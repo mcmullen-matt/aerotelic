@@ -34,6 +34,13 @@ void AAerotelicPlayerController::BeginPlay()
 	SetInputMode(InputMode);
 	bShowMouseCursor = true;
 
+	// Tooltips are off for now (requested 2026-10-09); the ToolTipText the
+	// widgets carry stays in place for when they are turned back on.
+	if (FSlateApplication::IsInitialized())
+	{
+		FSlateApplication::Get().SetAllowTooltips(false);
+	}
+
 	if (GEngine != nullptr && GEngine->GameViewport != nullptr && !Shell.IsValid())
 	{
 		SAssignNew(Shell, SAerotelicMainShell);

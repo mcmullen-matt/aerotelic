@@ -38,6 +38,11 @@ public:
 	// as NURBSPlanformPanel.span_changed() does.
 	void SpanChanged();
 
+	// The tabs' descriptions (planform mode, dihedral, twist, sections,
+	// axes) as one Help text. A wing shows it in its own Help tab; the
+	// propeller appends it to its Help.
+	FText GetHelpText() const;
+
 private:
 	aerotelic::WingModel* Model = nullptr;
 	FSimpleDelegate OnChangedDelegate;

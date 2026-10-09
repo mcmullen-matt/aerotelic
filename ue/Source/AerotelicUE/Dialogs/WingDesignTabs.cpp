@@ -75,7 +75,42 @@ FWingDesignTabs::FWingDesignTabs(WingModel* InModel, FSimpleDelegate InOnChanged
 	if (!bBlade)
 	{
 		Tabs.Add({ LOCTEXT("ControlSurfaces", "Control Surfaces"), BuildControlSurfacesTab() });
+		// A blade's help goes into the propeller panel's own Help tab.
+		Tabs.Add({ LOCTEXT("Help", "Help"), MakeHelpTab(GetHelpText()) });
 	}
+}
+
+FText FWingDesignTabs::GetHelpText() const
+{
+	// The per-tab descriptions, gathered here rather than shown above each
+	// tab's editor so the editing tabs hold only the controls.
+	const std::string Mode = Model->planform().Serialize().type;
+	FText PlanformHelp;
+	if (Mode == "nurbs")
+	{
+		PlanformHelp = FText::Format(LOCTEXT("HelpPlanformNurbs", "PLANFORM (NURBS)\n{0}"), kNurbsInfo);
+	}
+	else if (Mode == "double_trap")
+	{
+		PlanformHelp = LOCTEXT("HelpPlanformCranked",
+			"PLANFORM (CRANKED)\nTwo trapezoids joined at the kink: the Planform group sets the semi-span, the kink's span fraction and the root, kink and tip chords; "
+			"the Sweep group sets each panel's sweep angle and the chord fraction the sweep is measured at (0 = leading edge, 1 = trailing edge). "
+			"The outline below follows the inputs; the derived metrics are the aspect ratio, overall taper (tip over root) and wetted area.");
+	}
+	else
+	{
+		PlanformHelp = LOCTEXT("HelpPlanformStandard",
+			"PLANFORM (STANDARD)\nA single trapezoid. Type picks whether the tip is given as a chord (Ct/Cr) or as a taper ratio λ; switching keeps the same wing. "
+			"Semi-span and root chord set the size, the sweep angle is measured at the chord fraction given (0 = leading edge, 1 = trailing edge). "
+			"The outline below follows the inputs; the derived metrics are the aspect ratio, taper ratio and wetted area.");
+	}
+	const FText Dihedral = FText::Format(LOCTEXT("HelpDihedral", "DIHEDRAL\n{0}"), kDihedralInfo);
+	const FText Twist = FText::Format(LOCTEXT("HelpTwist", "TWIST\n{0}"), kTwistInfo);
+	const FText Sections = LOCTEXT("HelpSections",
+		"SECTIONS\nAirfoil sections at span stations s (0 = root, 1 = tip), blended between. Add at s inserts a station; pick each station's airfoil from the project's airfoils; Remove deletes the row.");
+	const FText Axes = LOCTEXT("HelpAxes",
+		"AXES\nEvery editor is non-dimensional: span fraction y/L across, with L the semi-span; chordwise x/L and height z/L up at the same scale; twist is in degrees.");
+	return FText::Join(FText::FromString(TEXT("\n\n")), PlanformHelp, Dihedral, Twist, Sections, Axes);
 }
 
 void FWingDesignTabs::NotifyChanged()
@@ -342,7 +377,6 @@ TSharedRef<SWidget> FWingDesignTabs::BuildNurbsPlanformTab(NURBSPlanform* Nurbs)
 		});
 
 	TSharedRef<SVerticalBox> Tab = SNew(SVerticalBox)
-		+ SVerticalBox::Slot().AutoHeight().Padding(8, 6, 8, 2) [ MakeInfoLabel(kNurbsInfo) ]
 		+ SVerticalBox::Slot().FillHeight(1.0f).Padding(4, 2) [ Editor ]
 		+ SVerticalBox::Slot().AutoHeight().Padding(8, 2) [ Controls ];
 
@@ -374,7 +408,6 @@ TSharedRef<SWidget> FWingDesignTabs::BuildDihedralTab()
 	WingModel* M = Model;
 
 	return SNew(SVerticalBox)
-		+ SVerticalBox::Slot().AutoHeight().Padding(8, 6, 8, 2) [ MakeInfoLabel(kDihedralInfo) ]
 		+ SVerticalBox::Slot().FillHeight(1.0f).Padding(4, 2) [ Editor ]
 		+ SVerticalBox::Slot().AutoHeight().Padding(8, 2)
 		[
@@ -405,8 +438,8 @@ TSharedRef<SWidget> FWingDesignTabs::BuildTwistTab()
 {
 	FSimpleDelegate OnChanged = FSimpleDelegate::CreateLambda([this]() { NotifyChanged(); });
 	TSharedRef<SCurveEditor> Editor = SNew(SCurveEditor)
-		.XLabel(LOCTEXT("EtaLabel", "η (span fraction)"))
-		.YLabel(LOCTEXT("TwistLabel", "Twist (°)"))
+		.XLabel(LOCTEXT("SpanLabel", "Span fraction (y/L)"))
+		.YLabel(LOCTEXT("TwistLabel", "Twist (degrees)"))
 		.Title(LOCTEXT("TwistTitle", "Twist NURBS  ·  drag poles  ·  dbl-click to add  ·  right-click for options"))
 		.XScale(1.0).YScale(1.0).EqualAspect(false)
 		.OnChanged(OnChanged);
@@ -418,7 +451,6 @@ TSharedRef<SWidget> FWingDesignTabs::BuildTwistTab()
 	WingModel* M = Model;
 
 	return SNew(SVerticalBox)
-		+ SVerticalBox::Slot().AutoHeight().Padding(8, 6, 8, 2) [ MakeInfoLabel(kTwistInfo) ]
 		+ SVerticalBox::Slot().FillHeight(1.0f).Padding(4, 2) [ Editor ]
 		+ SVerticalBox::Slot().AutoHeight().Padding(8, 2)
 		[

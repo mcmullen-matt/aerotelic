@@ -59,7 +59,17 @@ The layout follows the Python/Qt version's main window (`aerotelic/ui/main_windo
   has a degree spin box (1..points-1, applied through `SetDegree`), a
   "Reset Knots" button and a reset-to-default (Straight / Flat / Initial /
   Default / Circle...), a Help tab with the WingDesigner text, and
-  read-only derived metrics. Specifics: wing Standard tab has a Type combo
+  read-only derived metrics. Editing tabs hold only controls: every
+  descriptive paragraph lives in the panel's Help tab (the wing has one of
+  its own; the propeller's Help includes the blade tabs' text).
+* **Curve editors** draw a titled, framed plot with the x-axis label
+  centred below it and the y-axis label rotated along its left edge, in
+  non-dimensional units (x/L, y/L, z/L; x/R and r/R on the propeller
+  spinner; the twist editor's y axis is in degrees). Curves are clipped to
+  the plot area; hit-testing is relative to it.
+* **Tooltips are off** for now (`SetAllowTooltips(false)` in the player
+  controller). The widgets keep their tooltip text, so one line turns
+  them back on. Specifics: wing Standard tab has a Type combo
   (Tip Chord vs Taper Ratio) and a planform outline view; fuselage has a
   Sections tab with a station slider, section preview and parameter table;
   nacelle Front and lofted-nacelle guide curves have "Reset to Circle..."

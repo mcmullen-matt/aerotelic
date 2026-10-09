@@ -162,16 +162,49 @@ public:
 
 	virtual FVector2D ComputeDesiredSize(float) const override { return FVector2D(220.0f, Role == ERole::Curve ? 220.0f : 110.0f); }
 
+	// The plot area is the pane less a margin on each side for the title and
+	// legend (top), the rotated y-axis label (left) and the x-axis label
+	// (bottom), so the labels never sit over the curves. Everything in
+	// pixel space below -- painting and hit-testing -- is relative to the
+	// plot area's origin; see PlotOrigin / LastPaneSizePx.
+	FVector2D ComputePlotOrigin() const
+	{
+		const double Top = Role == ERole::Curve ? (HasLegend() ? 32.0 : 18.0) : 16.0;
+		return FVector2D(16.0, Top);
+	}
+	static constexpr double kMarginRight = 6.0;
+	static constexpr double kMarginBottom = 16.0;
+
+	bool HasLegend() const
+	{
+		for (const FCurveEditorSlot& Slot : Owner->Slots)
+		{
+			if (!Slot.Label.IsEmpty()) return true;
+		}
+		return false;
+	}
+
+	FVector2D ToPlotLocal(const FGeometry& Geometry, const FVector2D& ScreenPos) const
+	{
+		return Geometry.AbsoluteToLocal(ScreenPos) - PlotOrigin;
+	}
+
 	virtual int32 OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect,
 		FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled) const override
 	{
 		const FVector2D SizePx = AllottedGeometry.GetLocalSize();
-		LastPaneSizePx = FVector2D(FMath::Max(SizePx.X, 1.0), FMath::Max(SizePx.Y, 1.0));
+		PlotOrigin = ComputePlotOrigin();
+		LastPaneSizePx = FVector2D(FMath::Max(SizePx.X - PlotOrigin.X - kMarginRight, 1.0), FMath::Max(SizePx.Y - PlotOrigin.Y - kMarginBottom, 1.0));
 
 		// Background.
 		FSlateDrawElement::MakeBox(OutDrawElements, LayerId, AllottedGeometry.ToPaintGeometry(),
 			FAppStyle::Get().GetBrush("WhiteBrush"), ESlateDrawEffect::None, FLinearColor(0.051f, 0.067f, 0.09f));
 
+		// Curves and poles are clipped to the plot area so a zoomed view
+		// does not spill over the labels in the margins.
+		// (Grown by a pole marker's radius so a pole on the frame is whole.)
+		OutDrawElements.PushClip(FSlateClippingZone(AllottedGeometry.ToPaintGeometry(
+			FVector2f(LastPaneSizePx) + FVector2f(16.0f, 16.0f), FSlateLayoutTransform(FVector2f(PlotOrigin) - FVector2f(8.0f, 8.0f)))));
 		if (Role == ERole::Curve)
 		{
 			LastDrawnBox = Owner->GetOrComputeViewBoxForPane(LastPaneSizePx);
@@ -182,6 +215,7 @@ public:
 			LastDrawnBox = ComputeBasisBox();
 			PaintBasisPane(AllottedGeometry, OutDrawElements, LayerId + 1);
 		}
+		OutDrawElements.PopClip();
 		PaintLabels(AllottedGeometry, OutDrawElements, LayerId + 2);
 		return LayerId + 3;
 	}
@@ -201,6 +235,37 @@ public:
 			if (Text.IsEmpty()) return;
 			FSlateDrawElement::MakeText(Out, Layer, Geometry.ToOffsetPaintGeometry(Pos), Text, Font, ESlateDrawEffect::None, Color);
 		};
+		// The x label centred under the plot area; the y label rotated a
+		// quarter turn anticlockwise and centred beside it, as matplotlib
+		// lays out axis labels.
+		auto DrawXLabel = [&](const FText& Text)
+		{
+			if (Text.IsEmpty()) return;
+			const FVector2D TextSize = Measure->Measure(Text, Font);
+			const double X = PlotOrigin.X + (LastPaneSizePx.X - TextSize.X) * 0.5;
+			Draw(Text, FVector2D(FMath::Max(X, 2.0), Size.Y - TextSize.Y - 2), LabelColor);
+		};
+		auto DrawYLabel = [&](const FText& Text)
+		{
+			if (Text.IsEmpty()) return;
+			const FVector2D TextSize = Measure->Measure(Text, Font);
+			// Rotating by -90 degrees about the layout origin maps the text's
+			// baseline (+x) onto -y, so the glyphs read bottom to top from
+			// the origin; the origin is therefore the label's bottom-left.
+			const double Y = PlotOrigin.Y + (LastPaneSizePx.Y + TextSize.X) * 0.5;
+			const FSlateRenderTransform Rotate(FQuat2D(-UE_HALF_PI));
+			FSlateDrawElement::MakeText(Out, Layer,
+				Geometry.ToPaintGeometry(FVector2f(TextSize), FSlateLayoutTransform(FVector2f(2.0f, (float)Y)), Rotate, FVector2f::ZeroVector),
+				Text, Font, ESlateDrawEffect::None, LabelColor);
+		};
+		// A faint frame around the plot area so the axes read as a graph.
+		{
+			const FLinearColor FrameColor(0.22f, 0.24f, 0.28f);
+			const FVector2f O((float)PlotOrigin.X, (float)PlotOrigin.Y);
+			const FVector2f S((float)LastPaneSizePx.X, (float)LastPaneSizePx.Y);
+			TArray<FVector2f> Pts = { O, FVector2f(O.X + S.X, O.Y), O + S, FVector2f(O.X, O.Y + S.Y), O };
+			FSlateDrawElement::MakeLines(Out, Layer, Geometry.ToPaintGeometry(), Pts, ESlateDrawEffect::None, FrameColor, false, 1.0f);
+		}
 
 		if (Role == ERole::Curve)
 		{
@@ -216,10 +281,8 @@ public:
 				Draw(Slot.Label, FVector2D(X + 14, LegendY), LabelColor);
 				X += 14 + Measure->Measure(Slot.Label, Font).X + 12;
 			}
-			// Axis labels: y at the left under the legend, x bottom-right.
-			Draw(Owner->YLabel, FVector2D(6, LegendY + 14), LabelColor);
-			const FVector2D XSize = Measure->Measure(Owner->XLabel, Font);
-			Draw(Owner->XLabel, FVector2D(Size.X - XSize.X - 6, Size.Y - XSize.Y - 3), LabelColor);
+			DrawYLabel(Owner->YLabel);
+			DrawXLabel(Owner->XLabel);
 		}
 		else if (Owner->Slots.IsValidIndex(SlotIndex))
 		{
@@ -228,9 +291,8 @@ public:
 				? NSLOCTEXT("CurveEditor", "BasisTitle", "blending functions and knots  ·  drag knots along the line  ·  right-click to insert / delete")
 				: FText::Format(NSLOCTEXT("CurveEditor", "BasisTitleLabelled", "{0}  ·  blending functions and knots  ·  drag knots along the line  ·  right-click to insert / delete"), Slot.Label);
 			Draw(Title, FVector2D(6, 3), TitleColor);
-			const FText XText = NSLOCTEXT("CurveEditor", "BasisX", "Curve parameter s");
-			const FVector2D XSize = Measure->Measure(XText, Font);
-			Draw(XText, FVector2D(Size.X - XSize.X - 6, Size.Y - XSize.Y - 3), LabelColor);
+			DrawYLabel(NSLOCTEXT("CurveEditor", "BasisY", "N(s)"));
+			DrawXLabel(NSLOCTEXT("CurveEditor", "BasisX", "Curve parameter s"));
 		}
 	}
 
@@ -238,7 +300,7 @@ public:
 
 	virtual FReply OnMouseButtonDown(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent) override
 	{
-		const FVector2D Local = MyGeometry.AbsoluteToLocal(MouseEvent.GetScreenSpacePosition());
+		const FVector2D Local = ToPlotLocal(MyGeometry, MouseEvent.GetScreenSpacePosition());
 		if (MouseEvent.GetEffectingButton() == EKeys::LeftMouseButton)
 		{
 			if (Role == ERole::Curve) return PressCurve(Local);
@@ -259,7 +321,7 @@ public:
 		{
 			return FReply::Unhandled();
 		}
-		const FVector2D Local = InMyGeometry.AbsoluteToLocal(InMouseEvent.GetScreenSpacePosition());
+		const FVector2D Local = ToPlotLocal(InMyGeometry, InMouseEvent.GetScreenSpacePosition());
 		if (Owner->PoleAt(Local, LastDrawnBox, LastPaneSizePx).IsSet())
 		{
 			return FReply::Handled(); // a pole under the cursor: the first click already selected/dragged it
@@ -271,7 +333,7 @@ public:
 
 	virtual FReply OnMouseMove(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent) override
 	{
-		const FVector2D Local = MyGeometry.AbsoluteToLocal(MouseEvent.GetScreenSpacePosition());
+		const FVector2D Local = ToPlotLocal(MyGeometry, MouseEvent.GetScreenSpacePosition());
 		if (Role == ERole::Curve && Owner->IsDraggingPole())
 		{
 			Owner->DragPoleTo(Local, LastDrawnBox, LastPaneSizePx);
@@ -312,7 +374,7 @@ public:
 		{
 			return FReply::Unhandled();
 		}
-		const FVector2D Local = MyGeometry.AbsoluteToLocal(MouseEvent.GetScreenSpacePosition());
+		const FVector2D Local = ToPlotLocal(MyGeometry, MouseEvent.GetScreenSpacePosition());
 		Owner->ZoomAboutLocal(Local, LastDrawnBox, LastPaneSizePx, MouseEvent.GetWheelDelta());
 		Invalidate(EInvalidateWidget::Paint);
 		return FReply::Handled();
@@ -324,11 +386,14 @@ private:
 	int32 SlotIndex = -1;
 
 	mutable FBox2D LastDrawnBox = FBox2D(FVector2D(0, 0), FVector2D(1, 1));
+	// Plot-area size and its origin within the pane (see ComputePlotOrigin).
 	mutable FVector2D LastPaneSizePx = FVector2D(220, 220);
+	mutable FVector2D PlotOrigin = FVector2D(16, 18);
 
+	// Data space to pane-local pixels (plot-area pixels plus the origin).
 	FVector2D DataToLocal(FVector2D DataXY) const
 	{
-		return DataToLocalStatic(DataXY, LastDrawnBox, LastPaneSizePx);
+		return DataToLocalStatic(DataXY, LastDrawnBox, LastPaneSizePx) + PlotOrigin;
 	}
 
 	FReply PressCurve(FVector2D Local)

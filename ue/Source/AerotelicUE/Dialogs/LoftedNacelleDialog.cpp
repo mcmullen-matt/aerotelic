@@ -419,7 +419,8 @@ namespace
 		"Drag the green knots between their neighbours; push one onto a neighbour to repeat it. Grey knots are the clamped ends of a side-view curve and the seam of a guide. "
 		"Right-click the line to insert a knot without changing the shape; right-click a knot to raise its multiplicity or delete it.\n\n"
 		"CHEVRONS\n"
-		"Notches around the trailing edge, spaced evenly by arc length with the first tip at the top. Depth is typed in directly and marked by a dashed line on the Skins tab; 0 is a plain trailing edge.\n\n"
+		"Notches around the trailing edge, spaced evenly by arc length with the first tip at the top. Depth is typed in directly and marked by a dashed line on the Skins tab; 0 is a plain trailing edge. "
+		"The tip angle read-out is what the other nacelle parameterisation asks for instead of a depth; it is shown so a body drawn either way can be matched to the other.\n\n"
 		"VIEW\n"
 		"The wheel zooms about the cursor; the right-click menu's Fit view to contents fits everything; nothing else moves the view.");
 }
@@ -673,8 +674,7 @@ void BuildLoftedNacelleDesignContent(AAerotelicEntityActor* Entity, FAerotelicDe
 					+ SVerticalBox::Slot().AutoHeight() [ MakeMetricRow(LOCTEXT("TipAngle", "Tip angle:"), TAttribute<FText>::CreateLambda([TipAngleLabel]() { return TipAngleLabel->GetText(); })) ]
 					+ SVerticalBox::Slot().AutoHeight() [ MakeMetricRow(LOCTEXT("TePerimeter", "Trailing-edge perimeter:"), TAttribute<FText>::CreateLambda([TePerimeterLabel]() { return TePerimeterLabel->GetText(); })) ])
 			]
-			+ SVerticalBox::Slot().AutoHeight().Padding(0, 8)
-			[ MakeInfoLabel(LOCTEXT("ChevronNote", "The first tooth tip is at the top of the trailing edge; the rest are spaced evenly by arc length around it. Tip angle is what the other nacelle parameterisation asks for instead of a depth — it is shown here so a body drawn either way can be matched to the other.")) ]
+			// (The chevron description is in the Help tab's CHEVRONS section.)
 			+ SVerticalBox::Slot().AutoHeight().Padding(0, 6, 0, 0)
 			[ LengthField() ]
 		];

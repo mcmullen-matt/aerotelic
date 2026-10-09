@@ -130,8 +130,7 @@ void SPrimitiveDialog::Construct(const FArguments& InArgs, AAerotelicEntityActor
 		[
 			SNew(SVerticalBox)
 			+ SVerticalBox::Slot().AutoHeight() [ ShapeGroup ]
-			+ SVerticalBox::Slot().AutoHeight().Padding(0, 8, 0, 0)
-			[ MakeInfoLabel(LOCTEXT("PlacementNote", "The shape is built centred on the origin. To place it, right-click its row in the Scene tree and choose Transform — the translation there is the position of the centre.")) ]
+			// (Placement is described in the Help tab's PUTTING IT IN PLACE.)
 		];
 
 	TArray<FAerotelicTab> Tabs;

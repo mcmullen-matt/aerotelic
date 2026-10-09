@@ -198,12 +198,10 @@ void BuildPropellerDesignContent(AAerotelicEntityActor* Entity, FAerotelicDesign
 			SNew(SVerticalBox)
 			+ SVerticalBox::Slot().AutoHeight() [ MakeGroup(LOCTEXT("PropellerGroup", "Propeller"), PropellerInputs) ]
 			+ SVerticalBox::Slot().AutoHeight() [ DerivedGroup ]
-			+ SVerticalBox::Slot().AutoHeight().Padding(0, 8) [ MakeInfoLabel(kPropellerNote) ]
 		];
 
 	// ---- Spinner tab ----
 	TSharedRef<SWidget> SpinnerTab = SNew(SVerticalBox)
-		+ SVerticalBox::Slot().AutoHeight().Padding(8, 6, 8, 2) [ MakeInfoLabel(kSpinnerInfo) ]
 		+ SVerticalBox::Slot().FillHeight(1.0f).Padding(4, 2) [ SpinnerEditor ]
 		+ SVerticalBox::Slot().AutoHeight().Padding(8, 2)
 		[
@@ -253,7 +251,14 @@ void BuildPropellerDesignContent(AAerotelicEntityActor* Entity, FAerotelicDesign
 		Tabs.Add({ Tab.Key, Tab.Value });
 	}
 	Tabs.Add({ LOCTEXT("SpinnerTab", "Spinner"), SpinnerTab });
-	Tabs.Add({ LOCTEXT("HelpTab", "Help"), MakeHelpTab(kHelp) });
+	// The Propeller and Spinner tabs' descriptions and the blade tabs' help
+	// live here rather than above the controls.
+	const FText HelpText = FText::Join(FText::FromString(TEXT("\n\n")),
+		FText::Format(LOCTEXT("HelpPropellerTab", "PROPELLER TAB\n{0}"), kPropellerNote),
+		FText::Format(LOCTEXT("HelpSpinnerTab", "SPINNER TAB\n{0}"), kSpinnerInfo),
+		kHelp,
+		FText::Format(LOCTEXT("HelpBladeTabs", "BLADE TABS\n\n{0}"), BladeTabs->GetHelpText()));
+	Tabs.Add({ LOCTEXT("HelpTab", "Help"), MakeHelpTab(HelpText) });
 
 	Out.Title = FText::Format(LOCTEXT("Title", "Propeller -- {0}"), FText::FromString(Entity->EntityName));
 	// Keeps BladeTabs (and its model-bound widgets) alive with the panel.

@@ -308,8 +308,7 @@ void BuildNacelleDesignContent(AAerotelicEntityActor* Entity, FAerotelicDesignCo
 					+ SVerticalBox::Slot().AutoHeight() [ MakeMetricRow(LOCTEXT("TipAngle", "Tip angle:"), TAttribute<FText>::CreateLambda([TipAngleLabel]() { return TipAngleLabel->GetText(); })) ]
 					+ SVerticalBox::Slot().AutoHeight() [ MakeMetricRow(LOCTEXT("TePerimeter", "Trailing-edge perimeter:"), TAttribute<FText>::CreateLambda([TePerimeterLabel]() { return TePerimeterLabel->GetText(); })) ])
 			]
-			+ SVerticalBox::Slot().AutoHeight().Padding(0, 8)
-			[ MakeInfoLabel(LOCTEXT("ChevronNote", "The first tooth tip is at the top of the trailing edge; the rest are spaced evenly by arc length around it. Tip angle is what this panel used to ask for instead of a depth — it is shown here so a body drawn either way, on either nacelle panel, can be matched to the other.")) ]
+			// (The chevron description is in the Help tab's CHEVRONS section.)
 			+ SVerticalBox::Slot().AutoHeight().Padding(0, 6, 0, 0)
 			[ LengthField() ]
 		];
