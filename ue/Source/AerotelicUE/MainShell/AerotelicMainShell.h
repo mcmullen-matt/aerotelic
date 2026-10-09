@@ -56,6 +56,8 @@ private:
 	TSharedPtr<FUICommandList> Commands;
 	TSharedPtr<SWidget> ViewHole;
 	FText StatusText;
+	// The dock column's width, dragged with the handle on its left edge.
+	float DockColumnWidth = 400.0f;
 	FDelegateHandle KeyListenerHandle;
 
 	// Construction.

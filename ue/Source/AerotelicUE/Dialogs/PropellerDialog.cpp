@@ -4,77 +4,71 @@
 #include "Widgets/TabStrip.h"
 #include "Widgets/NumericEntry.h"
 #include "Widgets/CurveEditor.h"
+#include "Widgets/CurveTabControls.h"
 
 #include "Widgets/Layout/SBorder.h"
+#include "Widgets/Layout/SBox.h"
+#include "Widgets/Layout/SScrollBox.h"
 #include "Widgets/Text/STextBlock.h"
+#include "Widgets/Input/SSpinBox.h"
 
 #include "Entity/AerotelicEntityActor.h"
 #include "aerotelic/propeller_model.hpp"
+
+#define LOCTEXT_NAMESPACE "PropellerDialog"
 
 using namespace aerotelic;
 
 namespace
 {
-	TSharedRef<SWidget> FormRow(const FText& Label, TSharedRef<SWidget> Field)
+	TSharedRef<SWidget> FormRow(const FText& Label, TSharedRef<SWidget> Field, const FText& ToolTip = FText())
 	{
 		return SNew(SHorizontalBox)
+			.ToolTipText(ToolTip)
 			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 2, 8, 2)
-			[ SNew(STextBlock).Text(Label) ]
+			[ SNew(SBox).MinDesiredWidth(150) [ SNew(STextBlock).Text(Label) ] ]
 			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 2)
 			[ Field ];
 	}
 
-	TSharedRef<SWidget> BuildPropellerTab(PropellerModel* Model, FSimpleDelegate OnChanged)
+	// The Propeller tab's derived read-outs, from one Metrics() call; any
+	// exception blanks every label.
+	struct FDerived
 	{
-		TSharedRef<STextBlock> Derived = SNew(STextBlock).AutoWrapText(true);
-		TFunction<void()> Refresh = [Model, Derived]()
+		TOptional<PropellerMetrics> M;
+		void Refresh(PropellerModel* Model)
 		{
-			try
-			{
-				PropellerMetrics M = Model->Metrics();
-				Derived->SetText(FText::Format(NSLOCTEXT("PropellerDialog", "Derived",
-					"Diameter: {0}    Solidity: {1}    Activity Factor: {2}\nBeta @0.75R: {3}    Pitch/D @0.75R: {4}\nSpinner diameter: {5}    Spinner length: {6}"),
-					FText::AsNumber(M.diameter), FText::AsNumber(M.solidity), FText::AsNumber(M.activity_factor),
-					FText::AsNumber(M.beta_75), FText::AsNumber(M.pitch_ratio), FText::AsNumber(M.spinner_diameter), FText::AsNumber(M.spinner_length)));
-			}
-			catch (const std::exception&)
-			{
-				Derived->SetText(NSLOCTEXT("PropellerDialog", "DerivedNA", "--"));
-			}
-		};
-		Refresh();
+			try { M = Model->Metrics(); }
+			catch (const std::exception&) { M.Reset(); }
+		}
+	};
 
-		return SNew(SBorder).Padding(8)
-		[
-			SNew(SVerticalBox)
-			+ SVerticalBox::Slot().AutoHeight()
-			[ FormRow(NSLOCTEXT("PropellerDialog", "Radius", "Radius R"),
-				SNew(SAerotelicNumericEntry).Value_Lambda([Model]() { return Model->radius; })
-					.MinValue(1e-9).MaxValue(1e9).Delta(0.01).LiveUpdate(false)
-					.OnValueCommitted_Lambda([Model, OnChanged, Refresh](double V, ETextCommit::Type)
-					{ Model->SetRadius(V); Refresh(); OnChanged.ExecuteIfBound(); })) ]
-			+ SVerticalBox::Slot().AutoHeight()
-			[ FormRow(NSLOCTEXT("PropellerDialog", "BladeCount", "Number of blades"),
-				SNew(SAerotelicNumericEntry).Value_Lambda([Model]() { return (double)Model->blade_count; })
-					.MinValue(1).MaxValue((double)kPropellerMaxBlades).Delta(1.0).LiveUpdate(false)
-					.OnValueCommitted_Lambda([Model, OnChanged, Refresh](double V, ETextCommit::Type)
-					{ Model->blade_count = FMath::RoundToInt(V); Refresh(); OnChanged.ExecuteIfBound(); })) ]
-			+ SVerticalBox::Slot().AutoHeight()
-			[ FormRow(NSLOCTEXT("PropellerDialog", "BladeX", "Blade position (x/R)"),
-				SNew(SAerotelicNumericEntry).Value_Lambda([Model]() { return Model->blade_x; })
-					.MinValue(-1e9).MaxValue(1e9).Delta(0.01).LiveUpdate(false)
-					.OnValueCommitted_Lambda([Model, OnChanged, Refresh](double V, ETextCommit::Type)
-					{ Model->blade_x = V; Refresh(); OnChanged.ExecuteIfBound(); })) ]
-			+ SVerticalBox::Slot().AutoHeight()
-			[ FormRow(NSLOCTEXT("PropellerDialog", "HubRadius", "Blade root radius (r/R)"),
-				SNew(SAerotelicNumericEntry).Value_Lambda([Model]() { return Model->hub_radius; })
-					.MinValue(0.0).MaxValue(1.0).Delta(0.01).LiveUpdate(false)
-					.OnValueCommitted_Lambda([Model, OnChanged, Refresh](double V, ETextCommit::Type)
-					{ Model->hub_radius = V; Refresh(); OnChanged.ExecuteIfBound(); })) ]
-			+ SVerticalBox::Slot().AutoHeight().Padding(0, 10, 0, 0)
-			[ Derived ]
-		];
-	}
+	const FText kPropellerNote = LOCTEXT("PropellerNote",
+		"R is the length scale: the blade's span fraction is r/R, its planform is drawn in x/R, and the spinner in x/R and r/R. "
+		"Changing R rescales the whole propeller. The propeller turns clockwise seen from behind; mirror the entity for the other hand. See Help.");
+
+	const FText kSpinnerInfo = LOCTEXT("SpinnerInfo",
+		"The spinner's radius along its length, revolved about the axis. Both ends stay on the axis (r = 0) — the tip at the front, the closure at the back — and move along it only with Spinner length. "
+		"Drag the other points freely; double-click to add one, right-click for weight or to remove. The dashed line is the blades' axial position. Axes are x/R and r/R at equal scale.");
+
+	const FText kHelp = LOCTEXT("Help",
+		"ONE LENGTH\n"
+		"The tip radius R is the only length typed in; every other input and every editor axis is a fraction of it, so changing R rescales the whole propeller and moves no control point.\n\n"
+		"THE BLADE\n"
+		"Planform, Dihedral, Sections and Twist are the NURBS wing's tabs editing one blade whose semi-span is R, so span fraction is r/R and the planform is drawn in x/R. "
+		"The blade is drawn from the axis out, but only the part beyond the blade root radius is built, and that radius should stay inside the spinner. "
+		"Planform: leading and trailing edges in the plane of rotation, the pitch-change axis at x = 0; moving both edges together skews the blade. "
+		"Dihedral: the blade's rake, forward positive, aft negative, in units of R. Sections: airfoils at r/R stations, blended between. "
+		"Twist: the blade angle β from the plane of rotation; for a constant geometric pitch P, tan β = (P/D) / (π r/R). "
+		"The suction side faces forward and the propeller turns clockwise seen from behind; mirror the entity for the opposite hand.\n\n"
+		"THE SPINNER\n"
+		"One curve, radius against length, revolved about the axis. Both ends are held on the axis so the body is closed; they move along the axis only via Spinner length. "
+		"Every other point moves freely as long as it stays off the axis. The dashed line marks the blades' axial position.\n\n"
+		"CURVE EDITORS\n"
+		"Drag to move, double-click to add, right-click for weight or remove. In the knot graph drag the green knots, push one onto a neighbour to repeat it, right-click to insert or delete. "
+		"The wheel zooms; the right-click menu's Fit view to contents refits.\n\n"
+		"SOLID\n"
+		"While editing, the spinner and blades are drawn as separate overlapping bodies, which is quick; export joins them into one solid.");
 }
 
 void BuildPropellerDesignContent(AAerotelicEntityActor* Entity, FAerotelicDesignContent& Out)
@@ -86,52 +80,185 @@ void BuildPropellerDesignContent(AAerotelicEntityActor* Entity, FAerotelicDesign
 
 	PropellerModel* Model = Entity->GetModelAs<PropellerModel>();
 	TWeakObjectPtr<AAerotelicEntityActor> WeakEntity = Entity;
-	FSimpleDelegate OnChanged = FSimpleDelegate::CreateLambda([WeakEntity]()
+	FSimpleDelegate Rebuild = FSimpleDelegate::CreateLambda([WeakEntity]()
 	{
 		if (WeakEntity.IsValid()) WeakEntity->RefreshProxy();
 	});
 
-	TSharedRef<FWingDesignTabs> BladeTabs = MakeShared<FWingDesignTabs>(&Model->blade(), OnChanged);
+	TSharedRef<FDerived> Derived = MakeShared<FDerived>();
+	Derived->Refresh(Model);
 
-	// ---- Spinner ----
+	// ---- Spinner editor (built first: the layout router redraws it) ----
 	FCurveEditorSlot SpinnerSlot;
 	SpinnerSlot.Curve = &Model->spinner_curve_mut();
 	SpinnerSlot.Color = FLinearColor(0.75f, 0.78f, 0.85f);
+	SpinnerSlot.Label = LOCTEXT("Spinner", "spinner");
 	SpinnerSlot.YClampLo = 0.0;
 	SpinnerSlot.FixedPoles.Add(0, FVector2D(0.0, 0.0));
 	SpinnerSlot.FixedPoles.Add(-1, FVector2D(1.0, 0.0));
 	SpinnerSlot.Basis = ECurveBasisPlacement::Below;
 	TSharedRef<SCurveEditor> SpinnerEditor = SNew(SCurveEditor)
-		.XLabel(NSLOCTEXT("PropellerDialog", "XR", "Axial position (x/R)"))
-		.YLabel(NSLOCTEXT("PropellerDialog", "RadiusR", "Radius (/R)"))
-		.Title(NSLOCTEXT("PropellerDialog", "SpinnerTitle", "Spinner"))
-		.XScale(Model->spinner_length).YScale(1.0).EqualAspect(false)
-		.OnChanged(OnChanged);
+		.XLabel(LOCTEXT("XR", "Axial (x/R)"))
+		.YLabel(LOCTEXT("RadiusR", "Radius (r/R)"))
+		.Title(LOCTEXT("SpinnerTitle", "Spinner  ·  revolved about the axis  ·  both ends on the axis"))
+		.XScale(FMath::Max(Model->spinner_length, 1e-9)).YScale(1.0).EqualAspect(true);
 	SpinnerEditor->SetSlots({ SpinnerSlot });
+	// The blades' axial position, dashed.
+	SpinnerEditor->SetOutlineProvider(FOnGetOutlinePaths::CreateLambda([Model]()
+	{
+		TArray<FCurveEditorOutlinePath> Paths;
+		if (Model->spinner_length <= 0.0) return Paths;
+		const double X = Model->blade_x / Model->spinner_length;
+		double Top = Model->hub_radius + 0.05;
+		try { Top = FMath::Max(1.4 * Model->SpinnerRadius(), Top); } catch (const std::exception&) {}
+		FCurveEditorOutlinePath P;
+		P.Points = { FVector2D(X, Model->hub_radius), FVector2D(X, Top) };
+		P.Color = FLinearColor(0.88f, 0.31f, 0.31f);
+		P.Label = LOCTEXT("BladeAxis", "blade axis");
+		P.LineWidth = 1.2f;
+		Paths.Add(P);
+		return Paths;
+	}));
 
-	TSharedRef<SWidget> SpinnerTab = SNew(SVerticalBox)
-		+ SVerticalBox::Slot().AutoHeight().Padding(8)
-		[ FormRow(NSLOCTEXT("PropellerDialog", "SpinnerLength", "Spinner length (l/R)"),
-			SNew(SAerotelicNumericEntry).Value_Lambda([Model]() { return Model->spinner_length; })
+	// ---- Change routers (propeller_panel.py's _blade_changed / radius_changed / layout_changed / spinner_changed) ----
+	FSimpleDelegate OnBladeChanged = FSimpleDelegate::CreateLambda([Derived, Model, Rebuild]()
+	{
+		Derived->Refresh(Model);
+		Rebuild.ExecuteIfBound();
+	});
+	FSimpleDelegate OnLayoutChanged = FSimpleDelegate::CreateLambda([Derived, Model, SpinnerEditor, Rebuild]()
+	{
+		Derived->Refresh(Model);
+		SpinnerEditor->RequestRedraw(); // the blade-axis marker moves
+		Rebuild.ExecuteIfBound();
+	});
+	FSimpleDelegate OnSpinnerChanged = OnBladeChanged;
+	SpinnerEditor->SetOnChanged(OnSpinnerChanged);
+
+	TSharedRef<FWingDesignTabs> BladeTabs = MakeShared<FWingDesignTabs>(&Model->blade(), OnBladeChanged, /*bBlade*/ true);
+	FSimpleDelegate OnRadiusChanged = FSimpleDelegate::CreateLambda([Derived, Model, BladeTabs, Rebuild]()
+	{
+		BladeTabs->SpanChanged();
+		Derived->Refresh(Model);
+		Rebuild.ExecuteIfBound();
+	});
+
+	// ---- Propeller tab ----
+	auto Metric = [Derived](TFunction<FText(const PropellerMetrics&)> Get)
+	{
+		return TAttribute<FText>::CreateLambda([Derived, Get]() { return Derived->M.IsSet() ? Get(Derived->M.GetValue()) : DashText(); });
+	};
+	TSharedRef<SWidget> PropellerInputs = SNew(SVerticalBox)
+		+ SVerticalBox::Slot().AutoHeight()
+		[ FormRow(LOCTEXT("Radius", "Radius R:"),
+			SNew(SAerotelicNumericEntry).Value_Lambda([Model]() { return Model->radius; })
 				.MinValue(1e-9).MaxValue(1e9).Delta(0.01).LiveUpdate(false)
-				.OnValueCommitted_Lambda([Model, OnChanged, SpinnerEditor](double V, ETextCommit::Type)
+				.OnValueCommitted_Lambda([Model, OnRadiusChanged](double V, ETextCommit::Type)
+				{ if (!FMath::IsNearlyEqual(V, Model->radius)) { Model->SetRadius(V); OnRadiusChanged.ExecuteIfBound(); } }),
+			LOCTEXT("RadiusTip", "Tip radius R — the length scale: every other input and every editor\naxis on this panel is a fraction of it.")) ]
+		+ SVerticalBox::Slot().AutoHeight()
+		[ FormRow(LOCTEXT("BladeCount", "Number of blades:"),
+			SNew(SBox).WidthOverride(90)
+			[
+				SNew(SSpinBox<int32>)
+				.MinValue(1).MaxValue(kPropellerMaxBlades).MinSliderValue(1).MaxSliderValue(kPropellerMaxBlades).Delta(1)
+				.Value_Lambda([Model]() { return Model->blade_count; })
+				.OnValueCommitted_Lambda([Model, OnLayoutChanged](int32 V, ETextCommit::Type)
+				{ if (V != Model->blade_count) { Model->blade_count = V; OnLayoutChanged.ExecuteIfBound(); } })
+			],
+			LOCTEXT("BladeCountTip", "Number of blades, spaced evenly around the axis.")) ]
+		+ SVerticalBox::Slot().AutoHeight()
+		[ FormRow(LOCTEXT("BladeX", "Blade position (x/R):"),
+			SNew(SAerotelicNumericEntry).Value_Lambda([Model]() { return Model->blade_x; })
+				.MinValue(-1e9).MaxValue(1e9).Delta(0.01).LiveUpdate(false)
+				.OnValueCommitted_Lambda([Model, OnLayoutChanged](double V, ETextCommit::Type)
+				{ if (!FMath::IsNearlyEqual(V, Model->blade_x)) { Model->blade_x = V; OnLayoutChanged.ExecuteIfBound(); } }),
+			LOCTEXT("BladeXTip", "Axial position of the blades' pitch-change axis, aft of the spinner tip,\nas a fraction of R (x/R).")) ]
+		+ SVerticalBox::Slot().AutoHeight()
+		[ FormRow(LOCTEXT("HubRadius", "Blade root radius (r/R):"),
+			SNew(SAerotelicNumericEntry).Value_Lambda([Model]() { return Model->hub_radius; })
+				.MinValue(0.0).MaxValue(1.0).Delta(0.01).LiveUpdate(false)
+				.OnValueCommitted_Lambda([Model, OnLayoutChanged](double V, ETextCommit::Type)
+				{ if (!FMath::IsNearlyEqual(V, Model->hub_radius)) { Model->hub_radius = V; OnLayoutChanged.ExecuteIfBound(); } }),
+			LOCTEXT("HubRadiusTip", "Where each blade is cut off, as r/R. The blade is drawn from the axis\nout, so its axes are r/R; only the part beyond this radius is built,\nand it should be inside the spinner.")) ];
+
+	TSharedRef<SWidget> DerivedGroup = MakeGroup(LOCTEXT("DerivedGroup", "Derived"),
+		SNew(SVerticalBox)
+		+ SVerticalBox::Slot().AutoHeight() [ MakeMetricRow(LOCTEXT("Diameter", "Diameter:"), Metric([](const PropellerMetrics& M) { return FormatG(M.diameter, 4); })) ]
+		+ SVerticalBox::Slot().AutoHeight() [ MakeMetricRow(LOCTEXT("Solidity", "Solidity σ:"), Metric([](const PropellerMetrics& M) { return FormatF(M.solidity, 4); })) ]
+		+ SVerticalBox::Slot().AutoHeight() [ MakeMetricRow(LOCTEXT("ActivityFactor", "Activity factor (per blade):"), Metric([](const PropellerMetrics& M) { return FormatF(M.activity_factor, 1); })) ]
+		+ SVerticalBox::Slot().AutoHeight() [ MakeMetricRow(LOCTEXT("Beta75", "Blade angle β at 0.75 R:"), Metric([](const PropellerMetrics& M) { return FText::FromString(FString::Printf(TEXT("%.2f °"), M.beta_75)); })) ]
+		+ SVerticalBox::Slot().AutoHeight() [ MakeMetricRow(LOCTEXT("PitchRatio", "Geometric pitch P/D at 0.75 R:"), Metric([](const PropellerMetrics& M) { return FormatF(M.pitch_ratio, 3); })) ]
+		+ SVerticalBox::Slot().AutoHeight() [ MakeMetricRow(LOCTEXT("SpinnerDiameter", "Spinner diameter:"), Metric([](const PropellerMetrics& M) { return FormatG(M.spinner_diameter, 4); })) ]
+		+ SVerticalBox::Slot().AutoHeight() [ MakeMetricRow(LOCTEXT("SpinnerLength", "Spinner length:"), Metric([](const PropellerMetrics& M) { return FormatG(M.spinner_length, 4); })) ]);
+
+	TSharedRef<SWidget> PropellerTab = SNew(SScrollBox)
+		+ SScrollBox::Slot().Padding(8)
+		[
+			SNew(SVerticalBox)
+			+ SVerticalBox::Slot().AutoHeight() [ MakeGroup(LOCTEXT("PropellerGroup", "Propeller"), PropellerInputs) ]
+			+ SVerticalBox::Slot().AutoHeight() [ DerivedGroup ]
+			+ SVerticalBox::Slot().AutoHeight().Padding(0, 8) [ MakeInfoLabel(kPropellerNote) ]
+		];
+
+	// ---- Spinner tab ----
+	TSharedRef<SWidget> SpinnerTab = SNew(SVerticalBox)
+		+ SVerticalBox::Slot().AutoHeight().Padding(8, 6, 8, 2) [ MakeInfoLabel(kSpinnerInfo) ]
+		+ SVerticalBox::Slot().FillHeight(1.0f).Padding(4, 2) [ SpinnerEditor ]
+		+ SVerticalBox::Slot().AutoHeight().Padding(8, 2)
+		[
+			MakeControlsRow(
 				{
-					Model->spinner_length = V;
-					SpinnerEditor->SetScales(Model->spinner_length, 1.0);
-					OnChanged.ExecuteIfBound();
-				})) ]
-		+ SVerticalBox::Slot().FillHeight(1.0f) [ SpinnerEditor ];
+					FormRow(LOCTEXT("SpinnerLengthLabel", "Spinner length (l/R):"),
+						SNew(SAerotelicNumericEntry).Value_Lambda([Model]() { return Model->spinner_length; })
+							.MinValue(1e-9).MaxValue(1e9).Delta(0.01).LiveUpdate(false)
+							.OnValueCommitted_Lambda([Model, SpinnerEditor, OnSpinnerChanged](double V, ETextCommit::Type)
+							{
+								if (FMath::IsNearlyEqual(V, Model->spinner_length)) return;
+								Model->spinner_length = V;
+								SpinnerEditor->SetScales(Model->spinner_length, 1.0);
+								OnSpinnerChanged.ExecuteIfBound();
+							}),
+						LOCTEXT("SpinnerLengthTip", "Spinner length, tip to back, as a fraction of R.")),
+					MakeDegreeSpin(LOCTEXT("Degree", "Degree:"), [Model]() { return &Model->spinner_curve_mut(); }, SpinnerEditor, OnSpinnerChanged,
+						LOCTEXT("PolyDegreeTip", "Curve degree  (1 = polygon, 2 = quadratic, 3 = cubic ...).")),
+				},
+				{
+					MakeControlButton(LOCTEXT("ResetKnots", "Reset Knots"), LOCTEXT("ResetKnotsTip", "Put the knots back at their default spacing (points unchanged)"),
+						FOnClicked::CreateLambda([Model, SpinnerEditor, OnSpinnerChanged]()
+						{
+							Model->spinner_curve_mut().ResetKnotsPublic();
+							SpinnerEditor->RequestRedraw();
+							OnSpinnerChanged.ExecuteIfBound();
+							return FReply::Handled();
+						})),
+					MakeControlButton(LOCTEXT("ResetDefault", "Reset to Default"), LOCTEXT("ResetDefaultTip", "The default general-aviation spinner profile, at the current length"),
+						FOnClicked::CreateLambda([Model, SpinnerEditor, OnSpinnerChanged]()
+						{
+							const PropellerSpec Def;
+							NurbsSpec Spec = Def.spinner_curve;
+							Spec.weights.reset(); // unit weights, as the Python reset forces
+							ResetCurveFromSpec(Model->spinner_curve_mut(), Spec);
+							SpinnerEditor->RequestRedraw();
+							OnSpinnerChanged.ExecuteIfBound();
+							return FReply::Handled();
+						})),
+				})
+		];
 
 	TArray<FAerotelicTab> Tabs;
-	Tabs.Add({ NSLOCTEXT("PropellerDialog", "PropellerTab", "Propeller"), BuildPropellerTab(Model, OnChanged) });
+	Tabs.Add({ LOCTEXT("PropellerTab", "Propeller"), PropellerTab });
 	for (const auto& Tab : BladeTabs->GetTabs())
 	{
 		Tabs.Add({ Tab.Key, Tab.Value });
 	}
-	Tabs.Add({ NSLOCTEXT("PropellerDialog", "SpinnerTab", "Spinner"), SpinnerTab });
+	Tabs.Add({ LOCTEXT("SpinnerTab", "Spinner"), SpinnerTab });
+	Tabs.Add({ LOCTEXT("HelpTab", "Help"), MakeHelpTab(kHelp) });
 
-	Out.Title = FText::Format(NSLOCTEXT("PropellerDialog", "Title", "Propeller -- {0}"), FText::FromString(Entity->EntityName));
+	Out.Title = FText::Format(LOCTEXT("Title", "Propeller -- {0}"), FText::FromString(Entity->EntityName));
 	// Keeps BladeTabs (and its model-bound widgets) alive with the panel.
 	Out.WingTabs = BladeTabs;
 	Out.Widget = SNew(SAerotelicTabStrip, Tabs);
 }
+
+#undef LOCTEXT_NAMESPACE

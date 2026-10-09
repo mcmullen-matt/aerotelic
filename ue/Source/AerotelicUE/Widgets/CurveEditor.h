@@ -115,6 +115,9 @@ public:
 	// nurbs_editor.py's set_curves() docstring for the same call).
 	void SetSlots(TArray<FCurveEditorSlot> InSlots);
 	void SetLinks(TArray<FCurveEditorLink> InLinks) { Links = MoveTemp(InLinks); }
+	// Replaces the OnChanged delegate given at construction -- for panels
+	// whose change router needs widgets that are built after the editor.
+	void SetOnChanged(FSimpleDelegate InOnChanged) { OnChangedDelegate = InOnChanged; }
 	void SetOutlineProvider(FOnGetOutlinePaths InProvider) { OutlineProvider = InProvider; }
 	void SetScales(double NewXScale, double NewYScale);
 

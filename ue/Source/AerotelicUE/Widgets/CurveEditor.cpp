@@ -7,7 +7,9 @@
 #include "Framework/Application/SlateApplication.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Rendering/DrawElements.h"
+#include "Fonts/FontMeasure.h"
 #include "Styling/AppStyle.h"
+#include "Styling/CoreStyle.h"
 #include "Algo/AllOf.h"
 #include "Math/Box2D.h"
 
@@ -180,7 +182,56 @@ public:
 			LastDrawnBox = ComputeBasisBox();
 			PaintBasisPane(AllottedGeometry, OutDrawElements, LayerId + 1);
 		}
-		return LayerId + 2;
+		PaintLabels(AllottedGeometry, OutDrawElements, LayerId + 2);
+		return LayerId + 3;
+	}
+
+	// Title, axis labels and a slot legend, as the Python canvases draw
+	// (title and axis labels in grey, the legend top-left under the title).
+	void PaintLabels(const FGeometry& Geometry, FSlateWindowElementList& Out, int32 Layer) const
+	{
+		const FSlateFontInfo Font = FCoreStyle::GetDefaultFontStyle("Regular", 8);
+		const FLinearColor TitleColor(0.8f, 0.8f, 0.8f);
+		const FLinearColor LabelColor(0.53f, 0.53f, 0.53f);
+		const TSharedRef<FSlateFontMeasure> Measure = FSlateApplication::Get().GetRenderer()->GetFontMeasureService();
+		const FVector2D Size = Geometry.GetLocalSize();
+
+		auto Draw = [&](const FText& Text, FVector2D Pos, const FLinearColor& Color)
+		{
+			if (Text.IsEmpty()) return;
+			FSlateDrawElement::MakeText(Out, Layer, Geometry.ToOffsetPaintGeometry(Pos), Text, Font, ESlateDrawEffect::None, Color);
+		};
+
+		if (Role == ERole::Curve)
+		{
+			Draw(Owner->Title, FVector2D(6, 3), TitleColor);
+			// Legend: one coloured swatch + label per named slot.
+			double X = 6.0;
+			const double LegendY = 17.0;
+			for (const FCurveEditorSlot& Slot : Owner->Slots)
+			{
+				if (Slot.Label.IsEmpty()) continue;
+				FSlateDrawElement::MakeBox(Out, Layer, Geometry.ToPaintGeometry(FVector2f(10, 3), FSlateLayoutTransform(FVector2f(X, LegendY + 6))),
+					FAppStyle::Get().GetBrush("WhiteBrush"), ESlateDrawEffect::None, Slot.Color);
+				Draw(Slot.Label, FVector2D(X + 14, LegendY), LabelColor);
+				X += 14 + Measure->Measure(Slot.Label, Font).X + 12;
+			}
+			// Axis labels: y at the left under the legend, x bottom-right.
+			Draw(Owner->YLabel, FVector2D(6, LegendY + 14), LabelColor);
+			const FVector2D XSize = Measure->Measure(Owner->XLabel, Font);
+			Draw(Owner->XLabel, FVector2D(Size.X - XSize.X - 6, Size.Y - XSize.Y - 3), LabelColor);
+		}
+		else if (Owner->Slots.IsValidIndex(SlotIndex))
+		{
+			const FCurveEditorSlot& Slot = Owner->Slots[SlotIndex];
+			const FText Title = Slot.Label.IsEmpty()
+				? NSLOCTEXT("CurveEditor", "BasisTitle", "blending functions and knots  ·  drag knots along the line  ·  right-click to insert / delete")
+				: FText::Format(NSLOCTEXT("CurveEditor", "BasisTitleLabelled", "{0}  ·  blending functions and knots  ·  drag knots along the line  ·  right-click to insert / delete"), Slot.Label);
+			Draw(Title, FVector2D(6, 3), TitleColor);
+			const FText XText = NSLOCTEXT("CurveEditor", "BasisX", "Curve parameter s");
+			const FVector2D XSize = Measure->Measure(XText, Font);
+			Draw(XText, FVector2D(Size.X - XSize.X - 6, Size.Y - XSize.Y - 3), LabelColor);
+		}
 	}
 
 	// ---- mouse ----

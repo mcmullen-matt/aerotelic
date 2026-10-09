@@ -34,7 +34,6 @@ namespace
 	// kLeftColumnWidth in Widgets/AerotelicDialogWindow.cpp.
 	constexpr float kViewToolbarWidth = 40.0f;
 	constexpr float kSceneTreeWidth = 220.0f;
-	constexpr float kDockColumnWidth = 400.0f;
 	constexpr float kIconSize = 30.0f;
 
 	const FLinearColor kPanelBg(0.09f, 0.09f, 0.10f, 1.0f);
@@ -49,6 +48,57 @@ namespace
 	{
 		return FCanExecuteAction::CreateLambda([]() { return false; });
 	}
+
+	// A thin vertical grip on the dock column's left edge: dragging it
+	// resizes the column (QDockWidget's separator). Dragging left widens.
+	class SDockResizeHandle : public SCompoundWidget
+	{
+	public:
+		SLATE_BEGIN_ARGS(SDockResizeHandle) {}
+			SLATE_ARGUMENT(float*, Width)
+		SLATE_END_ARGS()
+
+		void Construct(const FArguments& InArgs)
+		{
+			Width = InArgs._Width;
+			SetCursor(EMouseCursor::ResizeLeftRight);
+			ChildSlot
+			[
+				SNew(SBox).WidthOverride(6)
+				[
+					SNew(SBorder)
+					.BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush"))
+					.BorderBackgroundColor_Lambda([this]() { return bDragging || IsHovered() ? FLinearColor(0.23f, 0.48f, 0.84f) : FLinearColor(0.12f, 0.13f, 0.16f); })
+				]
+			];
+		}
+
+		virtual FReply OnMouseButtonDown(const FGeometry& Geo, const FPointerEvent& Event) override
+		{
+			if (Event.GetEffectingButton() != EKeys::LeftMouseButton) return FReply::Unhandled();
+			bDragging = true;
+			DragStartX = Event.GetScreenSpacePosition().X;
+			DragStartWidth = *Width;
+			return FReply::Handled().CaptureMouse(SharedThis(this));
+		}
+		virtual FReply OnMouseMove(const FGeometry& Geo, const FPointerEvent& Event) override
+		{
+			if (!bDragging) return FReply::Unhandled();
+			*Width = FMath::Clamp(DragStartWidth - (Event.GetScreenSpacePosition().X - DragStartX), 300.0f, 1000.0f);
+			return FReply::Handled();
+		}
+		virtual FReply OnMouseButtonUp(const FGeometry& Geo, const FPointerEvent& Event) override
+		{
+			if (!bDragging) return FReply::Unhandled();
+			bDragging = false;
+			return FReply::Handled().ReleaseMouseCapture();
+		}
+
+	private:
+		float* Width = nullptr;
+		bool bDragging = false;
+		float DragStartX = 0.f, DragStartWidth = 0.f;
+	};
 }
 
 UAerotelicDocumentSubsystem* SAerotelicMainShell::GetDocument() const
@@ -143,14 +193,20 @@ void SAerotelicMainShell::Construct(const FArguments& InArgs)
 						? EVisibility::Visible : EVisibility::Collapsed;
 				})
 				[
-					SNew(SBox).WidthOverride(kDockColumnWidth)
+					SNew(SHorizontalBox)
+					+ SHorizontalBox::Slot().AutoWidth()
+					[ SNew(SDockResizeHandle).Width(&DockColumnWidth) ]
+					+ SHorizontalBox::Slot().AutoWidth()
 					[
-						SNew(SBorder)
-						.BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush"))
-						.BorderBackgroundColor(kPanelBg)
-						.Padding(FMargin(2))
+						SNew(SBox).WidthOverride_Lambda([this]() { return FOptionalSize(DockColumnWidth); })
 						[
-							BuildAerotelicDesignDock(FindAerotelicMainWindow())
+							SNew(SBorder)
+							.BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush"))
+							.BorderBackgroundColor(kPanelBg)
+							.Padding(FMargin(2))
+							[
+								BuildAerotelicDesignDock(FindAerotelicMainWindow())
+							]
 						]
 					]
 				]

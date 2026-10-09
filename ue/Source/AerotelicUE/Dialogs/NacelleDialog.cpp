@@ -3,15 +3,20 @@
 #include "Widgets/TabStrip.h"
 #include "Widgets/NumericEntry.h"
 #include "Widgets/CurveEditor.h"
+#include "Widgets/CurveTabControls.h"
 #include "Widgets/PromptDialogs.h"
 
 #include "Widgets/Layout/SBorder.h"
+#include "Widgets/Layout/SBox.h"
+#include "Widgets/Layout/SScrollBox.h"
 #include "Widgets/Text/STextBlock.h"
-#include "Widgets/Input/SButton.h"
+#include "Widgets/Input/SSpinBox.h"
 #include "Misc/MessageDialog.h"
 
 #include "Entity/AerotelicEntityActor.h"
 #include "aerotelic/nacelle_model.hpp"
+
+#define LOCTEXT_NAMESPACE "NacelleDialog"
 
 using namespace aerotelic;
 
@@ -25,6 +30,47 @@ namespace
 			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 2)
 			[ Field ];
 	}
+
+	TSharedRef<SWidget> MakeLengthField(NacelleModel* Model, FSimpleDelegate OnLength)
+	{
+		return FormRow(LOCTEXT("Length", "Length:"),
+			SNew(SAerotelicNumericEntry)
+			.ToolTipText(LOCTEXT("LengthTip", "Nacelle length along its axis, lip to trailing edge"))
+			.Value_Lambda([Model]() { return Model->length; })
+			.MinValue(1e-9).MaxValue(1e9).Delta(0.1).LiveUpdate(false)
+			.OnValueCommitted_Lambda([Model, OnLength](double V, ETextCommit::Type)
+			{
+				if (FMath::IsNearlyEqual(V, Model->length)) return;
+				Model->SetLength(V);
+				OnLength.ExecuteIfBound();
+			}));
+	}
+
+	const FText kRadiusPrompt = LOCTEXT("RadiusPrompt",
+		"The front curve is the inlet lip exactly as drawn, and every other ring of the cowl is it scaled in proportion to the side view's radius there. "
+		"This is therefore the lip's own radius, and it sets the size of the whole body.");
+
+	const FText kHelp = LOCTEXT("Help",
+		"HOW THE NACELLE IS MADE\n"
+		"The Side view is the section through the cowl wall: the upper curve is the outer skin, the lower the inner (duct) skin, both as radii from the axis (the axis is y/L = 0). "
+		"They meet at the inlet lip (x/L = 0) and at a sharp trailing edge (x/L = 1). The Front view is the lip ring as drawn, looking aft (starboard on the left); "
+		"every other ring is it scaled about the axis in proportion to the section radius there, so a circular lip gives a true body of revolution.\n\n"
+		"SIDE VIEW\n"
+		"Dragging the lip or trailing-edge point moves it vertically and brings the other skin's end point with it; other points move freely. "
+		"Double-click near a skin to add a point to it; right-click a point to set its weight or remove it (the shared end points cannot be removed). "
+		"A second point straight above or below the lip gives a round lip.\n\n"
+		"FRONT VIEW\n"
+		"Points move anywhere; the curve is closed, so there are no end points, and the point marked seam is where its parameter starts. "
+		"Double-click adds a point on the nearest side of the control polygon. Reset to Circle... asks for a radius in units of the nacelle length, "
+		"opening on the side view's lip point, and sets the size of the whole body.\n\n"
+		"KNOT GRAPHS\n"
+		"Drag the green knots between their neighbours; push one onto a neighbour to repeat it. Grey knots are the clamped ends of a skin and the seam of the lip curve. "
+		"Right-click the line to insert a knot without changing the shape; right-click a knot to raise its multiplicity or delete it.\n\n"
+		"CHEVRONS\n"
+		"Triangular notches around the trailing edge, spaced evenly by arc length with the first tooth tip at the top. Depth is how far forward they reach, "
+		"marked by a dashed line in the side view; 0 is a plain trailing edge. The tip angle beside it is the included angle at a tooth tip, reported so a body drawn either way can be matched.\n\n"
+		"VIEW\n"
+		"The wheel zooms about the cursor; the right-click menu's Fit view to contents fits everything; nothing else moves the view.");
 }
 
 void BuildNacelleDesignContent(AAerotelicEntityActor* Entity, FAerotelicDesignContent& Out)
@@ -36,154 +82,246 @@ void BuildNacelleDesignContent(AAerotelicEntityActor* Entity, FAerotelicDesignCo
 
 	NacelleModel* Model = Entity->GetModelAs<NacelleModel>();
 	TWeakObjectPtr<AAerotelicEntityActor> WeakEntity = Entity;
-	FSimpleDelegate OnChanged = FSimpleDelegate::CreateLambda([WeakEntity]()
+	FSimpleDelegate Rebuild = FSimpleDelegate::CreateLambda([WeakEntity]()
 	{
 		if (WeakEntity.IsValid()) WeakEntity->RefreshProxy();
 	});
+
+	const double InvLength = 1.0 / FMath::Max(Model->length, 1e-9);
 
 	// ---- Side view: outer/inner skins, lip + trailing-edge poles shared rigidly ----
 	FCurveEditorSlot OuterSlot, InnerSlot;
 	OuterSlot.Curve = &Model->upper_curve_mut();
 	OuterSlot.Color = FLinearColor(0.23f, 0.62f, 0.84f);
-	OuterSlot.Label = NSLOCTEXT("NacelleDialog", "Outer", "outer skin");
+	OuterSlot.Label = LOCTEXT("Outer", "outer skin");
 	OuterSlot.Basis = ECurveBasisPlacement::Above;
 	InnerSlot.Curve = &Model->lower_curve_mut();
 	InnerSlot.Color = FLinearColor(0.84f, 0.54f, 0.23f);
-	InnerSlot.Label = NSLOCTEXT("NacelleDialog", "Inner", "inner skin");
+	InnerSlot.Label = LOCTEXT("Inner", "inner skin");
 	InnerSlot.Basis = ECurveBasisPlacement::Below;
 
 	TSharedRef<SCurveEditor> SideEditor = SNew(SCurveEditor)
-		.XLabel(NSLOCTEXT("NacelleDialog", "XL", "Nacelle fraction (x/L)"))
-		.YLabel(NSLOCTEXT("NacelleDialog", "YL", "Radius from axis (y/L)"))
-		.Title(NSLOCTEXT("NacelleDialog", "SideTitle", "Side view"))
-		.XScale(1.0).YScale(1.0 / FMath::Max(Model->length, 1e-9)).EqualAspect(true)
-		.OnChanged(OnChanged);
+		.XLabel(LOCTEXT("XL", "Nacelle fraction (x/L)"))
+		.YLabel(LOCTEXT("YL", "Radius from axis (y/L)"))
+		.Title(LOCTEXT("SideTitle", "Side view  ·  outer and inner skin  ·  lip and trailing edge shared"))
+		.XScale(1.0).YScale(InvLength).EqualAspect(true)
+		.OnChanged(Rebuild);
 	SideEditor->SetSlots({ OuterSlot, InnerSlot });
 	SideEditor->SetLinks({ { FIntPoint(0, 0), FIntPoint(1, 0) }, { FIntPoint(0, -1), FIntPoint(1, -1) } });
+	// Chevron-valley marker: a dashed red line at x = 1 - depth/L across the wall.
+	SideEditor->SetOutlineProvider(FOnGetOutlinePaths::CreateLambda([Model]()
+	{
+		TArray<FCurveEditorOutlinePath> Paths;
+		const double Depth = Model->chevron_count > 0 ? Model->chevron_depth : 0.0;
+		if (Depth <= 0.0 || Depth >= Model->length) return Paths;
+		const double X = 1.0 - Depth / Model->length;
+		try
+		{
+			const double YOut = Model->upper_curve().ZAtEta(X)[1];
+			const double YIn = Model->lower_curve().ZAtEta(X)[1];
+			FCurveEditorOutlinePath P;
+			P.Points = { FVector2D(X, YIn), FVector2D(X, YOut) };
+			P.Color = FLinearColor(0.88f, 0.31f, 0.31f);
+			P.Label = LOCTEXT("Valleys", "chevron valleys");
+			P.LineWidth = 1.2f;
+			Paths.Add(P);
+		}
+		catch (const std::exception&) {}
+		return Paths;
+	}));
 
 	// ---- Front view: closed, free-x lip ring ----
-	FCurveEditorSlot FrontSlot;
-	FrontSlot.Curve = &Model->front_curve_mut();
-	FrontSlot.Color = FLinearColor(0.31f, 0.78f, 0.5f);
-	FrontSlot.bClosedFill = true;
-	FrontSlot.bFreeX = true;
-	FrontSlot.Basis = ECurveBasisPlacement::Below;
-
+	auto MakeFrontSlot = [Model]()
+	{
+		FCurveEditorSlot FrontSlot;
+		FrontSlot.Curve = &Model->front_curve_mut();
+		FrontSlot.Color = FLinearColor(0.31f, 0.78f, 0.5f);
+		FrontSlot.Label = LOCTEXT("Lip", "inlet lip");
+		FrontSlot.bClosedFill = true;
+		FrontSlot.bFreeX = true;
+		FrontSlot.Basis = ECurveBasisPlacement::Below;
+		return FrontSlot;
+	};
 	TSharedRef<SCurveEditor> FrontEditor = SNew(SCurveEditor)
-		.XLabel(NSLOCTEXT("NacelleDialog", "LateralL", "Lateral (y/L)"))
-		.YLabel(NSLOCTEXT("NacelleDialog", "VerticalL", "Vertical (z/L)"))
-		.Title(NSLOCTEXT("NacelleDialog", "FrontTitle", "Front view (inlet lip)"))
-		.XScale(1.0 / FMath::Max(Model->length, 1e-9)).YScale(1.0 / FMath::Max(Model->length, 1e-9)).EqualAspect(true)
-		.OnChanged(OnChanged);
-	FrontEditor->SetSlots({ FrontSlot });
+		.XLabel(LOCTEXT("LateralL", "Lateral (y/L)   ← starboard  ·  port →"))
+		.YLabel(LOCTEXT("VerticalL", "Vertical (z/L)"))
+		.Title(LOCTEXT("FrontTitle", "Front view  ·  inlet lip, looking aft  ·  the axis is the crosshair"))
+		.XScale(InvLength).YScale(InvLength).EqualAspect(true)
+		.OnChanged(Rebuild);
+	FrontEditor->SetSlots({ MakeFrontSlot() });
 
-	TSharedRef<SButton> ResetCircleButton = SNew(SButton)
-		.Text(NSLOCTEXT("NacelleDialog", "ResetCircle", "Reset to Circle..."))
-		.OnClicked_Lambda([Model, FrontEditor, OnChanged]()
-		{
-			const double Current = Model->LipRadius();
-			TOptional<double> R = PromptForDouble(
-				NSLOCTEXT("NacelleDialog", "ResetCircleTitle", "Reset to Circle"),
-				NSLOCTEXT("NacelleDialog", "ResetCircleLabel", "Radius, as a fraction of the nacelle length (y/L):"),
-				Current, 1e-9, 1e9, 0.01);
-			if (R.IsSet())
-			{
-				try
-				{
-					Model->SetFrontCurve(DefaultFrontCurveSpec(R.GetValue() * Model->length));
-				}
-				catch (const std::exception& e)
-				{
-					FMessageDialog::Open(EAppMsgType::Ok,
-						FText::FromString(FString::Printf(TEXT("That radius was rejected:\n%s"), UTF8_TO_TCHAR(e.what()))));
-					return FReply::Handled();
-				}
-				FCurveEditorSlot NewSlot;
-				NewSlot.Curve = &Model->front_curve_mut();
-				NewSlot.Color = FLinearColor(0.31f, 0.78f, 0.5f);
-				NewSlot.bClosedFill = true;
-				NewSlot.bFreeX = true;
-				NewSlot.Basis = ECurveBasisPlacement::Below;
-				FrontEditor->SetSlots({ NewSlot });
-				OnChanged.ExecuteIfBound();
-			}
-			return FReply::Handled();
-		});
-
-	TSharedRef<SWidget> FrontTab = SNew(SVerticalBox)
-		+ SVerticalBox::Slot().AutoHeight().Padding(4) [ ResetCircleButton ]
-		+ SVerticalBox::Slot().FillHeight(1.0f) [ FrontEditor ];
-
-	// ---- Chevrons ----
-	// Built before the refresh lambda so it can capture these by value (a
-	// capture-by-reference to a function-local TSharedPtr would dangle the
-	// moment OpenNacelleDialog returns -- the lambda outlives this stack
-	// frame, kept alive by the SAerotelicNumericEntry widgets below).
+	// ---- Chevrons tab read-outs ----
 	TSharedRef<STextBlock> ToothWidthLabel = SNew(STextBlock);
+	TSharedRef<STextBlock> DepthRatioLabel = SNew(STextBlock);
 	TSharedRef<STextBlock> TipAngleLabel = SNew(STextBlock);
 	TSharedRef<STextBlock> TePerimeterLabel = SNew(STextBlock);
-	TFunction<void()> RefreshChevronReadouts = [Model, ToothWidthLabel, TipAngleLabel, TePerimeterLabel]()
+	TFunction<void()> RefreshChevronReadouts = [Model, ToothWidthLabel, DepthRatioLabel, TipAngleLabel, TePerimeterLabel]()
 	{
-		ToothWidthLabel->SetText(FText::AsNumber(Model->ToothWidth()));
-		TipAngleLabel->SetText(Model->chevron_count > 0 ? FText::AsNumber(Model->ChevronTipAngle()) : FText::FromString(TEXT("--")));
-		TePerimeterLabel->SetText(FText::AsNumber(Model->TePerimeter()));
+		const int32 N = Model->chevron_count;
+		double Perim = std::numeric_limits<double>::quiet_NaN();
+		try { Perim = Model->TePerimeter(); } catch (const std::exception&) {}
+		ToothWidthLabel->SetText(N > 0 ? FormatG(Perim / N, 4) : DashText());
+		DepthRatioLabel->SetText(N > 0 ? FormatF(Model->chevron_depth / FMath::Max(Model->length, 1e-9), 3) : DashText());
+		double Angle = 0.0;
+		try { Angle = N > 0 ? Model->ChevronTipAngle() : 0.0; } catch (const std::exception&) {}
+		TipAngleLabel->SetText(N > 0 && Angle > 0.0 ? FText::FromString(FString::Printf(TEXT("%.1f °"), Angle)) : DashText());
+		TePerimeterLabel->SetText(FormatG(Perim, 4));
 	};
-
-	TSharedRef<SWidget> ChevronsTab = SNew(SBorder).Padding(8)
-	[
-		SNew(SVerticalBox)
-		+ SVerticalBox::Slot().AutoHeight()
-		[ FormRow(NSLOCTEXT("NacelleDialog", "ChevronCount", "Number of chevrons"),
-			SNew(SAerotelicNumericEntry).Value_Lambda([Model]() { return (double)Model->chevron_count; })
-				.MinValue(0).MaxValue((double)kMaxChevrons).Delta(1.0).LiveUpdate(false)
-				.OnValueCommitted_Lambda([Model, OnChanged, SideEditor, RefreshChevronReadouts](double V, ETextCommit::Type)
-				{
-					Model->chevron_count = FMath::RoundToInt(V);
-					SideEditor->RequestRedraw();
-					RefreshChevronReadouts();
-					OnChanged.ExecuteIfBound();
-				})) ]
-		+ SVerticalBox::Slot().AutoHeight()
-		[ FormRow(NSLOCTEXT("NacelleDialog", "ChevronDepth", "Chevron depth"),
-			SNew(SAerotelicNumericEntry).Value_Lambda([Model]() { return Model->chevron_depth; })
-				.MinValue(0.0).MaxValue(1e9).Delta(0.05).LiveUpdate(false)
-				.OnValueCommitted_Lambda([Model, OnChanged, SideEditor, RefreshChevronReadouts](double V, ETextCommit::Type)
-				{
-					Model->chevron_depth = V;
-					SideEditor->RequestRedraw();
-					RefreshChevronReadouts();
-					OnChanged.ExecuteIfBound();
-				})) ]
-		+ SVerticalBox::Slot().AutoHeight().Padding(0, 8, 0, 2)
-		[ FormRow(NSLOCTEXT("NacelleDialog", "ToothWidth", "Tooth width"), ToothWidthLabel) ]
-		+ SVerticalBox::Slot().AutoHeight()
-		[ FormRow(NSLOCTEXT("NacelleDialog", "TipAngle", "Tip angle"), TipAngleLabel) ]
-		+ SVerticalBox::Slot().AutoHeight()
-		[ FormRow(NSLOCTEXT("NacelleDialog", "TePerimeter", "Trailing-edge perimeter"), TePerimeterLabel) ]
-	];
 	RefreshChevronReadouts();
 
-	// ---- Length (shared) ----
-	TSharedRef<SWidget> LengthRow = FormRow(NSLOCTEXT("NacelleDialog", "Length", "Length"),
-		SNew(SAerotelicNumericEntry).Value_Lambda([Model]() { return Model->length; })
-			.MinValue(1e-9).MaxValue(1e9).Delta(0.1).LiveUpdate(false)
-			.OnValueCommitted_Lambda([Model, OnChanged, SideEditor, FrontEditor](double V, ETextCommit::Type)
-			{
-				Model->SetLength(V);
-				const double Inv = 1.0 / FMath::Max(Model->length, 1e-9);
-				SideEditor->SetScales(1.0, Inv);
-				FrontEditor->SetScales(Inv, Inv);
-				OnChanged.ExecuteIfBound();
-			}));
+	// Every curve edit also changes the trailing-edge perimeter.
+	FSimpleDelegate OnCurveChanged = FSimpleDelegate::CreateLambda([RefreshChevronReadouts, Rebuild]()
+	{
+		RefreshChevronReadouts();
+		Rebuild.ExecuteIfBound();
+	});
+	FSimpleDelegate OnChevronsChanged = FSimpleDelegate::CreateLambda([RefreshChevronReadouts, SideEditor, Rebuild]()
+	{
+		RefreshChevronReadouts();
+		SideEditor->RequestRedraw(); // the valley marker moves
+		Rebuild.ExecuteIfBound();
+	});
+	// Length: rescales both editors' axes and re-seeds the chevron depth
+	// (SetLength scales it along with the curves).
+	FSimpleDelegate OnLength = FSimpleDelegate::CreateLambda([Model, SideEditor, FrontEditor, OnChevronsChanged]()
+	{
+		const double Inv = 1.0 / FMath::Max(Model->length, 1e-9);
+		SideEditor->SetScales(1.0, Inv);
+		FrontEditor->SetScales(Inv, Inv);
+		OnChevronsChanged.ExecuteIfBound();
+	});
+	auto LengthField = [Model, OnLength]() { return MakeLengthField(Model, OnLength); };
+
+	auto CurveTab = [&](TSharedRef<SCurveEditor> Editor, TArray<TSharedRef<SWidget>> Leading, TArray<TSharedRef<SWidget>> Trailing)
+	{
+		Leading.Insert(LengthField(), 0);
+		return SNew(SVerticalBox)
+			+ SVerticalBox::Slot().FillHeight(1.0f) [ Editor ]
+			+ SVerticalBox::Slot().AutoHeight().Padding(4, 2) [ MakeControlsRow(Leading, Trailing) ];
+	};
+
+	// Side view controls.
+	TSharedRef<SWidget> SideTab = CurveTab(SideEditor,
+		{
+			MakeDegreeSpin(LOCTEXT("OuterDegree", "Outer degree:"), [Model]() { return &Model->upper_curve_mut(); }, SideEditor, OnCurveChanged),
+			MakeDegreeSpin(LOCTEXT("InnerDegree", "Inner degree:"), [Model]() { return &Model->lower_curve_mut(); }, SideEditor, OnCurveChanged),
+		},
+		{
+			MakeControlButton(LOCTEXT("ResetKnots", "Reset Knots"), LOCTEXT("ResetKnotsBothTip", "Put both skins' knots back at their default spacing (points unchanged)"),
+				FOnClicked::CreateLambda([Model, SideEditor, OnCurveChanged]()
+				{
+					Model->upper_curve_mut().ResetKnotsPublic();
+					Model->lower_curve_mut().ResetKnotsPublic();
+					SideEditor->RequestRedraw();
+					OnCurveChanged.ExecuteIfBound();
+					return FReply::Handled();
+				})),
+			MakeControlButton(LOCTEXT("ResetDefault", "Reset to Default"), FText(),
+				FOnClicked::CreateLambda([Model, SideEditor, OnCurveChanged]()
+				{
+					const double K = Model->length / kNacelleDefaultLength;
+					const NacelleSpec Def;
+					ResetCurveFromSpec(Model->upper_curve_mut(), Def.upper_curve, FVector2D(1.0, K));
+					ResetCurveFromSpec(Model->lower_curve_mut(), Def.lower_curve, FVector2D(1.0, K));
+					SideEditor->RequestRedraw();
+					OnCurveChanged.ExecuteIfBound();
+					return FReply::Handled();
+				})),
+		});
+
+	// Front view controls.
+	TSharedRef<SWidget> FrontTab = CurveTab(FrontEditor,
+		{ MakeDegreeSpin(LOCTEXT("Degree", "Degree:"), [Model]() { return &Model->front_curve_mut(); }, FrontEditor, OnCurveChanged,
+			LOCTEXT("PolyDegreeTip", "Curve degree  (1 = polygon, 2 = quadratic, 3 = cubic ...).")) },
+		{
+			MakeControlButton(LOCTEXT("ResetKnots", "Reset Knots"), LOCTEXT("ResetKnotsTip", "Put the knots back at their default spacing (points unchanged)"),
+				FOnClicked::CreateLambda([Model, FrontEditor, OnCurveChanged]()
+				{
+					Model->front_curve_mut().ResetKnotsPublic();
+					FrontEditor->RequestRedraw();
+					OnCurveChanged.ExecuteIfBound();
+					return FReply::Handled();
+				})),
+			MakeControlButton(LOCTEXT("ResetCircle", "Reset to Circle..."),
+				LOCTEXT("ResetCircleTip", "A round lip ring, at a radius you type in units of the nacelle length.\nStarts from the lip point of the side view, so accepting it unchanged\ngives a circle through that point."),
+				FOnClicked::CreateLambda([Model, FrontEditor, MakeFrontSlot, OnCurveChanged]()
+				{
+					const double Length = FMath::Max(Model->length, 1e-9);
+					double Current = FMath::Abs(Model->LipRadius()) / Length;
+					if (!(Current > 0.0)) Current = 0.25;
+					TOptional<double> R = PromptCircleRadius(Current, Length, kRadiusPrompt);
+					if (!R.IsSet()) return FReply::Handled();
+					try
+					{
+						Model->SetFrontCurve(DefaultFrontCurveSpec(R.GetValue() * Length));
+					}
+					catch (const std::exception& e)
+					{
+						FMessageDialog::Open(EAppMsgType::Ok, FText::FromString(FString::Printf(TEXT("That radius was rejected:\n%s"), UTF8_TO_TCHAR(e.what()))));
+						return FReply::Handled();
+					}
+					FrontEditor->SetSlots({ MakeFrontSlot() }); // SetFrontCurve replaces the curve object
+					FrontEditor->RequestRedraw();
+					OnCurveChanged.ExecuteIfBound();
+					return FReply::Handled();
+				})),
+		});
+
+	// ---- Chevrons ----
+	TSharedRef<SWidget> ChevronsTab = SNew(SScrollBox)
+		+ SScrollBox::Slot().Padding(8)
+		[
+			SNew(SVerticalBox)
+			+ SVerticalBox::Slot().AutoHeight()
+			[
+				MakeGroup(LOCTEXT("ChevronsGroup", "Trailing-edge chevrons"),
+					SNew(SVerticalBox)
+					+ SVerticalBox::Slot().AutoHeight()
+					[ FormRow(LOCTEXT("ChevronCount", "Number of chevrons:"),
+						SNew(SBox).WidthOverride(90)
+						[
+							SNew(SSpinBox<int32>)
+							.ToolTipText(LOCTEXT("CountTip", "How many notches around the trailing edge. 0 = a plain trailing edge."))
+							.MinValue(0).MaxValue(kMaxChevrons).MinSliderValue(0).MaxSliderValue(kMaxChevrons).Delta(1)
+							.Value_Lambda([Model]() { return Model->chevron_count; })
+							.OnValueCommitted_Lambda([Model, OnChevronsChanged](int32 V, ETextCommit::Type)
+							{
+								if (V == Model->chevron_count) return;
+								Model->chevron_count = V;
+								OnChevronsChanged.ExecuteIfBound();
+							})
+						]) ]
+					+ SVerticalBox::Slot().AutoHeight()
+					[ FormRow(LOCTEXT("ChevronDepth", "Chevron depth:"),
+						SNew(SAerotelicNumericEntry)
+						.ToolTipText(LOCTEXT("DepthTip", "How far forward the notches reach: the distance from the trailing edge\nto the forwardmost point of a notch."))
+						.Value_Lambda([Model]() { return Model->chevron_depth; })
+						.MinValue(0.0).MaxValue(1e9).Delta(0.05).LiveUpdate(false)
+						.OnValueCommitted_Lambda([Model, OnChevronsChanged](double V, ETextCommit::Type)
+						{
+							if (FMath::IsNearlyEqual(V, Model->chevron_depth)) return;
+							Model->chevron_depth = V;
+							OnChevronsChanged.ExecuteIfBound();
+						})) ]
+					+ SVerticalBox::Slot().AutoHeight().Padding(0, 8, 0, 0) [ MakeMetricRow(LOCTEXT("ToothWidth", "Tooth width:"), TAttribute<FText>::CreateLambda([ToothWidthLabel]() { return ToothWidthLabel->GetText(); })) ]
+					+ SVerticalBox::Slot().AutoHeight() [ MakeMetricRow(LOCTEXT("DepthRatio", "Depth / length:"), TAttribute<FText>::CreateLambda([DepthRatioLabel]() { return DepthRatioLabel->GetText(); })) ]
+					+ SVerticalBox::Slot().AutoHeight() [ MakeMetricRow(LOCTEXT("TipAngle", "Tip angle:"), TAttribute<FText>::CreateLambda([TipAngleLabel]() { return TipAngleLabel->GetText(); })) ]
+					+ SVerticalBox::Slot().AutoHeight() [ MakeMetricRow(LOCTEXT("TePerimeter", "Trailing-edge perimeter:"), TAttribute<FText>::CreateLambda([TePerimeterLabel]() { return TePerimeterLabel->GetText(); })) ])
+			]
+			+ SVerticalBox::Slot().AutoHeight().Padding(0, 8)
+			[ MakeInfoLabel(LOCTEXT("ChevronNote", "The first tooth tip is at the top of the trailing edge; the rest are spaced evenly by arc length around it. Tip angle is what this panel used to ask for instead of a depth — it is shown here so a body drawn either way, on either nacelle panel, can be matched to the other.")) ]
+			+ SVerticalBox::Slot().AutoHeight().Padding(0, 6, 0, 0)
+			[ LengthField() ]
+		];
 
 	TArray<FAerotelicTab> Tabs;
-	Tabs.Add({ NSLOCTEXT("NacelleDialog", "SideTab", "Side view"), SideEditor });
-	Tabs.Add({ NSLOCTEXT("NacelleDialog", "FrontTab", "Front view"), FrontTab });
-	Tabs.Add({ NSLOCTEXT("NacelleDialog", "ChevronsTab", "Chevrons"), ChevronsTab });
+	Tabs.Add({ LOCTEXT("SideTab", "Side view"), SideTab });
+	Tabs.Add({ LOCTEXT("FrontTab", "Front view"), FrontTab });
+	Tabs.Add({ LOCTEXT("ChevronsTab", "Chevrons"), ChevronsTab });
+	Tabs.Add({ LOCTEXT("HelpTab", "Help"), MakeHelpTab(kHelp) });
 
-	Out.Title = FText::Format(NSLOCTEXT("NacelleDialog", "Title", "Nacelle -- {0}"), FText::FromString(Entity->EntityName));
-	Out.Widget =
-		SNew(SVerticalBox)
-		+ SVerticalBox::Slot().AutoHeight().Padding(8) [ LengthRow ]
-		+ SVerticalBox::Slot().FillHeight(1.0f) [ SNew(SAerotelicTabStrip, Tabs) ];
+	Out.Title = FText::Format(LOCTEXT("Title", "Nacelle -- {0}"), FText::FromString(Entity->EntityName));
+	Out.Widget = SNew(SAerotelicTabStrip, Tabs);
 }
+
+#undef LOCTEXT_NAMESPACE

@@ -47,7 +47,20 @@ The layout follows the Python/Qt version's main window (`aerotelic/ui/main_windo
 * **Design dock** on the right: the selected entity's design panel (Wing,
   Fuselage, Nacelle, Lofted Nacelle, Propeller, Primitive) in a dockable tab
   that can be torn off into its own window and docked back. Panels are kept
-  per entity, so tab state survives switching selection.
+  per entity, so tab state survives switching selection. When the Design
+  tab is torn off (nothing docked) the column collapses to zero width and
+  the 3D view takes the space; a 6-px grip on the column's left edge drags
+  its width (300..1000).
+* **Design panels** carry the WingDesigner panel features: every curve tab
+  has a degree spin box (1..points-1, applied through `SetDegree`), a
+  "Reset Knots" button and a reset-to-default (Straight / Flat / Initial /
+  Default / Circle...), a Help tab with the WingDesigner text, and
+  read-only derived metrics. Specifics: wing Standard tab has a Type combo
+  (Tip Chord vs Taper Ratio) and a planform outline view; fuselage has a
+  Sections tab with a station slider, section preview and parameter table;
+  nacelle Front and lofted-nacelle guide curves have "Reset to Circle..."
+  with a radius prompt; lofted nacelle has an "Editing:" guide combo with
+  Add/Remove; propeller shows derived metrics and a Spinner tab.
 * **Transform dialog** (from the tree's context menu): one modeless window
   per entity with position, rotation axis and angle.
 * **Status bar**: last action on the left, project path on the right.
@@ -70,6 +83,10 @@ The layout follows the Python/Qt version's main window (`aerotelic/ui/main_windo
 * `Source/AerotelicUE/Dialogs/` -- one `Build*DesignContent` per entity
   type, dispatched by `EntityDesignContent`; these are the panel contents
   shown in the design dock.
+* `Widgets/CurveTabControls` -- the shared panel chrome (degree spin, control
+  buttons in a wrapping row, info label, metric row, group box, Help tab,
+  `ResetCurveFromSpec` / `ResetCurveToLine`). `Widgets/PromptDialogs` has
+  the modal string and circle-radius prompts.
 * `Widgets/InputSink` -- wraps each frame panel so unhandled mouse buttons
   and wheel turns stop there instead of bubbling to the game viewport (the
   frame is a viewport overlay, i.e. a child of the SViewport; without this a
@@ -101,6 +118,13 @@ The layout follows the Python/Qt version's main window (`aerotelic/ui/main_windo
   and to the right. Drag any of them wherever you like.
 * Not yet carried over from the Qt version: the custom frameless title bar,
   render styles (edges / wireframe), section planes, ground grid, navigation
-  cube, per-body rows and colours in the scene tree, mirrored entities.
+  cube, per-body rows and colours in the scene tree, mirrored entities,
+  reference images, the Selig airfoil database / `.dat` import, and the
+  wing Control Surfaces tab (the C++ core has no control-surface model yet;
+  the tab is a placeholder note).
+* Build gotchas: a TArray must not be appended with a reference to its own
+  element (`Pts.Add(Pts[0])` reallocates under the reference); if a crash
+  leaves `CrashReportClientEditor.exe` running it holds the module DLL and
+  the next link fails with LNK1104 -- kill it first.
 * The packaged build is `Development` configuration (native file dialogs via
   the DesktopPlatform module are not available in `Shipping`).
