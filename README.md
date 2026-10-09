@@ -1,8 +1,9 @@
 # Aerotelic (C++ / Unreal Engine)
 
 Parametric aircraft-geometry CAD: the C++ port of the Python/Qt application
-(which lives in its own repository, `aerotelic_python`). Two parts, kept in
-one repository because they change together:
+WingDesigner (which lives in its own repository, checked out as a sibling
+directory `WingDesigner`; its `projects/p38.yaml` is the sample project the
+tests load). Two parts, kept in one repository because they change together:
 
 | Directory | What it is |
 |---|---|

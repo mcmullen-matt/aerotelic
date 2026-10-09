@@ -28,7 +28,7 @@ int32 UAerotelicRealProjectTestCommandlet::Main(const FString& Params)
 	}
 
 	// The Python app's repository (sibling of this one) ships the sample project.
-	const FString Path = TEXT("C:\\Users\\Matt\\devel_1\\aerotelic_python\\projects\\p38.yaml");
+	const FString Path = TEXT("C:\\Users\\Matt\\devel_1\\WingDesigner\\projects\\p38.yaml");
 	Check(Doc->OpenProjectPath(Path), "opened the real Python-saved p38.yaml");
 	Check(Doc->GetEntities().Num() == 7, FString::Printf(TEXT("entity count is 7 (got %d)"), Doc->GetEntities().Num()));
 

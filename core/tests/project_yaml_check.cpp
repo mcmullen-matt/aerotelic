@@ -175,7 +175,7 @@ void CheckPrimitiveRoundTrip() {
 
 void CheckRealPythonProjectFile() {
 	// The Python app's repository (sibling of this one) ships the sample project.
-	const std::string path = "C:\\Users\\Matt\\devel_1\\aerotelic_python\\projects\\p38.yaml";
+	const std::string path = "C:\\Users\\Matt\\devel_1\\WingDesigner\\projects\\p38.yaml";
 	ProjectFile project;
 	try {
 		project = LoadProjectYaml(path);

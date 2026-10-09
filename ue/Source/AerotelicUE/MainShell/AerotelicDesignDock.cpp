@@ -2,8 +2,10 @@
 #include "AerotelicDesignPanel.h"
 
 #include "Framework/Docking/TabManager.h"
+#include "Framework/Application/SlateApplication.h"
 #include "Widgets/Docking/SDockTab.h"
 #include "Widgets/Text/STextBlock.h"
+#include "Widgets/AerotelicDialogWindow.h"
 
 #define LOCTEXT_NAMESPACE "AerotelicDesignDock"
 
@@ -77,6 +79,24 @@ void ShowAerotelicDesignTab()
 	{
 		GTabManager->TryInvokeTab(FTabId(DesignTabId));
 	}
+}
+
+bool IsAerotelicDesignTabDocked()
+{
+	if (!GTabManager.IsValid() || !FSlateApplication::IsInitialized())
+	{
+		return false;
+	}
+	TSharedPtr<SDockTab> Tab = GTabManager->FindExistingLiveTab(FTabId(DesignTabId));
+	if (!Tab.IsValid())
+	{
+		return false;
+	}
+	// The only dock area inside the main window is the frame's column, so
+	// "docked" is simply "lives in the main window".
+	TSharedPtr<SWindow> TabWindow = FSlateApplication::Get().FindWidgetWindow(Tab.ToSharedRef());
+	TSharedPtr<SWindow> MainWindow = FindAerotelicMainWindow();
+	return TabWindow.IsValid() && TabWindow == MainWindow;
 }
 
 void TearDownAerotelicDesignDock()

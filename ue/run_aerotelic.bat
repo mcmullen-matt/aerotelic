@@ -5,7 +5,7 @@ rem   2. Otherwise falls back to the developer launcher (editor binaries
 rem      hosting the app in -game mode; needs build_editor.bat first).
 rem
 rem Optional first argument: a project .yaml to open at startup, e.g.
-rem   run_aerotelic.bat C:\Users\Matt\devel_1\aerotelic_python\projects\p38.yaml
+rem   run_aerotelic.bat C:\Users\Matt\devel_1\WingDesigner\projects\p38.yaml
 setlocal
 set PROJECT_ARG=
 if not "%~1"=="" set PROJECT_ARG=-AerotelicProject="%~1"

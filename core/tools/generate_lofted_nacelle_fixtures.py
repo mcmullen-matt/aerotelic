@@ -8,7 +8,7 @@ import sys
 
 import numpy as np
 
-sys.path.insert(0, r"C:\Users\Matt\devel_1\aerotelic_python")
+sys.path.insert(0, r"C:\Users\Matt\devel_1\WingDesigner")
 from core.lofted_nacelle_model import LoftedNacelleModel, default_section_curve
 
 OUT = os.path.join(os.path.dirname(__file__), "..", "tests", "lofted_nacelle_fixtures.txt")

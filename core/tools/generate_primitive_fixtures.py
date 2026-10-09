@@ -8,7 +8,7 @@ against Extents(), since both sides already share the same OCCT kernel).
 import os
 import sys
 
-sys.path.insert(0, r"C:\Users\Matt\devel_1\aerotelic_python")
+sys.path.insert(0, r"C:\Users\Matt\devel_1\WingDesigner")
 from core.primitive_model import PrimitiveModel
 
 OUT = os.path.join(os.path.dirname(__file__), "..", "tests", "primitive_fixtures.txt")

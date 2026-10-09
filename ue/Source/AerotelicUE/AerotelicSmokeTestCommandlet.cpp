@@ -13,7 +13,7 @@ DEFINE_LOG_CATEGORY_STATIC(LogAerotelicSmokeTest, Log, All);
 int32 UAerotelicSmokeTestCommandlet::Main(const FString& Params)
 {
 	try {
-		ProjectFile project = LoadProjectYaml("C:\\Users\\Matt\\devel_1\\aerotelic_python\\projects\\p38.yaml");
+		ProjectFile project = LoadProjectYaml("C:\\Users\\Matt\\devel_1\\WingDesigner\\projects\\p38.yaml");
 		UE_LOG(LogAerotelicSmokeTest, Display, TEXT("Loaded p38.yaml: %d entities"), project.entities.size());
 
 		int32 built = 0;

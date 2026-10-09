@@ -21,6 +21,11 @@ TSharedRef<SWidget> BuildAerotelicDesignDock(const TSharedPtr<SWindow>& HostWind
 // Brings the Design tab to the front (re-spawning it if it was closed).
 void ShowAerotelicDesignTab();
 
+// True while the Design tab lives in the main window's dock column (as
+// opposed to a torn-off floating window). The frame collapses the column
+// to zero width when this is false, so the 3D view takes the space.
+bool IsAerotelicDesignTabDocked();
+
 // Closes every docking area (including torn-off windows) and unregisters
 // the spawners. Call from EndPlay.
 void TearDownAerotelicDesignDock();

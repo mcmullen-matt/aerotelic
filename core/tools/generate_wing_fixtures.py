@@ -8,7 +8,7 @@ import sys
 
 import numpy as np
 
-sys.path.insert(0, r"C:\Users\Matt\devel_1\aerotelic_python")
+sys.path.insert(0, r"C:\Users\Matt\devel_1\WingDesigner")
 from core.wing_model import make_planform, WingModel
 from core.airfoil import naca4
 

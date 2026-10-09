@@ -6,7 +6,7 @@ C++ port to check itself against.
 import os
 import sys
 
-sys.path.insert(0, r"C:\Users\Matt\devel_1\aerotelic_python")
+sys.path.insert(0, r"C:\Users\Matt\devel_1\WingDesigner")
 from core.nacelle_model import NacelleModel
 
 OUT = os.path.join(os.path.dirname(__file__), "..", "tests", "nacelle_fixtures.txt")

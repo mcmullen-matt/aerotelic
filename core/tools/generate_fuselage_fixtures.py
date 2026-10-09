@@ -8,7 +8,7 @@ path -- see fuselage_model.hpp's note on FuselageSpec::legacy.
 import os
 import sys
 
-sys.path.insert(0, r"C:\Users\Matt\devel_1\aerotelic_python")
+sys.path.insert(0, r"C:\Users\Matt\devel_1\WingDesigner")
 from core.fuselage_model import FuselageModel
 
 OUT = os.path.join(os.path.dirname(__file__), "..", "tests", "fuselage_fixtures.txt")

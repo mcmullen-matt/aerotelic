@@ -8,7 +8,7 @@ matching this port's scope cut (see propeller_model.hpp's file header).
 import os
 import sys
 
-sys.path.insert(0, r"C:\Users\Matt\devel_1\aerotelic_python")
+sys.path.insert(0, r"C:\Users\Matt\devel_1\WingDesigner")
 from core.propeller_model import PropellerModel
 
 OUT = os.path.join(os.path.dirname(__file__), "..", "tests", "propeller_fixtures.txt")

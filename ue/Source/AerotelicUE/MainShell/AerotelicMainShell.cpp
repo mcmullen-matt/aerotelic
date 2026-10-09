@@ -133,6 +133,15 @@ void SAerotelicMainShell::Construct(const FArguments& InArgs)
 			+ SHorizontalBox::Slot().AutoWidth()
 			[
 				SNew(SAerotelicInputSink)
+				// The column takes no space while the Design tab is torn off
+				// into its own window, so the 3D view spans to the right edge.
+				// It reappears for the duration of any drag so a tab can be
+				// dropped back into it.
+				.Visibility_Lambda([]()
+				{
+					return IsAerotelicDesignTabDocked() || FSlateApplication::Get().IsDragDropping()
+						? EVisibility::Visible : EVisibility::Collapsed;
+				})
 				[
 					SNew(SBox).WidthOverride(kDockColumnWidth)
 					[
