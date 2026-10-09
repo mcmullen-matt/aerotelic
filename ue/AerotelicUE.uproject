@@ -1,0 +1,13 @@
+{
+	"FileVersion": 3,
+	"EngineAssociation": "5.8",
+	"Category": "",
+	"Description": "Aerotelic: parametric aircraft-geometry CAD, ported from the Python/Qt app to C++/Unreal. Runs as a standalone application (AerotelicUE.exe); the Editor target is kept only for the headless test commandlets.",
+	"Modules": [
+		{
+			"Name": "AerotelicUE",
+			"Type": "Runtime",
+			"LoadingPhase": "Default"
+		}
+	]
+}

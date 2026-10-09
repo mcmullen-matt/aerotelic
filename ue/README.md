@@ -1,0 +1,106 @@
+# Aerotelic (C++ / Unreal) -- standalone application
+
+Aerotelic is the C++ port of the Python/Qt parametric aircraft-geometry CAD
+tool. The geometry backend is `../core` (OCCT + yaml-cpp, in this same
+repository); this project is the user interface and 3D view, built on Unreal Engine 5.8 and
+delivered as a **standalone application** -- the Unreal Editor is not part of
+the workflow.
+
+## Running
+
+| Script | What it does |
+|---|---|
+| `run_aerotelic.bat [project.yaml]` | Launches the app. Uses the packaged build in `Packaged\` if present, otherwise the developer launcher. |
+| `run_aerotelic_dev.bat [project.yaml]` | Developer launcher: hosts the app in the editor binaries in `-game` mode (no Editor UI, reads uncooked content). Needs `build_editor.bat`. |
+| `build_editor.bat` | Compiles the module for the developer launcher and the tests. |
+| `package_standalone.bat` | Cooks and packages the self-contained `Packaged\Windows\AerotelicUE.exe`. Slow the first time (shader compilation). |
+| `run_tests.bat` | Headless regression: document round-trip (17 checks) and loading the real `p38.yaml` (4 checks). |
+
+Both launchers accept an optional project file to open at startup
+(`-AerotelicProject=<path>` on the executable's command line).
+
+## The application window
+
+The layout follows the Python/Qt version's main window (`aerotelic/ui/main_window.py`):
+
+* **Menu bar**: File (New, Save, Save As, Open, Export STEP/STL, Quit), Edit
+  (Preferences), Geometry (Airfoils, Boolean Operation), View (Isometric /
+  Top / Front / Side, Ground Grid, Navigation Cube, Show Intermediate
+  Features, Rebuild), Help. Same shortcuts as the Qt app (Ctrl+N/S/O,
+  Ctrl+Shift+S, F5...). Items whose backend is not in the C++ port yet
+  (exports, theme, airfoil dock, booleans, grid, nav cube, tutorials) are
+  present but **disabled**, with a tooltip saying so.
+* **Toolbar** under the menu: the add-entity launchers, grouped WING /
+  FUSELAGE / NACELLE / PROPELLER / PRIMITIVE with the Qt version's
+  text-label icons. Adding an entity selects it and opens its design panel.
+* **Left edge**: Style / Orientation / Section dropdowns (Orientation works;
+  the others are placeholders) and Rebuild.
+* **Scene tree**: one row per entity with a visibility checkbox. Click to
+  select, double-click to edit, right-click for Hide/Show, Edit, Rename,
+  Transform, Color (placeholder), Mirrored (placeholder), Delete.
+* **3D view** in the middle: left-drag orbits, right/middle-drag pans, wheel
+  zooms, `F` frames the selected entity, `Home` frames everything. Clicking
+  an object selects it (orange tint); clicking empty space clears the
+  selection. Rendering is confined to this region (the frame sets the local
+  player's split-screen rectangle), so framing and picking are relative to
+  the visible view, not the whole window.
+* **Design dock** on the right: the selected entity's design panel (Wing,
+  Fuselage, Nacelle, Lofted Nacelle, Propeller, Primitive) in a dockable tab
+  that can be torn off into its own window and docked back. Panels are kept
+  per entity, so tab state survives switching selection.
+* **Transform dialog** (from the tree's context menu): one modeless window
+  per entity with position, rotation axis and angle.
+* **Status bar**: last action on the left, project path on the right.
+
+## How the standalone build is put together
+
+* `Source/AerotelicUE.Target.cs` -- the game target that becomes `AerotelicUE.exe`.
+  The module is `Runtime` type; editor-only code (the legacy Window -> Aerotelic
+  tab, World-Outliner selection fallback) is compiled only for the editor target.
+* `Source/AerotelicUE/Standalone/` -- `AerotelicGameMode` (studio lighting,
+  grey backdrop, command-line project), `AerotelicCameraPawn` (orbit camera,
+  click-to-select, view presets), `AerotelicPlayerController` (cursor/input
+  mode, hosts the frame over the viewport and confines the 3D rendering to
+  the frame's view hole via the viewport client's split-screen table).
+* `Source/AerotelicUE/MainShell/` -- the frame: `AerotelicMainShell` (menu
+  bar, toolbars, layout, status bar), `AerotelicCommands` (every action with
+  label/tooltip/shortcut), `AerotelicSceneTree`, `AerotelicDesignDock`
+  (private `FTabManager` hosting the Design tab), `AerotelicDesignPanel`
+  (selected entity's panel), `AerotelicTransformDialog`.
+* `Source/AerotelicUE/Dialogs/` -- one `Build*DesignContent` per entity
+  type, dispatched by `EntityDesignContent`; these are the panel contents
+  shown in the design dock.
+* `Widgets/InputSink` -- wraps each frame panel so unhandled mouse buttons
+  and wheel turns stop there instead of bubbling to the game viewport (the
+  frame is a viewport overlay, i.e. a child of the SViewport; without this a
+  right-click on a tree row reached the viewport, which captured the mouse,
+  and the context menu never opened).
+* `Entity/AerotelicDocumentSubsystem` is an engine subsystem, so the same
+  document object serves the standalone app, the Editor host and the test
+  commandlets.
+* `Config/DefaultEngine.ini` -- starts in the engine's empty `Entry` map (no
+  project map asset is needed), fixed exposure, no Lumen/bloom/motion blur,
+  near clip 0.5 (models are a few units across), UI at 1:1 scale.
+* Docking note (spike, 2026-10-09): Slate's docking system works in the
+  standalone game target -- tabs stack, tear off into floating windows,
+  re-dock into a tab well and split the column -- provided the tabs live in
+  a private `FTabManager` (child of the global one). Tabs spawned from the
+  global manager's nomad spawners can re-dock but may not split.
+* `tools/mouse.ps1` -- blind UI automation (click, right-click,
+  double-click, drag, held drag, key presses, window list, close main
+  window) used with `tools/screenshot.ps1` to verify the app without a human
+  at the keyboard.
+
+## Known limits of this prototype
+
+* Only what the Editor-hosted version had is carried over: no new modelling
+  functionality. Mirrored entities (`mirror: true` in the project file) are
+  still rendered un-mirrored, as before.
+* Transform dialogs open just to the right of the scene tree, so they do not
+  cover the 3D view's centre; a second, third and later dialog cascade down
+  and to the right. Drag any of them wherever you like.
+* Not yet carried over from the Qt version: the custom frameless title bar,
+  render styles (edges / wireframe), section planes, ground grid, navigation
+  cube, per-body rows and colours in the scene tree, mirrored entities.
+* The packaged build is `Development` configuration (native file dialogs via
+  the DesktopPlatform module are not available in `Shipping`).
