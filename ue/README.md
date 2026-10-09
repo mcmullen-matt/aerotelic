@@ -46,11 +46,15 @@ The layout follows the Python/Qt version's main window (`aerotelic/ui/main_windo
   the visible view, not the whole window.
 * **Design dock** on the right: the selected entity's design panel (Wing,
   Fuselage, Nacelle, Lofted Nacelle, Propeller, Primitive) in a dockable tab
-  that can be torn off into its own window and docked back. Panels are kept
-  per entity, so tab state survives switching selection. When the Design
-  tab is torn off (nothing docked) the column collapses to zero width and
-  the 3D view takes the space; a 6-px grip on the column's left edge drags
-  its width (300..1000).
+  that can be torn off into its own window and docked back. The tab exists
+  only while an entity is being edited: it opens on Edit (tree
+  double-click, context menu, or adding an entity) and closes with its own
+  close button or the close button of the window it was torn off into.
+  Whenever nothing is docked (at startup, after a close, or while the tab
+  floats) the column collapses to zero width and the 3D view takes the
+  space; a 6-px grip on the column's left edge drags its width (300..1000).
+  Panels are kept per entity while the tab lives, so switching selection
+  keeps each panel's tab state.
 * **Design panels** carry the WingDesigner panel features: every curve tab
   has a degree spin box (1..points-1, applied through `SetDegree`), a
   "Reset Knots" button and a reset-to-default (Straight / Flat / Initial /
@@ -102,7 +106,12 @@ The layout follows the Python/Qt version's main window (`aerotelic/ui/main_windo
   standalone game target -- tabs stack, tear off into floating windows,
   re-dock into a tab well and split the column -- provided the tabs live in
   a private `FTabManager` (child of the global one). Tabs spawned from the
-  global manager's nomad spawners can re-dock but may not split.
+  global manager's nomad spawners can re-dock but may not split. Two more
+  findings: a tab with `CanEverClose(false)` also pins its floating window
+  open (the window asks every tab before closing); and after a tab is
+  closed in a floating window, `TryInvokeTab` restores that window from the
+  manager's collapsed areas, so the dock re-opens the tab by restoring a
+  fresh primary area into the column instead.
 * `tools/mouse.ps1` -- blind UI automation (click, right-click,
   double-click, drag, held drag, key presses, window list, close main
   window) used with `tools/screenshot.ps1` to verify the app without a human
