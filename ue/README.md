@@ -33,8 +33,49 @@ The layout follows the Python/Qt version's main window (`aerotelic/ui/main_windo
 * **Toolbar** under the menu: the add-entity launchers, grouped WING /
   FUSELAGE / NACELLE / PROPELLER / PRIMITIVE with the Qt version's
   text-label icons. Adding an entity selects it and opens its design panel.
-* **Left edge**: Style / Orientation / Section dropdowns (Orientation works;
-  the others are placeholders) and Rebuild.
+* **Left edge**: Style / Orientation / Section dropdowns and Rebuild.
+  **Style** (occ_viewer.py's render styles): Shaded; Shaded with Edges
+  (the triangulation's edges in near-black over the surface); Wireframe
+  (those edges alone, in the body's colour). The edges are a second,
+  wireframe-material copy of each body's mesh (`M_AerotelicWire`, unlit,
+  nudged a little towards the camera so it sits on the surface); the
+  surface mesh stays the pick geometry even while hidden. **Section**
+  (view_gizmo.py SectionPlane): None / X Plane / Y Plane / Z Plane and
+  Flip Side. One clip plane normal to a world axis, applied to every body
+  (never the ground or the gizmo) through the materials' ClipPoint /
+  ClipNormal parameters, starting at the middle of the scene along the
+  axis; the positive side is kept unless flipped. An amber frame outlines
+  the plane and a double-headed arrow along the axis, drawn on top of the
+  bodies so it stays reachable inside one, moves it when dragged (clamped
+  to the scene plus 2 %). The engine has no capping, so a cut body shows
+  the inside of its far wall, darkened, where WingDesigner caps the cut.
+  Neither style nor section is saved with the project.
+* **Navigation cube** (View -> Navigation Cube, on by default): a shaded,
+  labelled cube in the top-right corner of the 3D view, turning with the
+  camera, with an XYZ triad at its corner (WingDesigner's AIS_ViewCube).
+  Faces are named after the application's own presets: FRONT is the face
+  the Front preset looks at (-X), TOP is +Z, LEFT is -Y. Hovering lights
+  the face, edge or corner under the cursor; clicking swings the camera to
+  look from there over 0.35 s -- the centre of a face for a face-on view,
+  near an edge for a two-axis view, a corner for three (face zone 0.72).
+  Drawn entirely in Slate, so styles and sections never touch it.
+* **Airfoils** (Geometry -> Airfoils..., and the picker behind a section's
+  airfoil button on a wing's Sections tab): WingDesigner's library.
+  The UIUC / Selig database (~1,650 airfoils) is downloaded once, on
+  request, into `%LOCALAPPDATA%\WingDesigner\selig_db` (shared with the Qt
+  app; an older `Aerotelic\selig_db` is used if that is what exists) and
+  indexed; files are parsed only when selected. `Load .dat...` reads any
+  Selig-format file (the core's `ParseSeligDat` port: comments, Lednicer
+  count headers, LE-to-origin / TE-onto-+x normalisation, unit chord) into
+  the session's custom library. The panel is preview only: search box,
+  source combo (All / Selig / Custom), result list, the 2-D preview
+  (training points, upper and lower NURBS, dashed camber, chord line,
+  legend, equal aspect) and the statistics (max t/c and camber, with
+  their x/c). The picker adds the sources In this project (gold, one entry
+  per distinct airfoil across every wing and blade) and NACA 4-digit (the
+  common codes, plus whatever valid code is typed -- "2412", "naca 2412",
+  "NACA-2412"); double-click or OK assigns. A chosen airfoil is saved as
+  its fitted curve, so projects need no database.
 * **Scene tree**: the list of parameterisations, as in WingDesigner. Each
   entity row has a visibility checkbox, a colour swatch, its name and kind,
   and child rows for the solid bodies it produces (`<entity>-<n>` with the
@@ -62,12 +103,16 @@ The layout follows the Python/Qt version's main window (`aerotelic/ui/main_windo
   Glossiness (specular) and Blur (roughness) sliders and Matte / Satin /
   Glossy / Metal presets, setting the finish of every body in the scene at
   once. The bodies are drawn with `Content/Materials/M_AerotelicSurface`
-  (Color, Metallic, Specular and Roughness parameters), an asset authored
-  by `setup_materials.bat` (the `AerotelicMaterialSetup` commandlet, Editor
-  binaries) because shaders cannot be compiled inside a packaged game. If
-  the asset is missing the bodies fall back to BasicShapeMaterial and the
-  dialog has no effect. View -> Ground Grid (Ctrl+G) shows or hides the
-  ground.
+  (Color, Metallic, Specular and Roughness parameters, the section clip,
+  darker back faces), an asset authored by `setup_materials.bat` (the
+  `AerotelicMaterialSetup` commandlet, Editor binaries) because shaders
+  cannot be compiled inside a packaged game; the same commandlet authors
+  `M_AerotelicWire` (the edge styles) and `M_AerotelicGizmo` /
+  `M_AerotelicGizmoTop` (the section gizmo's frame and its on-top arrow).
+  All four are committed. If the surface asset is missing the bodies fall
+  back to BasicShapeMaterial and the dialog has no effect; without the
+  wire asset the edge styles draw no edges. View -> Ground Grid (Ctrl+G)
+  shows or hides the ground.
 * **Reference images** (WingDesigner's REQ-IO-011 / REQ-FUTURE-020, -024,
   -025, -027): every side/top/plan/front-view curve editor has a
   "Reference image" group with Import..., Remove, Fit, Flip H/V and
@@ -228,18 +273,17 @@ The layout follows the Python/Qt version's main window (`aerotelic/ui/main_windo
 
 ## Known limits of this prototype
 
-* Only what the Editor-hosted version had is carried over: no new modelling
-  functionality. Mirrored entities (`mirror: true` in the project file) are
-  still rendered un-mirrored, as before.
+* No new modelling functionality beyond WingDesigner's: this is a port.
 * Transform dialogs open just to the right of the scene tree, so they do not
   cover the 3D view's centre; a second, third and later dialog cascade down
   and to the right. Drag any of them wherever you like.
 * Not yet carried over from the Qt version: the custom frameless title bar,
-  render styles (edges / wireframe), section planes, ground grid, navigation
-  cube, per-body rows and colours in the scene tree, mirrored entities,
-  reference images, the Selig airfoil database / `.dat` import, and the
-  wing Control Surfaces tab (the C++ core has no control-surface model yet;
-  the tab is a placeholder note).
+  boolean operations (the core has them; no UI yet), Export STEP/STL (the
+  OCCT STEP toolkits collide with the engine's own zlib/png/tiff DLLs --
+  see `AerotelicUE.Build.cs`), the colour theme, and the wing Control
+  Surfaces tab (the C++ core has no control-surface model yet; the tab is
+  a placeholder note). A section plane cuts without capping (see above),
+  and the engine cannot rasterise SVG reference images.
 * Legacy project files: WingDesigner's older format keys entities by `id`
   with a display `label` (`Projects/cessna_172.yaml`); the label becomes
   the name and the raw `features` graph is ignored (the mirror nodes it

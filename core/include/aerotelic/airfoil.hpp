@@ -38,6 +38,9 @@ public:
 	const NurbsCurve& nurbs_curve() const { return *curve_; }
 	// nullptr when the trailing edge is already closed (pts[0] == pts[-1]).
 	const NurbsCurve* te_line() const { return te_line_.get(); }
+	// The raw points the curve was fitted through (airfoil.py's _pts_arr;
+	// the Airfoils panel plots them as "training points"). (N, 2).
+	const Mat& fit_points() const { return pts_arr_; }
 
 	// ---- geometry queries ----
 	std::vector<double> UpperXY(double t) const;

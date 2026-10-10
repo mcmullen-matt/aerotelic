@@ -37,6 +37,7 @@ set(YAMLCPP_LIB "${YAMLCPP_SRC_DIR}/build/Release/yaml-cpp.lib")
 add_library(aerotelic_core STATIC
 	src/nurbs.cpp
 	src/airfoil.cpp
+	src/airfoil_dat.cpp
 	src/primitive_model.cpp
 	src/feature_tree.cpp
 	src/wing_model.cpp
@@ -56,6 +57,9 @@ target_link_libraries(nurbs_fixture_check PRIVATE aerotelic_core)
 
 add_executable(airfoil_fixture_check tests/airfoil_fixture_check.cpp)
 target_link_libraries(airfoil_fixture_check PRIVATE aerotelic_core)
+
+add_executable(airfoil_dat_check tests/airfoil_dat_check.cpp)
+target_link_libraries(airfoil_dat_check PRIVATE aerotelic_core)
 
 add_executable(primitive_fixture_check tests/primitive_fixture_check.cpp)
 target_link_libraries(primitive_fixture_check PRIVATE aerotelic_core)

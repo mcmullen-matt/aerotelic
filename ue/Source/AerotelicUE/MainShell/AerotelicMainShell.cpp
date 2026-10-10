@@ -6,6 +6,7 @@
 #include "AerotelicWelcomeScreen.h"
 #include "AerotelicTutorialDialog.h"
 #include "Branding/AerotelicBranding.h"
+#include "Dialogs/AirfoilLibraryDialog.h"
 
 #include "Engine/Engine.h"
 #include "Engine/GameViewportClient.h"
@@ -328,7 +329,7 @@ void SAerotelicMainShell::BindCommands()
 	Commands->MapAction(C.ColorTheme, FExecuteAction(), Never());
 
 	// Geometry
-	Commands->MapAction(C.Airfoils, FExecuteAction(), Never());
+	Commands->MapAction(C.Airfoils, FExecuteAction::CreateLambda([]() { OpenAerotelicAirfoilLibrary(); }));
 	Commands->MapAction(C.BooleanOperation, FExecuteAction(), Never());
 
 	// View

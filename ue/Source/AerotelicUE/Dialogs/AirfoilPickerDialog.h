@@ -4,11 +4,12 @@
 #include <memory>
 #include "aerotelic/airfoil.hpp"
 
-// Airfoil picker: every project airfoil already in the scene offered first
-// (click to choose it outright, matching section_panel.py's
-// AirfoilPickerDialog merging in project_airfoils()), plus a NACA 4-digit
-// code entry with a live preview (Selig-database browsing and .dat loading
-// are out of scope this pass -- see the approved plan). Modal: blocks until
-// the user accepts or cancels. Returns unset if cancelled.
+// Airfoil picker (section_panel.py AirfoilPickerDialog): the library
+// browser over the sources In this project / NACA 4-digit / Selig database
+// / Custom (.dat), with search, preview and statistics, Load .dat..., and
+// the database download offered while it is missing. Double-click or OK
+// accepts. Modal: blocks until the user accepts or cancels. Returns unset
+// if cancelled. (InitialCode is kept for callers; the list opens on the
+// common NACA codes.)
 TOptional<std::shared_ptr<aerotelic::Airfoil>> PromptForAirfoil(
 	const TArray<std::shared_ptr<aerotelic::Airfoil>>& ProjectAirfoils, const FString& InitialCode = TEXT("2412"));
