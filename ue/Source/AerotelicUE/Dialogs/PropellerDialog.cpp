@@ -101,6 +101,7 @@ void BuildPropellerDesignContent(AAerotelicEntityActor* Entity, FAerotelicDesign
 		.XLabel(LOCTEXT("XR", "Axial (x/R)"))
 		.YLabel(LOCTEXT("RadiusR", "Radius (r/R)"))
 		.Title(LOCTEXT("SpinnerTitle", "Spinner  ·  revolved about the axis  ·  both ends on the axis"))
+		.DefaultYMax(0.25)
 		.XScale(FMath::Max(Model->spinner_length, 1e-9)).YScale(1.0).EqualAspect(true);
 	SpinnerEditor->SetSlots({ SpinnerSlot });
 	// The blades' axial position, dashed.

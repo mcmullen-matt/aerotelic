@@ -67,6 +67,20 @@ The layout follows the Python/Qt version's main window (`aerotelic/ui/main_windo
   non-dimensional units (x/L, y/L, z/L; x/R and r/R on the propeller
   spinner; the twist editor's y axis is in degrees). Curves are clipped to
   the plot area; hit-testing is relative to it.
+* **Ticks and limits.** Major ticks with numeric labels and minor ticks
+  sit on the left and bottom edges, with a faint grid through the majors,
+  placed as matplotlib's automatic locator does (steps of 1, 2, 2.5 or 5
+  times a power of ten; 5 minors per major, 4 when the step is 2). The
+  x axis shows 0..1 (small grab padding); the y axis starts at 0 and
+  shows up to a per-editor default ceiling (`DefaultYMax`: 0.5 planform
+  chord, 0.1 blade chord / dihedral / fuselage heights / lofted offsets,
+  0.25 nacelle and spinner radius, 1.0 conic rho, 10 degrees twist), grown
+  to take in content above it or below zero. Equal-aspect editors treat
+  the ceiling as a minimum. Dragging a pole past an edge grows the view
+  on that side by the cursor's travel beyond it and the pole rides the new
+  edge; the view never shrinks during a drag and stays grown afterwards.
+  Shapes about an origin (the nacelle lip ring) frame their content.
+  Basis panes have fixed y ticks at 0, 0.5 and 1.
 * **Tooltips are off** for now (`SetAllowTooltips(false)` in the player
   controller). The widgets keep their tooltip text, so one line turns
   them back on. Specifics: wing Standard tab has a Type combo

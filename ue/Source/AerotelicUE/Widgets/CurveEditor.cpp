@@ -170,10 +170,43 @@ public:
 	FVector2D ComputePlotOrigin() const
 	{
 		const double Top = Role == ERole::Curve ? (HasLegend() ? 32.0 : 18.0) : 16.0;
-		return FVector2D(16.0, Top);
+		// Left: the rotated axis label, the tick labels and the tick.
+		return FVector2D(52.0, Top);
 	}
-	static constexpr double kMarginRight = 6.0;
-	static constexpr double kMarginBottom = 16.0;
+	static constexpr double kMarginRight = 8.0;
+	// Bottom: the tick, its label and the axis label.
+	static constexpr double kMarginBottom = 32.0;
+	static constexpr double kMajorTickPx = 5.0;
+	static constexpr double kMinorTickPx = 2.5;
+
+	// matplotlib's automatic tick placement: the major step is 1, 2, 2.5 or
+	// 5 times a power of ten, the largest that still fits about one major
+	// per PxPerMajor pixels; minors subdivide a major by 5 (4 when the
+	// mantissa is 2); labels carry just the decimals the step needs.
+	struct FTicks { double Step = 0.2; int32 MinorDivs = 5; int32 Decimals = 1; };
+	static FTicks NiceTicks(double Span, double PlotPx, double PxPerMajor)
+	{
+		FTicks T;
+		const double Target = FMath::Max(PlotPx / PxPerMajor, 1.0);
+		const double Raw = FMath::Max(Span / Target, 1e-12);
+		const double Mag = FMath::Pow(10.0, FMath::FloorToDouble(FMath::LogX(10.0, Raw)));
+		double Mantissa = 10.0;
+		for (double Cand : { 1.0, 2.0, 2.5, 5.0, 10.0 })
+		{
+			if (Cand * Mag >= Raw * (1.0 - 1e-9)) { Mantissa = Cand; break; }
+		}
+		T.Step = Mantissa * Mag;
+		T.MinorDivs = Mantissa == 2.0 ? 4 : 5;
+		T.Decimals = FMath::Max(0, -(int32)FMath::FloorToDouble(FMath::LogX(10.0, T.Step) + 1e-9));
+		if (Mantissa == 2.5) T.Decimals += 1;
+		return T;
+	}
+
+	static FText TickLabel(double V, int32 Decimals, double Step)
+	{
+		if (FMath::Abs(V) < Step * 1e-6) V = 0.0; // no "-0.00"
+		return FText::FromString(FString::Printf(TEXT("%.*f"), Decimals, V));
+	}
 
 	bool HasLegend() const
 	{
@@ -205,24 +238,26 @@ public:
 		// (Grown by a pole marker's radius so a pole on the frame is whole.)
 		OutDrawElements.PushClip(FSlateClippingZone(AllottedGeometry.ToPaintGeometry(
 			FVector2f(LastPaneSizePx) + FVector2f(16.0f, 16.0f), FSlateLayoutTransform(FVector2f(PlotOrigin) - FVector2f(8.0f, 8.0f)))));
+		// Layers: background, grid, curves (+2..+4: lines, pole edges, pole
+		// fills), then ticks / labels on top.
 		if (Role == ERole::Curve)
 		{
 			LastDrawnBox = Owner->GetOrComputeViewBoxForPane(LastPaneSizePx);
-			PaintCurvePane(AllottedGeometry, OutDrawElements, LayerId + 1);
+			PaintCurvePane(AllottedGeometry, OutDrawElements, LayerId + 2);
 		}
 		else
 		{
 			LastDrawnBox = ComputeBasisBox();
-			PaintBasisPane(AllottedGeometry, OutDrawElements, LayerId + 1);
+			PaintBasisPane(AllottedGeometry, OutDrawElements, LayerId + 2);
 		}
 		OutDrawElements.PopClip();
-		PaintLabels(AllottedGeometry, OutDrawElements, LayerId + 2);
-		return LayerId + 3;
+		PaintLabels(AllottedGeometry, OutDrawElements, LayerId + 1, LayerId + 5);
+		return LayerId + 6;
 	}
 
 	// Title, axis labels and a slot legend, as the Python canvases draw
 	// (title and axis labels in grey, the legend top-left under the title).
-	void PaintLabels(const FGeometry& Geometry, FSlateWindowElementList& Out, int32 Layer) const
+	void PaintLabels(const FGeometry& Geometry, FSlateWindowElementList& Out, int32 GridLayer, int32 Layer) const
 	{
 		const FSlateFontInfo Font = FCoreStyle::GetDefaultFontStyle("Regular", 8);
 		const FLinearColor TitleColor(0.8f, 0.8f, 0.8f);
@@ -266,6 +301,7 @@ public:
 			TArray<FVector2f> Pts = { O, FVector2f(O.X + S.X, O.Y), O + S, FVector2f(O.X, O.Y + S.Y), O };
 			FSlateDrawElement::MakeLines(Out, Layer, Geometry.ToPaintGeometry(), Pts, ESlateDrawEffect::None, FrameColor, false, 1.0f);
 		}
+		PaintTicks(Geometry, Out, GridLayer, Layer, Measure);
 
 		if (Role == ERole::Curve)
 		{
@@ -293,6 +329,98 @@ public:
 			Draw(Title, FVector2D(6, 3), TitleColor);
 			DrawYLabel(NSLOCTEXT("CurveEditor", "BasisY", "N(s)"));
 			DrawXLabel(NSLOCTEXT("CurveEditor", "BasisX", "Curve parameter s"));
+		}
+	}
+
+	// Major and minor ticks on the left and bottom edges of the plot area,
+	// numeric labels at the majors and a faint grid through them -- what
+	// matplotlib drew for WingDesigner (its default locator, plus minors).
+	// The basis pane's y axis has fixed majors at 0, 0.5 and 1.
+	void PaintTicks(const FGeometry& Geometry, FSlateWindowElementList& Out, int32 GridLayer, int32 Layer,
+		const TSharedRef<FSlateFontMeasure>& Measure) const
+	{
+		const FSlateFontInfo Font = FCoreStyle::GetDefaultFontStyle("Regular", 7);
+		const FLinearColor TickColor(0.45f, 0.45f, 0.45f);
+		const FLinearColor TickLabelColor(0.6f, 0.6f, 0.6f);
+		const FLinearColor GridColor(0.16f, 0.18f, 0.22f);
+		const FBox2D& Box = LastDrawnBox;
+		const double Left = PlotOrigin.X, Bottom = PlotOrigin.Y + LastPaneSizePx.Y;
+		const double Right = Left + LastPaneSizePx.X, Top = PlotOrigin.Y;
+
+		auto Line = [&](FVector2D A, FVector2D B, const FLinearColor& Color, int32 OnLayer)
+		{
+			TArray<FVector2f> Pts = { FVector2f((float)A.X, (float)A.Y), FVector2f((float)B.X, (float)B.Y) };
+			FSlateDrawElement::MakeLines(Out, OnLayer, Geometry.ToPaintGeometry(), Pts, ESlateDrawEffect::None, Color, false, 1.0f);
+		};
+		auto Text = [&](const FText& T, FVector2D Pos)
+		{
+			FSlateDrawElement::MakeText(Out, Layer, Geometry.ToOffsetPaintGeometry(Pos), T, Font, ESlateDrawEffect::None, TickLabelColor);
+		};
+		// Ticks are walked by integer index k of the minor step (so a major
+		// is exactly k % MinorDivs == 0; no floating drift along the axis).
+		auto ForEachTick = [&](double Lo, double Hi, const FTicks& T, TFunctionRef<void(double, bool)> Visit)
+		{
+			const double Minor = T.Step / T.MinorDivs;
+			const int64 K0 = (int64)FMath::CeilToDouble(Lo / Minor - 1e-9);
+			const int64 K1 = (int64)FMath::FloorToDouble(Hi / Minor + 1e-9);
+			for (int64 k = K0; k <= K1; ++k)
+			{
+				const bool bMajor = ((k % T.MinorDivs) + T.MinorDivs) % T.MinorDivs == 0;
+				Visit(k * Minor, bMajor);
+			}
+		};
+
+		// ---- x axis ----
+		{
+			const FTicks T = NiceTicks(Box.Max.X - Box.Min.X, LastPaneSizePx.X, 70.0);
+			ForEachTick(Box.Min.X, Box.Max.X, T, [&](double v, bool bMajor)
+			{
+				const double px = DataToLocal(FVector2D(v, Box.Min.Y)).X;
+				if (px < Left - 0.5 || px > Right + 0.5) return;
+				if (bMajor)
+				{
+					Line(FVector2D(px, Bottom), FVector2D(px, Bottom + kMajorTickPx), TickColor, Layer);
+					Line(FVector2D(px, Top), FVector2D(px, Bottom), GridColor, GridLayer);
+					const FText Label = TickLabel(v, T.Decimals, T.Step);
+					const FVector2D Size = Measure->Measure(Label, Font);
+					Text(Label, FVector2D(px - Size.X * 0.5, Bottom + kMajorTickPx + 1));
+				}
+				else
+				{
+					Line(FVector2D(px, Bottom), FVector2D(px, Bottom + kMinorTickPx), TickColor, Layer);
+				}
+			});
+		}
+
+		// ---- y axis ----
+		auto YMajor = [&](double v, int32 Decimals, double Step)
+		{
+			const double py = DataToLocal(FVector2D(Box.Min.X, v)).Y;
+			if (py < Top - 0.5 || py > Bottom + 0.5) return;
+			Line(FVector2D(Left - kMajorTickPx, py), FVector2D(Left, py), TickColor, Layer);
+			Line(FVector2D(Left, py), FVector2D(Right, py), GridColor, GridLayer);
+			const FText Label = TickLabel(v, Decimals, Step);
+			const FVector2D Size = Measure->Measure(Label, Font);
+			Text(Label, FVector2D(Left - kMajorTickPx - 2 - Size.X, py - Size.Y * 0.5));
+		};
+		if (Role == ERole::Basis)
+		{
+			for (double v : { 0.0, 0.5, 1.0 }) YMajor(v, 1, 0.5);
+		}
+		else
+		{
+			const FTicks T = NiceTicks(Box.Max.Y - Box.Min.Y, LastPaneSizePx.Y, 44.0);
+			ForEachTick(Box.Min.Y, Box.Max.Y, T, [&](double v, bool bMajor)
+			{
+				if (bMajor)
+				{
+					YMajor(v, T.Decimals, T.Step);
+					return;
+				}
+				const double py = DataToLocal(FVector2D(Box.Min.X, v)).Y;
+				if (py < Top - 0.5 || py > Bottom + 0.5) return;
+				Line(FVector2D(Left - kMinorTickPx, py), FVector2D(Left, py), TickColor, Layer);
+			});
 		}
 	}
 
@@ -623,6 +751,7 @@ void SCurveEditor::Construct(const FArguments& InArgs)
 	XScale = InArgs._XScale;
 	YScale = InArgs._YScale;
 	bEqualAspect = InArgs._EqualAspect;
+	DefaultYMax = InArgs._DefaultYMax;
 	bSupportsUserLinks = InArgs._SupportsUserLinks;
 	LeadingName = InArgs._LeadingName;
 	TrailingName = InArgs._TrailingName;
@@ -987,16 +1116,31 @@ FBox2D SCurveEditor::ComputeFitBox() const
 		XHi = 1.08 * Sx;
 	}
 
-	double YMin = 0.0, YMax = bEqualAspect ? 0.5 * Sy : 0.5;
-	if (AllY.Num() > 0)
+	if (bAllFreeX)
 	{
-		YMin = AllY[0];
-		YMax = AllY[0];
-		for (double y : AllY) { YMin = FMath::Min(YMin, y); YMax = FMath::Max(YMax, y); }
+		// A shape about an origin frames itself, as WingDesigner's did.
+		double YMin = 0.0, YMax = bEqualAspect ? 0.5 * Sy : 0.5;
+		if (AllY.Num() > 0)
+		{
+			YMin = AllY[0];
+			YMax = AllY[0];
+			for (double y : AllY) { YMin = FMath::Min(YMin, y); YMax = FMath::Max(YMax, y); }
+		}
+		const double YRange = FMath::Max(bEqualAspect ? 0.5 * Sy : 0.5, YMax - YMin);
+		const double Margin = YRange * 0.2;
+		return FBox2D(FVector2D(XLo, YMin - Margin), FVector2D(XHi, YMax + Margin));
 	}
-	const double YRange = FMath::Max(bEqualAspect ? 0.5 * Sy : 0.5, YMax - YMin);
-	const double Margin = YRange * 0.2;
-	return FBox2D(FVector2D(XLo, YMin - Margin), FVector2D(XHi, YMax + Margin));
+
+	// A function of x: the y axis shows 0 up to the editor's default
+	// ceiling, grown (never shrunk) to take in whatever the content
+	// reaches above it or below zero. A small pad keeps a pole on the
+	// limit clear of the frame.
+	double YMin = 0.0, YMax = 0.0;
+	for (double y : AllY) { YMin = FMath::Min(YMin, y); YMax = FMath::Max(YMax, y); }
+	const double YLo = YMin;
+	const double YHi = FMath::Max(DefaultYMax, YMax);
+	const double Pad = 0.06 * FMath::Max(YHi - YLo, 1e-9);
+	return FBox2D(FVector2D(XLo, YLo - Pad), FVector2D(XHi, YHi + Pad));
 }
 
 FBox2D SCurveEditor::Equalized(const FBox2D& Box, FVector2D PaneSizePx) const
@@ -1017,9 +1161,20 @@ FBox2D SCurveEditor::Equalized(const FBox2D& Box, FVector2D PaneSizePx) const
 	else
 	{
 		const double Want = XSpan * PaneSizePx.Y / PaneSizePx.X;
-		const double Mid = 0.5 * (Box.Min.Y + Box.Max.Y);
-		Out.Min.Y = Mid - 0.5 * Want;
-		Out.Max.Y = Mid + 0.5 * Want;
+		const bool bAllFreeX = Slots.Num() > 0 && Algo::AllOf(Slots, [](const FCurveEditorSlot& S) { return S.bFreeX; });
+		if (bAllFreeX)
+		{
+			// A shape about an origin stays centred.
+			const double Mid = 0.5 * (Box.Min.Y + Box.Max.Y);
+			Out.Min.Y = Mid - 0.5 * Want;
+			Out.Max.Y = Mid + 0.5 * Want;
+		}
+		else
+		{
+			// Heighten y upward from its floor (the axis starts at zero, so
+			// the extra room is sky above the content, not space below it).
+			Out.Max.Y = Box.Min.Y + Want;
+		}
 	}
 	return Out;
 }
@@ -1214,13 +1369,37 @@ void SCurveEditor::BeginDragPole(FIntPoint Hit, const FBox2D& CurrentBox)
 	}
 	DraggingPole = Hit;
 	bDragMoved = false;
+	LastDragLocal.Reset();
 	LimLock = CurrentBox;
 }
 
 void SCurveEditor::DragPoleTo(FVector2D Local, const FBox2D& Box, FVector2D SizePx)
 {
 	if (!DraggingPole.IsSet()) return;
-	const FVector2D DataXY = LocalToDataStatic(Local, Box, SizePx);
+	// A pole dragged past an edge of the plot grows the view on that side
+	// by the cursor's travel beyond the edge (at the current scale), and
+	// the pole rides the new edge -- so the graph scrolls with the drag,
+	// proportionally to how far the mouse goes, and never shrinks during
+	// it. (Growing to wherever the cursor maps would compound: each
+	// event's overshoot is measured at an ever larger scale.) The box
+	// stays grown afterwards; Fit view refits to the content.
+	const FVector2D Delta = LastDragLocal.IsSet() ? Local - LastDragLocal.GetValue() : FVector2D::ZeroVector;
+	LastDragLocal = Local;
+	const double XPerPx = (Box.Max.X - Box.Min.X) / FMath::Max(SizePx.X, 1.0);
+	const double YPerPx = (Box.Max.Y - Box.Min.Y) / FMath::Max(SizePx.Y, 1.0);
+	FBox2D Grown = Box;
+	bool bGrew = false;
+	if (Local.Y < 0.0 && Delta.Y < 0.0)        { Grown.Max.Y += -Delta.Y * YPerPx; bGrew = true; } // above the top
+	if (Local.Y > SizePx.Y && Delta.Y > 0.0)   { Grown.Min.Y -= Delta.Y * YPerPx;  bGrew = true; } // below the bottom
+	if (Local.X < 0.0 && Delta.X < 0.0)        { Grown.Min.X -= -Delta.X * XPerPx; bGrew = true; }
+	if (Local.X > SizePx.X && Delta.X > 0.0)   { Grown.Max.X += Delta.X * XPerPx;  bGrew = true; }
+	if (bGrew)
+	{
+		LimLock = Grown;
+		ViewRequest = Grown;
+	}
+	const FVector2D Clamped(FMath::Clamp(Local.X, 0.0, SizePx.X), FMath::Clamp(Local.Y, 0.0, SizePx.Y));
+	const FVector2D DataXY = LocalToDataStatic(Clamped, Grown, SizePx);
 	MovePole(DraggingPole->X, DraggingPole->Y, FVector2D(DataXY.X / XScale, DataXY.Y / YScale));
 	bDragMoved = true;
 }
@@ -1232,6 +1411,7 @@ void SCurveEditor::ReleasePole()
 	const bool bMoved = bDragMoved;
 	DraggingPole.Reset();
 	bDragMoved = false;
+	LastDragLocal.Reset();
 	LimLock.Reset();
 	if (!bMoved)
 	{

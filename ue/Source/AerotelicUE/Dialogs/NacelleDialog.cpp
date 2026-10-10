@@ -104,6 +104,7 @@ void BuildNacelleDesignContent(AAerotelicEntityActor* Entity, FAerotelicDesignCo
 		.XLabel(LOCTEXT("XL", "Nacelle fraction (x/L)"))
 		.YLabel(LOCTEXT("YL", "Radius from axis (y/L)"))
 		.Title(LOCTEXT("SideTitle", "Side view  ·  outer and inner skin  ·  lip and trailing edge shared"))
+		.DefaultYMax(0.25)
 		.XScale(1.0).YScale(InvLength).EqualAspect(true)
 		.OnChanged(Rebuild);
 	SideEditor->SetSlots({ OuterSlot, InnerSlot });

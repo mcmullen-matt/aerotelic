@@ -139,11 +139,11 @@ namespace
 	};
 
 	TSharedRef<SCurveEditor> MakeEditor(FText XLabel, FText YLabel, FText Title, double YScale, bool bEqualAspect,
-		TArray<FCurveEditorSlot> Slots, FSimpleDelegate OnChanged, bool bUserLinks = false)
+		TArray<FCurveEditorSlot> Slots, FSimpleDelegate OnChanged, bool bUserLinks = false, double DefaultYMax = 0.1)
 	{
 		TSharedRef<SCurveEditor> Editor = SNew(SCurveEditor)
 			.XLabel(XLabel).YLabel(YLabel).Title(Title)
-			.XScale(1.0).YScale(YScale).EqualAspect(bEqualAspect)
+			.XScale(1.0).YScale(YScale).EqualAspect(bEqualAspect).DefaultYMax(DefaultYMax)
 			.SupportsUserLinks(bUserLinks)
 			.LeadingName(LOCTEXT("Nose", "nose")).TrailingName(LOCTEXT("Tail", "tail"))
 			.OnChanged(OnChanged);
@@ -261,7 +261,7 @@ void BuildFuselageDesignContent(AAerotelicEntityActor* Entity, FAerotelicDesignC
 	RhoUpperSlot.Basis = ECurveBasisPlacement::Below;
 	TSharedRef<SCurveEditor> RhoUpperEditor = MakeEditor(
 		LOCTEXT("XL", "Fuselage fraction (x/L)"), LOCTEXT("RhoUpperY", "Conic ρ (upper arcs)"),
-		RhoTitle(TEXT("ρ upper")), 1.0, false, { RhoUpperSlot }, OnChanged);
+		RhoTitle(TEXT("ρ upper")), 1.0, false, { RhoUpperSlot }, OnChanged, /*bUserLinks*/ false, /*DefaultYMax*/ 1.0);
 
 	FCurveEditorSlot RhoLowerSlot;
 	RhoLowerSlot.Curve = &Model->rho_lower_curve_mut();
@@ -270,7 +270,7 @@ void BuildFuselageDesignContent(AAerotelicEntityActor* Entity, FAerotelicDesignC
 	RhoLowerSlot.Basis = ECurveBasisPlacement::Below;
 	TSharedRef<SCurveEditor> RhoLowerEditor = MakeEditor(
 		LOCTEXT("XL", "Fuselage fraction (x/L)"), LOCTEXT("RhoLowerY", "Conic ρ (lower arcs)"),
-		RhoTitle(TEXT("ρ lower")), 1.0, false, { RhoLowerSlot }, OnChanged);
+		RhoTitle(TEXT("ρ lower")), 1.0, false, { RhoLowerSlot }, OnChanged, /*bUserLinks*/ false, /*DefaultYMax*/ 1.0);
 
 	// Length: rescales the Profile/Width editors' y axis (the curves hold
 	// lengths; the axes are fractions of L), then everything refreshes.

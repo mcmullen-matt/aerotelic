@@ -90,6 +90,7 @@ public:
 		: _XScale(1.0)
 		, _YScale(1.0)
 		, _EqualAspect(false)
+		, _DefaultYMax(0.1)
 		, _SupportsUserLinks(false)
 		, _LeadingName(FText::FromString(TEXT("leading")))
 		, _TrailingName(FText::FromString(TEXT("trailing")))
@@ -102,6 +103,10 @@ public:
 		// One display unit is the same number of pixels on both axes --
 		// only meaningful when both axes mean the same kind of quantity.
 		SLATE_ARGUMENT(bool, EqualAspect)
+		// The y axis's default ceiling in display units (after YScale): the
+		// view shows 0..this until the content or a drag exceeds it. Free-x
+		// shapes ignore it and frame their content.
+		SLATE_ARGUMENT(double, DefaultYMax)
 		SLATE_ARGUMENT(bool, SupportsUserLinks)
 		SLATE_ARGUMENT(FText, LeadingName)
 		SLATE_ARGUMENT(FText, TrailingName)
@@ -143,6 +148,7 @@ private:
 	FText XLabel, YLabel, Title, LeadingName, TrailingName;
 	double XScale = 1.0, YScale = 1.0;
 	bool bEqualAspect = false;
+	double DefaultYMax = 0.1;
 
 	TSharedPtr<class SSplitter> Splitter;
 	TSharedPtr<class SCurveEditorPane> CurvePane;
@@ -152,13 +158,15 @@ private:
 	TOptional<FIntPoint> Selected;         // (slot, pole) or (slot, basis function)
 	TOptional<FIntPoint> DraggingPole;     // (slot, pole)
 	bool bDragMoved = false;
+	TOptional<FVector2D> LastDragLocal;    // previous cursor position (plot px) during a pole drag
 	TOptional<FIntPoint> DraggingKnot;     // (slot, knot edit index)
 	TOptional<FIntPoint> LastPoleHit;      // for cycling through coincident poles
 	bool bNotifying = false;
 
 	// View box (x_lo, x_hi, y_lo, y_hi) in display units. Unset means "not
 	// framed yet" -- the next draw with content adopts the fit box, exactly
-	// once; after that only the wheel and Fit View move it.
+	// once; after that only the wheel, Fit View and a pole dragged past an
+	// edge (which grows the box, never shrinks it) move it.
 	TOptional<FBox2D> ViewRequest;
 	FBox2D FitBox = FBox2D(FVector2D(0, 0), FVector2D(1, 1));
 	TOptional<FBox2D> LimLock; // pins the box for the duration of a drag

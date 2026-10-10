@@ -157,6 +157,7 @@ TSharedRef<SWidget> FWingDesignTabs::BuildOutlineView(const FText& Title)
 		.XLabel(LOCTEXT("SpanLabel", "Span fraction (y/L)"))
 		.YLabel(LOCTEXT("ChordLabel", "Chordwise (x/L)"))
 		.Title(Title)
+		.DefaultYMax(bBlade ? 0.1 : 0.5)
 		.XScale(1.0).YScale(1.0 / FMath::Max(M->planform().SemiSpan(), 1e-9)).EqualAspect(true);
 	View->SetSlots({});
 	View->SetOutlineProvider(FOnGetOutlinePaths::CreateLambda([M]()
@@ -328,6 +329,7 @@ TSharedRef<SWidget> FWingDesignTabs::BuildNurbsPlanformTab(NURBSPlanform* Nurbs)
 		.XLabel(LOCTEXT("SpanLabel", "Span fraction (y/L)"))
 		.YLabel(LOCTEXT("ChordLabel", "Chordwise (x/L)"))
 		.Title(LOCTEXT("PlanformTitle", "Planform  ·  leading and trailing edge  ·  root and tip poles pinned in η"))
+		.DefaultYMax(bBlade ? 0.1 : 0.5)
 		.XScale(1.0)
 		.YScale(1.0 / FMath::Max(Nurbs->SemiSpan(), 1e-9))
 		.EqualAspect(true)
@@ -398,6 +400,7 @@ TSharedRef<SWidget> FWingDesignTabs::BuildDihedralTab()
 		.XLabel(LOCTEXT("SpanLabel", "Span fraction (y/L)"))
 		.YLabel(LOCTEXT("HeightLabel", "Height (z/L)"))
 		.Title(LOCTEXT("DihedralTitle", "Dihedral NURBS  ·  drag poles  ·  dbl-click to add  ·  right-click for options"))
+		.DefaultYMax(0.1)
 		.XScale(1.0).YScale(1.0).EqualAspect(true)
 		.OnChanged(OnChanged);
 	FCurveEditorSlot Slot;
@@ -441,6 +444,7 @@ TSharedRef<SWidget> FWingDesignTabs::BuildTwistTab()
 		.XLabel(LOCTEXT("SpanLabel", "Span fraction (y/L)"))
 		.YLabel(LOCTEXT("TwistLabel", "Twist (degrees)"))
 		.Title(LOCTEXT("TwistTitle", "Twist NURBS  ·  drag poles  ·  dbl-click to add  ·  right-click for options"))
+		.DefaultYMax(10.0)
 		.XScale(1.0).YScale(1.0).EqualAspect(false)
 		.OnChanged(OnChanged);
 	FCurveEditorSlot Slot;

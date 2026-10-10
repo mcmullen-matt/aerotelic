@@ -451,6 +451,7 @@ void BuildLoftedNacelleDesignContent(AAerotelicEntityActor* Entity, FAerotelicDe
 		.XLabel(LOCTEXT("XL", "Nacelle fraction (x/L)"))
 		.YLabel(LOCTEXT("OffsetL", "Vertical offset (y/L)"))
 		.Title(LOCTEXT("CentrelineTitle", "Centreline  ·  side view  ·  inlet and trailing edge pinned in x/L"))
+		.DefaultYMax(0.1)
 		.XScale(1.0).YScale(InvLength).EqualAspect(true);
 	CentrelineEditor->SetSlots({ CentrelineSlot });
 	// Body outline: the outer skin silhouette and the mean line, read-only.
@@ -496,6 +497,7 @@ void BuildLoftedNacelleDesignContent(AAerotelicEntityActor* Entity, FAerotelicDe
 		.XLabel(LOCTEXT("XL", "Nacelle fraction (x/L)"))
 		.YLabel(LOCTEXT("SkinOffsetL", "Offset from mean line (y/L)"))
 		.Title(LOCTEXT("SkinsTitle", "Skins  ·  outer and inner offsets  ·  the gap between them is the wall"))
+		.DefaultYMax(0.1)
 		.XScale(1.0).YScale(InvLength).EqualAspect(true)
 		.SupportsUserLinks(true)
 		.LeadingName(LOCTEXT("LipEnd", "lip")).TrailingName(LOCTEXT("TeEnd", "trailing-edge"));
