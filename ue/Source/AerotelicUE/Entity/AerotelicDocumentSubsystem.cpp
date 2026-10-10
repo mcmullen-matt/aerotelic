@@ -1,5 +1,6 @@
 #include "AerotelicDocumentSubsystem.h"
 #include "AerotelicEntityActor.h"
+#include "AerotelicBooleanModel.h"
 
 #include "ReferenceImagePaths.h"
 
@@ -252,13 +253,98 @@ void UAerotelicDocumentSubsystem::RemoveEntity(AAerotelicEntityActor* Entity)
 	{
 		return;
 	}
+	// Cascade: a boolean result that used this as an operand goes too
+	// (and anything built on that), as FeatureTree.Remove does.
+	TArray<AAerotelicEntityActor*> Dependents;
+	for (auto& Weak : Entities)
+	{
+		if (Weak.IsValid() && Weak.Get() != Entity && Weak->GetEntityType() == EntityType::Boolean)
+		{
+			if (static_cast<const FAerotelicBooleanModel*>(Weak->GetModel())->DependsOn(Entity))
+			{
+				Dependents.Add(Weak.Get());
+			}
+		}
+	}
 	if (SelectedEntity.Get() == Entity)
 	{
 		SetSelectedEntity(nullptr);
 	}
 	Entities.RemoveAll([Entity](const TWeakObjectPtr<AAerotelicEntityActor>& E) { return E.Get() == Entity; });
 	Entity->Destroy();
+	for (AAerotelicEntityActor* D : Dependents)
+	{
+		if (SelectedEntity.Get() == D)
+		{
+			SetSelectedEntity(nullptr);
+		}
+		Entities.RemoveAll([D](const TWeakObjectPtr<AAerotelicEntityActor>& E) { return E.Get() == D; });
+		D->Destroy();
+	}
 	OnEntityListChanged.Broadcast();
+}
+
+bool UAerotelicDocumentSubsystem::IsNameTaken(const FString& Name, const AAerotelicEntityActor* Except) const
+{
+	for (const auto& Weak : Entities)
+	{
+		if (Weak.IsValid() && Weak.Get() != Except && Weak->EntityName == Name)
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+FString UAerotelicDocumentSubsystem::NextBooleanName() const
+{
+	int32 Count = 0;
+	for (const auto& Weak : Entities)
+	{
+		if (Weak.IsValid() && Weak->GetEntityType() == EntityType::Boolean)
+		{
+			++Count;
+		}
+	}
+	int32 n = Count + 1;
+	FString Candidate = FString::Printf(TEXT("BoolOp %d"), n);
+	while (IsNameTaken(Candidate))
+	{
+		++n;
+		Candidate = FString::Printf(TEXT("BoolOp %d"), n);
+	}
+	return Candidate;
+}
+
+AAerotelicEntityActor* UAerotelicDocumentSubsystem::AddBoolean(const FString& Name, const TArray<FAerotelicBooleanOperand>& Operands,
+	const FString& Operation, FString& OutError)
+{
+	if (Operands.Num() < 2)
+	{
+		OutError = TEXT("Select at least two operands.");
+		return nullptr;
+	}
+	if (IsNameTaken(Name))
+	{
+		OutError = FString::Printf(TEXT("'%s' is already in use. Names must be unique in the scene."), *Name);
+		return nullptr;
+	}
+	auto Model = std::make_unique<FAerotelicBooleanModel>();
+	Model->Operation = TCHAR_TO_UTF8(*Operation);
+	Model->Operands = Operands;
+	// Build once up front so a failing operation (OCCT could not fuse/cut
+	// these) adds nothing, as fold_boolean cleans up after itself. The
+	// model keeps this result for the actor's first mesh build.
+	try
+	{
+		Model->BuildSolid();
+	}
+	catch (const std::exception& e)
+	{
+		OutError = UTF8_TO_TCHAR(e.what());
+		return nullptr;
+	}
+	return SpawnEntity(EntityType::Boolean, std::move(Model), Name);
 }
 
 void UAerotelicDocumentSubsystem::SetSelectedEntity(AAerotelicEntityActor* Entity)
@@ -526,6 +612,74 @@ bool UAerotelicDocumentSubsystem::OpenProjectPath(const FString& InPath, bool bA
 			}
 		}
 	}
+	// The boolean operations, in build order, over what is now in the
+	// scene (main_window.py _load_boolean). One that cannot be built is
+	// reported and skipped; the rest of the project still opens.
+	TArray<FString> Failures;
+	for (const ProjectBoolean& B : Project.booleans)
+	{
+		TArray<FAerotelicBooleanOperand> Operands;
+		FString Error;
+		for (const BooleanOperand& Ref : B.operands)
+		{
+			const FString RefName = UTF8_TO_TCHAR(Ref.name.c_str());
+			FAerotelicBooleanOperand Op;
+			for (auto& Weak : Entities)
+			{
+				if (Weak.IsValid() && Weak->EntityName == RefName)
+				{
+					Op.Entity = Weak;
+					break;
+				}
+			}
+			Op.bMirror = Ref.mirror;
+			if (!Op.Entity.IsValid())
+			{
+				Error = FString::Printf(TEXT("'%s' does not exist"), *RefName);
+				break;
+			}
+			Operands.Add(Op);
+		}
+		const FString Name = UTF8_TO_TCHAR(B.name.c_str());
+		AAerotelicEntityActor* Actor = Error.IsEmpty() ? AddBoolean(Name, Operands, UTF8_TO_TCHAR(B.operation.c_str()), Error) : nullptr;
+		if (Actor == nullptr)
+		{
+			Failures.Add(FString::Printf(TEXT("%s: %s"), *Name, *Error));
+			continue;
+		}
+		Actor->RefreshProxy();
+		if (B.color)
+		{
+			Actor->SetColorOverride(FLinearColor((float)(*B.color)[0], (float)(*B.color)[1], (float)(*B.color)[2]));
+		}
+		for (const ProjectBooleanBody& Body : B.bodies)
+		{
+			const FString Role = UTF8_TO_TCHAR(Body.name.c_str());
+			for (int32 i = 0; i < Actor->GetBodies().Num(); ++i)
+			{
+				if (Actor->GetBodies()[i].Name == Role)
+				{
+					if (Body.color)
+					{
+						Actor->SetBodyColor(i, FLinearColor((float)(*Body.color)[0], (float)(*Body.color)[1], (float)(*Body.color)[2]));
+					}
+					if (Body.hidden)
+					{
+						Actor->SetBodyVisible(i, false);
+					}
+				}
+			}
+		}
+		if (B.hidden)
+		{
+			Actor->SetEntityVisible(false);
+		}
+	}
+	if (Failures.Num() > 0 && !IsRunningCommandlet() && !FApp::IsUnattended())
+	{
+		FMessageDialog::Open(EAppMsgType::Ok,
+			FText::FromString(TEXT("Some boolean operations could not be rebuilt and were left out:\n") + FString::Join(Failures, TEXT("\n"))));
+	}
 	CurrentPath = bAdopt ? Path : FString();
 	OnEntityListChanged.Broadcast();
 	return true;
@@ -548,6 +702,10 @@ bool UAerotelicDocumentSubsystem::SaveProjectToPath(const FString& InPath)
 			continue;
 		}
 		AAerotelicEntityActor* Entity = WeakEntity.Get();
+		if (Entity->GetEntityType() == EntityType::Boolean)
+		{
+			continue; // written under `booleans:` below
+		}
 		ProjectEntity Pe;
 		Pe.name = TCHAR_TO_UTF8(*Entity->EntityName);
 		Pe.type = Entity->GetEntityType();
@@ -591,9 +749,59 @@ bool UAerotelicDocumentSubsystem::SaveProjectToPath(const FString& InPath)
 			Pe.model = Ps;
 			break;
 		}
+		case EntityType::Boolean:
+			break; // skipped above
 		}
 		RelativiseReferenceImagePaths(Pe.model, FPaths::GetPath(Path));
 		Project.entities.push_back(std::move(Pe));
+	}
+
+	// The boolean operations as authored (_booleans_for_save): name,
+	// operation, operands by name, and the display state that differs from
+	// the defaults, in build order.
+	for (auto& WeakEntity : Entities)
+	{
+		if (!WeakEntity.IsValid() || WeakEntity->GetEntityType() != EntityType::Boolean)
+		{
+			continue;
+		}
+		AAerotelicEntityActor* Entity = WeakEntity.Get();
+		const FAerotelicBooleanModel* M = static_cast<const FAerotelicBooleanModel*>(Entity->GetModel());
+		ProjectBoolean Pb;
+		Pb.name = TCHAR_TO_UTF8(*Entity->EntityName);
+		Pb.operation = M->Operation;
+		for (const FAerotelicBooleanOperand& Op : M->Operands)
+		{
+			if (!Op.Entity.IsValid())
+			{
+				continue;
+			}
+			BooleanOperand Ref;
+			Ref.name = TCHAR_TO_UTF8(*Op.Entity->EntityName);
+			Ref.mirror = Op.bMirror;
+			Pb.operands.push_back(Ref);
+		}
+		Pb.hidden = !Entity->IsEntityVisible();
+		if (const TOptional<FLinearColor> Color = Entity->GetColorOverride(); Color.IsSet())
+		{
+			Pb.color = std::array<double, 3>{ Color->R, Color->G, Color->B };
+		}
+		for (const FAerotelicBody& Body : Entity->GetBodies())
+		{
+			if (!Body.bHasColor && Body.bVisible)
+			{
+				continue;
+			}
+			ProjectBooleanBody Bb;
+			Bb.name = TCHAR_TO_UTF8(*Body.Name);
+			if (Body.bHasColor)
+			{
+				Bb.color = std::array<double, 3>{ Body.Color.R, Body.Color.G, Body.Color.B };
+			}
+			Bb.hidden = !Body.bVisible;
+			Pb.bodies.push_back(Bb);
+		}
+		Project.booleans.push_back(std::move(Pb));
 	}
 
 	try

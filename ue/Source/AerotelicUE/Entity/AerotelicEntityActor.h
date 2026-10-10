@@ -153,6 +153,19 @@ public:
 	DECLARE_MULTICAST_DELEGATE_OneParam(FOnAerotelicBodiesChanged, AAerotelicEntityActor*);
 	static FOnAerotelicBodiesChanged OnBodiesChanged;
 
+	// Fired after an entity's placed geometry changed (a rebuild after an
+	// edit, or a move): boolean results that use it as an operand rebuild
+	// themselves (feature_tree.py's dirty propagation).
+	DECLARE_MULTICAST_DELEGATE_OneParam(FOnAerotelicGeometryChanged, AAerotelicEntityActor*);
+	static FOnAerotelicGeometryChanged OnGeometryChanged;
+
+	// This entity's shape as placed in the world (the model's solid under
+	// the actor's transform), or its reflection about Y = 0 -- what a
+	// boolean operation consumes (EntityShapeFeature / MirrorFeature).
+	// Uses the solid cached by the last RefreshProxy(), building it if
+	// there is none yet. Null if the model cannot be built.
+	TopoDS_Shape GetPlacedShape(bool bMirror) const;
+
 	// This actor's placement as the backend's feature tree wants it.
 	aerotelic::EntityTransform GetEntityTransform() const;
 	// Applies a saved placement (from a loaded project file) to this actor.
@@ -223,6 +236,12 @@ private:
 	EAerotelicRenderStyle RenderStyle = EAerotelicRenderStyle::Shaded;
 	TOptional<FLinearColor> ColorOverride;
 	FDelegateHandle TransformHandle;
+	FDelegateHandle GeometryHandle;
+	// The model's solid from the last RefreshProxy() (unplaced), so the
+	// mirror and any boolean result reuse it instead of lofting again.
+	TopoDS_Shape LastSolid;
+
+	void OnOtherGeometryChanged(AAerotelicEntityActor* Other);
 
 	void EnsureProxyEdges();
 	void ApplyColors();

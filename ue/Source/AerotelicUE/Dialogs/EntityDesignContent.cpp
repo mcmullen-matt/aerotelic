@@ -25,6 +25,7 @@ FAerotelicDesignContent MakeEntityDesignContent(AAerotelicEntityActor* Entity)
 	case project_yaml::EntityType::LoftedNacelle: BuildLoftedNacelleDesignContent(Entity, Out); break;
 	case project_yaml::EntityType::Propeller: BuildPropellerDesignContent(Entity, Out); break;
 	case project_yaml::EntityType::Primitive: BuildPrimitiveDesignContent(Entity, Out); break;
+	case project_yaml::EntityType::Boolean: break; // nothing of its own to edit: its operands are
 	}
 	return Out;
 }

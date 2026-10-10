@@ -7,6 +7,7 @@
 #include "AerotelicTutorialDialog.h"
 #include "Branding/AerotelicBranding.h"
 #include "Dialogs/AirfoilLibraryDialog.h"
+#include "Dialogs/BooleanOperationDialog.h"
 
 #include "Engine/Engine.h"
 #include "Engine/GameViewportClient.h"
@@ -330,7 +331,11 @@ void SAerotelicMainShell::BindCommands()
 
 	// Geometry
 	Commands->MapAction(C.Airfoils, FExecuteAction::CreateLambda([]() { OpenAerotelicAirfoilLibrary(); }));
-	Commands->MapAction(C.BooleanOperation, FExecuteAction(), Never());
+	Commands->MapAction(C.BooleanOperation, FExecuteAction::CreateLambda([this]()
+	{
+		const FText Result = ShowAerotelicBooleanOperationDialog();
+		if (!Result.IsEmpty()) StatusText = Result;
+	}));
 
 	// View
 	Commands->MapAction(C.ViewIsometric, FExecuteAction::CreateSP(this, &SAerotelicMainShell::OnViewPreset, EAerotelicViewPreset::Isometric));

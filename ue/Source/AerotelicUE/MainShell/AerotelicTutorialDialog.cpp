@@ -102,7 +102,7 @@ namespace
 				Sorted.Sort();
 				Parts.Add(FString::Join(Sorted, TEXT("/")) + (Sorted.Num() == 1 ? TEXT(" planform") : TEXT(" planforms")));
 			}
-			const int32 Features = P.booleans_raw ? (int32)P.booleans_raw->size() : 0;
+			const int32 Features = (int32)P.booleans.size();
 			Parts.Add(FString::Printf(TEXT("%d feature%s"), Features, Features == 1 ? TEXT("") : TEXT("s")));
 			Row.Contents = Parts.Num() > 0 ? FString::Join(Parts, TEXT(", ")) : TEXT("empty");
 		}

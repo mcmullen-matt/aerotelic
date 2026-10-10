@@ -5,6 +5,7 @@
 
 #include "Entity/AerotelicDocumentSubsystem.h"
 #include "Entity/AerotelicEntityActor.h"
+#include "Entity/AerotelicBooleanModel.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogAerotelicDocumentTest, Log, All);
 
@@ -92,6 +93,25 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 		Wing->SetActorLocation(FVector(10.0, 20.0, 30.0));
 	}
 
+	// A boolean result over the fuselage and the sphere, saved under
+	// `booleans:` by name and rebuilt on load.
+	UE_LOG(LogAerotelicDocumentTest, Display, TEXT("step: AddBoolean"));
+	{
+		TArray<FAerotelicBooleanOperand> Operands;
+		FAerotelicBooleanOperand A, B;
+		A.Entity = Fuselage;
+		B.Entity = Primitive;
+		Operands.Add(A);
+		Operands.Add(B);
+		FString Error;
+		AAerotelicEntityActor* Fused = Doc->AddBoolean(TEXT("BoolOp 1"), Operands, TEXT("fuse"), Error);
+		Check(Fused != nullptr, FString::Printf(TEXT("fuse of fuselage and sphere built: %s"), *Error));
+		Check(Doc->GetEntities().Num() == 4, "the boolean result is a fourth scene item");
+		Check(Doc->NextBooleanName() == TEXT("BoolOp 2"), "next default boolean name is BoolOp 2");
+		AAerotelicEntityActor* Dup = Doc->AddBoolean(TEXT("BoolOp 1"), Operands, TEXT("cut"), Error);
+		Check(Dup == nullptr && !Error.IsEmpty(), "a duplicate name is refused");
+	}
+
 	UE_LOG(LogAerotelicDocumentTest, Display, TEXT("step: save"));
 	const FString TmpPath = FPaths::Combine(FPlatformProcess::UserTempDir(), TEXT("aerotelic_document_test.yaml"));
 	Check(Doc->SaveProjectToPath(TmpPath), "save succeeded");
@@ -115,9 +135,10 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 	// short-circuits without showing a dialog.
 	Check(Doc->OpenProjectPath(TmpPath), "reopen succeeded");
 	UE_LOG(LogAerotelicDocumentTest, Display, TEXT("step: reopen done"));
-	Check(Doc->GetEntities().Num() == 3, "reopened scene has 3 entities");
+	Check(Doc->GetEntities().Num() == 4, "reopened scene has 3 entities and the boolean result");
 
-	bool bFoundWing = false, bFoundFuselage = false, bFoundPrimitive = false;
+	bool bFoundWing = false, bFoundFuselage = false, bFoundPrimitive = false, bFoundBoolean = false;
+	AAerotelicEntityActor* ReopenedFuselage = nullptr;
 	for (auto& WeakEntity : Doc->GetEntities())
 	{
 		if (!WeakEntity.IsValid())
@@ -133,15 +154,32 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 			break;
 		case aerotelic::project_yaml::EntityType::Fuselage:
 			bFoundFuselage = true;
+			ReopenedFuselage = E;
 			break;
 		case aerotelic::project_yaml::EntityType::Primitive:
 			bFoundPrimitive = true;
 			break;
+		case aerotelic::project_yaml::EntityType::Boolean:
+		{
+			bFoundBoolean = true;
+			Check(E->EntityName == TEXT("BoolOp 1"), "boolean result kept its name");
+			const FAerotelicBooleanModel* M = static_cast<const FAerotelicBooleanModel*>(E->GetModel());
+			Check(M->Operation == "fuse" && M->Operands.Num() == 2, "boolean operation and operands round-tripped");
+			CheckBuildsSolid(E, TEXT("BoolOp 1"));
+			break;
+		}
 		default:
 			break;
 		}
 	}
-	Check(bFoundWing && bFoundFuselage && bFoundPrimitive, "all three entity types survived the round trip");
+	Check(bFoundWing && bFoundFuselage && bFoundPrimitive && bFoundBoolean, "all three entity types and the boolean survived the round trip");
+
+	// Deleting an operand cascades to the result built on it.
+	if (ReopenedFuselage != nullptr)
+	{
+		Doc->RemoveEntity(ReopenedFuselage);
+		Check(Doc->GetEntities().Num() == 2, "deleting an operand removed the boolean result with it");
+	}
 
 	IFileManager::Get().Delete(*TmpPath);
 

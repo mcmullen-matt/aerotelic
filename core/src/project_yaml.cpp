@@ -1,6 +1,7 @@
 #include "aerotelic/project_yaml.hpp"
 
 #include <fstream>
+#include <set>
 #include <stdexcept>
 
 namespace aerotelic::project_yaml {
@@ -452,6 +453,7 @@ const char* EntityTypeName(EntityType t) {
 		case EntityType::LoftedNacelle: return "lofted_nacelle";
 		case EntityType::Propeller: return "propeller";
 		case EntityType::Primitive: return "primitive";
+		case EntityType::Boolean: return "boolean";
 	}
 	return "";
 }
@@ -463,7 +465,95 @@ EntityType ParseEntityType(const std::string& s) {
 	if (s == "lofted_nacelle") return EntityType::LoftedNacelle;
 	if (s == "propeller") return EntityType::Propeller;
 	if (s == "primitive") return EntityType::Primitive;
+	if (s == "boolean") return EntityType::Boolean;
 	throw std::invalid_argument("Unknown entity type '" + s + "'");
+}
+
+// ===========================================================================
+// Boolean operations (`booleans:`)
+// ===========================================================================
+
+namespace {
+
+YAML::Node EncodeColor(const std::array<double, 3>& color) {
+	YAML::Node c;
+	for (double v : color) c.push_back(v);
+	c.SetStyle(YAML::EmitterStyle::Flow);
+	return c;
+}
+
+std::optional<std::array<double, 3>> DecodeColor(const YAML::Node& node) {
+	if (node && node.IsSequence() && node.size() >= 3) {
+		return std::array<double, 3>{node[0].as<double>(), node[1].as<double>(), node[2].as<double>()};
+	}
+	return std::nullopt;
+}
+
+} // namespace
+
+YAML::Node Encode(const ProjectBoolean& b) {
+	YAML::Node n;
+	n["name"] = b.name;
+	n["operation"] = b.operation;
+	YAML::Node operands(YAML::NodeType::Sequence);
+	for (const BooleanOperand& op : b.operands) {
+		if (op.mirror) {
+			YAML::Node m;
+			m["mirror"] = op.name;
+			m.SetStyle(YAML::EmitterStyle::Flow);
+			operands.push_back(m);
+		} else {
+			operands.push_back(op.name);
+		}
+	}
+	n["operands"] = operands;
+	if (b.fillet_radius) n["fillet_radius"] = *b.fillet_radius;
+	if (b.hidden) n["hidden"] = true;
+	if (b.color) n["color"] = EncodeColor(*b.color);
+	if (!b.bodies.empty()) {
+		YAML::Node bodies(YAML::NodeType::Sequence);
+		for (const ProjectBooleanBody& body : b.bodies) {
+			YAML::Node bn;
+			bn["name"] = body.name;
+			if (body.color) bn["color"] = EncodeColor(*body.color);
+			if (body.hidden) bn["hidden"] = true;
+			bodies.push_back(bn);
+		}
+		n["bodies"] = bodies;
+	}
+	return n;
+}
+
+ProjectBoolean DecodeProjectBoolean(const YAML::Node& node) {
+	ProjectBoolean b;
+	if (!node["name"]) throw std::invalid_argument("a boolean operation has no name");
+	b.name = node["name"].as<std::string>();
+	b.operation = node["operation"] ? node["operation"].as<std::string>() : "fuse";
+	if (b.operation != "fuse" && b.operation != "cut" && b.operation != "common") {
+		throw std::invalid_argument("Boolean '" + b.name + "' has an unknown operation '" + b.operation + "'");
+	}
+	for (const auto& ref : node["operands"]) {
+		BooleanOperand op;
+		if (ref.IsMap() && ref["mirror"]) {
+			op.name = ref["mirror"].as<std::string>();
+			op.mirror = true;
+		} else {
+			op.name = ref.as<std::string>();
+		}
+		b.operands.push_back(op);
+	}
+	if (b.operands.size() < 2) throw std::invalid_argument("Boolean '" + b.name + "' needs at least two operands.");
+	if (node["fillet_radius"]) b.fillet_radius = node["fillet_radius"].as<double>();
+	b.hidden = node["hidden"] ? node["hidden"].as<bool>() : false;
+	b.color = DecodeColor(node["color"]);
+	for (const auto& bn : node["bodies"]) {
+		ProjectBooleanBody body;
+		body.name = bn["name"] ? bn["name"].as<std::string>() : "";
+		body.color = DecodeColor(bn["color"]);
+		body.hidden = bn["hidden"] ? bn["hidden"].as<bool>() : false;
+		b.bodies.push_back(body);
+	}
+	return b;
 }
 
 // ===========================================================================
@@ -511,6 +601,7 @@ ProjectEntity DecodeEntity(const YAML::Node& node) {
 		case EntityType::LoftedNacelle: e.model = DecodeLoftedNacelleSpec(model_node); break;
 		case EntityType::Propeller: e.model = DecodePropellerSpec(model_node); break;
 		case EntityType::Primitive: e.model = DecodePrimitiveSpec(model_node); break;
+		case EntityType::Boolean: throw std::invalid_argument("Entity '" + e.name + "': boolean results belong under 'booleans', not 'entities'");
 	}
 	if (node["color"] && node["color"].size() >= 3) {
 		const YAML::Node& c = node["color"];
@@ -528,7 +619,29 @@ ProjectFile LoadProjectYaml(const std::string& path) {
 	if (root["entities"]) {
 		for (const auto& en : root["entities"]) project.entities.push_back(DecodeEntity(en));
 	}
-	if (root["booleans"]) project.booleans_raw = root["booleans"];
+	// Validated as the Python loader does: every operand must name an
+	// entity or a boolean listed before it, and a mirror operand a
+	// mirrored entity.
+	std::set<std::string> seen, mirrored;
+	for (const auto& e : project.entities) {
+		seen.insert(e.name);
+		if (e.mirror) mirrored.insert(e.name);
+	}
+	if (root["booleans"]) {
+		for (const auto& bn : root["booleans"]) {
+			ProjectBoolean b = DecodeProjectBoolean(bn);
+			for (const BooleanOperand& op : b.operands) {
+				if (!seen.count(op.name)) {
+					throw std::invalid_argument("Boolean '" + b.name + "' refers to '" + op.name + "', which does not exist (or is listed after it).");
+				}
+				if (op.mirror && !mirrored.count(op.name)) {
+					throw std::invalid_argument("Boolean '" + b.name + "' refers to the mirror of '" + op.name + "', which is not mirrored.");
+				}
+			}
+			seen.insert(b.name);
+			project.booleans.push_back(std::move(b));
+		}
+	}
 	return project;
 }
 
@@ -537,7 +650,11 @@ void SaveProjectYaml(const ProjectFile& project, const std::string& path) {
 	YAML::Node entities(YAML::NodeType::Sequence);
 	for (const auto& e : project.entities) entities.push_back(EncodeEntity(e));
 	root["entities"] = entities;
-	if (project.booleans_raw) root["booleans"] = *project.booleans_raw;
+	if (!project.booleans.empty()) {
+		YAML::Node booleans(YAML::NodeType::Sequence);
+		for (const auto& b : project.booleans) booleans.push_back(Encode(b));
+		root["booleans"] = booleans;
+	}
 
 	std::ofstream out(path);
 	if (!out) throw std::runtime_error("could not open " + path + " for writing");

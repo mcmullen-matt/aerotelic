@@ -14,9 +14,11 @@
 // images, pole_links (beyond the bare presence of an empty 'pole_links'
 // key on a saved Fuselage, needed so the Python app doesn't mistake a
 // file this app wrote for a pre-2026 legacy one -- see EncodeFuselage).
-// The 'booleans' top-level key (feature-tree booleans) is preserved
-// verbatim across a load-then-save round trip but not decoded into any
-// typed structure -- there's no UI to create or edit one yet.
+// The 'booleans' top-level key is the list of boolean operations as the
+// user authored them (main_window.py _booleans_for_save / _load_boolean):
+// name, operation, operands by name, display state. The feature-graph
+// nodes behind an operation are an implementation detail and are rebuilt
+// from this on load.
 
 #include <optional>
 #include <string>
@@ -77,7 +79,10 @@ Placement DecodePlacement(const YAML::Node& node);
 
 // ---- project-level ----
 
-enum class EntityType { Wing, Fuselage, Nacelle, LoftedNacelle, Propeller, Primitive };
+// Boolean is the kind of a boolean operation's result: a scene item like
+// the others (listed, coloured, hidden, saved), but it is never an entry
+// under `entities:` -- it lives under `booleans:` (ProjectBoolean).
+enum class EntityType { Wing, Fuselage, Nacelle, LoftedNacelle, Propeller, Primitive, Boolean };
 const char* EntityTypeName(EntityType t);
 EntityType ParseEntityType(const std::string& s);
 
@@ -97,11 +102,40 @@ struct ProjectEntity {
 	bool hidden = false;
 };
 
+// One operand of a boolean operation, by scene name: an entity, the
+// mirrored half of a mirrored entity (`{mirror: <entity name>}` in the
+// file), or an earlier boolean result.
+struct BooleanOperand {
+	std::string name;
+	bool mirror = false;
+};
+
+// Per-solid display overrides of a boolean result (`bodies:`).
+struct ProjectBooleanBody {
+	std::string name;
+	std::optional<std::array<double, 3>> color;
+	bool hidden = false;
+};
+
+struct ProjectBoolean {
+	std::string name;
+	// "fuse" | "cut" | "common"; cut is first minus the rest.
+	std::string operation = "fuse";
+	// In build order: folded left to right ((A op B) op C).
+	std::vector<BooleanOperand> operands;
+	std::optional<double> fillet_radius;
+	bool hidden = false;
+	std::optional<std::array<double, 3>> color;
+	std::vector<ProjectBooleanBody> bodies;
+};
+
+YAML::Node Encode(const ProjectBoolean& b);
+ProjectBoolean DecodeProjectBoolean(const YAML::Node& node);
+
 struct ProjectFile {
 	std::vector<ProjectEntity> entities;
-	// Preserved verbatim across load-then-save; not decoded (no UI to
-	// create/edit booleans yet).
-	std::optional<YAML::Node> booleans_raw;
+	// In build order; every operand names something listed before it.
+	std::vector<ProjectBoolean> booleans;
 };
 
 ProjectFile LoadProjectYaml(const std::string& path);

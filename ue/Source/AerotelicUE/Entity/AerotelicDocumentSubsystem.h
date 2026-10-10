@@ -71,6 +71,21 @@ public:
 	AAerotelicEntityActor* AddPropeller();
 	AAerotelicEntityActor* AddPrimitive(const FString& Shape);
 
+	// Geometry -> Boolean Operation...: a new scene item, the operands'
+	// placed shapes folded left to right with Operation ("fuse" | "cut" |
+	// "common"). The operands stay in the scene (main_window.py
+	// _create_boolean_operation). Null with OutError on failure, in which
+	// case nothing was added.
+	AAerotelicEntityActor* AddBoolean(const FString& Name, const TArray<struct FAerotelicBooleanOperand>& Operands,
+		const FString& Operation, FString& OutError);
+	// Every scene name (entities and boolean results); the project file
+	// refers to things by name, so they are one namespace.
+	bool IsNameTaken(const FString& Name, const AAerotelicEntityActor* Except = nullptr) const;
+	// A default "BoolOp n" (_unique_label).
+	FString NextBooleanName() const;
+
+	// Removes Entity and every boolean result that depends on it (the
+	// feature tree's cascading remove).
 	void RemoveEntity(AAerotelicEntityActor* Entity);
 
 	// The application's own selection (the standalone app has no World

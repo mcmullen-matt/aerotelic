@@ -9,6 +9,7 @@
 #include "ProceduralMeshComponent.h"
 
 #include "AerotelicDocumentSubsystem.h"
+#include "AerotelicBooleanModel.h"
 #include "Misc/PackageName.h"
 
 #include "aerotelic/feature_tree.hpp"
@@ -125,12 +126,17 @@ namespace
 	}
 
 	// WingDesigner's role names: "Main" for a single solid, "Spinner" and
-	// "Blade n" for a propeller's parts.
+	// "Blade n" for a propeller's parts, "Body n" for a boolean result's
+	// solids (_sync_result_bodies).
 	FString RoleName(EntityType Type, int32 Index, int32 Count)
 	{
 		if (Type == EntityType::Propeller && Count > 1)
 		{
 			return Index == 0 ? FString(TEXT("Spinner")) : FString::Printf(TEXT("Blade %d"), Index);
+		}
+		if (Type == EntityType::Boolean)
+		{
+			return FString::Printf(TEXT("Body %d"), Index + 1);
 		}
 		return Count > 1 ? FString::Printf(TEXT("Part %d"), Index + 1) : FString(TEXT("Main"));
 	}
@@ -208,6 +214,11 @@ void AAerotelicEntityActor::InitializeFrom(aerotelic::project_yaml::EntityType I
 	{
 		TransformHandle = ProxyRoot->TransformUpdated.AddUObject(this, &AAerotelicEntityActor::OnRootTransformed);
 	}
+	// A boolean result follows its operands.
+	if (EntityType == aerotelic::project_yaml::EntityType::Boolean && !GeometryHandle.IsValid())
+	{
+		GeometryHandle = OnGeometryChanged.AddUObject(this, &AAerotelicEntityActor::OnOtherGeometryChanged);
+	}
 	RefreshProxy();
 }
 
@@ -217,6 +228,46 @@ void AAerotelicEntityActor::OnRootTransformed(USceneComponent*, EUpdateTransform
 	{
 		RefreshMirror();
 	}
+	OnGeometryChanged.Broadcast(this);
+}
+
+void AAerotelicEntityActor::OnOtherGeometryChanged(AAerotelicEntityActor* Other)
+{
+	if (Other == this || Model == nullptr || EntityType != aerotelic::project_yaml::EntityType::Boolean)
+	{
+		return;
+	}
+	if (static_cast<const FAerotelicBooleanModel*>(Model.get())->DependsOn(Other))
+	{
+		RefreshProxy();
+	}
+}
+
+TopoDS_Shape AAerotelicEntityActor::GetPlacedShape(bool bMirror) const
+{
+	if (Model == nullptr)
+	{
+		return TopoDS_Shape();
+	}
+	TopoDS_Shape Solid = LastSolid;
+	if (Solid.IsNull())
+	{
+		try
+		{
+			Solid = Model->BuildSolid();
+		}
+		catch (const std::exception&)
+		{
+			return TopoDS_Shape();
+		}
+	}
+	const aerotelic::EntityTransform T = GetEntityTransform();
+	TopoDS_Shape Placed = aerotelic::Place(Solid, { T.tx, T.ty, T.tz }, { T.ax, T.ay, T.az }, T.angle_deg);
+	if (bMirror)
+	{
+		Placed = aerotelic::ApplyMirror(Placed, { 0.0, 0.0, 0.0 }, { 0.0, 1.0, 0.0 });
+	}
+	return Placed;
 }
 
 void AAerotelicEntityActor::EnsureProxyEdges()
@@ -253,6 +304,7 @@ FLinearColor AAerotelicEntityActor::DefaultColorFor(aerotelic::project_yaml::Ent
 	case EType::LoftedNacelle: return FLinearColor(0.82f, 0.42f, 0.55f); // nacelle rose
 	case EType::Propeller:     return FLinearColor(0.66f, 0.68f, 0.74f); // propeller aluminium
 	case EType::Primitive:     return FLinearColor(0.85f, 0.80f, 0.30f); // primitive ochre
+	case EType::Boolean:       return FLinearColor(0.62f, 0.56f, 0.78f); // boolean result lilac
 	case EType::Wing:
 	default:                   return FLinearColor(0.20f, 0.50f, 0.90f); // steel blue
 	}
@@ -457,6 +509,7 @@ FString AAerotelicEntityActor::GetMirrorBodyDisplayName(int32 Index) const
 }
 
 AAerotelicEntityActor::FOnAerotelicBodiesChanged AAerotelicEntityActor::OnBodiesChanged;
+AAerotelicEntityActor::FOnAerotelicGeometryChanged AAerotelicEntityActor::OnGeometryChanged;
 
 FBox AAerotelicEntityActor::GetVisibleWorldBounds() const
 {
@@ -530,8 +583,9 @@ void AAerotelicEntityActor::RefreshMirror()
 		// Reflect the *placed* shape about Y = 0, as MirrorFeature does to
 		// EntityShapeFeature's result: an off-centreline boom lands on the
 		// other side, and a rotated propeller comes out the opposite hand.
+		// (From the solid RefreshProxy() just cached, not a second loft.)
 		const aerotelic::EntityTransform T = GetEntityTransform();
-		Placed = aerotelic::Place(Model->BuildSolid(), { T.tx, T.ty, T.tz }, { T.ax, T.ay, T.az }, T.angle_deg);
+		Placed = aerotelic::Place(LastSolid.IsNull() ? Model->BuildSolid() : LastSolid, { T.tx, T.ty, T.tz }, { T.ax, T.ay, T.az }, T.angle_deg);
 		Placed = aerotelic::ApplyMirror(Placed, { 0.0, 0.0, 0.0 }, { 0.0, 1.0, 0.0 });
 	}
 	catch (const std::exception& e)
@@ -586,6 +640,7 @@ void AAerotelicEntityActor::RefreshProxy()
 		// sections) must not leave either visual in a half-built state --
 		// hide both rather than show something stale or wrong.
 		UE_LOG(LogTemp, Warning, TEXT("AerotelicEntityActor: BuildSolid failed for '%s': %s"), *EntityName, UTF8_TO_TCHAR(e.what()));
+		LastSolid.Nullify();
 		bHasTessellation = false;
 		bMirrorHasTessellation = false;
 		ApplyMeshVisibility();
@@ -593,8 +648,10 @@ void AAerotelicEntityActor::RefreshProxy()
 		{
 			Edge->SetVisibility(false);
 		}
+		OnGeometryChanged.Broadcast(this);
 		return;
 	}
+	LastSolid = Shape;
 
 	// Keep each body's display state across a rebuild by role name, so a
 	// hidden or recoloured blade stays so when the propeller is edited.
@@ -644,6 +701,7 @@ void AAerotelicEntityActor::RefreshProxy()
 	{
 		OnBodiesChanged.Broadcast(this);
 	}
+	OnGeometryChanged.Broadcast(this);
 }
 
 TArray<FString> AAerotelicEntityActor::RefreshTessellatedMesh(const TopoDS_Shape& Shape,

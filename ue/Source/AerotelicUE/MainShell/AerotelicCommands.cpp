@@ -25,7 +25,7 @@ void FAerotelicCommands::RegisterCommands()
 
 	// Geometry
 	UI_COMMAND(Airfoils, "Airfoils...", "The airfoil library: the Selig database, NACA codes and .dat files, with a preview (assign one from a wing's Sections tab)", EUserInterfaceActionType::Button, FInputChord());
-	UI_COMMAND(BooleanOperation, "Boolean Operation...", "Fuse/Cut/Common two entities. Not available yet in this version.", EUserInterfaceActionType::Button, FInputChord());
+	UI_COMMAND(BooleanOperation, "Boolean Operation...", "Fuse/Cut/Common two entities (or previously-created boolean results)", EUserInterfaceActionType::Button, FInputChord());
 
 	// View
 	UI_COMMAND(ViewIsometric, "Isometric", "Look at the scene from the isometric direction", EUserInterfaceActionType::Button, FInputChord());

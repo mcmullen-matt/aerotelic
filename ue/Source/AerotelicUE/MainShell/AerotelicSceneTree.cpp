@@ -15,6 +15,7 @@
 
 #include "Entity/AerotelicDocumentSubsystem.h"
 #include "Entity/AerotelicEntityActor.h"
+#include "Entity/AerotelicBooleanModel.h"
 #include "Widgets/PromptDialogs.h"
 
 #define LOCTEXT_NAMESPACE "AerotelicSceneTree"
@@ -33,6 +34,7 @@ namespace
 		case project_yaml::EntityType::LoftedNacelle: return LOCTEXT("TypeLoftedNacelle", "lofted nacelle");
 		case project_yaml::EntityType::Propeller: return LOCTEXT("TypePropeller", "propeller");
 		case project_yaml::EntityType::Primitive: return LOCTEXT("TypePrimitive", "primitive");
+		case project_yaml::EntityType::Boolean: return LOCTEXT("TypeBoolean", "boolean");
 		}
 		return FText::GetEmpty();
 	}
@@ -125,7 +127,12 @@ void SAerotelicSceneTree::EditEntity(AAerotelicEntityActor* Entity)
 	{
 		Doc->SetSelectedEntity(Entity);
 	}
-	ShowAerotelicDesignTab();
+	// A boolean result has no parameters of its own to edit: its operands
+	// do. Selecting it is all there is.
+	if (Entity->GetEntityType() != project_yaml::EntityType::Boolean)
+	{
+		ShowAerotelicDesignTab();
+	}
 }
 
 // ------------------------------------------------------------------- rows
@@ -373,6 +380,10 @@ TSharedPtr<SWidget> SAerotelicSceneTree::MakeEntityMenu(FItem Item)
 {
 	TWeakObjectPtr<AAerotelicEntityActor> Entity = Item->Entity;
 	const bool bVisible = Entity->IsEntityVisible();
+	// A boolean result is shown, coloured, renamed and deleted like any
+	// row, but has no design panel, placement or mirror of its own
+	// (main_window.py's result-row menu).
+	const bool bBoolean = Entity->GetEntityType() == project_yaml::EntityType::Boolean;
 
 	FMenuBuilder Menu(true, nullptr, nullptr, false, &FCoreStyle::Get(), /*bSearchable*/ false);
 
@@ -385,21 +396,27 @@ TSharedPtr<SWidget> SAerotelicSceneTree::MakeEntityMenu(FItem Item)
 			if (Entity.IsValid()) Entity->SetEntityVisible(!bVisible);
 		})));
 
-	Menu.AddMenuEntry(LOCTEXT("Edit", "Edit"), LOCTEXT("EditTip", "Open this entity's design panel"), FSlateIcon(),
-		FUIAction(FExecuteAction::CreateLambda([this, Entity]()
-		{
-			if (Entity.IsValid())
+	if (!bBoolean)
+	{
+		Menu.AddMenuEntry(LOCTEXT("Edit", "Edit"), LOCTEXT("EditTip", "Open this entity's design panel"), FSlateIcon(),
+			FUIAction(FExecuteAction::CreateLambda([this, Entity]()
 			{
-				EditEntity(Entity.Get());
-				Status(FText::Format(LOCTEXT("StatusEditing", "Editing {0}"), FText::FromString(Entity->EntityName)));
-			}
-		})));
+				if (Entity.IsValid())
+				{
+					EditEntity(Entity.Get());
+					Status(FText::Format(LOCTEXT("StatusEditing", "Editing {0}"), FText::FromString(Entity->EntityName)));
+				}
+			})));
+	}
 
 	Menu.AddMenuEntry(LOCTEXT("Rename", "Rename"), LOCTEXT("RenameTip", "Give this entity a new, unique name"), FSlateIcon(),
 		FUIAction(FExecuteAction::CreateLambda([this, Entity]() { if (Entity.IsValid()) RenameEntity(Entity.Get()); })));
 
-	Menu.AddMenuEntry(LOCTEXT("Transform", "Transform"), LOCTEXT("TransformTip", "Translate and rotate this entity"), FSlateIcon(),
-		FUIAction(FExecuteAction::CreateLambda([Entity]() { if (Entity.IsValid()) OpenAerotelicTransformDialog(Entity.Get()); })));
+	if (!bBoolean)
+	{
+		Menu.AddMenuEntry(LOCTEXT("Transform", "Transform"), LOCTEXT("TransformTip", "Translate and rotate this entity"), FSlateIcon(),
+			FUIAction(FExecuteAction::CreateLambda([Entity]() { if (Entity.IsValid()) OpenAerotelicTransformDialog(Entity.Get()); })));
+	}
 
 	Menu.AddMenuEntry(LOCTEXT("Color", "Color"), LOCTEXT("ColorTip", "Pick the colour every body of this entity is drawn in (the mirrored ones included)"), FSlateIcon(),
 		FUIAction(FExecuteAction::CreateLambda([this, Entity]() { if (Entity.IsValid()) PickEntityColor(Entity.Get()); })));
@@ -408,22 +425,25 @@ TSharedPtr<SWidget> SAerotelicSceneTree::MakeEntityMenu(FItem Item)
 		FUIAction(FExecuteAction::CreateLambda([Entity]() { if (Entity.IsValid()) Entity->SetColorOverride(TOptional<FLinearColor>()); }),
 			FCanExecuteAction::CreateLambda([Entity]() { return Entity.IsValid() && Entity->GetColorOverride().IsSet(); })));
 
-	Menu.AddMenuSeparator();
+	if (!bBoolean)
+	{
+		Menu.AddMenuSeparator();
 
-	Menu.AddMenuEntry(LOCTEXT("Mirrored", "Mirrored"),
-		LOCTEXT("MirroredTip", "Derive a port-side copy by reflecting about Y = 0. The mirrored half is never edited on its own -- it always follows this entity."),
-		FSlateIcon(),
-		FUIAction(
-			FExecuteAction::CreateLambda([this, Entity]()
-			{
-				if (!Entity.IsValid()) return;
-				Entity->SetMirrored(!Entity->IsMirrored());
-				Status(FText::Format(Entity->IsMirrored() ? LOCTEXT("StatusMirrored", "{0} is now mirrored") : LOCTEXT("StatusUnmirrored", "{0} is no longer mirrored"),
-					FText::FromString(Entity->EntityName)));
-			}),
-			FCanExecuteAction(),
-			FIsActionChecked::CreateLambda([Entity]() { return Entity.IsValid() && Entity->IsMirrored(); })),
-		NAME_None, EUserInterfaceActionType::ToggleButton);
+		Menu.AddMenuEntry(LOCTEXT("Mirrored", "Mirrored"),
+			LOCTEXT("MirroredTip", "Derive a port-side copy by reflecting about Y = 0. The mirrored half is never edited on its own -- it always follows this entity."),
+			FSlateIcon(),
+			FUIAction(
+				FExecuteAction::CreateLambda([this, Entity]()
+				{
+					if (!Entity.IsValid()) return;
+					Entity->SetMirrored(!Entity->IsMirrored());
+					Status(FText::Format(Entity->IsMirrored() ? LOCTEXT("StatusMirrored", "{0} is now mirrored") : LOCTEXT("StatusUnmirrored", "{0} is no longer mirrored"),
+						FText::FromString(Entity->EntityName)));
+				}),
+				FCanExecuteAction(),
+				FIsActionChecked::CreateLambda([Entity]() { return Entity.IsValid() && Entity->IsMirrored(); })),
+			NAME_None, EUserInterfaceActionType::ToggleButton);
+	}
 
 	Menu.AddMenuSeparator();
 
@@ -542,8 +562,20 @@ void SAerotelicSceneTree::DeleteEntity(AAerotelicEntityActor* Entity)
 		return;
 	}
 	const FString Name = Entity->EntityName;
-	const EAppReturnType::Type Answer = FMessageDialog::Open(EAppMsgType::YesNo,
-		FText::Format(LOCTEXT("ConfirmDelete", "Delete {0}?"), FText::FromString(Name)));
+	// Boolean results built on this go with it; say so.
+	TArray<FString> Dependents;
+	for (const TWeakObjectPtr<AAerotelicEntityActor>& Other : Doc->GetEntities())
+	{
+		if (Other.IsValid() && Other.Get() != Entity && Other->GetEntityType() == project_yaml::EntityType::Boolean
+			&& static_cast<const FAerotelicBooleanModel*>(Other->GetModel())->DependsOn(Entity))
+		{
+			Dependents.Add(Other->EntityName);
+		}
+	}
+	const FText Question = Dependents.Num() == 0
+		? FText::Format(LOCTEXT("ConfirmDelete", "Delete {0}?"), FText::FromString(Name))
+		: FText::Format(LOCTEXT("ConfirmDeleteCascade", "Delete {0}?\nThe boolean operation(s) built on it go with it: {1}"), FText::FromString(Name), FText::FromString(FString::Join(Dependents, TEXT(", "))));
+	const EAppReturnType::Type Answer = FMessageDialog::Open(EAppMsgType::YesNo, Question);
 	if (Answer != EAppReturnType::Yes)
 	{
 		return;

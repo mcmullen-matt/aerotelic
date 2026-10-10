@@ -132,6 +132,25 @@ The layout follows the Python/Qt version's main window (`aerotelic/ui/main_windo
   file is saved relative to it, others absolute; a missing file draws
   nothing and keeps its placement. PNG, JPEG, BMP and TIFF (no SVG: the
   engine has no SVG rasteriser).
+* **Boolean operations** (Geometry -> Boolean Operation...): WingDesigner's
+  dialog -- the operands in order (every entity, the mirrored half of each
+  mirrored one as its own row, every earlier boolean result), Add / Select
+  All / Remove / Up / Down, the operation (Fuse, Cut = first minus the
+  rest, Common) and a unique name ("BoolOp n" by default). The result is a
+  new scene item of kind boolean: the operands' placed shapes folded left
+  to right with the core's `BooleanOperation`, drawn in lilac with one
+  "Body n" row per solid, shown, coloured, renamed and deleted like any
+  row (no design panel, placement or mirror of its own). The operands stay
+  in the scene, so hide them to see the result alone. It follows its
+  operands: editing or moving one rebuilds it, deleting one deletes it
+  (with a warning). An operation OCCT cannot complete is reported and adds
+  nothing. A fuse of lofted bodies can take tens of seconds, as in the Qt
+  app. Saved under `booleans:` by name (`operands: [Wing, {mirror: Wing}]`,
+  `operation`, `hidden`, `color`, per-body `bodies:`), validated on load
+  as WingDesigner does; a boolean that cannot be rebuilt is left out with
+  a message. No seam fillet (removed from WingDesigner's UI 2026-09-29).
+  View -> Show Intermediate Features stays disabled: the fold's steps are
+  not materialised here.
 * **Welcome screen** (Help -> Welcome Screen..., and at start-up unless
   ticked off; `-NoWelcome` or `-unattended` skips it): WingDesigner's
   splash card -- the artwork from `Resources/`, product identity and
@@ -278,17 +297,17 @@ The layout follows the Python/Qt version's main window (`aerotelic/ui/main_windo
   cover the 3D view's centre; a second, third and later dialog cascade down
   and to the right. Drag any of them wherever you like.
 * Not yet carried over from the Qt version: the custom frameless title bar,
-  boolean operations (the core has them; no UI yet), Export STEP/STL (the
-  OCCT STEP toolkits collide with the engine's own zlib/png/tiff DLLs --
-  see `AerotelicUE.Build.cs`), the colour theme, and the wing Control
-  Surfaces tab (the C++ core has no control-surface model yet; the tab is
-  a placeholder note). A section plane cuts without capping (see above),
-  and the engine cannot rasterise SVG reference images.
+  Show Intermediate Features, Export STEP/STL (the OCCT STEP toolkits
+  collide with the engine's own zlib/png/tiff DLLs -- see
+  `AerotelicUE.Build.cs`), the colour theme, and the wing Control Surfaces
+  tab (the C++ core has no control-surface model yet; the tab is a
+  placeholder note). A section plane cuts without capping (see above), and
+  the engine cannot rasterise SVG reference images.
 * Legacy project files: WingDesigner's older format keys entities by `id`
   with a display `label` (`Projects/cessna_172.yaml`); the label becomes
   the name and the raw `features` graph is ignored (the mirror nodes it
-  holds are covered by the entity's own `mirror` flag; booleans have no
-  UI here yet).
+  holds are covered by the entity's own `mirror` flag; its booleans are
+  not recovered -- only the current `booleans:` list is read).
 * Build gotchas: a TArray must not be appended with a reference to its own
   element (`Pts.Add(Pts[0])` reallocates under the reference); if a crash
   leaves `CrashReportClientEditor.exe` running it holds the module DLL and
