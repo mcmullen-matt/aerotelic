@@ -69,7 +69,12 @@ public static class Win32Mouse {
 
 switch ($Action) {
 	"move" {
+		# SetCursorPos alone does not reach the app as a mouse-move (hover
+		# never fires); a real input event does, as path/drag send.
 		[void][Win32Mouse]::SetCursorPos($X, $Y)
+		[Win32Mouse]::mouse_event([Win32Mouse]::MOVE, 0, 0, 0, [UIntPtr]::Zero)
+		Start-Sleep -Milliseconds 30
+		[Win32Mouse]::mouse_event([Win32Mouse]::MOVE, 1, 0, 0, [UIntPtr]::Zero)
 		Write-Output "moved to ($X,$Y)"
 	}
 	# down / path / up let a caller hold a drag open (e.g. to screenshot the

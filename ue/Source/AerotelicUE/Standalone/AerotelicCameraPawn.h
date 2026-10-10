@@ -53,6 +53,15 @@ public:
 	// false when nothing is selected.
 	static bool RebuildSelectedEntity();
 
+	// The camera's world-space axes, for overlays that track the view (the
+	// navigation cube).
+	void GetViewBasis(FVector& OutForward, FVector& OutRight, FVector& OutUp) const;
+	// Swings the view to look along NewForward over 0.35 s with an ease
+	// (view_gizmo.py NavigationCube start_snap/step), keeping the focus
+	// point and distance. Up is world +Z, or +X when looking straight
+	// up or down, as the presets have it.
+	void AnimateToForward(const FVector& NewForward);
+
 private:
 	UPROPERTY(VisibleAnywhere, Category = "Aerotelic")
 	TObjectPtr<UCameraComponent> Camera;
@@ -72,6 +81,12 @@ private:
 	bool bDraggingSection = false;
 	FVector2D LastMouse = FVector2D::ZeroVector;
 	double DragTravel = 0.0;
+
+	// Nav-cube swing in progress (AnimateToForward).
+	bool bAnimating = false;
+	double AnimStartSeconds = 0.0;
+	FVector AnimFrom = FVector::ForwardVector;
+	FVector AnimTo = FVector::ForwardVector;
 
 	// Set when the scene goes from empty to non-empty (first Add, or Open
 	// Project); consumed on the next tick, once the new meshes' bounds exist.

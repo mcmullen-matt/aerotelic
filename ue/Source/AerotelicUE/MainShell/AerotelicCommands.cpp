@@ -33,7 +33,7 @@ void FAerotelicCommands::RegisterCommands()
 	UI_COMMAND(ViewFront, "Front", "Look at the scene from the front", EUserInterfaceActionType::Button, FInputChord());
 	UI_COMMAND(ViewSide, "Side", "Look at the scene from the side", EUserInterfaceActionType::Button, FInputChord());
 	UI_COMMAND(GroundGrid, "Ground Grid", "Show or hide the ground lattice, sized to the model", EUserInterfaceActionType::ToggleButton, FInputChord(EModifierKey::Control, EKeys::G));
-	UI_COMMAND(NavigationCube, "Navigation Cube", "Orientation widget in the top-right corner of the view. Not available yet in this version.", EUserInterfaceActionType::ToggleButton, FInputChord());
+	UI_COMMAND(NavigationCube, "Navigation Cube", "Orientation widget in the top-right corner of the view: click a face, edge or corner to look from there", EUserInterfaceActionType::ToggleButton, FInputChord());
 	UI_COMMAND(ShowIntermediateFeatures, "Show Intermediate Features", "List the individual steps that make up each authored operation. Not available yet in this version.", EUserInterfaceActionType::ToggleButton, FInputChord());
 	UI_COMMAND(SurfaceStyle, "Surface...", "Metallic, glossiness and blur of every rendered surface", EUserInterfaceActionType::Button, FInputChord());
 	UI_COMMAND(Rebuild, "Rebuild Wing", "Rebuild the selected entity's geometry", EUserInterfaceActionType::Button, FInputChord(EKeys::F5));

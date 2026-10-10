@@ -32,6 +32,8 @@
 #include "Standalone/AerotelicGridGround.h"
 #include "Widgets/AerotelicDialogWindow.h"
 #include "Widgets/InputSink.h"
+#include "Widgets/NavCube.h"
+#include "Widgets/SOverlay.h"
 
 #define LOCTEXT_NAMESPACE "AerotelicMainShell"
 
@@ -202,8 +204,20 @@ void SAerotelicMainShell::Construct(const FArguments& InArgs)
 
 			+ SHorizontalBox::Slot().FillWidth(1.0f)
 			[
-				SAssignNew(ViewHole, SSpacer)
-				.Visibility(EVisibility::HitTestInvisible)
+				// The 3D view: the hole the viewport shows through, with the
+				// navigation cube laid over its top-right corner.
+				SNew(SOverlay)
+				.Visibility(EVisibility::SelfHitTestInvisible)
+				+ SOverlay::Slot()
+				[
+					SAssignNew(ViewHole, SSpacer)
+					.Visibility(EVisibility::HitTestInvisible)
+				]
+				+ SOverlay::Slot().HAlign(HAlign_Right).VAlign(VAlign_Top).Padding(FMargin(0, 10, 10, 0))
+				[
+					SNew(SAerotelicNavCube)
+					.Visibility_Lambda([this]() { return bNavCubeVisible ? EVisibility::Visible : EVisibility::Collapsed; })
+				]
 			]
 
 			+ SHorizontalBox::Slot().AutoWidth()
@@ -326,7 +340,10 @@ void SAerotelicMainShell::BindCommands()
 		FExecuteAction::CreateLambda([]() { if (AAerotelicGridGround* G = FindGround()) G->SetActorHiddenInGame(!G->IsHidden()); }),
 		FCanExecuteAction::CreateLambda([]() { return FindGround() != nullptr; }),
 		FIsActionChecked::CreateLambda([]() { AAerotelicGridGround* G = FindGround(); return G != nullptr && !G->IsHidden(); }));
-	Commands->MapAction(C.NavigationCube, FExecuteAction(), Never(), FIsActionChecked::CreateLambda([]() { return false; }));
+	Commands->MapAction(C.NavigationCube,
+		FExecuteAction::CreateLambda([this]() { bNavCubeVisible = !bNavCubeVisible; }),
+		FCanExecuteAction(),
+		FIsActionChecked::CreateLambda([this]() { return bNavCubeVisible; }));
 	Commands->MapAction(C.ShowIntermediateFeatures, FExecuteAction(), Never(), FIsActionChecked::CreateLambda([]() { return false; }));
 	Commands->MapAction(C.SurfaceStyle, FExecuteAction::CreateLambda([]() { OpenAerotelicSurfaceDialog(); }));
 	Commands->MapAction(C.Rebuild, FExecuteAction::CreateSP(this, &SAerotelicMainShell::OnRebuild));

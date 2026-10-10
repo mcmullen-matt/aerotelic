@@ -58,6 +58,8 @@ private:
 	FText StatusText;
 	// The dock column's width, dragged with the handle on its left edge.
 	float DockColumnWidth = 400.0f;
+	// View -> Navigation Cube.
+	bool bNavCubeVisible = true;
 	FDelegateHandle KeyListenerHandle;
 
 	// Construction.

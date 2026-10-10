@@ -194,6 +194,28 @@ void AAerotelicCameraPawn::SetPresetView(EAerotelicViewPreset Preset)
 	FrameAll();
 }
 
+void AAerotelicCameraPawn::GetViewBasis(FVector& OutForward, FVector& OutRight, FVector& OutUp) const
+{
+	const FRotationMatrix Frame(FRotator(Pitch, Yaw, 0.0));
+	OutForward = Frame.GetUnitAxis(EAxis::X);
+	OutRight = Frame.GetUnitAxis(EAxis::Y);
+	OutUp = Frame.GetUnitAxis(EAxis::Z);
+}
+
+void AAerotelicCameraPawn::AnimateToForward(const FVector& NewForward)
+{
+	const FVector Target = NewForward.GetSafeNormal();
+	if (Target.IsNearlyZero())
+	{
+		return;
+	}
+	AnimFrom = FRotator(Pitch, Yaw, 0.0).Vector();
+	AnimTo = Target;
+	AnimStartSeconds = FPlatformTime::Seconds();
+	bAnimating = true;
+	UE_LOG(LogAerotelicCamera, Log, TEXT("camera: nav cube -> forward %s"), *Target.ToString());
+}
+
 bool AAerotelicCameraPawn::RebuildSelectedEntity()
 {
 	UAerotelicDocumentSubsystem* Doc = UAerotelicDocumentSubsystem::Get();
@@ -297,6 +319,37 @@ void AAerotelicCameraPawn::Tick(float DeltaSeconds)
 	{
 		bPendingFrameAll = false;
 		FrameAll();
+	}
+
+	if (bAnimating)
+	{
+		// Great-circle swing from the old forward to the new one, eased
+		// with a smoothstep over 0.35 s of wall-clock time.
+		constexpr double kDuration = 0.35;
+		const double T = FMath::Clamp((FPlatformTime::Seconds() - AnimStartSeconds) / kDuration, 0.0, 1.0);
+		const double E = T * T * (3.0 - 2.0 * T);
+		const double Cos = FMath::Clamp(FVector::DotProduct(AnimFrom, AnimTo), -1.0, 1.0);
+		const double AngleDeg = FMath::RadiansToDegrees(FMath::Acos(Cos));
+		FVector Axis = FVector::CrossProduct(AnimFrom, AnimTo);
+		if (Axis.IsNearlyZero())
+		{
+			// Parallel or opposite: swing about world up (or X at the poles).
+			Axis = FMath::Abs(AnimFrom.Z) < 0.9 ? FVector::UpVector : FVector::ForwardVector;
+			Axis = FVector::CrossProduct(AnimFrom, Axis).GetSafeNormal();
+		}
+		else
+		{
+			Axis.Normalize();
+		}
+		const FVector F = (T >= 1.0) ? AnimTo : AnimFrom.RotateAngleAxis(AngleDeg * E, Axis).GetSafeNormal();
+		const FRotator R = F.Rotation();
+		Yaw = R.Yaw;
+		Pitch = FMath::Clamp(R.Pitch, -89.9, 89.9);
+		UpdateCameraTransform();
+		if (T >= 1.0)
+		{
+			bAnimating = false;
+		}
 	}
 
 	APlayerController* PC = Cast<APlayerController>(GetController());
