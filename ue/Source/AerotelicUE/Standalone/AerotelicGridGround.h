@@ -38,9 +38,11 @@ public:
 
 	virtual void OnConstruction(const FTransform& Transform) override;
 
-	// Resizes the grid so it comfortably contains Content, keeping the cell
-	// size to a round 1/2/5 x 10^k and the lines in proportion. An empty or
-	// tiny box leaves the defaults. Call after the scene changes.
+	// Resizes the grid to run from -L to +L in X and Y, symmetric about the
+	// origin, with L = 1.2 x the content's largest |X| or |Y|; the cell
+	// size is L over a whole number of cells so the lines fall exactly on 0
+	// and +/-L. An empty scene keeps a 20 x 20 unit grid. Call after the
+	// scene changes.
 	void FitToContent(const FBox& Content);
 
 	// Top of the lattice, for anything that wants to sit on the ground.

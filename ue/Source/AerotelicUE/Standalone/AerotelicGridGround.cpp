@@ -58,32 +58,34 @@ void AAerotelicGridGround::OnConstruction(const FTransform& Transform)
 
 void AAerotelicGridGround::FitToContent(const FBox& Content)
 {
-	// Fit the footprint, not the height: the grid is a floor.
-	double Extent = 0.0;
+	// The grid is symmetric about the origin and square: it runs from -L to
+	// +L in both X and Y, with L = 1.2 x the content's largest |X| or |Y|
+	// (its height plays no part in a floor's limits). An empty scene keeps
+	// a 20 x 20 unit grid so the app does not open onto a degenerate floor.
+	double Limit = 10.0;
 	if (Content.IsValid)
 	{
-		const FVector Size = Content.GetSize();
-		Extent = 2.0 * FMath::Max3(
+		const double MaxExtent = FMath::Max(
 			FMath::Max(FMath::Abs(Content.Min.X), FMath::Abs(Content.Max.X)),
-			FMath::Max(FMath::Abs(Content.Min.Y), FMath::Abs(Content.Max.Y)),
-			0.5 * FMath::Max(Size.X, Size.Y));
+			FMath::Max(FMath::Abs(Content.Min.Y), FMath::Abs(Content.Max.Y)));
+		Limit = FMath::Max(1.2 * MaxExtent, 0.5);
 	}
-	// A near-empty scene keeps the default 20 x 20 unit grid, so the app
-	// does not open onto a degenerate floor.
-	Extent = FMath::Max(Extent, 20.0);
 
-	// Round the cell up to 1, 2 or 5 times a power of ten, so the lines
-	// land on readable intervals rather than an arbitrary fraction.
-	const double Raw = Extent / kTargetCells;
+	// The limit is exact, so the cell size is L divided by a whole number
+	// of cells per half: lines always fall on 0 and on +/-L. The count per
+	// half comes from a 1/2/5 x 10^k step near L / (cells / 2), so the
+	// spacing stays close to a round number.
+	const double Raw = Limit / (0.5 * kTargetCells);
 	const double Mag = FMath::Pow(10.0, FMath::FloorToDouble(FMath::LogX(10.0, FMath::Max(Raw, 1e-9))));
 	double Step = 10.0 * Mag;
 	for (double Mantissa : { 1.0, 2.0, 5.0 })
 	{
 		if (Mantissa * Mag >= Raw * (1.0 - 1e-9)) { Step = Mantissa * Mag; break; }
 	}
+	const int32 CellsPerHalf = FMath::Clamp(FMath::CeilToInt(Limit / Step), 2, 100);
 
-	CellSize = (float)Step;
-	CellsX = FMath::Clamp(FMath::CeilToInt(Extent / Step), 4, 200);
+	CellSize = (float)(Limit / CellsPerHalf);
+	CellsX = 2 * CellsPerHalf;
 	CellsY = CellsX;
 	// Lines keep the reference project's proportions: 3% and 2% of a cell.
 	LineWidth = CellSize * 0.03f;
