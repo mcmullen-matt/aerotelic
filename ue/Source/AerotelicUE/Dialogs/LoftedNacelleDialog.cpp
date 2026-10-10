@@ -4,6 +4,8 @@
 #include "Widgets/NumericEntry.h"
 #include "Widgets/CurveEditor.h"
 #include "Widgets/CurveTabControls.h"
+#include "Widgets/ReferenceImageBar.h"
+#include "Widgets/ReferenceImageMath.h"
 #include "Widgets/PromptDialogs.h"
 
 #include "Widgets/Layout/SBorder.h"
@@ -100,6 +102,23 @@ namespace
 				.OnChanged(FSimpleDelegate::CreateSP(this, &SGuideCurvesTab::NotifyChanged));
 			Editor->SetOutlineProvider(FOnGetOutlinePaths::CreateSP(this, &SGuideCurvesTab::ContextOutlines));
 
+			// The front-view underlay: centred on the axis, three radii wide.
+			LoftedNacelleModel* M = Model;
+			TSharedRef<SWidget> ImageBar = SNew(SReferenceImageBar).Editor(Editor).Images(&Model->reference_images)
+				.Key(TEXT("section")).ViewLabel(LOCTEXT("FrontView", "front view")).Units(FText::FromString(TEXT("y/L")))
+				.Placement(SReferenceImageBar::FPlaceReferenceImage::CreateLambda([M](aerotelic::ReferenceImageSpec& S, FIntPoint Size)
+				{
+					double R = 0.0;
+					for (const GuideSection& Sec : M->sections())
+					{
+						const Mat Poles = Sec.curve->poles();
+						for (int i = 0; i < Poles.rows(); ++i) R = FMath::Max(R, FMath::Max(FMath::Abs(Poles(i, 0)), FMath::Abs(Poles(i, 1))));
+					}
+					R /= FMath::Max(M->length, 1e-9);
+					const double W = 3.0 * FMath::Max(R, 1e-3);
+					ReferenceImageMath::FitWidth(S, Size, W, 0.0, -0.5 * W);
+				}));
+
 			ChildSlot
 			[
 				SNew(SVerticalBox)
@@ -108,6 +127,8 @@ namespace
 				[ MakeGroup(LOCTEXT("GuidesGroup", "Guide curves"), SAssignNew(GuidesRow, SHorizontalBox)) ]
 				+ SVerticalBox::Slot().AutoHeight().Padding(4, 2)
 				[ SAssignNew(ControlsHost, SBox) ]
+				+ SVerticalBox::Slot().AutoHeight().Padding(4, 2)
+				[ ImageBar ]
 			];
 			Rebuild();
 		}
@@ -577,12 +598,17 @@ void BuildLoftedNacelleDesignContent(AAerotelicEntityActor* Entity, FAerotelicDe
 	GuideTab = SNew(SGuideCurvesTab, Model).OnChanged(OnCurveChanged).LengthField(LengthField());
 	*GuideTabRef = GuideTab;
 
-	auto CurveTab = [&](TSharedRef<SCurveEditor> Editor, TArray<TSharedRef<SWidget>> Leading, TArray<TSharedRef<SWidget>> Trailing)
+	auto CurveTab = [&](TSharedRef<SCurveEditor> Editor, TArray<TSharedRef<SWidget>> Leading, TArray<TSharedRef<SWidget>> Trailing, TSharedPtr<SWidget> Extra = nullptr)
 	{
 		Leading.Insert(LengthField(), 0);
 		return SNew(SVerticalBox)
 			+ SVerticalBox::Slot().FillHeight(1.0f) [ Editor ]
-			+ SVerticalBox::Slot().AutoHeight().Padding(4, 2) [ MakeControlsRow(Leading, Trailing) ];
+			+ SVerticalBox::Slot().AutoHeight().Padding(4, 2) [ MakeControlsRow(Leading, Trailing) ]
+			+ SVerticalBox::Slot().AutoHeight().Padding(4, 2) [ Extra.IsValid() ? Extra.ToSharedRef() : SNullWidget::NullWidget ];
+	};
+	auto ImageBar = [Model](TSharedRef<SCurveEditor> Editor, const TCHAR* Key)
+	{
+		return SNew(SReferenceImageBar).Editor(Editor).Images(&Model->reference_images).Key(Key).ViewLabel(LOCTEXT("SideView", "side view"));
 	};
 
 	TSharedRef<SWidget> CentrelineTab = CurveTab(CentrelineEditor,
@@ -605,7 +631,8 @@ void BuildLoftedNacelleDesignContent(AAerotelicEntityActor* Entity, FAerotelicDe
 					OnCurveChanged.ExecuteIfBound();
 					return FReply::Handled();
 				})),
-		});
+		},
+		ImageBar(CentrelineEditor, TEXT("centreline")));
 
 	TSharedRef<SWidget> SkinsTab = CurveTab(SkinsEditor,
 		{
@@ -633,7 +660,8 @@ void BuildLoftedNacelleDesignContent(AAerotelicEntityActor* Entity, FAerotelicDe
 					OnCurveChanged.ExecuteIfBound();
 					return FReply::Handled();
 				})),
-		});
+		},
+		ImageBar(SkinsEditor, TEXT("skins")));
 
 	// ---- Chevrons ----
 	TSharedRef<SWidget> ChevronsTab = SNew(SScrollBox)

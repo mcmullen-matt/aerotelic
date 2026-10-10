@@ -15,6 +15,7 @@
 
 #include "aerotelic/mat.hpp"
 #include "aerotelic/nurbs.hpp"
+#include "aerotelic/reference_image.hpp"
 #include "aerotelic/solid_model.hpp"
 
 namespace aerotelic {
@@ -43,6 +44,7 @@ struct NacelleSpec {
 	// "not given" from "given as the default value".
 	std::optional<double> chevron_depth;
 	std::optional<double> chevron_angle; // legacy, converted on load
+	ReferenceImageMap reference_images; // "side", "front"
 };
 
 struct NacelleMetrics {
@@ -57,6 +59,7 @@ public:
 	double length;
 	int chevron_count;
 	double chevron_depth;
+	ReferenceImageMap reference_images;
 
 	const NurbsCurve& upper_curve() const { return *upper_curve_; }
 	const NurbsCurve& lower_curve() const { return *lower_curve_; }

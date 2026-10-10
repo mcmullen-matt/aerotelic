@@ -18,6 +18,7 @@
 
 #include "aerotelic/airfoil.hpp"
 #include "aerotelic/nurbs.hpp"
+#include "aerotelic/reference_image.hpp"
 #include "aerotelic/solid_model.hpp"
 #include "aerotelic/wing_model.hpp"
 
@@ -38,6 +39,7 @@ struct PropellerSpec {
 	double spinner_length = 0.40;
 	NurbsSpec spinner_curve;
 	std::optional<WingModelSpec> blade; // absent => MakeDefaultBlade(radius)
+	ReferenceImageMap reference_images; // "spinner"
 };
 
 struct PropellerMetrics {
@@ -65,6 +67,7 @@ public:
 	double blade_x;
 	double hub_radius;
 	double spinner_length;
+	ReferenceImageMap reference_images;
 
 	const NurbsCurve& spinner_curve() const { return *spinner_curve_; }
 	NurbsCurve& spinner_curve_mut() { return *spinner_curve_; }

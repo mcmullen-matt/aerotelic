@@ -4,6 +4,7 @@
 #include "Widgets/NumericEntry.h"
 #include "Widgets/CurveEditor.h"
 #include "Widgets/CurveTabControls.h"
+#include "Widgets/ReferenceImageBar.h"
 
 #include "Widgets/SLeafWidget.h"
 #include "Widgets/Layout/SBorder.h"
@@ -309,12 +310,18 @@ void BuildFuselageDesignContent(AAerotelicEntityActor* Entity, FAerotelicDesignC
 	};
 	const FuselageSpec Defaults;
 
-	auto CurveTab = [&](TSharedRef<SCurveEditor> Editor, TArray<TSharedRef<SWidget>> Leading, TArray<TSharedRef<SWidget>> Trailing)
+	// Extra: the Reference image bar, on the two side/top-view editors.
+	auto CurveTab = [&](TSharedRef<SCurveEditor> Editor, TArray<TSharedRef<SWidget>> Leading, TArray<TSharedRef<SWidget>> Trailing, TSharedPtr<SWidget> Extra = nullptr)
 	{
 		Leading.Insert(LengthField(), 0);
 		return SNew(SVerticalBox)
 			+ SVerticalBox::Slot().FillHeight(1.0f) [ Editor ]
-			+ SVerticalBox::Slot().AutoHeight().Padding(4, 2) [ MakeControlsRow(Leading, Trailing) ];
+			+ SVerticalBox::Slot().AutoHeight().Padding(4, 2) [ MakeControlsRow(Leading, Trailing) ]
+			+ SVerticalBox::Slot().AutoHeight().Padding(4, 2) [ Extra.IsValid() ? Extra.ToSharedRef() : SNullWidget::NullWidget ];
+	};
+	auto ImageBar = [Model](TSharedRef<SCurveEditor> Editor, const TCHAR* Key, const FText& View)
+	{
+		return SNew(SReferenceImageBar).Editor(Editor).Images(&Model->reference_images).Key(Key).ViewLabel(View);
 	};
 
 	TSharedRef<SWidget> ProfileTab = CurveTab(ProfileEditor,
@@ -326,14 +333,16 @@ void BuildFuselageDesignContent(AAerotelicEntityActor* Entity, FAerotelicDesignC
 			ResetKnotsButton({ &Model->z_upper_curve_mut(), &Model->z_lower_curve_mut() }, ProfileEditor,
 				LOCTEXT("ResetKnotsBothTip", "Put both curves' knots back at their default spacing (poles unchanged)")),
 			ResetDefaultButton({ { &Model->z_upper_curve_mut(), Defaults.z_upper_curve }, { &Model->z_lower_curve_mut(), Defaults.z_lower_curve } }, ProfileEditor),
-		});
+		},
+		ImageBar(ProfileEditor, TEXT("profile"), LOCTEXT("SideView", "side view")));
 
 	TSharedRef<SWidget> WidthTab = CurveTab(WidthEditor,
 		{ MakeDegreeSpin(LOCTEXT("NurbsDegree", "NURBS Degree:"), [Model]() { return &Model->y_half_curve_mut(); }, WidthEditor, OnChanged) },
 		{
 			ResetKnotsButton({ &Model->y_half_curve_mut() }, WidthEditor, LOCTEXT("ResetKnotsTip", "Put the knots back at their default spacing (poles unchanged)")),
 			ResetDefaultButton({ { &Model->y_half_curve_mut(), Defaults.y_half_curve } }, WidthEditor),
-		});
+		},
+		ImageBar(WidthEditor, TEXT("width"), LOCTEXT("TopView", "top view")));
 
 	TSharedRef<SWidget> RhoUpperTab = CurveTab(RhoUpperEditor,
 		{ MakeDegreeSpin(LOCTEXT("NurbsDegree", "NURBS Degree:"), [Model]() { return &Model->rho_upper_curve_mut(); }, RhoUpperEditor, OnChanged) },

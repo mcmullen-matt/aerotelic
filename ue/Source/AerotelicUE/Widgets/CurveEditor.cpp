@@ -1,5 +1,10 @@
 #include "CurveEditor.h"
 #include "PromptDialogs.h"
+#include "ReferenceImageMath.h"
+
+#include "Engine/Texture2D.h"
+#include "ImageUtils.h"
+#include "Misc/Paths.h"
 
 #include "Widgets/Layout/SSplitter.h"
 #include "Widgets/Layout/SBox.h"
@@ -450,6 +455,14 @@ public:
 			return FReply::Unhandled();
 		}
 		const FVector2D Local = ToPlotLocal(InMyGeometry, InMouseEvent.GetScreenSpacePosition());
+		// Double-clicking the rotation knob levels the image; over its body
+		// a double-click still adds a pole.
+		if (Owner->IsReferenceSelected() && Owner->ReferenceHitAt(Local, LastDrawnBox, LastPaneSizePx).Kind == SCurveEditor::ERefHit::Rotate)
+		{
+			Owner->ReleaseReference();
+			Owner->LevelReferenceImage();
+			return FReply::Handled();
+		}
 		if (Owner->PoleAt(Local, LastDrawnBox, LastPaneSizePx).IsSet())
 		{
 			return FReply::Handled(); // a pole under the cursor: the first click already selected/dragged it
@@ -465,6 +478,12 @@ public:
 		if (Role == ERole::Curve && Owner->IsDraggingPole())
 		{
 			Owner->DragPoleTo(Local, LastDrawnBox, LastPaneSizePx);
+			Invalidate(EInvalidateWidget::Paint);
+			return FReply::Handled();
+		}
+		if (Role == ERole::Curve && Owner->IsDraggingReference())
+		{
+			Owner->DragReferenceTo(Local, LastDrawnBox, LastPaneSizePx);
 			Invalidate(EInvalidateWidget::Paint);
 			return FReply::Handled();
 		}
@@ -486,6 +505,12 @@ public:
 		if (Role == ERole::Curve && Owner->IsDraggingPole())
 		{
 			Owner->ReleasePole();
+			return FReply::Handled();
+		}
+		if (Role == ERole::Curve && Owner->IsDraggingReference())
+		{
+			Owner->ReleaseReference();
+			Invalidate(EInvalidateWidget::Paint);
 			return FReply::Handled();
 		}
 		if (Role == ERole::Basis && Owner->IsDraggingKnot(SlotIndex))
@@ -524,22 +549,47 @@ private:
 		return DataToLocalStatic(DataXY, LastDrawnBox, LastPaneSizePx) + PlotOrigin;
 	}
 
+	// Press priority, as nurbs_editor.py's _press_curve: a selected image's
+	// rotation/corner/edge handles, then poles (the curves stay editable
+	// over the picture), then the image's body, then empty space (which
+	// deselects everything).
 	FReply PressCurve(FVector2D Local)
 	{
+		if (Owner->IsReferenceSelected())
+		{
+			const SCurveEditor::FRefHitResult RefHit = Owner->ReferenceHitAt(Local, LastDrawnBox, LastPaneSizePx);
+			if (RefHit.Kind == SCurveEditor::ERefHit::Handle || RefHit.Kind == SCurveEditor::ERefHit::Rotate)
+			{
+				Owner->BeginReferenceDrag(RefHit, Local, LastDrawnBox, LastPaneSizePx);
+				Invalidate(EInvalidateWidget::Paint);
+				return FReply::Handled();
+			}
+		}
 		TOptional<FIntPoint> Hit = Owner->PoleAt(Local, LastDrawnBox, LastPaneSizePx);
 		if (Hit.IsSet())
 		{
+			Owner->DeselectReference(); // a pole is the target now
 			Owner->BeginDragPole(Hit.GetValue(), LastDrawnBox);
 			Invalidate(EInvalidateWidget::Paint);
 			return FReply::Handled();
 		}
+		const SCurveEditor::FRefHitResult BodyHit = Owner->ReferenceHitAt(Local, LastDrawnBox, LastPaneSizePx);
+		if (BodyHit.Kind == SCurveEditor::ERefHit::Body)
+		{
+			Owner->SelectReference();
+			Owner->BeginReferenceDrag(BodyHit, Local, LastDrawnBox, LastPaneSizePx);
+			Invalidate(EInvalidateWidget::Paint);
+			return FReply::Handled();
+		}
 		Owner->DeselectAll();
+		Owner->DeselectReference();
 		Invalidate(EInvalidateWidget::Paint);
 		return FReply::Handled();
 	}
 
 	FReply PressBasis(FVector2D Local)
 	{
+		Owner->DeselectReference(); // a press anywhere outside the curve pane deselects the image
 		TOptional<int32> KnotEditIndex = Owner->KnotAt(SlotIndex, Local, LastDrawnBox, LastPaneSizePx);
 		if (KnotEditIndex.IsSet())
 		{
@@ -563,9 +613,81 @@ private:
 		{
 			MenuBuilder.AddMenuEntry(NSLOCTEXT("CurveEditor", "FitView", "Fit view to contents"),
 				FText::GetEmpty(), FSlateIcon(), FUIAction(FExecuteAction::CreateSP(Owner, &SCurveEditor::FitView)));
+			if (Owner->IsReferenceRotatable())
+			{
+				MenuBuilder.AddMenuEntry(
+					FText::Format(NSLOCTEXT("CurveEditor", "LevelImage", "Level reference image ({0} → 0°)"),
+						FText::FromString(FString::Printf(TEXT("%+.1f°"), Owner->GetReferenceImageSpec()->angle))),
+					FText::GetEmpty(), FSlateIcon(), FUIAction(FExecuteAction::CreateSP(Owner, &SCurveEditor::LevelReferenceImage)));
+			}
 		}
 		FSlateApplication::Get().PushMenu(AsShared(), FWidgetPath(), MenuBuilder.MakeWidget(),
 			ScreenPos, FPopupTransitionEffect(FPopupTransitionEffect::ContextMenu));
+	}
+
+	// ---- reference image ----
+
+	// The picture itself, under everything: the visible (cropped) rectangle
+	// of the source mapped into plot pixels, turned about the source's
+	// centre with a render transform (a rigid rotation on an equal-aspect
+	// editor), tinted to its opacity.
+	void PaintReferenceImage(const FGeometry& Geo, FSlateWindowElementList& Out, int32 Layer) const
+	{
+		if (!Owner->ReferenceDrawable()) return;
+		const aerotelic::ReferenceImageSpec& S = *Owner->RefSpec;
+		const FIntPoint Size = Owner->RefSize;
+		const ReferenceImageMath::FExtent E = ReferenceImageMath::Extent(S, Size);
+		const FVector2D TL = DataToLocal(FVector2D(E.Left, E.Top));
+		const FVector2D BR = DataToLocal(FVector2D(E.Right, E.Bottom));
+		const FVector2D Px(FMath::Max(BR.X - TL.X, 1.0), FMath::Max(BR.Y - TL.Y, 1.0));
+		const FVector2D PivotPx = DataToLocal(ReferenceImageMath::Centre(S, Size)) - TL;
+		// Data angle is counter-clockwise with y up; on screen (y down) that
+		// is a negative Slate angle.
+		const FSlateRenderTransform Turn(FQuat2D(-FMath::DegreesToRadians(S.angle)));
+		FSlateDrawElement::MakeBox(Out, Layer,
+			Geo.ToPaintGeometry(FVector2f(Px), FSlateLayoutTransform(FVector2f(TL)), Turn, FVector2f(PivotPx / Px)),
+			&Owner->RefBrush, ESlateDrawEffect::None, FLinearColor(1.0f, 1.0f, 1.0f, (float)S.opacity));
+	}
+
+	// The selection chrome, over the poles: dashed outline, eight square
+	// handles, the rotation stem and knob with the angle read-out.
+	void PaintReferenceOverlay(const FGeometry& Geo, FSlateWindowElementList& Out, int32 Layer) const
+	{
+		if (!Owner->ReferenceDrawable() || !Owner->IsReferenceSelected()) return;
+		const FLinearColor Orange(0.94f, 0.627f, 0.188f);
+		const aerotelic::ReferenceImageSpec& S = *Owner->RefSpec;
+		FVector2D Corners[4];
+		ReferenceImageMath::Corners(S, Owner->RefSize, Corners);
+		TArray<FVector2f> Outline;
+		for (int32 i = 0; i <= 4; ++i)
+		{
+			const FVector2D P = DataToLocal(Corners[i % 4]);
+			Outline.Add(FVector2f((float)P.X, (float)P.Y));
+		}
+		FSlateDrawElement::MakeLines(Out, Layer, Geo.ToPaintGeometry(), Outline, ESlateDrawEffect::None, Orange, true, 1.0f);
+
+		static const TCHAR* Names[] = { TEXT("bl"), TEXT("bm"), TEXT("br"), TEXT("ml"), TEXT("mr"), TEXT("tl"), TEXT("tm"), TEXT("tr") };
+		for (const TCHAR* Name : Names)
+		{
+			const FVector2D P = DataToLocal(Owner->ReferenceHandleWorld(Name));
+			FSlateDrawElement::MakeBox(Out, Layer + 1, Geo.ToPaintGeometry(FVector2f(8, 8), FSlateLayoutTransform(FVector2f(P - FVector2D(4, 4)))),
+				FAppStyle::Get().GetBrush("WhiteBrush"), ESlateDrawEffect::None, FLinearColor::White);
+			FSlateDrawElement::MakeBox(Out, Layer + 2, Geo.ToPaintGeometry(FVector2f(6, 6), FSlateLayoutTransform(FVector2f(P - FVector2D(3, 3)))),
+				FAppStyle::Get().GetBrush("WhiteBrush"), ESlateDrawEffect::None, Orange);
+		}
+		if (Owner->IsReferenceRotatable())
+		{
+			const FVector2D Tm = DataToLocal(Owner->ReferenceHandleWorld(TEXT("tm")));
+			const FVector2D Knob = Owner->ReferenceRotationKnotPx(LastDrawnBox, LastPaneSizePx) + PlotOrigin;
+			TArray<FVector2f> Stem = { FVector2f((float)Tm.X, (float)Tm.Y), FVector2f((float)Knob.X, (float)Knob.Y) };
+			FSlateDrawElement::MakeLines(Out, Layer, Geo.ToPaintGeometry(), Stem, ESlateDrawEffect::None, Orange, true, 1.0f);
+			FSlateDrawElement::MakeBox(Out, Layer + 1, Geo.ToPaintGeometry(FVector2f(9, 9), FSlateLayoutTransform(FVector2f(Knob - FVector2D(4.5, 4.5)))),
+				FAppStyle::Get().GetBrush("WhiteBrush"), ESlateDrawEffect::None, FLinearColor::White);
+			FSlateDrawElement::MakeBox(Out, Layer + 2, Geo.ToPaintGeometry(FVector2f(7, 7), FSlateLayoutTransform(FVector2f(Knob - FVector2D(3.5, 3.5)))),
+				FAppStyle::Get().GetBrush("WhiteBrush"), ESlateDrawEffect::None, Orange);
+			FSlateDrawElement::MakeText(Out, Layer + 2, Geo.ToOffsetPaintGeometry(Knob + FVector2D(7, -6)),
+				FText::FromString(FString::Printf(TEXT("%.1f°"), S.angle)), FCoreStyle::GetDefaultFontStyle("Regular", 7), ESlateDrawEffect::None, Orange);
+		}
 	}
 
 	void ShowBasisContextMenu(FVector2D Local, FVector2D ScreenPos)
@@ -598,6 +720,9 @@ private:
 	{
 		const FBox2D& Box = LastDrawnBox;
 		const double Sx = Owner->XScale, Sy = Owner->YScale;
+
+		// The reference image first, under everything (zorder 0).
+		PaintReferenceImage(Geo, OutDrawElements, LayerId);
 
 		// y = 0 axis.
 		DrawDataLine(Geo, OutDrawElements, LayerId, FVector2D(Box.Min.X, 0.0), FVector2D(Box.Max.X, 0.0), FLinearColor(0.27f, 0.27f, 0.27f), 0.8f);
@@ -684,6 +809,9 @@ private:
 					FAppStyle::Get().GetBrush("WhiteBrush"), ESlateDrawEffect::None, Fill);
 			}
 		}
+
+		// The image's selection chrome, over the poles.
+		PaintReferenceOverlay(Geo, OutDrawElements, LayerId + 3);
 	}
 
 	void PaintBasisPane(const FGeometry& Geo, FSlateWindowElementList& OutDrawElements, int32 LayerId) const
@@ -813,7 +941,232 @@ void SCurveEditor::SetSlots(TArray<FCurveEditorSlot> InSlots)
 {
 	Slots = MoveTemp(InSlots);
 	Selected.Reset();
+	bRefSelected = false;
 	RebuildPanes();
+}
+
+// ---- reference image ----
+
+void SCurveEditor::SetReferenceImage(aerotelic::ReferenceImageSpec* Spec, const FString& BaseDir)
+{
+	RefSpec = Spec;
+	RefTexture.Reset();
+	RefSize = FIntPoint::ZeroValue;
+	bRefSelected = false;
+	RefDrag = ERefDrag::None;
+	if (RefSpec != nullptr && !RefSpec->path.empty())
+	{
+		FString Path = UTF8_TO_TCHAR(RefSpec->path.c_str());
+		if (FPaths::IsRelative(Path) && !BaseDir.IsEmpty())
+		{
+			Path = FPaths::Combine(BaseDir, Path);
+		}
+		FPaths::NormalizeFilename(Path);
+		// A missing or unreadable file is tolerated: nothing draws, the
+		// placement survives -- projects outlive the paths they were saved
+		// with.
+		if (UTexture2D* Tex = FImageUtils::ImportFileAsTexture2D(Path))
+		{
+			RefTexture.Reset(Tex);
+			RefSize = FIntPoint(Tex->GetSizeX(), Tex->GetSizeY());
+		}
+	}
+	UpdateReferenceBrush();
+	RequestRedraw();
+}
+
+void SCurveEditor::UpdateReferenceBrush()
+{
+	if (!ReferenceDrawable())
+	{
+		RefBrush = FSlateBrush();
+		return;
+	}
+	const aerotelic::ReferenceImageSpec& S = *RefSpec;
+	RefBrush.SetResourceObject(RefTexture.Get());
+	RefBrush.ImageSize = FVector2f((float)RefSize.X, (float)RefSize.Y);
+	RefBrush.DrawAs = ESlateBrushDrawType::Image;
+	RefBrush.Tiling = ESlateBrushTileType::NoTile;
+	// Flips apply to the source before the crop, so the crop fractions
+	// refer to the picture as the user sees it: pick the texture region
+	// that a flip will bring into view, then let the brush mirror it.
+	const double L = S.flip_h ? 1.0 - S.crop[2] : S.crop[0];
+	const double R = S.flip_h ? 1.0 - S.crop[0] : S.crop[2];
+	const double T = S.flip_v ? 1.0 - S.crop[3] : S.crop[1];
+	const double B = S.flip_v ? 1.0 - S.crop[1] : S.crop[3];
+	RefBrush.SetUVRegion(FBox2f(FVector2f((float)L, (float)T), FVector2f((float)R, (float)B)));
+	RefBrush.Mirroring = S.flip_h && S.flip_v ? ESlateBrushMirrorType::Both
+		: S.flip_h ? ESlateBrushMirrorType::Horizontal
+		: S.flip_v ? ESlateBrushMirrorType::Vertical
+		: ESlateBrushMirrorType::NoMirror;
+}
+
+void SCurveEditor::ReferenceImageChanged()
+{
+	UpdateReferenceBrush();
+	RequestRedraw();
+	OnReferenceChanged.ExecuteIfBound();
+}
+
+void SCurveEditor::LevelReferenceImage()
+{
+	if (!IsReferenceRotatable()) return;
+	ReferenceImageMath::RotateTo(*RefSpec, RefSize, 0.0);
+	ReferenceImageChanged();
+}
+
+FVector2D SCurveEditor::ReferenceHandleWorld(const FString& Name) const
+{
+	// Fractions of the visible rectangle, (0, 0) bottom-left.
+	static const TMap<FString, FVector2D> Fractions = {
+		{ TEXT("bl"), FVector2D(0.0, 0.0) }, { TEXT("bm"), FVector2D(0.5, 0.0) }, { TEXT("br"), FVector2D(1.0, 0.0) },
+		{ TEXT("ml"), FVector2D(0.0, 0.5) }, { TEXT("mr"), FVector2D(1.0, 0.5) },
+		{ TEXT("tl"), FVector2D(0.0, 1.0) }, { TEXT("tm"), FVector2D(0.5, 1.0) }, { TEXT("tr"), FVector2D(1.0, 1.0) },
+	};
+	const FVector2D F = Fractions.FindRef(Name);
+	const ReferenceImageMath::FExtent E = ReferenceImageMath::Extent(*RefSpec, RefSize);
+	return ReferenceImageMath::ToWorld(*RefSpec, RefSize,
+		FVector2D(E.Left + F.X * (E.Right - E.Left), E.Bottom + F.Y * (E.Top - E.Bottom)));
+}
+
+FVector2D SCurveEditor::ReferenceRotationKnotPx(const FBox2D& Box, FVector2D SizePx) const
+{
+	// A knob on a 22 px stem off the top-middle handle, along the image's
+	// own "up"; folded inward when pointing outward would leave the plot.
+	const FVector2D Tm = DataToLocalStatic(ReferenceHandleWorld(TEXT("tm")), Box, SizePx);
+	const FVector2D Cc = DataToLocalStatic(ReferenceImageMath::CropCentre(*RefSpec, RefSize), Box, SizePx);
+	FVector2D Dir = (Tm - Cc).GetSafeNormal();
+	if (Dir.IsNearlyZero()) Dir = FVector2D(0, -1);
+	FVector2D Knob = Tm + 22.0 * Dir;
+	if (Knob.X < 0 || Knob.Y < 0 || Knob.X > SizePx.X || Knob.Y > SizePx.Y)
+	{
+		Knob = Tm - 22.0 * Dir;
+	}
+	return Knob;
+}
+
+SCurveEditor::FRefHitResult SCurveEditor::ReferenceHitAt(FVector2D Local, const FBox2D& Box, FVector2D SizePx) const
+{
+	FRefHitResult Out;
+	if (!ReferenceDrawable()) return Out;
+	const double HitPx = 9.0;
+	if (bRefSelected)
+	{
+		if (IsReferenceRotatable() && FVector2D::Distance(ReferenceRotationKnotPx(Box, SizePx), Local) <= HitPx)
+		{
+			Out.Kind = ERefHit::Rotate;
+			return Out;
+		}
+		static const TCHAR* Names[] = { TEXT("bl"), TEXT("bm"), TEXT("br"), TEXT("ml"), TEXT("mr"), TEXT("tl"), TEXT("tm"), TEXT("tr") };
+		for (const TCHAR* Name : Names)
+		{
+			if (FVector2D::Distance(DataToLocalStatic(ReferenceHandleWorld(Name), Box, SizePx), Local) <= HitPx)
+			{
+				Out.Kind = ERefHit::Handle;
+				Out.Handle = Name;
+				return Out;
+			}
+		}
+	}
+	// The body, tested in the image's own frame so a turned picture is hit
+	// on its real rectangle.
+	const FVector2D Data = LocalToDataStatic(Local, Box, SizePx);
+	const FVector2D L = ReferenceImageMath::ToLocal(*RefSpec, RefSize, Data);
+	const ReferenceImageMath::FExtent E = ReferenceImageMath::Extent(*RefSpec, RefSize);
+	if (L.X >= E.Left && L.X <= E.Right && L.Y >= E.Bottom && L.Y <= E.Top)
+	{
+		Out.Kind = ERefHit::Body;
+	}
+	return Out;
+}
+
+void SCurveEditor::BeginReferenceDrag(const FRefHitResult& Hit, FVector2D Local, const FBox2D& Box, FVector2D SizePx)
+{
+	if (!ReferenceDrawable()) return;
+	const FVector2D Data = LocalToDataStatic(Local, Box, SizePx);
+	LimLock = Box; // the view stays still for the gesture
+	if (Hit.Kind == ERefHit::Body)
+	{
+		RefDrag = ERefDrag::Move;
+		RefDragLastData = Data;
+	}
+	else if (Hit.Kind == ERefHit::Rotate)
+	{
+		RefDrag = ERefDrag::Rotate;
+		RefPivot = ReferenceImageMath::CropCentre(*RefSpec, RefSize);
+		const FVector2D PivotPx = DataToLocalStatic(RefPivot, Box, SizePx);
+		RefBearing0 = FMath::RadiansToDegrees(FMath::Atan2(-(Local.Y - PivotPx.Y), Local.X - PivotPx.X));
+		RefAngle0 = RefSpec->angle;
+	}
+	else if (Hit.Kind == ERefHit::Handle)
+	{
+		static const TMap<FString, FString> EdgeSide = {
+			{ TEXT("tm"), TEXT("top") }, { TEXT("bm"), TEXT("bottom") }, { TEXT("ml"), TEXT("left") }, { TEXT("mr"), TEXT("right") } };
+		static const TMap<FString, FString> Opposite = {
+			{ TEXT("bl"), TEXT("tr") }, { TEXT("tr"), TEXT("bl") }, { TEXT("br"), TEXT("tl") }, { TEXT("tl"), TEXT("br") } };
+		if (const FString* Side = EdgeSide.Find(Hit.Handle))
+		{
+			RefDrag = ERefDrag::Crop;
+			RefDragSide = *Side;
+		}
+		else if (const FString* Opp = Opposite.Find(Hit.Handle))
+		{
+			// Scale about the opposite corner, aspect fixed, along the
+			// original diagonal.
+			RefDrag = ERefDrag::Scale;
+			RefAnchor = ReferenceHandleWorld(*Opp);
+			RefDiag = ReferenceHandleWorld(Hit.Handle) - RefAnchor;
+			RefScale0 = RefSpec->scale;
+		}
+	}
+}
+
+void SCurveEditor::DragReferenceTo(FVector2D Local, const FBox2D& Box, FVector2D SizePx)
+{
+	if (!ReferenceDrawable() || RefDrag == ERefDrag::None) return;
+	const FVector2D Data = LocalToDataStatic(Local, Box, SizePx);
+	switch (RefDrag)
+	{
+	case ERefDrag::Move:
+		ReferenceImageMath::Translate(*RefSpec, Data - RefDragLastData);
+		RefDragLastData = Data;
+		break;
+	case ERefDrag::Crop:
+		ReferenceImageMath::SetCropEdgeAt(*RefSpec, RefSize, RefDragSide, Data);
+		UpdateReferenceBrush();
+		break;
+	case ERefDrag::Scale:
+	{
+		const FVector2D V = Data - RefAnchor;
+		const double K = FMath::Max((V.X * RefDiag.X + V.Y * RefDiag.Y) / FMath::Max(RefDiag.SizeSquared(), 1e-18), 0.05);
+		ReferenceImageMath::ScaleAbout(*RefSpec, RefSize, RefScale0 * K / FMath::Max(RefSpec->scale, 1e-18), RefAnchor);
+		break;
+	}
+	case ERefDrag::Rotate:
+	{
+		const FVector2D PivotPx = DataToLocalStatic(RefPivot, Box, SizePx);
+		const FVector2D D = Local - PivotPx;
+		if (D.Size() < 5.0) return; // too close to the pivot to read a bearing
+		const double Bearing = FMath::RadiansToDegrees(FMath::Atan2(-D.Y, D.X));
+		double Angle = RefAngle0 + (Bearing - RefBearing0);
+		// Snap onto multiples of 15 degrees within 0.75.
+		const double Nearest = FMath::RoundToDouble(Angle / 15.0) * 15.0;
+		if (FMath::Abs(Angle - Nearest) <= 0.75) Angle = Nearest;
+		ReferenceImageMath::RotateTo(*RefSpec, RefSize, Angle, RefPivot);
+		break;
+	}
+	default:
+		break;
+	}
+}
+
+void SCurveEditor::ReleaseReference()
+{
+	if (RefDrag == ERefDrag::None) return;
+	RefDrag = ERefDrag::None;
+	LimLock.Reset();
+	// Never the geometry OnChanged: an image edit rebuilds no solid.
+	OnReferenceChanged.ExecuteIfBound();
 }
 
 void SCurveEditor::SetScales(double NewXScale, double NewYScale)

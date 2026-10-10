@@ -43,7 +43,10 @@ public:
 	// "replace the scene?" confirmation.
 	bool NewProject();
 	bool OpenProjectWithDialog();
-	bool OpenProjectPath(const FString& Path);
+	// bAdopt = false (a tutorial project): the scene is loaded but the file
+	// is not adopted as the current one, so the first Save asks for a
+	// location rather than overwriting the shipped file.
+	bool OpenProjectPath(const FString& Path, bool bAdopt = true);
 	bool SaveProject();
 	bool SaveProjectAsWithDialog();
 	// Saves without a file dialog -- what SaveProject()/SaveProjectAsWithDialog()

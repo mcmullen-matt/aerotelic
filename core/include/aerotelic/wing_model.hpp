@@ -26,6 +26,7 @@
 #include "aerotelic/airfoil.hpp"
 #include "aerotelic/mat.hpp"
 #include "aerotelic/nurbs.hpp"
+#include "aerotelic/reference_image.hpp"
 #include "aerotelic/solid_model.hpp"
 
 namespace aerotelic {
@@ -288,6 +289,7 @@ struct WingModelSpec {
 	std::string name = "Wing";
 	PlanformSpec planform;
 	std::vector<WingSectionSpec> sections;
+	ReferenceImageMap reference_images; // "planform", "dihedral"
 };
 
 class WingModel : public ISolidModel {
@@ -312,6 +314,9 @@ public:
 
 	std::string name;
 	double station_tol = kStationTol;
+	// Tracing underlays per editor (see reference_image.hpp); saved, never
+	// read by the geometry.
+	ReferenceImageMap reference_images;
 
 	Planform& planform() { return *planform_; }
 	const Planform& planform() const { return *planform_; }

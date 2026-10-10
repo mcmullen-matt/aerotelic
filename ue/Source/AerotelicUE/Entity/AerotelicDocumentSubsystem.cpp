@@ -1,9 +1,12 @@
 #include "AerotelicDocumentSubsystem.h"
 #include "AerotelicEntityActor.h"
 
+#include "ReferenceImagePaths.h"
+
 #include "Engine/Engine.h"
 #include "Engine/World.h"
 #include "Misc/MessageDialog.h"
+#include "Misc/Paths.h"
 #include "DesktopPlatformModule.h"
 #include "IDesktopPlatform.h"
 #include "Framework/Application/SlateApplication.h"
@@ -372,8 +375,13 @@ bool UAerotelicDocumentSubsystem::OpenProjectWithDialog()
 	return OpenProjectPath(Filenames[0]);
 }
 
-bool UAerotelicDocumentSubsystem::OpenProjectPath(const FString& Path)
+bool UAerotelicDocumentSubsystem::OpenProjectPath(const FString& InPath, bool bAdopt)
 {
+	// The native file dialogs hand back paths relative to the engine's
+	// binaries directory; everything downstream (the status bar, the
+	// project directory that reference images are saved relative to) wants
+	// the full path.
+	const FString Path = FPaths::ConvertRelativePathToFull(InPath);
 	if (!ConfirmReplaceSceneIfNeeded())
 	{
 		return false;
@@ -430,6 +438,7 @@ bool UAerotelicDocumentSubsystem::OpenProjectPath(const FString& Path)
 		{
 			continue;
 		}
+		ResolveReferenceImagePaths(Model.get(), Entity.type, FPaths::GetPath(Path));
 		const FString Name = UTF8_TO_TCHAR(Entity.name.c_str());
 		AAerotelicEntityActor* Actor = SpawnEntity(Entity.type, std::move(Model), Name);
 		if (Actor != nullptr)
@@ -450,13 +459,14 @@ bool UAerotelicDocumentSubsystem::OpenProjectPath(const FString& Path)
 			}
 		}
 	}
-	CurrentPath = Path;
+	CurrentPath = bAdopt ? Path : FString();
 	OnEntityListChanged.Broadcast();
 	return true;
 }
 
-bool UAerotelicDocumentSubsystem::SaveProjectToPath(const FString& Path)
+bool UAerotelicDocumentSubsystem::SaveProjectToPath(const FString& InPath)
 {
+	const FString Path = FPaths::ConvertRelativePathToFull(InPath); // see OpenProjectPath
 	if (Entities.Num() == 0)
 	{
 		FMessageDialog::Open(EAppMsgType::Ok, FText::FromString(TEXT("Nothing to save -- the scene is empty.")));
@@ -515,6 +525,7 @@ bool UAerotelicDocumentSubsystem::SaveProjectToPath(const FString& Path)
 			break;
 		}
 		}
+		RelativiseReferenceImagePaths(Pe.model, FPaths::GetPath(Path));
 		Project.entities.push_back(std::move(Pe));
 	}
 

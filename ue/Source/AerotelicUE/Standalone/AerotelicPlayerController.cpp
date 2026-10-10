@@ -9,6 +9,14 @@
 
 #include "MainShell/AerotelicMainShell.h"
 #include "MainShell/AerotelicDesignDock.h"
+#include "MainShell/AerotelicWelcomeScreen.h"
+#include "Licensing/AerotelicLicence.h"
+#include "Licensing/AerotelicLicenseInfo.h"
+#include "Licensing/AerotelicActivationDialog.h"
+#include "Misc/App.h"
+#include "Misc/CommandLine.h"
+#include "Misc/Parse.h"
+#include "TimerManager.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogAerotelicFrame, Log, All);
 
@@ -41,11 +49,45 @@ void AAerotelicPlayerController::BeginPlay()
 		FSlateApplication::Get().SetAllowTooltips(false);
 	}
 
+	// The licence gate (core/licence.py:enforced + ui/activation_dialog.py):
+	// a packaged build verifies its licence before the frame exists and
+	// exits if the user quits the activation dialog. A dev run reports a
+	// development build on the welcome screen instead.
+	if (AerotelicLicence::Enforced())
+	{
+		TOptional<AerotelicLicence::FCheckResult> Result = EnsureAerotelicLicensed();
+		if (!Result.IsSet())
+		{
+			FPlatformMisc::RequestExit(false);
+			return;
+		}
+		SetCurrentAerotelicLicenseInfo(FAerotelicLicenseInfo::FromResult(Result.GetValue()));
+	}
+	else
+	{
+		SetCurrentAerotelicLicenseInfo(FAerotelicLicenseInfo::Development());
+	}
+
 	if (GEngine != nullptr && GEngine->GameViewport != nullptr && !Shell.IsValid())
 	{
 		SAssignNew(Shell, SAerotelicMainShell);
 		GEngine->GameViewport->AddViewportWidgetContent(Shell.ToSharedRef(), 100);
+		if (UWorld* World = GetWorld())
+		{
+			World->GetTimerManager().SetTimerForNextTick(this, &AAerotelicPlayerController::ShowStartupWelcome);
+		}
 	}
+}
+
+void AAerotelicPlayerController::ShowStartupWelcome()
+{
+	// Skipped under automation (-unattended) so the screenshot tooling and
+	// tests are not blocked by a modal.
+	if (FApp::IsUnattended() || FParse::Param(FCommandLine::Get(), TEXT("NoWelcome")))
+	{
+		return;
+	}
+	ShowAerotelicWelcomeScreen(/*bForce*/ false);
 }
 
 void AAerotelicPlayerController::EndPlay(const EEndPlayReason::Type EndPlayReason)

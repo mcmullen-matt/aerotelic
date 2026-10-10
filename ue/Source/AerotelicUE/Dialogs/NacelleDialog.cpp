@@ -4,6 +4,8 @@
 #include "Widgets/NumericEntry.h"
 #include "Widgets/CurveEditor.h"
 #include "Widgets/CurveTabControls.h"
+#include "Widgets/ReferenceImageBar.h"
+#include "Widgets/ReferenceImageMath.h"
 #include "Widgets/PromptDialogs.h"
 
 #include "Widgets/Layout/SBorder.h"
@@ -193,13 +195,29 @@ void BuildNacelleDesignContent(AAerotelicEntityActor* Entity, FAerotelicDesignCo
 	});
 	auto LengthField = [Model, OnLength]() { return MakeLengthField(Model, OnLength); };
 
-	auto CurveTab = [&](TSharedRef<SCurveEditor> Editor, TArray<TSharedRef<SWidget>> Leading, TArray<TSharedRef<SWidget>> Trailing)
+	auto CurveTab = [&](TSharedRef<SCurveEditor> Editor, TArray<TSharedRef<SWidget>> Leading, TArray<TSharedRef<SWidget>> Trailing, TSharedPtr<SWidget> Extra = nullptr)
 	{
 		Leading.Insert(LengthField(), 0);
 		return SNew(SVerticalBox)
 			+ SVerticalBox::Slot().FillHeight(1.0f) [ Editor ]
-			+ SVerticalBox::Slot().AutoHeight().Padding(4, 2) [ MakeControlsRow(Leading, Trailing) ];
+			+ SVerticalBox::Slot().AutoHeight().Padding(4, 2) [ MakeControlsRow(Leading, Trailing) ]
+			+ SVerticalBox::Slot().AutoHeight().Padding(4, 2) [ Extra.IsValid() ? Extra.ToSharedRef() : SNullWidget::NullWidget ];
 	};
+	// Reference images: the side view spans the length from x/L = 0; the
+	// front view is centred on the axis, three lip radii wide.
+	TSharedRef<SWidget> SideImageBar = SNew(SReferenceImageBar).Editor(SideEditor).Images(&Model->reference_images)
+		.Key(TEXT("side")).ViewLabel(LOCTEXT("SideView", "side view"));
+	TSharedRef<SWidget> FrontImageBar = SNew(SReferenceImageBar).Editor(FrontEditor).Images(&Model->reference_images)
+		.Key(TEXT("front")).ViewLabel(LOCTEXT("FrontView", "front view"))
+		.Placement(SReferenceImageBar::FPlaceReferenceImage::CreateLambda([Model](aerotelic::ReferenceImageSpec& S, FIntPoint Size)
+		{
+			double R = 0.0;
+			const Mat Poles = Model->front_curve().poles();
+			for (int i = 0; i < Poles.rows(); ++i) R = FMath::Max(R, FMath::Max(FMath::Abs(Poles(i, 0)), FMath::Abs(Poles(i, 1))));
+			R /= FMath::Max(Model->length, 1e-9);
+			const double W = 3.0 * FMath::Max(R, 1e-3);
+			ReferenceImageMath::FitWidth(S, Size, W, 0.0, -0.5 * W);
+		}));
 
 	// Side view controls.
 	TSharedRef<SWidget> SideTab = CurveTab(SideEditor,
@@ -228,7 +246,8 @@ void BuildNacelleDesignContent(AAerotelicEntityActor* Entity, FAerotelicDesignCo
 					OnCurveChanged.ExecuteIfBound();
 					return FReply::Handled();
 				})),
-		});
+		},
+		SideImageBar);
 
 	// Front view controls.
 	TSharedRef<SWidget> FrontTab = CurveTab(FrontEditor,
@@ -266,7 +285,8 @@ void BuildNacelleDesignContent(AAerotelicEntityActor* Entity, FAerotelicDesignCo
 					OnCurveChanged.ExecuteIfBound();
 					return FReply::Handled();
 				})),
-		});
+		},
+		FrontImageBar);
 
 	// ---- Chevrons ----
 	TSharedRef<SWidget> ChevronsTab = SNew(SScrollBox)

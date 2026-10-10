@@ -24,6 +24,7 @@
 
 #include "aerotelic/mat.hpp"
 #include "aerotelic/nurbs.hpp"
+#include "aerotelic/reference_image.hpp"
 #include "aerotelic/solid_model.hpp"
 
 namespace aerotelic {
@@ -49,6 +50,7 @@ struct FuselageSpec {
 	// its station, on z_upper_curve/z_lower_curve/y_half_curve. The YAML
 	// loader is what should set this -- see the file header.
 	bool legacy = false;
+	ReferenceImageMap reference_images; // "profile", "width"
 };
 
 struct FuselageSection {
@@ -66,6 +68,7 @@ public:
 
 	std::string name;
 	double length;
+	ReferenceImageMap reference_images;
 
 	const NurbsCurve& z_upper_curve() const { return *z_upper_curve_; }
 	const NurbsCurve& z_lower_curve() const { return *z_lower_curve_; }

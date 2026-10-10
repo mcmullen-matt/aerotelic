@@ -3,6 +3,9 @@
 #include "AerotelicSceneTree.h"
 #include "AerotelicDesignDock.h"
 #include "AerotelicSurfaceDialog.h"
+#include "AerotelicWelcomeScreen.h"
+#include "AerotelicTutorialDialog.h"
+#include "Branding/AerotelicBranding.h"
 
 #include "Engine/Engine.h"
 #include "Engine/GameViewportClient.h"
@@ -339,8 +342,10 @@ void SAerotelicMainShell::BindCommands()
 	Commands->MapAction(C.SectionFlip, FExecuteAction(), Never(), FIsActionChecked::CreateLambda([]() { return false; }));
 
 	// Help
-	Commands->MapAction(C.WelcomeScreen, FExecuteAction(), Never());
-	Commands->MapAction(C.TutorialProjects, FExecuteAction(), Never());
+	// Forced: Help -> Welcome Screen... shows it even when ticked off at
+	// start-up (the Qt app's own menu item lost that argument).
+	Commands->MapAction(C.WelcomeScreen, FExecuteAction::CreateLambda([]() { ShowAerotelicWelcomeScreen(/*bForce*/ true); }));
+	Commands->MapAction(C.TutorialProjects, FExecuteAction::CreateLambda([]() { ShowAerotelicTutorialDialog(); }));
 	Commands->MapAction(C.About, FExecuteAction::CreateSP(this, &SAerotelicMainShell::OnAbout));
 
 	// Add entity
@@ -668,9 +673,10 @@ void SAerotelicMainShell::OnQuit()
 
 void SAerotelicMainShell::OnAbout()
 {
-	FMessageDialog::Open(EAppMsgType::Ok,
-		LOCTEXT("AboutText", "Aerotelic -- parametric aircraft-geometry CAD.\n\nC++ / Unreal Engine 5.8 port of the Python/Qt application.\nGeometry: Open CASCADE Technology."),
-		LOCTEXT("AboutTitle", "About Aerotelic"));
+	// The same identity and legal text as the welcome screen (branding.py's
+	// about_html), so the two cannot drift apart.
+	FMessageDialog::Open(EAppMsgType::Ok, FText::FromString(AerotelicBranding::AboutText()),
+		FText::FromString(FString::Printf(TEXT("About %s"), AerotelicBranding::Product)));
 }
 
 void SAerotelicMainShell::OnRebuild()

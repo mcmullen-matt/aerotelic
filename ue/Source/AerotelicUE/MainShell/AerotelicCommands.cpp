@@ -49,8 +49,8 @@ void FAerotelicCommands::RegisterCommands()
 	UI_COMMAND(SectionFlip, "Flip Side", "Hide the other side of the section plane. Not available yet in this version.", EUserInterfaceActionType::ToggleButton, FInputChord());
 
 	// Help
-	UI_COMMAND(WelcomeScreen, "Welcome Screen...", "Not available yet in this version", EUserInterfaceActionType::Button, FInputChord());
-	UI_COMMAND(TutorialProjects, "Tutorial Projects...", "Not available yet in this version", EUserInterfaceActionType::Button, FInputChord(EKeys::F1));
+	UI_COMMAND(WelcomeScreen, "Welcome Screen...", "The welcome screen: licence state, the legal text, the tutorial projects", EUserInterfaceActionType::Button, FInputChord());
+	UI_COMMAND(TutorialProjects, "Tutorial Projects...", "The example projects delivered with the application", EUserInterfaceActionType::Button, FInputChord(EKeys::F1));
 	UI_COMMAND(About, "About", "About Aerotelic", EUserInterfaceActionType::Button, FInputChord());
 
 	// Top toolbar (_setup_horizontal_toolbar)

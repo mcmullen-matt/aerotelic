@@ -68,6 +68,53 @@ The layout follows the Python/Qt version's main window (`aerotelic/ui/main_windo
   the asset is missing the bodies fall back to BasicShapeMaterial and the
   dialog has no effect. View -> Ground Grid (Ctrl+G) shows or hides the
   ground.
+* **Reference images** (WingDesigner's REQ-IO-011 / REQ-FUTURE-020, -024,
+  -025, -027): every side/top/plan/front-view curve editor has a
+  "Reference image" group with Import..., Remove, Fit, Flip H/V and
+  Opacity. The picture draws under the curves in the editor's own
+  non-dimensional units (scale = units per source pixel, position of the
+  source's top-left corner). Click it to select: drag the body to move, a
+  corner handle to scale about the opposite corner (aspect fixed, floor
+  5 % of the scale at press), an edge handle to crop, the knob on the
+  stem above it to turn (snapping to 15 degrees within 0.75; offered only
+  on equal-aspect editors, where a turn is rigid); double-click the knob
+  or use the graph's right-click "Level reference image" to level. Poles
+  win over the body, a selected image's handles win over poles. Saved on
+  the model under `reference_images:` keyed by view (profile, width,
+  planform, dihedral, side, front, centreline, section, skins, spinner)
+  with path, scale, x, y, crop, opacity, flip_h, flip_v, angle; legacy
+  mpp/x_m/y_m files are converted on load. An image beside the project
+  file is saved relative to it, others absolute; a missing file draws
+  nothing and keeps its placement. PNG, JPEG, BMP and TIFF (no SVG: the
+  engine has no SVG rasteriser).
+* **Welcome screen** (Help -> Welcome Screen..., and at start-up unless
+  ticked off; `-NoWelcome` or `-unattended` skips it): WingDesigner's
+  splash card -- the artwork from `Resources/`, product identity and
+  version (from `Resources/VERSION` or `VERSION`, else `0.9.0-dev`), the
+  licence block, the legal small print, the tutorial link, "Show this
+  screen at start-up" (saved in the game user settings) and Close.
+  Branding and the disclaimer text live in `Branding/AerotelicBranding`
+  and are, as in WingDesigner, placeholders not reviewed by counsel.
+* **Tutorial Projects** (Help -> Tutorial Projects..., F1, or from the
+  welcome screen): the matrix of the two shipped projects in `Projects/`
+  (Cessna 172, Lockheed P-38 Lightning) with each row's contents read off
+  disk; a missing or unreadable file is greyed. Opening a row loads it
+  without adopting its path, so the first Save asks for a location.
+* **Licensing** (`Licensing/`): WingDesigner's scheme, accepting the same
+  licence files. A packaged build (or a dev run with
+  `AEROTELIC_ENFORCE_LICENCE=1`) verifies `licence.lic` -- an
+  Ed25519-signed JSON envelope bound to this computer's MachineGuid --
+  before the frame exists, checks the licence with the server
+  (`/v1/check`, trusted time) or falls back to the kept signed reply
+  within a 7-day grace, and otherwise shows the activation dialog (enter
+  a 25-character key -> `/v1/activate`) or exits. `PublicKeys()` in
+  `AerotelicLicence.cpp` is EMPTY until a key pair is generated with the
+  licence server's `admin keygen`; with none, an enforced build cannot
+  start (REQ-LIC-006). The server URL is overridable with
+  `AEROTELIC_LICENCE_SERVER`. No feature gating, no trial, no read-only
+  mode, exactly as the Qt app. `run_tests.bat` runs
+  `AerotelicLicenceTest`: 42 checks driving the verifier against a key
+  pair generated in process.
 * **Ground**: the GridCube-UE5.8 reference project's grid lattice (thin cube
   instances over a dark base plane, engine basic shapes only) ported in
   `Standalone/AerotelicGridGround`, scaled to model units and refitted
@@ -193,6 +240,11 @@ The layout follows the Python/Qt version's main window (`aerotelic/ui/main_windo
   reference images, the Selig airfoil database / `.dat` import, and the
   wing Control Surfaces tab (the C++ core has no control-surface model yet;
   the tab is a placeholder note).
+* Legacy project files: WingDesigner's older format keys entities by `id`
+  with a display `label` (`Projects/cessna_172.yaml`); the label becomes
+  the name and the raw `features` graph is ignored (the mirror nodes it
+  holds are covered by the entity's own `mirror` flag; booleans have no
+  UI here yet).
 * Build gotchas: a TArray must not be appended with a reference to its own
   element (`Pts.Add(Pts[0])` reallocates under the reference); if a crash
   leaves `CrashReportClientEditor.exe` running it holds the module DLL and

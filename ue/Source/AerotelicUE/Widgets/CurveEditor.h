@@ -3,8 +3,13 @@
 #include "CoreMinimal.h"
 #include "Widgets/SCompoundWidget.h"
 #include "Widgets/SLeafWidget.h"
+#include "Styling/SlateBrush.h"
+#include "UObject/StrongObjectPtr.h"
 
 #include "aerotelic/nurbs.hpp"
+#include "aerotelic/reference_image.hpp"
+
+class UTexture2D;
 
 // The shared dual-curve/single-curve editing tool -- the Slate port of
 // aerotelic/ui/nurbs_editor.py's NURBSEditorCanvas. One or two NurbsCurves
@@ -135,8 +140,65 @@ public:
 	// change) so the panes repaint and the splitter/basis panes rebuild.
 	void RequestRedraw();
 
+	// ---- reference image (core/reference_image.py + the canvas's image
+	// handling in nurbs_editor.py) ----
+	//
+	// Binds the editor to one saved image record (or none). The texture is
+	// read from Spec->path (joined onto BaseDir when relative); a file that
+	// cannot be read leaves the image "missing": nothing draws, the saved
+	// placement is kept. The spec is the model's; the editor never owns it.
+	void SetReferenceImage(aerotelic::ReferenceImageSpec* Spec, const FString& BaseDir);
+	aerotelic::ReferenceImageSpec* GetReferenceImageSpec() const { return RefSpec; }
+	bool HasReferenceImage() const { return RefSpec != nullptr; }
+	bool IsReferenceImageMissing() const { return RefSpec != nullptr && !RefTexture.IsValid(); }
+	FIntPoint GetReferenceImageSize() const { return RefSize; }
+	// Rotation is offered only where one display unit is the same number of
+	// pixels on both axes; anywhere else a turn would shear the picture.
+	bool IsReferenceRotatable() const { return bEqualAspect && RefSpec != nullptr && RefTexture.IsValid(); }
+	// Back to 0 degrees without moving the visible centre.
+	void LevelReferenceImage();
+	// After the bar changed flips, opacity or placement: redraw and notify.
+	void ReferenceImageChanged();
+	void SetOnReferenceChanged(FSimpleDelegate InDelegate) { OnReferenceChanged = InDelegate; }
+
 private:
 	friend class SCurveEditorPane;
+
+	// ---- reference image state ----
+	aerotelic::ReferenceImageSpec* RefSpec = nullptr;
+	TStrongObjectPtr<UTexture2D> RefTexture;
+	FSlateBrush RefBrush;
+	FIntPoint RefSize = FIntPoint::ZeroValue;
+	bool bRefSelected = false;
+	enum class ERefDrag : uint8 { None, Move, Crop, Scale, Rotate };
+	ERefDrag RefDrag = ERefDrag::None;
+	FVector2D RefDragLastData = FVector2D::ZeroVector; // move
+	FString RefDragSide;                               // crop
+	FVector2D RefAnchor = FVector2D::ZeroVector;       // scale: the held corner (world)
+	FVector2D RefDiag = FVector2D::ZeroVector;         // scale: grabbed corner - anchor at press
+	double RefScale0 = 0.0;                            // scale: spec scale at press
+	FVector2D RefPivot = FVector2D::ZeroVector;        // rotate: the visible centre (world)
+	double RefBearing0 = 0.0, RefAngle0 = 0.0;         // rotate: at press
+	FSimpleDelegate OnReferenceChanged;
+
+	// Pane-facing: hit testing in plot pixels; drags in data units.
+	enum class ERefHit : uint8 { None, Body, Handle, Rotate };
+	struct FRefHitResult { ERefHit Kind = ERefHit::None; FString Handle; };
+	FRefHitResult ReferenceHitAt(FVector2D Local, const FBox2D& Box, FVector2D SizePx) const;
+	void BeginReferenceDrag(const FRefHitResult& Hit, FVector2D Local, const FBox2D& Box, FVector2D SizePx);
+	void DragReferenceTo(FVector2D Local, const FBox2D& Box, FVector2D SizePx);
+	void ReleaseReference();
+	bool IsDraggingReference() const { return RefDrag != ERefDrag::None; }
+	void SelectReference() { bRefSelected = true; Selected.Reset(); }
+	void DeselectReference() { bRefSelected = false; }
+	bool IsReferenceSelected() const { return bRefSelected; }
+	bool ReferenceDrawable() const { return RefSpec != nullptr && RefTexture.IsValid(); }
+	// World positions of the eight handles ("bl", "bm", "br", "ml", "mr",
+	// "tl", "tm", "tr") and the rotation knob (plot px, folded inward when
+	// it would leave the plot).
+	FVector2D ReferenceHandleWorld(const FString& Name) const;
+	FVector2D ReferenceRotationKnotPx(const FBox2D& Box, FVector2D SizePx) const;
+	void UpdateReferenceBrush();
 
 	TArray<FCurveEditorSlot> Slots;
 	TArray<FCurveEditorLink> Links;

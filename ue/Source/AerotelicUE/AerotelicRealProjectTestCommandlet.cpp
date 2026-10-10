@@ -2,6 +2,10 @@
 
 #include "Entity/AerotelicDocumentSubsystem.h"
 #include "Entity/AerotelicEntityActor.h"
+#include "Entity/ReferenceImagePaths.h"
+#include "Misc/Paths.h"
+
+#include "aerotelic/fuselage_model.hpp"
 
 DEFINE_LOG_CATEGORY_STATIC(LogAerotelicRealProjectTest, Log, All);
 
@@ -77,6 +81,34 @@ int32 UAerotelicRealProjectTestCommandlet::Main(const FString& Params)
 		// body list is only filled in the interactive app.)
 	};
 	CheckState(TEXT("after open"));
+
+	// Reference-image paths: beside the project file they are written
+	// relative to it, elsewhere absolute; relative paths resolve on load.
+	{
+		const FString Dir = FPaths::ConvertRelativePathToFull(FPaths::ProjectSavedDir());
+		aerotelic::FuselageSpec Fs;
+		Fs.reference_images["profile"].path = TCHAR_TO_UTF8(*(Dir / TEXT("three_view.png")));
+		Fs.reference_images["width"].path = TCHAR_TO_UTF8(*FString(TEXT("D:/elsewhere/top.png")));
+		aerotelic::project_yaml::EntityModelSpec Spec = Fs;
+		RelativiseReferenceImagePaths(Spec, Dir);
+		const aerotelic::FuselageSpec& Out = std::get<aerotelic::FuselageSpec>(Spec);
+		Check(Out.reference_images.at("profile").path == "three_view.png",
+			FString::Printf(TEXT("an image beside the project file is saved relative to it (got %s)"), UTF8_TO_TCHAR(Out.reference_images.at("profile").path.c_str())));
+		Check(Out.reference_images.at("width").path == "D:/elsewhere/top.png", "an image elsewhere stays absolute");
+		aerotelic::FuselageModel Model(Out);
+		ResolveReferenceImagePaths(&Model, aerotelic::project_yaml::EntityType::Fuselage, Dir);
+		Check(FString(UTF8_TO_TCHAR(Model.reference_images.at("profile").path.c_str())).Equals(Dir / TEXT("three_view.png"), ESearchCase::IgnoreCase),
+			FString::Printf(TEXT("a relative path resolves against the project directory on load (got %s)"), UTF8_TO_TCHAR(Model.reference_images.at("profile").path.c_str())));
+	}
+
+	// The other shipped tutorial is in WingDesigner's legacy format (entities
+	// keyed by id + label, a raw features graph): it must load too.
+	const FString Cessna = FPaths::Combine(FPaths::ProjectDir(), TEXT("Projects"), TEXT("cessna_172.yaml"));
+	Check(Doc->OpenProjectPath(Cessna, /*bAdopt*/ false), "opened the legacy-format cessna_172.yaml tutorial");
+	Check(Doc->GetEntities().Num() == 2, FString::Printf(TEXT("the Cessna has 2 entities (got %d)"), Doc->GetEntities().Num()));
+	Check(!Doc->HasCurrentPath(), "a tutorial is not adopted as the current file");
+	Check(Find(TEXT("Wing 2")) != nullptr && Find(TEXT("Wing 2"))->IsMirrored(), "the legacy label is the entity name and its mirror flag loaded");
+	Check(Doc->OpenProjectPath(Path), "reopened p38");
 
 	const FString TempPath = FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("p38_roundtrip.yaml"));
 	Check(Doc->SaveProjectToPath(TempPath), "saved the project to Saved/p38_roundtrip.yaml");

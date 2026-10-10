@@ -112,6 +112,7 @@ NacelleSpec::NacelleSpec() {
 NacelleModel::NacelleModel(const NacelleSpec& spec) {
 	length = spec.length;
 	name = spec.name;
+	reference_images = spec.reference_images;
 
 	NurbsSpec upper = spec.upper_curve, lower = spec.lower_curve;
 	PinEnds(upper, lower);
@@ -150,6 +151,7 @@ NacelleSpec NacelleModel::Serialize() const {
 	s.front_curve = front_curve_->Serialize();
 	s.chevron_count = chevron_count;
 	s.chevron_depth = chevron_depth;
+	s.reference_images = reference_images;
 	return s;
 }
 

@@ -32,6 +32,10 @@ public:
 private:
 	TSharedPtr<SAerotelicMainShell> Shell;
 
+	// The welcome screen, one tick after the frame is up (so the window has
+	// painted once), unless the user has ticked it off.
+	void ShowStartupWelcome();
+
 	// Sets the local player's normalised view rectangle (the split-screen
 	// mechanism) to the frame's view hole, so the scene is framed and
 	// click-selected relative to the visible 3D view rather than the whole

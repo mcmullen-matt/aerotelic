@@ -416,12 +416,14 @@ WingModel::WingModel(const WingModelSpec& spec) : name(spec.name) {
 	for (const auto& sec : spec.sections) {
 		AddSection(Airfoil::FromCurve(sec.airfoil_curve, sec.airfoil_name), sec.s);
 	}
+	reference_images = spec.reference_images;
 }
 
 WingModelSpec WingModel::Serialize() const {
 	WingModelSpec spec;
 	spec.name = name;
 	spec.planform = planform_->Serialize();
+	spec.reference_images = reference_images;
 	for (const auto& sec : user_sections_) {
 		WingSectionSpec ss;
 		ss.s = sec.s;

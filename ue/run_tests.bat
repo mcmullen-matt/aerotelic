@@ -8,4 +8,5 @@ set UE_ROOT=C:\Program Files\Epic Games\UE_5.8
 set CMD="%UE_ROOT%\Engine\Binaries\Win64\UnrealEditor-Cmd.exe"
 %CMD% "%~dp0AerotelicUE.uproject" -run=AerotelicDocumentTest -unattended -nullrhi -nosplash -stdout -FullStdOutLogOutput | findstr /C:"RESULT" /C:"FAIL"
 %CMD% "%~dp0AerotelicUE.uproject" -run=AerotelicRealProjectTest -unattended -nullrhi -nosplash -stdout -FullStdOutLogOutput | findstr /C:"RESULT" /C:"FAIL"
+%CMD% "%~dp0AerotelicUE.uproject" -run=AerotelicLicenceTest -unattended -nullrhi -nosplash -stdout -FullStdOutLogOutput | findstr /C:"RESULT" /C:"FAIL"
 endlocal

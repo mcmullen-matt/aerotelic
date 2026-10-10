@@ -3,6 +3,7 @@
 #include "Widgets/NumericEntry.h"
 #include "Widgets/CurveEditor.h"
 #include "Widgets/CurveTabControls.h"
+#include "Widgets/ReferenceImageBar.h"
 
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Layout/SBox.h"
@@ -201,7 +202,11 @@ TSharedRef<SWidget> FWingDesignTabs::BuildOutlineView(const FText& Title)
 		return Paths;
 	}));
 	OutlineView = View;
-	return SNew(SBox).MinDesiredHeight(220) [ View ];
+	// The only thing draggable on this graph is the reference image.
+	return SNew(SVerticalBox)
+		+ SVerticalBox::Slot().AutoHeight() [ SNew(SBox).MinDesiredHeight(220) [ View ] ]
+		+ SVerticalBox::Slot().AutoHeight().Padding(0, 4, 0, 0)
+		[ SNew(SReferenceImageBar).Editor(View).Images(&M->reference_images).Key(TEXT("planform")).ViewLabel(LOCTEXT("PlanView", "plan view")).Units(FText::FromString(TEXT("y/L"))) ];
 }
 
 TSharedRef<SWidget> FWingDesignTabs::BuildDerivedMetrics(const FText& TaperLabel)
@@ -380,7 +385,9 @@ TSharedRef<SWidget> FWingDesignTabs::BuildNurbsPlanformTab(NURBSPlanform* Nurbs)
 
 	TSharedRef<SVerticalBox> Tab = SNew(SVerticalBox)
 		+ SVerticalBox::Slot().FillHeight(1.0f).Padding(4, 2) [ Editor ]
-		+ SVerticalBox::Slot().AutoHeight().Padding(8, 2) [ Controls ];
+		+ SVerticalBox::Slot().AutoHeight().Padding(8, 2) [ Controls ]
+		+ SVerticalBox::Slot().AutoHeight().Padding(8, 2)
+		[ SNew(SReferenceImageBar).Editor(Editor).Images(&Model->reference_images).Key(TEXT("planform")).ViewLabel(LOCTEXT("PlanView", "plan view")).Units(FText::FromString(TEXT("y/L"))) ];
 
 	if (!bBlade)
 	{
@@ -434,7 +441,9 @@ TSharedRef<SWidget> FWingDesignTabs::BuildDihedralTab()
 							return FReply::Handled();
 						})),
 				})
-		];
+		]
+		+ SVerticalBox::Slot().AutoHeight().Padding(8, 2)
+		[ SNew(SReferenceImageBar).Editor(Editor).Images(&M->reference_images).Key(TEXT("dihedral")).ViewLabel(LOCTEXT("FrontView", "front view")).Units(FText::FromString(TEXT("y/L"))) ];
 }
 
 TSharedRef<SWidget> FWingDesignTabs::BuildTwistTab()

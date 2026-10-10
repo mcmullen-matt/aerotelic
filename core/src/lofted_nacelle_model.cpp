@@ -118,6 +118,7 @@ LoftedNacelleSpec::LoftedNacelleSpec() {
 LoftedNacelleModel::LoftedNacelleModel(const LoftedNacelleSpec& spec) {
 	length = spec.length;
 	name = spec.name;
+	reference_images = spec.reference_images;
 
 	NurbsSpec cl = spec.centreline_curve, oc = spec.outer_curve, ic = spec.inner_curve;
 	PinXEnds(cl);
@@ -170,6 +171,7 @@ LoftedNacelleSpec LoftedNacelleModel::Serialize() const {
 		gs.curve = sec.curve->Serialize();
 		s.sections.push_back(gs);
 	}
+	s.reference_images = reference_images;
 	s.chevron_count = chevron_count;
 	s.chevron_depth = chevron_depth;
 	return s;

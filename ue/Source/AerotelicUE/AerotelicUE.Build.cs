@@ -42,7 +42,14 @@ public class AerotelicUE : ModuleRules
 			"AppFramework",
 			"ProceduralMeshComponent",
 			"DesktopPlatform",
+			// Licensing: the licence server's JSON over HTTPS.
+			"HTTP", "Json",
 		});
+
+		// Licensing: Ed25519 signature verification and SHA-256 for the
+		// machine id, from the engine's own OpenSSL (the same copy its HTTPS
+		// stack uses).
+		AddEngineThirdPartyPrivateStaticDependencies(Target, "OpenSSL");
 
 		// Editor-only extras: the "Window -> Aerotelic" nomad tab that hosts
 		// the same shell inside the Unreal Editor (kept as a fallback and for

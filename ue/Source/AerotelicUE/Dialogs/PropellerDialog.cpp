@@ -5,6 +5,8 @@
 #include "Widgets/NumericEntry.h"
 #include "Widgets/CurveEditor.h"
 #include "Widgets/CurveTabControls.h"
+#include "Widgets/ReferenceImageBar.h"
+#include "Widgets/ReferenceImageMath.h"
 
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Layout/SBox.h"
@@ -243,6 +245,16 @@ void BuildPropellerDesignContent(AAerotelicEntityActor* Entity, FAerotelicDesign
 							return FReply::Handled();
 						})),
 				})
+		]
+		+ SVerticalBox::Slot().AutoHeight().Padding(8, 2)
+		[
+			// The side-view underlay spans the spinner's length (x/R).
+			SNew(SReferenceImageBar).Editor(SpinnerEditor).Images(&Model->reference_images)
+			.Key(TEXT("spinner")).ViewLabel(LOCTEXT("SideView", "side view")).Units(FText::FromString(TEXT("x/R")))
+			.Placement(SReferenceImageBar::FPlaceReferenceImage::CreateLambda([Model](aerotelic::ReferenceImageSpec& S, FIntPoint Size)
+			{
+				ReferenceImageMath::FitWidth(S, Size, FMath::Max(Model->spinner_length, 1e-6), 0.0, 0.0);
+			}))
 		];
 
 	TArray<FAerotelicTab> Tabs;

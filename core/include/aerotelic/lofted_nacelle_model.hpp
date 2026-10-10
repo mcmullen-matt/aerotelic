@@ -16,6 +16,7 @@
 
 #include "aerotelic/mat.hpp"
 #include "aerotelic/nurbs.hpp"
+#include "aerotelic/reference_image.hpp"
 #include "aerotelic/solid_model.hpp"
 
 namespace aerotelic {
@@ -42,6 +43,7 @@ struct LoftedNacelleSpec {
 	std::vector<GuideSectionSpec> sections;
 	int chevron_count = 0;
 	double chevron_depth = 0.25;
+	ReferenceImageMap reference_images; // "centreline", "section", "skins"
 };
 
 struct GuideSection {
@@ -62,6 +64,7 @@ public:
 	double length;
 	int chevron_count;
 	double chevron_depth;
+	ReferenceImageMap reference_images;
 
 	const NurbsCurve& centreline_curve() const { return *centreline_curve_; }
 	const NurbsCurve& outer_curve() const { return *outer_curve_; }

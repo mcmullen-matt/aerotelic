@@ -114,6 +114,7 @@ PropellerModel::PropellerModel(const PropellerSpec& spec) {
 	blade_x = spec.blade_x;
 	hub_radius = spec.hub_radius;
 	spinner_length = spec.spinner_length;
+	reference_images = spec.reference_images;
 
 	// Held on the axis at both ends, and at the two ends of the length.
 	NurbsSpec spinner_spec = spec.spinner_curve;
@@ -145,6 +146,7 @@ PropellerSpec PropellerModel::Serialize() const {
 	s.spinner_length = spinner_length;
 	s.spinner_curve = spinner_curve_->Serialize();
 	s.blade = blade_->Serialize();
+	s.reference_images = reference_images;
 	return s;
 }
 

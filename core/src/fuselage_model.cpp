@@ -97,6 +97,7 @@ FuselageSpec::FuselageSpec() {
 FuselageModel::FuselageModel(const FuselageSpec& spec) {
 	length = spec.length;
 	name = spec.name;
+	reference_images = spec.reference_images;
 
 	NurbsSpec zu = spec.z_upper_curve, zl = spec.z_lower_curve, yh = spec.y_half_curve;
 	WithNoseStation(zu, spec.legacy);
@@ -121,6 +122,7 @@ FuselageSpec FuselageModel::Serialize() const {
 	s.y_half_curve = y_half_curve_->Serialize();
 	s.rho_upper_curve = rho_upper_curve_->Serialize();
 	s.rho_lower_curve = rho_lower_curve_->Serialize();
+	s.reference_images = reference_images;
 	return s;
 }
 

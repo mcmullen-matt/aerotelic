@@ -119,6 +119,76 @@ PlanformSpec DecodePlanformSpec(const YAML::Node& node) {
 }
 
 // ===========================================================================
+// Reference images (core/reference_image.py's serialize()/_migrate)
+// ===========================================================================
+
+namespace {
+
+// Written only when there is at least one image, under the model, keyed by
+// view -- the Python key order: path, scale, x, y, crop, opacity, flip_h,
+// flip_v, angle.
+void EncodeReferenceImages(YAML::Node& model_node, const ReferenceImageMap& images) {
+	if (images.empty()) return;
+	YAML::Node all;
+	for (const auto& [key, r] : images) {
+		YAML::Node n;
+		n["path"] = r.path;
+		n["scale"] = r.scale;
+		n["x"] = r.x;
+		n["y"] = r.y;
+		YAML::Node crop;
+		for (double v : r.crop) crop.push_back(v);
+		n["crop"] = crop;
+		n["opacity"] = r.opacity;
+		n["flip_h"] = r.flip_h;
+		n["flip_v"] = r.flip_v;
+		n["angle"] = r.angle;
+		all[key] = n;
+	}
+	model_node["reference_images"] = all;
+}
+
+// Every key is optional (Python's {**_DEFAULT, **d}). `unit` is the
+// entity's reference length, for the legacy metre-based keys (mpp, x_m,
+// y_m), applied only when no "scale" key is present so a file can never be
+// converted twice.
+ReferenceImageMap DecodeReferenceImages(const YAML::Node& model_node, double unit) {
+	ReferenceImageMap out;
+	const YAML::Node& all = model_node["reference_images"];
+	if (!all || !all.IsMap()) return out;
+	const double u = unit > 0.0 ? unit : 1.0;
+	for (const auto& kv : all) {
+		const std::string key = kv.first.as<std::string>();
+		const YAML::Node& n = kv.second;
+		if (!n || !n.IsMap()) continue;
+		ReferenceImageSpec r;
+		if (n["path"]) r.path = n["path"].as<std::string>();
+		if (n["scale"]) {
+			r.scale = n["scale"].as<double>();
+			if (n["x"]) r.x = n["x"].as<double>();
+			if (n["y"]) r.y = n["y"].as<double>();
+		} else {
+			if (n["mpp"]) r.scale = n["mpp"].as<double>() / u;
+			if (n["x_m"]) r.x = n["x_m"].as<double>() / u;
+			else if (n["x"]) r.x = n["x"].as<double>();
+			if (n["y_m"]) r.y = n["y_m"].as<double>() / u;
+			else if (n["y"]) r.y = n["y"].as<double>();
+		}
+		if (n["crop"] && n["crop"].IsSequence() && n["crop"].size() == 4) {
+			for (size_t i = 0; i < 4; ++i) r.crop[i] = n["crop"][i].as<double>();
+		}
+		if (n["opacity"]) r.opacity = n["opacity"].as<double>();
+		if (n["flip_h"]) r.flip_h = n["flip_h"].as<bool>();
+		if (n["flip_v"]) r.flip_v = n["flip_v"].as<bool>();
+		if (n["angle"]) r.angle = n["angle"].as<double>();
+		out[key] = r;
+	}
+	return out;
+}
+
+} // namespace
+
+// ===========================================================================
 // WingModelSpec
 // ===========================================================================
 
@@ -137,6 +207,7 @@ YAML::Node Encode(const WingModelSpec& spec) {
 		secs.push_back(sn);
 	}
 	n["sections"] = secs;
+	EncodeReferenceImages(n, spec.reference_images);
 	return n;
 }
 
@@ -144,6 +215,7 @@ WingModelSpec DecodeWingModelSpec(const YAML::Node& node) {
 	WingModelSpec spec;
 	spec.name = node["name"] ? node["name"].as<std::string>() : "Wing";
 	spec.planform = DecodePlanformSpec(node["planform"]);
+	spec.reference_images = DecodeReferenceImages(node, spec.planform.semi_span);
 	if (node["sections"]) {
 		for (const auto& sn : node["sections"]) {
 			WingSectionSpec ss;
@@ -170,12 +242,14 @@ YAML::Node Encode(const NacelleSpec& spec) {
 	n["front_curve"] = Encode(spec.front_curve);
 	n["chevron_count"] = spec.chevron_count;
 	if (spec.chevron_depth) n["chevron_depth"] = *spec.chevron_depth;
+	EncodeReferenceImages(n, spec.reference_images);
 	return n;
 }
 
 NacelleSpec DecodeNacelleSpec(const YAML::Node& node) {
 	NacelleSpec spec;
 	spec.length = node["length"].as<double>();
+	spec.reference_images = DecodeReferenceImages(node, 1.0);
 	spec.name = node["name"] ? node["name"].as<std::string>() : "Nacelle";
 	spec.upper_curve = DecodeNurbsSpec(node["upper_curve"]);
 	spec.lower_curve = DecodeNurbsSpec(node["lower_curve"]);
@@ -207,12 +281,14 @@ YAML::Node Encode(const LoftedNacelleSpec& spec) {
 	n["inner_curve"] = Encode(spec.inner_curve);
 	n["chevron_count"] = spec.chevron_count;
 	n["chevron_depth"] = spec.chevron_depth;
+	EncodeReferenceImages(n, spec.reference_images);
 	return n;
 }
 
 LoftedNacelleSpec DecodeLoftedNacelleSpec(const YAML::Node& node) {
 	LoftedNacelleSpec spec;
 	spec.length = node["length"].as<double>();
+	spec.reference_images = DecodeReferenceImages(node, 1.0);
 	spec.name = node["name"] ? node["name"].as<std::string>() : "Nacelle";
 	spec.centreline_curve = DecodeNurbsSpec(node["centreline_curve"]);
 	spec.sections.clear();
@@ -245,6 +321,7 @@ YAML::Node Encode(const PropellerSpec& spec) {
 	n["spinner_length"] = spec.spinner_length;
 	n["spinner_curve"] = Encode(spec.spinner_curve);
 	if (spec.blade) n["blade"] = Encode(*spec.blade);
+	EncodeReferenceImages(n, spec.reference_images);
 	return n;
 }
 
@@ -252,6 +329,7 @@ PropellerSpec DecodePropellerSpec(const YAML::Node& node) {
 	PropellerSpec spec;
 	spec.name = node["name"] ? node["name"].as<std::string>() : "Propeller";
 	spec.radius = node["radius"].as<double>();
+	spec.reference_images = DecodeReferenceImages(node, 1.0);
 	spec.blade_count = node["blade_count"] ? node["blade_count"].as<int>() : 2;
 	spec.blade_x = node["blade_x"] ? node["blade_x"].as<double>() : 0.26;
 	spec.hub_radius = node["hub_radius"] ? node["hub_radius"].as<double>() : 0.12;
@@ -277,12 +355,14 @@ YAML::Node Encode(const FuselageSpec& spec) {
 	// Present-but-empty: signals "not a pre-2026 legacy file" to the Python
 	// app without asserting a nose link this port doesn't actually track.
 	n["pole_links"] = YAML::Node(YAML::NodeType::Map);
+	EncodeReferenceImages(n, spec.reference_images);
 	return n;
 }
 
 FuselageSpec DecodeFuselageSpec(const YAML::Node& node, bool* out_legacy) {
 	FuselageSpec spec;
 	spec.length = node["length"].as<double>();
+	spec.reference_images = DecodeReferenceImages(node, spec.length);
 	spec.name = node["name"] ? node["name"].as<std::string>() : "Fuselage";
 	spec.z_upper_curve = DecodeNurbsSpec(node["z_upper_curve"]);
 	spec.z_lower_curve = DecodeNurbsSpec(node["z_lower_curve"]);
@@ -413,7 +493,13 @@ YAML::Node EncodeEntity(const ProjectEntity& e) {
 
 ProjectEntity DecodeEntity(const YAML::Node& node) {
 	ProjectEntity e;
-	e.name = node["name"].as<std::string>();
+	// The legacy WingDesigner format (projects/cessna_172.yaml) keys an
+	// entity by `id` with a display `label` and carries a raw `features`
+	// graph in place of `booleans`; the label is the name there.
+	if (node["name"]) e.name = node["name"].as<std::string>();
+	else if (node["label"]) e.name = node["label"].as<std::string>();
+	else if (node["id"]) e.name = node["id"].as<std::string>();
+	else e.name = "Entity";
 	e.type = ParseEntityType(node["type"].as<std::string>());
 	e.mirror = node["mirror"] ? node["mirror"].as<bool>() : false;
 	e.placement = DecodePlacement(node["placement"]);
