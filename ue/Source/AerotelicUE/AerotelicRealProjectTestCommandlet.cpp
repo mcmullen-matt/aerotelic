@@ -48,6 +48,42 @@ int32 UAerotelicRealProjectTestCommandlet::Main(const FString& Params)
 	Check(nFuselage == 2 && nWing == 3 && nNacelle == 1 && nPropeller == 1,
 		FString::Printf(TEXT("entity type mix matches the file (fuselage=%d wing=%d nacelle=%d propeller=%d)"), nFuselage, nWing, nNacelle, nPropeller));
 
+	// Display state the file carries: every entity but Center is mirrored,
+	// and four carry a colour override (the Wing's is navy). Both must
+	// survive a save and a reload -- the first saver dropped them.
+	auto Find = [Doc](const TCHAR* Name) -> AAerotelicEntityActor*
+	{
+		for (auto& WeakEntity : Doc->GetEntities())
+		{
+			if (WeakEntity.IsValid() && WeakEntity->EntityName == Name) return WeakEntity.Get();
+		}
+		return nullptr;
+	};
+	auto CheckState = [&](const TCHAR* Stage)
+	{
+		AAerotelicEntityActor* Center = Find(TEXT("Center"));
+		AAerotelicEntityActor* Wing = Find(TEXT("Wing"));
+		AAerotelicEntityActor* Boom = Find(TEXT("Boom"));
+		AAerotelicEntityActor* Prop = Find(TEXT("Propeller 7"));
+		Check(Center && Wing && Boom && Prop, FString::Printf(TEXT("%s: Center, Wing, Boom and Propeller 7 are present"), Stage));
+		if (!(Center && Wing && Boom && Prop)) return;
+		Check(!Center->IsMirrored() && Wing->IsMirrored() && Boom->IsMirrored() && Prop->IsMirrored(),
+			FString::Printf(TEXT("%s: mirror flags (Center off; Wing, Boom, Propeller 7 on)"), Stage));
+		const TOptional<FLinearColor> WingColor = Wing->GetColorOverride();
+		Check(WingColor.IsSet() && FMath::IsNearlyEqual(WingColor->B, 0.498f, 0.01f) && WingColor->R < 0.01f && WingColor->G < 0.01f,
+			FString::Printf(TEXT("%s: Wing colour override is navy (0, 0, 0.498)"), Stage));
+		Check(!Center->GetColorOverride().IsSet(), FString::Printf(TEXT("%s: Center has no colour override (per-kind default applies)"), Stage));
+		// (Bodies are not checked: a commandlet never tessellates, so the
+		// body list is only filled in the interactive app.)
+	};
+	CheckState(TEXT("after open"));
+
+	const FString TempPath = FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("p38_roundtrip.yaml"));
+	Check(Doc->SaveProjectToPath(TempPath), "saved the project to Saved/p38_roundtrip.yaml");
+	Check(Doc->OpenProjectPath(TempPath), "reopened the saved copy");
+	Check(Doc->GetEntities().Num() == 7, FString::Printf(TEXT("reopened entity count is 7 (got %d)"), Doc->GetEntities().Num()));
+	CheckState(TEXT("after save+reload"));
+
 	UE_LOG(LogAerotelicRealProjectTest, Display, TEXT("RESULT: %d passed, %d failed"), g_pass, g_fail);
 	return g_fail == 0 ? 0 : 1;
 }

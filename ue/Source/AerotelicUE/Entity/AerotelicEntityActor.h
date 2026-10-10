@@ -2,12 +2,43 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
+#include "Components/SceneComponent.h"
 #include <memory>
 
 #include "aerotelic/solid_model.hpp"
 #include "aerotelic/project_yaml.hpp"
 
 #include "AerotelicEntityActor.generated.h"
+
+// One solid the entity's parameterisation produces. Most entities make a
+// single "Main" body; a propeller makes a Spinner and one Blade per blade.
+// Name is the role (what the body IS); the scene tree shows the display
+// name "<entity>-<n>" beside it, as WingDesigner's body rows do.
+USTRUCT()
+struct FAerotelicBody
+{
+	GENERATED_BODY()
+
+	// Role name: "Main", "Spinner", "Blade 1", ...
+	UPROPERTY()
+	FString Name;
+
+	UPROPERTY()
+	bool bVisible = true;
+
+	// The mirrored copy of this body, when the entity is mirrored. Hiding
+	// the body hides its mirror too; showing it again leaves a mirror the
+	// user hid on its own hidden (WingDesigner's asymmetric coupling).
+	UPROPERTY()
+	bool bMirrorVisible = true;
+
+	// Per-body colour override; unset means "take the entity's colour".
+	UPROPERTY()
+	bool bHasColor = false;
+
+	UPROPERTY()
+	FLinearColor Color = FLinearColor::White;
+};
 
 // One scene entity: a live aerotelic model (WingModel/FuselageModel/...)
 // rendered as a real tessellated mesh (BRepMesh_IncrementalMesh ->
@@ -58,6 +89,48 @@ public:
 	void SetEntityVisible(bool bVisible);
 	bool IsEntityVisible() const { return !IsHidden(); }
 
+	// ---- bodies (the solids this parameterisation produces) ----
+
+	const TArray<FAerotelicBody>& GetBodies() const { return Bodies; }
+	// "<entity name>-<n>", the label WingDesigner's body rows carry.
+	FString GetBodyDisplayName(int32 Index) const;
+	void SetBodyVisible(int32 Index, bool bVisible);
+	bool IsBodyVisible(int32 Index) const;
+	// Per-body colour. Clearing it falls back to the entity's colour.
+	void SetBodyColor(int32 Index, TOptional<FLinearColor> InColor);
+	// What body Index is actually drawn in: its own colour, else the
+	// entity's, else the per-type default.
+	FLinearColor GetBodyDisplayColor(int32 Index) const;
+
+	// ---- colour ----
+
+	// The entity's colour override; unset means the per-entity-type default
+	// (WingDesigner's _kind_default). Setting one drops every per-body
+	// override, as the Qt app's _set_entity_color does.
+	void SetColorOverride(TOptional<FLinearColor> InColor);
+	TOptional<FLinearColor> GetColorOverride() const { return ColorOverride; }
+	// Override if set, else the type default -- what is on screen.
+	FLinearColor GetDisplayColor() const;
+	static FLinearColor DefaultColorFor(aerotelic::project_yaml::EntityType Type);
+
+	// ---- mirroring ----
+
+	// A port-side copy reflected about world Y = 0, derived from the placed
+	// shape exactly as WingDesigner's MirrorFeature is: never edited on its
+	// own, it always follows this entity (including its placement, so a
+	// mirrored propeller comes out the opposite hand).
+	void SetMirrored(bool bInMirrored);
+	bool IsMirrored() const { return bMirrored; }
+	void SetMirrorBodyVisible(int32 Index, bool bVisible);
+	bool IsMirrorBodyVisible(int32 Index) const;
+	FString GetMirrorBodyDisplayName(int32 Index) const;
+
+	// Fired after the set of bodies (or the mirrored state) of an entity
+	// changed, so the scene tree can re-sync its child rows. Static: the
+	// tree outlives any one entity.
+	DECLARE_MULTICAST_DELEGATE_OneParam(FOnAerotelicBodiesChanged, AAerotelicEntityActor*);
+	static FOnAerotelicBodiesChanged OnBodiesChanged;
+
 	// This actor's placement as the backend's feature tree wants it.
 	aerotelic::EntityTransform GetEntityTransform() const;
 	// Applies a saved placement (from a loaded project file) to this actor.
@@ -80,24 +153,45 @@ private:
 	UPROPERTY()
 	TArray<TObjectPtr<UStaticMeshComponent>> ProxyEdges;
 
-	// The real visual: BuildSolid()'s tessellated surface.
+	// The real visual: BuildSolid()'s tessellated surface, one mesh section
+	// per body so each can carry its own colour and visibility.
 	UPROPERTY(VisibleAnywhere, Category = "Aerotelic")
 	TObjectPtr<class UProceduralMeshComponent> ProxyMesh;
 
-	// The mesh's material, instanced so the selection tint can be set per
-	// entity. Created on first use from the engine's BasicShapeMaterial.
+	// The mirrored copy. Its transform is absolute (not the actor's), so it
+	// can hold world-space geometry: the reflection is of the *placed*
+	// shape, which no relative transform under a moving actor expresses.
+	UPROPERTY(VisibleAnywhere, Category = "Aerotelic")
+	TObjectPtr<class UProceduralMeshComponent> MirrorMesh;
+
+	// One dynamic material per body per mesh, so a body's colour and the
+	// selection tint can be set without touching its siblings.
 	UPROPERTY()
-	TObjectPtr<class UMaterialInstanceDynamic> MeshMaterial;
+	TArray<TObjectPtr<class UMaterialInstanceDynamic>> BodyMaterials;
+
+	UPROPERTY()
+	TArray<TObjectPtr<class UMaterialInstanceDynamic>> MirrorMaterials;
+
+	UPROPERTY()
+	TArray<FAerotelicBody> Bodies;
 
 	aerotelic::project_yaml::EntityType EntityType = aerotelic::project_yaml::EntityType::Primitive;
 	std::unique_ptr<aerotelic::ISolidModel> Model;
 	bool bSelected = false;
+	bool bMirrored = false;
+	TOptional<FLinearColor> ColorOverride;
+	FDelegateHandle TransformHandle;
 
 	void EnsureProxyEdges();
-	void EnsureMeshMaterial();
-	void ApplySelectionTint();
+	void ApplyColors();
 	void ShowBoxFallback(const TopoDS_Shape& Shape);
-	// Returns false (and leaves ProxyMesh empty) if the shape has nothing
-	// to tessellate -- caller falls back to ShowBoxFallback().
-	bool RefreshTessellatedMesh(const TopoDS_Shape& Shape);
+	// Tessellates Shape into Target, one section per top-level solid.
+	// Returns the role names of the sections written, empty if there was
+	// nothing to tessellate (caller falls back to ShowBoxFallback()).
+	TArray<FString> RefreshTessellatedMesh(const TopoDS_Shape& Shape,
+		class UProceduralMeshComponent* Target, TArray<TObjectPtr<class UMaterialInstanceDynamic>>& Materials);
+	// Rebuilds MirrorMesh from the placed-then-reflected shape. Cheap no-op
+	// when the entity is not mirrored.
+	void RefreshMirror();
+	void OnRootTransformed(class USceneComponent* Component, EUpdateTransformFlags Flags, ETeleportType Teleport);
 };

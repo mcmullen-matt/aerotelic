@@ -14,8 +14,10 @@
 #include "Misc/Parse.h"
 
 #include "AerotelicCameraPawn.h"
+#include "AerotelicGridGround.h"
 #include "AerotelicPlayerController.h"
 #include "Entity/AerotelicDocumentSubsystem.h"
+#include "Entity/AerotelicEntityActor.h"
 
 AAerotelicGameMode::AAerotelicGameMode()
 {
@@ -28,7 +30,58 @@ void AAerotelicGameMode::BeginPlay()
 	Super::BeginPlay();
 	SpawnLighting();
 	SpawnBackdrop();
+	SpawnGround();
+	if (UAerotelicDocumentSubsystem* Doc = UAerotelicDocumentSubsystem::Get())
+	{
+		ListChangedHandle = Doc->OnEntityListChanged.AddUObject(this, &AAerotelicGameMode::FitGroundToScene);
+	}
 	OpenProjectFromCommandLine();
+}
+
+void AAerotelicGameMode::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+	if (UAerotelicDocumentSubsystem* Doc = UAerotelicDocumentSubsystem::Get())
+	{
+		Doc->OnEntityListChanged.Remove(ListChangedHandle);
+	}
+	Super::EndPlay(EndPlayReason);
+}
+
+void AAerotelicGameMode::SpawnGround()
+{
+	UWorld* World = GetWorld();
+	if (World == nullptr)
+	{
+		return;
+	}
+	FActorSpawnParameters Params;
+	Params.ObjectFlags |= RF_Transient;
+	Ground = World->SpawnActor<AAerotelicGridGround>(FVector::ZeroVector, FRotator::ZeroRotator, Params);
+	FitGroundToScene();
+}
+
+void AAerotelicGameMode::FitGroundToScene()
+{
+	if (Ground == nullptr)
+	{
+		return;
+	}
+	FBox Content(ForceInit);
+	if (UAerotelicDocumentSubsystem* Doc = UAerotelicDocumentSubsystem::Get())
+	{
+		for (const TWeakObjectPtr<AAerotelicEntityActor>& Weak : Doc->GetEntities())
+		{
+			if (Weak.IsValid())
+			{
+				const FBox Box = Weak->GetVisibleWorldBounds();
+				if (Box.IsValid)
+				{
+					Content += Box;
+				}
+			}
+		}
+	}
+	Ground->FitToContent(Content);
 }
 
 void AAerotelicGameMode::SpawnLighting()

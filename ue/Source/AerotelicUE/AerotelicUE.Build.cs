@@ -36,6 +36,10 @@ public class AerotelicUE : ModuleRules
 		PublicDependencyModuleNames.AddRange(new string[] {
 			"Core", "CoreUObject", "Engine", "InputCore", "ApplicationCore",
 			"Slate", "SlateCore",
+			// Runtime module (Engine/Source/Runtime/AppFramework): the
+			// colour picker (SColorPicker / OpenColorPicker) and SColorBlock
+			// the scene tree's Color command and swatches use.
+			"AppFramework",
 			"ProceduralMeshComponent",
 			"DesktopPlatform",
 		});

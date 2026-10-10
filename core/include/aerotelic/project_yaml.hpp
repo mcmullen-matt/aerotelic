@@ -89,6 +89,12 @@ struct ProjectEntity {
 	bool mirror = false;
 	Placement placement{{0.0, 0.0, 0.0}, {0.0, 0.0, 1.0}, 0.0};
 	EntityModelSpec model;
+	// Display state, written only when it differs from how the entity was
+	// made (the Python app's rule: defaults and inherited values never
+	// reach the file). An unset colour means "use the per-type default".
+	// RGB in 0..1, no alpha -- the Qt app offered none.
+	std::optional<std::array<double, 3>> color;
+	bool hidden = false;
 };
 
 struct ProjectFile {

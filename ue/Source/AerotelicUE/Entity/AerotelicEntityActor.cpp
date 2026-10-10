@@ -8,11 +8,14 @@
 #include "UObject/ConstructorHelpers.h"
 #include "ProceduralMeshComponent.h"
 
+#include "aerotelic/feature_tree.hpp"
+
 #include <Bnd_Box.hxx>
 #include <BRepBndLib.hxx>
 #include <BRepMesh_IncrementalMesh.hxx>
 #include <TopoDS_Shape.hxx>
 #include <TopoDS_Face.hxx>
+#include <TopoDS_Iterator.hxx>
 #include <TopoDS.hxx>
 #include <TopExp_Explorer.hxx>
 #include <TopAbs_ShapeEnum.hxx>
@@ -22,13 +25,57 @@
 #include <gp_Pnt.hxx>
 #include <gp_Trsf.hxx>
 
+using aerotelic::project_yaml::EntityType;
+
 namespace
 {
-	// Neutral light grey for the surfaces; a warm orange tint for the one
-	// selected entity (the standalone app's stand-in for the Editor's
-	// selection outline).
-	const FLinearColor kSurfaceColor(0.72f, 0.74f, 0.78f);
+	// A warm orange tint for the one selected entity (the standalone app's
+	// stand-in for the Editor's selection outline).
 	const FLinearColor kSelectedColor(1.0f, 0.55f, 0.12f);
+
+	UMaterialInterface* BaseMaterial()
+	{
+		return LoadObject<UMaterialInterface>(nullptr, TEXT("/Engine/BasicShapes/BasicShapeMaterial"));
+	}
+
+	// The top-level solids of a built shape, in build order: a propeller's
+	// compound lists its spinner then each blade; anything else is one
+	// solid. (TopoDS_Iterator keeps a compound's insertion order, which is
+	// what the role names below rely on.)
+	TArray<TopoDS_Shape> TopLevelSolids(const TopoDS_Shape& Shape)
+	{
+		TArray<TopoDS_Shape> Out;
+		if (Shape.IsNull())
+		{
+			return Out;
+		}
+		if (Shape.ShapeType() == TopAbs_COMPOUND)
+		{
+			for (TopoDS_Iterator It(Shape); It.More(); It.Next())
+			{
+				if (!It.Value().IsNull())
+				{
+					Out.Add(It.Value());
+				}
+			}
+		}
+		if (Out.Num() == 0)
+		{
+			Out.Add(Shape);
+		}
+		return Out;
+	}
+
+	// WingDesigner's role names: "Main" for a single solid, "Spinner" and
+	// "Blade n" for a propeller's parts.
+	FString RoleName(EntityType Type, int32 Index, int32 Count)
+	{
+		if (Type == EntityType::Propeller && Count > 1)
+		{
+			return Index == 0 ? FString(TEXT("Spinner")) : FString::Printf(TEXT("Blade %d"), Index);
+		}
+		return Count > 1 ? FString::Printf(TEXT("Part %d"), Index + 1) : FString(TEXT("Main"));
+	}
 }
 
 AAerotelicEntityActor::AAerotelicEntityActor()
@@ -47,16 +94,28 @@ AAerotelicEntityActor::AAerotelicEntityActor()
 	// commandlet rather than relying on a guard that runs too late.
 	if (!IsRunningCommandlet())
 	{
-		ProxyMesh = CreateDefaultSubobject<UProceduralMeshComponent>(TEXT("ProxyMesh"));
-		ProxyMesh->SetupAttachment(ProxyRoot);
-		ProxyMesh->SetMobility(EComponentMobility::Movable);
-		// Query-only collision on the Visibility channel: this is what lets
-		// the standalone app's click-to-select cursor trace hit the mesh.
-		// Nothing simulates physics against it.
-		ProxyMesh->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
-		ProxyMesh->SetCollisionResponseToAllChannels(ECR_Ignore);
-		ProxyMesh->SetCollisionResponseToChannel(ECC_Visibility, ECR_Block);
-		ProxyMesh->bUseComplexAsSimpleCollision = true;
+		auto MakeMesh = [this](const TCHAR* Name)
+		{
+			UProceduralMeshComponent* Mesh = CreateDefaultSubobject<UProceduralMeshComponent>(Name);
+			Mesh->SetupAttachment(ProxyRoot);
+			Mesh->SetMobility(EComponentMobility::Movable);
+			// Query-only collision on the Visibility channel: this is what
+			// lets the standalone app's click-to-select cursor trace hit the
+			// mesh. Nothing simulates physics against it.
+			Mesh->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
+			Mesh->SetCollisionResponseToAllChannels(ECR_Ignore);
+			Mesh->SetCollisionResponseToChannel(ECC_Visibility, ECR_Block);
+			Mesh->bUseComplexAsSimpleCollision = true;
+			return Mesh;
+		};
+		ProxyMesh = MakeMesh(TEXT("ProxyMesh"));
+		MirrorMesh = MakeMesh(TEXT("MirrorMesh"));
+		// The mirror holds world-space geometry (see the header): pin it to
+		// the world, not to the actor's transform.
+		MirrorMesh->SetUsingAbsoluteLocation(true);
+		MirrorMesh->SetUsingAbsoluteRotation(true);
+		MirrorMesh->SetUsingAbsoluteScale(true);
+		MirrorMesh->SetVisibility(false);
 	}
 }
 
@@ -66,7 +125,21 @@ void AAerotelicEntityActor::InitializeFrom(aerotelic::project_yaml::EntityType I
 	EntityType = InType;
 	Model = std::move(InModel);
 	EntityName = InName;
+	// The mirror is a reflection of the *placed* shape, so it follows every
+	// move of the actor.
+	if (ProxyRoot != nullptr && !TransformHandle.IsValid())
+	{
+		TransformHandle = ProxyRoot->TransformUpdated.AddUObject(this, &AAerotelicEntityActor::OnRootTransformed);
+	}
 	RefreshProxy();
+}
+
+void AAerotelicEntityActor::OnRootTransformed(USceneComponent*, EUpdateTransformFlags, ETeleportType)
+{
+	if (bMirrored)
+	{
+		RefreshMirror();
+	}
 }
 
 void AAerotelicEntityActor::EnsureProxyEdges()
@@ -88,28 +161,86 @@ void AAerotelicEntityActor::EnsureProxyEdges()
 	}
 }
 
-void AAerotelicEntityActor::EnsureMeshMaterial()
+// ---------------------------------------------------------------- colour
+
+FLinearColor AAerotelicEntityActor::DefaultColorFor(aerotelic::project_yaml::EntityType Type)
 {
-	if (MeshMaterial != nullptr)
+	// WingDesigner's _kind_default (core/occ_viewer.py), linear RGB as the
+	// Qt app fed OCCT. (Qualified: inside this class the bare name
+	// EntityType is the data member.)
+	using EType = aerotelic::project_yaml::EntityType;
+	switch (Type)
 	{
-		return;
+	case EType::Fuselage:      return FLinearColor(0.20f, 0.72f, 0.38f); // fuselage green
+	case EType::Nacelle:       return FLinearColor(0.78f, 0.60f, 0.28f); // nacelle bronze
+	case EType::LoftedNacelle: return FLinearColor(0.82f, 0.42f, 0.55f); // nacelle rose
+	case EType::Propeller:     return FLinearColor(0.66f, 0.68f, 0.74f); // propeller aluminium
+	case EType::Primitive:     return FLinearColor(0.85f, 0.80f, 0.30f); // primitive ochre
+	case EType::Wing:
+	default:                   return FLinearColor(0.20f, 0.50f, 0.90f); // steel blue
 	}
-	UMaterialInterface* Base = LoadObject<UMaterialInterface>(nullptr, TEXT("/Engine/BasicShapes/BasicShapeMaterial"));
-	if (Base == nullptr)
-	{
-		return;
-	}
-	MeshMaterial = UMaterialInstanceDynamic::Create(Base, this);
-	ApplySelectionTint();
 }
 
-void AAerotelicEntityActor::ApplySelectionTint()
+FLinearColor AAerotelicEntityActor::GetDisplayColor() const
 {
-	if (MeshMaterial != nullptr)
+	return ColorOverride.IsSet() ? ColorOverride.GetValue() : DefaultColorFor(EntityType);
+}
+
+FLinearColor AAerotelicEntityActor::GetBodyDisplayColor(int32 Index) const
+{
+	if (Bodies.IsValidIndex(Index) && Bodies[Index].bHasColor)
 	{
-		// BasicShapeMaterial exposes its base colour as the "Color" vector
-		// parameter.
-		MeshMaterial->SetVectorParameterValue(TEXT("Color"), bSelected ? kSelectedColor : kSurfaceColor);
+		return Bodies[Index].Color;
+	}
+	return GetDisplayColor();
+}
+
+void AAerotelicEntityActor::SetColorOverride(TOptional<FLinearColor> InColor)
+{
+	ColorOverride = InColor;
+	// Every body takes the entity's colour, the mirrored ones included,
+	// and any colour a body had on its own is dropped (the Qt app's
+	// _set_entity_color).
+	for (FAerotelicBody& Body : Bodies)
+	{
+		Body.bHasColor = false;
+	}
+	ApplyColors();
+}
+
+void AAerotelicEntityActor::SetBodyColor(int32 Index, TOptional<FLinearColor> InColor)
+{
+	if (!Bodies.IsValidIndex(Index))
+	{
+		return;
+	}
+	Bodies[Index].bHasColor = InColor.IsSet();
+	if (InColor.IsSet())
+	{
+		Bodies[Index].Color = InColor.GetValue();
+	}
+	ApplyColors();
+}
+
+void AAerotelicEntityActor::ApplyColors()
+{
+	// BasicShapeMaterial exposes its base colour as the "Color" vector
+	// parameter. The selection tint overrides every body's colour while
+	// the entity is selected.
+	for (int32 i = 0; i < BodyMaterials.Num(); ++i)
+	{
+		if (BodyMaterials[i] != nullptr)
+		{
+			BodyMaterials[i]->SetVectorParameterValue(TEXT("Color"), bSelected ? kSelectedColor : GetBodyDisplayColor(i));
+		}
+	}
+	// The mirror inherits its source body's colour (REQ-VIZ-020).
+	for (int32 i = 0; i < MirrorMaterials.Num(); ++i)
+	{
+		if (MirrorMaterials[i] != nullptr)
+		{
+			MirrorMaterials[i]->SetVectorParameterValue(TEXT("Color"), bSelected ? kSelectedColor : GetBodyDisplayColor(i));
+		}
 	}
 }
 
@@ -120,14 +251,68 @@ void AAerotelicEntityActor::SetSelected(bool bInSelected)
 		return;
 	}
 	bSelected = bInSelected;
-	ApplySelectionTint();
+	ApplyColors();
 }
+
+// ------------------------------------------------------------ visibility
 
 void AAerotelicEntityActor::SetEntityVisible(bool bVisible)
 {
 	SetActorHiddenInGame(!bVisible);
 	SetActorEnableCollision(bVisible);
 }
+
+FString AAerotelicEntityActor::GetBodyDisplayName(int32 Index) const
+{
+	return FString::Printf(TEXT("%s-%d"), *EntityName, Index + 1);
+}
+
+void AAerotelicEntityActor::SetBodyVisible(int32 Index, bool bVisible)
+{
+	if (!Bodies.IsValidIndex(Index))
+	{
+		return;
+	}
+	Bodies[Index].bVisible = bVisible;
+	if (ProxyMesh != nullptr)
+	{
+		ProxyMesh->SetMeshSectionVisible(Index, bVisible);
+	}
+	if (MirrorMesh != nullptr)
+	{
+		MirrorMesh->SetMeshSectionVisible(Index, bVisible && Bodies[Index].bMirrorVisible);
+	}
+}
+
+bool AAerotelicEntityActor::IsBodyVisible(int32 Index) const
+{
+	return Bodies.IsValidIndex(Index) && Bodies[Index].bVisible;
+}
+
+void AAerotelicEntityActor::SetMirrorBodyVisible(int32 Index, bool bVisible)
+{
+	if (!Bodies.IsValidIndex(Index))
+	{
+		return;
+	}
+	Bodies[Index].bMirrorVisible = bVisible;
+	if (MirrorMesh != nullptr)
+	{
+		MirrorMesh->SetMeshSectionVisible(Index, bVisible && Bodies[Index].bVisible);
+	}
+}
+
+bool AAerotelicEntityActor::IsMirrorBodyVisible(int32 Index) const
+{
+	return Bodies.IsValidIndex(Index) && Bodies[Index].bMirrorVisible;
+}
+
+FString AAerotelicEntityActor::GetMirrorBodyDisplayName(int32 Index) const
+{
+	return FString::Printf(TEXT("%s-%d-mirror"), *EntityName, Index + 1);
+}
+
+AAerotelicEntityActor::FOnAerotelicBodiesChanged AAerotelicEntityActor::OnBodiesChanged;
 
 FBox AAerotelicEntityActor::GetVisibleWorldBounds() const
 {
@@ -140,6 +325,10 @@ FBox AAerotelicEntityActor::GetVisibleWorldBounds() const
 	{
 		Box += ProxyMesh->Bounds.GetBox();
 	}
+	if (MirrorMesh != nullptr && MirrorMesh->IsVisible())
+	{
+		Box += MirrorMesh->Bounds.GetBox();
+	}
 	for (const UStaticMeshComponent* Edge : ProxyEdges)
 	{
 		if (Edge != nullptr && Edge->IsVisible())
@@ -149,6 +338,71 @@ FBox AAerotelicEntityActor::GetVisibleWorldBounds() const
 	}
 	return Box;
 }
+
+// ------------------------------------------------------------- mirroring
+
+void AAerotelicEntityActor::SetMirrored(bool bInMirrored)
+{
+	if (bMirrored == bInMirrored)
+	{
+		return;
+	}
+	bMirrored = bInMirrored;
+	if (bMirrored)
+	{
+		// The mirror is the only thing drawing that half now, so it starts
+		// visible.
+		for (FAerotelicBody& Body : Bodies)
+		{
+			Body.bMirrorVisible = true;
+		}
+	}
+	RefreshMirror();
+	OnBodiesChanged.Broadcast(this);
+}
+
+void AAerotelicEntityActor::RefreshMirror()
+{
+	if (MirrorMesh == nullptr || IsRunningCommandlet())
+	{
+		return;
+	}
+	if (!bMirrored || Model == nullptr)
+	{
+		MirrorMesh->ClearAllMeshSections();
+		MirrorMesh->SetVisibility(false);
+		MirrorMaterials.Reset();
+		return;
+	}
+
+	TopoDS_Shape Placed;
+	try
+	{
+		// Reflect the *placed* shape about Y = 0, as MirrorFeature does to
+		// EntityShapeFeature's result: an off-centreline boom lands on the
+		// other side, and a rotated propeller comes out the opposite hand.
+		const aerotelic::EntityTransform T = GetEntityTransform();
+		Placed = aerotelic::Place(Model->BuildSolid(), { T.tx, T.ty, T.tz }, { T.ax, T.ay, T.az }, T.angle_deg);
+		Placed = aerotelic::ApplyMirror(Placed, { 0.0, 0.0, 0.0 }, { 0.0, 1.0, 0.0 });
+	}
+	catch (const std::exception& e)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("AerotelicEntityActor: mirror of '%s' failed: %s"), *EntityName, UTF8_TO_TCHAR(e.what()));
+		MirrorMesh->ClearAllMeshSections();
+		MirrorMesh->SetVisibility(false);
+		return;
+	}
+
+	const TArray<FString> Roles = RefreshTessellatedMesh(Placed, MirrorMesh, MirrorMaterials);
+	MirrorMesh->SetVisibility(Roles.Num() > 0);
+	for (int32 i = 0; i < Roles.Num(); ++i)
+	{
+		MirrorMesh->SetMeshSectionVisible(i, !Bodies.IsValidIndex(i) || (Bodies[i].bVisible && Bodies[i].bMirrorVisible));
+	}
+	ApplyColors();
+}
+
+// ---------------------------------------------------------------- build
 
 void AAerotelicEntityActor::RefreshProxy()
 {
@@ -179,6 +433,7 @@ void AAerotelicEntityActor::RefreshProxy()
 		// hide both rather than show something stale or wrong.
 		UE_LOG(LogTemp, Warning, TEXT("AerotelicEntityActor: BuildSolid failed for '%s': %s"), *EntityName, UTF8_TO_TCHAR(e.what()));
 		ProxyMesh->SetVisibility(false);
+		MirrorMesh->SetVisibility(false);
 		for (UStaticMeshComponent* Edge : ProxyEdges)
 		{
 			Edge->SetVisibility(false);
@@ -186,9 +441,37 @@ void AAerotelicEntityActor::RefreshProxy()
 		return;
 	}
 
-	if (RefreshTessellatedMesh(Shape))
+	// Keep each body's display state across a rebuild by role name, so a
+	// hidden or recoloured blade stays so when the propeller is edited.
+	const TArray<FAerotelicBody> Previous = Bodies;
+	const TArray<FString> Roles = RefreshTessellatedMesh(Shape, ProxyMesh, BodyMaterials);
+	Bodies.Reset();
+	for (const FString& BodyRole : Roles)
+	{
+		FAerotelicBody Body;
+		Body.Name = BodyRole;
+		if (const FAerotelicBody* Old = Previous.FindByPredicate([&BodyRole](const FAerotelicBody& B) { return B.Name == BodyRole; }))
+		{
+			Body.bVisible = Old->bVisible;
+			Body.bMirrorVisible = Old->bMirrorVisible;
+			Body.bHasColor = Old->bHasColor;
+			Body.Color = Old->Color;
+		}
+		Bodies.Add(Body);
+	}
+	bool bBodiesChanged = Previous.Num() != Bodies.Num();
+	for (int32 i = 0; !bBodiesChanged && i < Bodies.Num(); ++i)
+	{
+		bBodiesChanged = Previous[i].Name != Bodies[i].Name;
+	}
+
+	if (Roles.Num() > 0)
 	{
 		ProxyMesh->SetVisibility(true);
+		for (int32 i = 0; i < Bodies.Num(); ++i)
+		{
+			ProxyMesh->SetMeshSectionVisible(i, Bodies[i].bVisible);
+		}
 		for (UStaticMeshComponent* Edge : ProxyEdges)
 		{
 			Edge->SetVisibility(false);
@@ -199,15 +482,29 @@ void AAerotelicEntityActor::RefreshProxy()
 		ProxyMesh->SetVisibility(false);
 		ShowBoxFallback(Shape);
 	}
+	ApplyColors();
+	RefreshMirror();
+	if (bBodiesChanged)
+	{
+		OnBodiesChanged.Broadcast(this);
+	}
 }
 
-bool AAerotelicEntityActor::RefreshTessellatedMesh(const TopoDS_Shape& Shape)
+TArray<FString> AAerotelicEntityActor::RefreshTessellatedMesh(const TopoDS_Shape& Shape,
+	UProceduralMeshComponent* Target, TArray<TObjectPtr<UMaterialInstanceDynamic>>& Materials)
 {
+	TArray<FString> Roles;
+	if (Target == nullptr)
+	{
+		return Roles;
+	}
+	Target->ClearAllMeshSections();
+
 	Bnd_Box Box;
 	BRepBndLib::AddOptimal(Shape, Box);
 	if (Box.IsVoid())
 	{
-		return false;
+		return Roles;
 	}
 	double Xmin, Ymin, Zmin, Xmax, Ymax, Zmax;
 	Box.Get(Xmin, Ymin, Zmin, Xmax, Ymax, Zmax);
@@ -219,92 +516,110 @@ bool AAerotelicEntityActor::RefreshTessellatedMesh(const TopoDS_Shape& Shape)
 	BRepMesh_IncrementalMesh Mesher(Shape, Deflection);
 	if (!Mesher.IsDone())
 	{
-		return false;
+		return Roles;
 	}
 
-	TArray<FVector> Vertices;
-	TArray<int32> Triangles;
+	UMaterialInterface* Base = BaseMaterial();
+	const TArray<TopoDS_Shape> Solids = TopLevelSolids(Shape);
+	TArray<TObjectPtr<UMaterialInstanceDynamic>> NewMaterials;
 
-	for (TopExp_Explorer FaceExp(Shape, TopAbs_FACE); FaceExp.More(); FaceExp.Next())
+	for (int32 s = 0; s < Solids.Num(); ++s)
 	{
-		const TopoDS_Face& Face = TopoDS::Face(FaceExp.Current());
-		TopLoc_Location Loc;
-		Handle(Poly_Triangulation) Tri = BRep_Tool::Triangulation(Face, Loc);
-		if (Tri.IsNull())
+		TArray<FVector> Vertices;
+		TArray<int32> Triangles;
+
+		for (TopExp_Explorer FaceExp(Solids[s], TopAbs_FACE); FaceExp.More(); FaceExp.Next())
+		{
+			const TopoDS_Face& Face = TopoDS::Face(FaceExp.Current());
+			TopLoc_Location Loc;
+			Handle(Poly_Triangulation) Tri = BRep_Tool::Triangulation(Face, Loc);
+			if (Tri.IsNull())
+			{
+				continue;
+			}
+			const gp_Trsf& Trsf = Loc.Transformation();
+			const bool bReversed = (Face.Orientation() == TopAbs_REVERSED);
+
+			const int32 BaseIndex = Vertices.Num();
+			for (int32 i = 1; i <= Tri->NbNodes(); ++i)
+			{
+				gp_Pnt P = Tri->Node(i);
+				P.Transform(Trsf);
+				// 1 model unit = 1 Unreal unit (cm), same convention the proxy
+				// box used -- no axis conversion, so OCCT's right-handed
+				// winding needs correcting for UE's left-handed one below.
+				Vertices.Add(FVector(P.X(), P.Y(), P.Z()));
+			}
+			for (int32 i = 1; i <= Tri->NbTriangles(); ++i)
+			{
+				int32 n1, n2, n3;
+				Tri->Triangle(i).Get(n1, n2, n3);
+				if (bReversed)
+				{
+					Swap(n1, n2);
+				}
+				// Emit both windings: OCCT's right-handed convention mapped
+				// straight into UE's left-handed one flips which winding is
+				// "front", and getting that chirality fix exactly right without
+				// being able to look at it is a coin flip not worth getting
+				// wrong silently. Normals (below) are computed once from this
+				// same winding and stay correct for both; the duplicate index
+				// triple costs triangles, not correctness.
+				Triangles.Add(BaseIndex + n1 - 1);
+				Triangles.Add(BaseIndex + n2 - 1);
+				Triangles.Add(BaseIndex + n3 - 1);
+				Triangles.Add(BaseIndex + n1 - 1);
+				Triangles.Add(BaseIndex + n3 - 1);
+				Triangles.Add(BaseIndex + n2 - 1);
+			}
+		}
+
+		if (Triangles.Num() == 0)
 		{
 			continue;
 		}
-		const gp_Trsf& Trsf = Loc.Transformation();
-		const bool bReversed = (Face.Orientation() == TopAbs_REVERSED);
 
-		const int32 BaseIndex = Vertices.Num();
-		for (int32 i = 1; i <= Tri->NbNodes(); ++i)
+		// Smooth per-vertex normals, accumulated from one winding direction
+		// only (the first of each emitted pair) so the two duplicate triangles
+		// above don't cancel each other's contribution to zero.
+		TArray<FVector> Normals;
+		Normals.SetNumZeroed(Vertices.Num());
+		for (int32 t = 0; t < Triangles.Num(); t += 6)
 		{
-			gp_Pnt P = Tri->Node(i);
-			P.Transform(Trsf);
-			// 1 model unit = 1 Unreal unit (cm), same convention the proxy
-			// box used -- no axis conversion, so OCCT's right-handed
-			// winding needs correcting for UE's left-handed one below.
-			Vertices.Add(FVector(P.X(), P.Y(), P.Z()));
+			const FVector& A = Vertices[Triangles[t]];
+			const FVector& B = Vertices[Triangles[t + 1]];
+			const FVector& C = Vertices[Triangles[t + 2]];
+			const FVector FaceNormal = FVector::CrossProduct(B - A, C - A);
+			Normals[Triangles[t]] += FaceNormal;
+			Normals[Triangles[t + 1]] += FaceNormal;
+			Normals[Triangles[t + 2]] += FaceNormal;
 		}
-		for (int32 i = 1; i <= Tri->NbTriangles(); ++i)
+		for (FVector& N : Normals)
 		{
-			int32 n1, n2, n3;
-			Tri->Triangle(i).Get(n1, n2, n3);
-			if (bReversed)
-			{
-				Swap(n1, n2);
-			}
-			// Emit both windings: OCCT's right-handed convention mapped
-			// straight into UE's left-handed one flips which winding is
-			// "front", and getting that chirality fix exactly right without
-			// being able to look at it is a coin flip not worth getting
-			// wrong silently. Normals (below) are computed once from this
-			// same winding and stay correct for both; the duplicate index
-			// triple costs triangles, not correctness.
-			Triangles.Add(BaseIndex + n1 - 1);
-			Triangles.Add(BaseIndex + n2 - 1);
-			Triangles.Add(BaseIndex + n3 - 1);
-			Triangles.Add(BaseIndex + n1 - 1);
-			Triangles.Add(BaseIndex + n3 - 1);
-			Triangles.Add(BaseIndex + n2 - 1);
+			N = N.GetSafeNormal();
 		}
-	}
 
-	if (Triangles.Num() == 0)
-	{
-		return false;
-	}
+		const int32 Section = Roles.Num();
+		// bCreateCollision = true: the triangle mesh doubles as the pick
+		// geometry for the standalone app's click-to-select.
+		Target->CreateMeshSection(Section, Vertices, Triangles, Normals, TArray<FVector2D>(), TArray<FColor>(), TArray<FProcMeshTangent>(), true);
 
-	// Smooth per-vertex normals, accumulated from one winding direction
-	// only (the first of each emitted pair) so the two duplicate triangles
-	// above don't cancel each other's contribution to zero.
-	TArray<FVector> Normals;
-	Normals.SetNumZeroed(Vertices.Num());
-	for (int32 t = 0; t < Triangles.Num(); t += 6)
-	{
-		const FVector& A = Vertices[Triangles[t]];
-		const FVector& B = Vertices[Triangles[t + 1]];
-		const FVector& C = Vertices[Triangles[t + 2]];
-		const FVector FaceNormal = FVector::CrossProduct(B - A, C - A);
-		Normals[Triangles[t]] += FaceNormal;
-		Normals[Triangles[t + 1]] += FaceNormal;
-		Normals[Triangles[t + 2]] += FaceNormal;
+		// Reuse the section's material instance across rebuilds; make one
+		// the first time.
+		UMaterialInstanceDynamic* Mid = Materials.IsValidIndex(Section) ? Materials[Section].Get() : nullptr;
+		if (Mid == nullptr && Base != nullptr)
+		{
+			Mid = UMaterialInstanceDynamic::Create(Base, this);
+		}
+		if (Mid != nullptr)
+		{
+			Target->SetMaterial(Section, Mid);
+		}
+		NewMaterials.Add(Mid);
+		Roles.Add(RoleName(EntityType, s, Solids.Num()));
 	}
-	for (FVector& N : Normals)
-	{
-		N = N.GetSafeNormal();
-	}
-
-	// bCreateCollision = true: the triangle mesh doubles as the pick
-	// geometry for the standalone app's click-to-select.
-	ProxyMesh->CreateMeshSection(0, Vertices, Triangles, Normals, TArray<FVector2D>(), TArray<FColor>(), TArray<FProcMeshTangent>(), true);
-	EnsureMeshMaterial();
-	if (MeshMaterial != nullptr)
-	{
-		ProxyMesh->SetMaterial(0, MeshMaterial);
-	}
-	return true;
+	Materials = MoveTemp(NewMaterials);
+	return Roles;
 }
 
 void AAerotelicEntityActor::ShowBoxFallback(const TopoDS_Shape& Shape)
@@ -367,6 +682,8 @@ void AAerotelicEntityActor::ShowBoxFallback(const TopoDS_Shape& Shape)
 		ProxyEdges[i]->SetRelativeScale3D(Edges[i].Scale);
 	}
 }
+
+// ------------------------------------------------------------- placement
 
 aerotelic::EntityTransform AAerotelicEntityActor::GetEntityTransform() const
 {

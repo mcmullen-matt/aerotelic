@@ -10,11 +10,27 @@ class STableViewBase;
 
 DECLARE_DELEGATE_OneParam(FOnAerotelicStatus, const FText&);
 
+// One row of the scene tree -- the Slate form of WingDesigner's
+// (kind, entity, body) row key. The list is the list of parameterisations:
+// each entity is a row, with a child row per solid body it produces (the
+// one solid of a fuselage; a propeller's spinner and blades) and, when the
+// entity is mirrored, a child row per mirrored body.
+struct FAerotelicSceneRow
+{
+	enum class EKind : uint8 { Entity, Body, Mirror };
+
+	EKind Kind = EKind::Entity;
+	TWeakObjectPtr<AAerotelicEntityActor> Entity;
+	int32 BodyIndex = INDEX_NONE; // Body / Mirror rows: which body
+	TArray<TSharedPtr<FAerotelicSceneRow>> Children;
+};
+
 // The scene tree beside the 3D view (main_window.py's _make_entity_tree):
-// one row per entity with a visibility checkbox, its name and kind; click to
-// select, double-click to edit, right-click for Hide/Show, Edit, Rename,
-// Transform, Color, Mirrored and Delete. Body child rows (a wing parted
-// into several solids) are not ported yet -- entities render as one mesh.
+// entity rows with a visibility checkbox, name, colour swatch and kind;
+// body and mirror rows beneath with their own checkbox. Click to select
+// (a body row selects its entity), double-click to edit, right-click for
+// the row's menu: an entity's Hide/Show, Edit, Rename, Transform, Color,
+// Mirrored and Delete; a body's Hide/Show and Color.
 class SAerotelicSceneTree : public SCompoundWidget
 {
 public:
@@ -30,20 +46,25 @@ public:
 	static void EditEntity(AAerotelicEntityActor* Entity);
 
 private:
-	using FItem = TWeakObjectPtr<AAerotelicEntityActor>;
+	using FItem = TSharedPtr<FAerotelicSceneRow>;
 
 	TSharedRef<ITableRow> GenerateRow(FItem Item, const TSharedRef<STableViewBase>& OwnerTable);
 	void GetChildren(FItem Item, TArray<FItem>& OutChildren);
 	void OnSelectionChanged(FItem Item, ESelectInfo::Type SelectInfo);
 	void OnDoubleClick(FItem Item);
 	TSharedPtr<SWidget> OnContextMenuOpening();
+	TSharedPtr<SWidget> MakeEntityMenu(FItem Item);
+	TSharedPtr<SWidget> MakeBodyMenu(FItem Item);
 
 	void RefreshItems();
+	void OnBodiesChanged(AAerotelicEntityActor* Entity);
 	void SyncSelectionFromDocument();
 	void Status(const FText& Text);
 
 	void RenameEntity(AAerotelicEntityActor* Entity);
 	void DeleteEntity(AAerotelicEntityActor* Entity);
+	void PickEntityColor(AAerotelicEntityActor* Entity);
+	void PickBodyColor(AAerotelicEntityActor* Entity, int32 BodyIndex);
 
 	TArray<FItem> Items;
 	TSharedPtr<STreeView<FItem>> Tree;
@@ -51,4 +72,5 @@ private:
 	FOnAerotelicStatus OnStatusDelegate;
 	FDelegateHandle ListChangedHandle;
 	FDelegateHandle SelectionChangedHandle;
+	FDelegateHandle BodiesChangedHandle;
 };

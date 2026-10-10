@@ -401,6 +401,13 @@ YAML::Node EncodeEntity(const ProjectEntity& e) {
 	YAML::Node model_node;
 	std::visit([&](const auto& spec) { model_node = Encode(spec); }, e.model);
 	n["model"] = model_node;
+	if (e.color) {
+		YAML::Node c;
+		for (double v : *e.color) c.push_back(v);
+		c.SetStyle(YAML::EmitterStyle::Flow);
+		n["color"] = c;
+	}
+	if (e.hidden) n["hidden"] = true;
 	return n;
 }
 
@@ -419,6 +426,11 @@ ProjectEntity DecodeEntity(const YAML::Node& node) {
 		case EntityType::Propeller: e.model = DecodePropellerSpec(model_node); break;
 		case EntityType::Primitive: e.model = DecodePrimitiveSpec(model_node); break;
 	}
+	if (node["color"] && node["color"].size() >= 3) {
+		const YAML::Node& c = node["color"];
+		e.color = std::array<double, 3>{c[0].as<double>(), c[1].as<double>(), c[2].as<double>()};
+	}
+	e.hidden = node["hidden"] ? node["hidden"].as<bool>() : false;
 	return e;
 }
 

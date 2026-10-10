@@ -57,6 +57,11 @@ bool UAerotelicDocumentSubsystem::ConfirmReplaceSceneIfNeeded() const
 	{
 		return true;
 	}
+	// No one to ask under a test commandlet or an unattended run.
+	if (IsRunningCommandlet() || FApp::IsUnattended())
+	{
+		return true;
+	}
 	const EAppReturnType::Type Result = FMessageDialog::Open(EAppMsgType::YesNo,
 		FText::FromString(TEXT("Clear the entire project and start with an empty scene?\nAll unsaved changes will be lost.")));
 	return Result == EAppReturnType::Yes;
@@ -419,6 +424,18 @@ bool UAerotelicDocumentSubsystem::OpenProjectPath(const FString& Path)
 		{
 			Actor->ApplyPlacement(Entity.placement);
 			Actor->RefreshProxy();
+			// Display state saved with the entity: the mirrored half, a
+			// colour override, hidden. Absent means the defaults.
+			Actor->SetMirrored(Entity.mirror);
+			if (Entity.color)
+			{
+				const auto& C = *Entity.color;
+				Actor->SetColorOverride(FLinearColor((float)C[0], (float)C[1], (float)C[2]));
+			}
+			if (Entity.hidden)
+			{
+				Actor->SetEntityVisible(false);
+			}
 		}
 	}
 	CurrentPath = Path;
@@ -445,8 +462,15 @@ bool UAerotelicDocumentSubsystem::SaveProjectToPath(const FString& Path)
 		ProjectEntity Pe;
 		Pe.name = TCHAR_TO_UTF8(*Entity->EntityName);
 		Pe.type = Entity->GetEntityType();
-		Pe.mirror = false;
+		Pe.mirror = Entity->IsMirrored();
 		Pe.placement = Entity->GetPlacement();
+		// Written only when set, as the Qt app does: defaults never reach
+		// the file.
+		if (const TOptional<FLinearColor> Color = Entity->GetColorOverride(); Color.IsSet())
+		{
+			Pe.color = std::array<double, 3>{ Color->R, Color->G, Color->B };
+		}
+		Pe.hidden = !Entity->IsEntityVisible();
 		switch (Pe.type)
 		{
 		case EntityType::Wing:

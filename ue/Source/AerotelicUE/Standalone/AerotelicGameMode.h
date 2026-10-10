@@ -20,9 +20,19 @@ public:
 	AAerotelicGameMode();
 
 	virtual void BeginPlay() override;
+	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 
 private:
 	void SpawnLighting();
 	void SpawnBackdrop();
+	void SpawnGround();
+	// Resizes the grid to the scene's footprint whenever the entity list
+	// changes, so a model of any size lands on a sensibly scaled floor.
+	void FitGroundToScene();
 	void OpenProjectFromCommandLine();
+
+	UPROPERTY()
+	TObjectPtr<class AAerotelicGridGround> Ground;
+
+	FDelegateHandle ListChangedHandle;
 };

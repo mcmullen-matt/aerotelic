@@ -33,7 +33,9 @@ namespace
 	// the window. Keep kViewToolbarWidth + kSceneTreeWidth in sync with
 	// kLeftColumnWidth in Widgets/AerotelicDialogWindow.cpp.
 	constexpr float kViewToolbarWidth = 40.0f;
-	constexpr float kSceneTreeWidth = 220.0f;
+	// 280 (the Qt tree's maximum) rather than ~200: body and mirror rows
+	// carry "<entity>-<n>-mirror" names plus a role annotation.
+	constexpr float kSceneTreeWidth = 280.0f;
 	constexpr float kIconSize = 30.0f;
 
 	const FLinearColor kPanelBg(0.09f, 0.09f, 0.10f, 1.0f);

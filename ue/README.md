@@ -35,9 +35,34 @@ The layout follows the Python/Qt version's main window (`aerotelic/ui/main_windo
   text-label icons. Adding an entity selects it and opens its design panel.
 * **Left edge**: Style / Orientation / Section dropdowns (Orientation works;
   the others are placeholders) and Rebuild.
-* **Scene tree**: one row per entity with a visibility checkbox. Click to
-  select, double-click to edit, right-click for Hide/Show, Edit, Rename,
-  Transform, Color (placeholder), Mirrored (placeholder), Delete.
+* **Scene tree**: the list of parameterisations, as in WingDesigner. Each
+  entity row has a visibility checkbox, a colour swatch, its name and kind,
+  and child rows for the solid bodies it produces (`<entity>-<n>` with the
+  role: Main, or a propeller's Spinner and Blade n) plus, when mirrored,
+  one `<entity>-<n>-mirror` row per body. Every row has its own checkbox.
+  Click to select (a body row selects its entity), double-click to edit,
+  right-click an entity for Hide/Show, Edit, Rename, Transform, Color,
+  Default Color, Mirrored (toggle), Delete; a body for Hide/Show, Color,
+  Entity's Color.
+* **Mirroring** (entity menu, Mirrored): a port-side copy reflected about
+  world Y = 0 from the *placed* shape, exactly WingDesigner's
+  MirrorFeature -- an off-centre boom lands on the other side and a
+  mirrored propeller comes out the opposite hand. It follows every move
+  and edit of its entity, inherits its colours, and is never edited on
+  its own. Saved as the entity's `mirror:` flag.
+* **Colour**: per entity and per body, chosen with the engine's own colour
+  picker (AppFramework's SColorPicker, no alpha). Defaults are
+  WingDesigner's per-kind colours (steel blue wing, green fuselage, bronze
+  nacelle, rose lofted nacelle, aluminium propeller, ochre primitive);
+  resolution is body override, else entity override, else default. Setting
+  an entity colour drops its bodies' overrides. Only overrides are saved
+  (`color: [r, g, b]`, 0..1), as the Qt app does; `hidden: true` is
+  saved too.
+* **Ground**: the GridCube-UE5.8 reference project's grid lattice (thin cube
+  instances over a dark base plane, engine basic shapes only) ported in
+  `Standalone/AerotelicGridGround`, scaled to model units (1-unit cells by
+  default) and refitted to the scene's footprint whenever the entity list
+  changes. It has no collision, so clicks on it still clear the selection.
 * **3D view** in the middle: left-drag orbits, right/middle-drag pans, wheel
   zooms, `F` frames the selected entity, `Home` frames everything. Clicking
   an object selects it (orange tint); clicking empty space clears the
