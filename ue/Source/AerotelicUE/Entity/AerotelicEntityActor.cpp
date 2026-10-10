@@ -35,6 +35,8 @@ namespace
 	// A warm orange tint for the one selected entity (the standalone app's
 	// stand-in for the Editor's selection outline).
 	const FLinearColor kSelectedColor(1.0f, 0.55f, 0.12f);
+	// occ_viewer.py _C_MESH_EDGE: the near-black of "Shaded with Edges".
+	const FLinearColor kMeshEdgeColor(0.02f, 0.02f, 0.03f);
 
 	UMaterialInterface* BaseMaterial()
 	{
@@ -54,6 +56,25 @@ namespace
 		return M;
 	}
 
+	UMaterialInterface* WireMaterial()
+	{
+		static TWeakObjectPtr<UMaterialInterface> Cached;
+		static bool bWarned = false;
+		if (Cached.IsValid())
+		{
+			return Cached.Get();
+		}
+		const FString Package = AAerotelicEntityActor::WireMaterialPackage();
+		UMaterialInterface* M = LoadObject<UMaterialInterface>(nullptr, *FString::Printf(TEXT("%s.%s"), *Package, *FPackageName::GetLongPackageAssetName(Package)));
+		if (M == nullptr && !bWarned)
+		{
+			bWarned = true;
+			UE_LOG(LogTemp, Warning, TEXT("AerotelicEntityActor: %s not found (run setup_materials.bat); the Shaded with Edges and Wireframe styles draw no edges."), *Package);
+		}
+		Cached = M;
+		return M;
+	}
+
 	void ApplyStyleTo(UMaterialInstanceDynamic* Mid, const FAerotelicSurfaceStyle& Style)
 	{
 		if (Mid != nullptr)
@@ -61,6 +82,17 @@ namespace
 			Mid->SetScalarParameterValue(TEXT("Metallic"), Style.Metallic);
 			Mid->SetScalarParameterValue(TEXT("Specular"), Style.Specular);
 			Mid->SetScalarParameterValue(TEXT("Roughness"), Style.Roughness);
+		}
+	}
+
+	void ApplyClipTo(UMaterialInstanceDynamic* Mid, const FAerotelicSectionPlane& Plane)
+	{
+		if (Mid != nullptr)
+		{
+			const FVector P = Plane.Point();
+			const FVector N = Plane.KeptNormal();
+			Mid->SetVectorParameterValue(TEXT("ClipPoint"), FLinearColor((float)P.X, (float)P.Y, (float)P.Z, 0.0f));
+			Mid->SetVectorParameterValue(TEXT("ClipNormal"), FLinearColor((float)N.X, (float)N.Y, (float)N.Z, 0.0f));
 		}
 	}
 
@@ -142,6 +174,25 @@ AAerotelicEntityActor::AAerotelicEntityActor()
 		MirrorMesh->SetUsingAbsoluteRotation(true);
 		MirrorMesh->SetUsingAbsoluteScale(true);
 		MirrorMesh->SetVisibility(false);
+
+		// The edge copies: no collision (the surface mesh is the pick
+		// geometry even when the style hides it), hidden until a style that
+		// draws edges is chosen.
+		auto MakeEdgeMesh = [this](const TCHAR* Name)
+		{
+			UProceduralMeshComponent* Mesh = CreateDefaultSubobject<UProceduralMeshComponent>(Name);
+			Mesh->SetupAttachment(ProxyRoot);
+			Mesh->SetMobility(EComponentMobility::Movable);
+			Mesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+			Mesh->SetCastShadow(false);
+			Mesh->SetVisibility(false);
+			return Mesh;
+		};
+		EdgeMesh = MakeEdgeMesh(TEXT("EdgeMesh"));
+		MirrorEdgeMesh = MakeEdgeMesh(TEXT("MirrorEdgeMesh"));
+		MirrorEdgeMesh->SetUsingAbsoluteLocation(true);
+		MirrorEdgeMesh->SetUsingAbsoluteRotation(true);
+		MirrorEdgeMesh->SetUsingAbsoluteScale(true);
 	}
 }
 
@@ -268,6 +319,23 @@ void AAerotelicEntityActor::ApplyColors()
 			MirrorMaterials[i]->SetVectorParameterValue(TEXT("Color"), bSelected ? kSelectedColor : GetBodyDisplayColor(i));
 		}
 	}
+	// Edges: near-black over a shaded surface, the body's own colour when
+	// they are all there is (occ_viewer.py _apply_style's SetEdgeColor).
+	const bool bWire = RenderStyle == EAerotelicRenderStyle::Wireframe;
+	for (int32 i = 0; i < EdgeMaterials.Num(); ++i)
+	{
+		if (EdgeMaterials[i] != nullptr)
+		{
+			EdgeMaterials[i]->SetVectorParameterValue(TEXT("Color"), bSelected ? kSelectedColor : (bWire ? GetBodyDisplayColor(i) : kMeshEdgeColor));
+		}
+	}
+	for (int32 i = 0; i < MirrorEdgeMaterials.Num(); ++i)
+	{
+		if (MirrorEdgeMaterials[i] != nullptr)
+		{
+			MirrorEdgeMaterials[i]->SetVectorParameterValue(TEXT("Color"), bSelected ? kSelectedColor : (bWire ? GetBodyDisplayColor(i) : kMeshEdgeColor));
+		}
+	}
 }
 
 FString AAerotelicEntityActor::SurfaceMaterialPackage()
@@ -275,10 +343,42 @@ FString AAerotelicEntityActor::SurfaceMaterialPackage()
 	return TEXT("/Game/Materials/M_AerotelicSurface");
 }
 
+FString AAerotelicEntityActor::WireMaterialPackage()
+{
+	return TEXT("/Game/Materials/M_AerotelicWire");
+}
+
 void AAerotelicEntityActor::ApplySurfaceStyle(const FAerotelicSurfaceStyle& Style)
 {
 	for (UMaterialInstanceDynamic* Mid : BodyMaterials) ApplyStyleTo(Mid, Style);
 	for (UMaterialInstanceDynamic* Mid : MirrorMaterials) ApplyStyleTo(Mid, Style);
+}
+
+void AAerotelicEntityActor::ApplyRenderStyle(EAerotelicRenderStyle Style)
+{
+	RenderStyle = Style;
+	ApplyMeshVisibility();
+	ApplyColors();
+}
+
+void AAerotelicEntityActor::ApplySectionPlane(const FAerotelicSectionPlane& Plane)
+{
+	for (UMaterialInstanceDynamic* Mid : BodyMaterials) ApplyClipTo(Mid, Plane);
+	for (UMaterialInstanceDynamic* Mid : MirrorMaterials) ApplyClipTo(Mid, Plane);
+	for (UMaterialInstanceDynamic* Mid : EdgeMaterials) ApplyClipTo(Mid, Plane);
+	for (UMaterialInstanceDynamic* Mid : MirrorEdgeMaterials) ApplyClipTo(Mid, Plane);
+}
+
+void AAerotelicEntityActor::ApplyMeshVisibility()
+{
+	// Which meshes the style shows. The surface mesh stays registered and
+	// collidable while hidden, so a wireframe body is still click-selectable.
+	const bool bSurface = RenderStyle != EAerotelicRenderStyle::Wireframe;
+	const bool bEdges = RenderStyle != EAerotelicRenderStyle::Shaded;
+	if (ProxyMesh != nullptr)      ProxyMesh->SetVisibility(bHasTessellation && bSurface);
+	if (EdgeMesh != nullptr)       EdgeMesh->SetVisibility(bHasTessellation && bEdges);
+	if (MirrorMesh != nullptr)     MirrorMesh->SetVisibility(bMirrorHasTessellation && bSurface);
+	if (MirrorEdgeMesh != nullptr) MirrorEdgeMesh->SetVisibility(bMirrorHasTessellation && bEdges);
 }
 
 void AAerotelicEntityActor::SetSelected(bool bInSelected)
@@ -318,6 +418,10 @@ void AAerotelicEntityActor::SetBodyVisible(int32 Index, bool bVisible)
 	{
 		ProxyMesh->SetMeshSectionVisible(Index, bVisible);
 	}
+	if (EdgeMesh != nullptr)
+	{
+		EdgeMesh->SetMeshSectionVisible(Index, bVisible);
+	}
 }
 
 bool AAerotelicEntityActor::IsBodyVisible(int32 Index) const
@@ -335,6 +439,10 @@ void AAerotelicEntityActor::SetMirrorBodyVisible(int32 Index, bool bVisible)
 	if (MirrorMesh != nullptr)
 	{
 		MirrorMesh->SetMeshSectionVisible(Index, bVisible);
+	}
+	if (MirrorEdgeMesh != nullptr)
+	{
+		MirrorEdgeMesh->SetMeshSectionVisible(Index, bVisible);
 	}
 }
 
@@ -357,11 +465,13 @@ FBox AAerotelicEntityActor::GetVisibleWorldBounds() const
 	{
 		return Box;
 	}
-	if (ProxyMesh != nullptr && ProxyMesh->IsVisible())
+	// The surface meshes' bounds stand for both copies, whichever the style
+	// is showing (in Wireframe the surface is hidden but its edges are not).
+	if (ProxyMesh != nullptr && bHasTessellation)
 	{
 		Box += ProxyMesh->Bounds.GetBox();
 	}
-	if (MirrorMesh != nullptr && MirrorMesh->IsVisible())
+	if (MirrorMesh != nullptr && bMirrorHasTessellation)
 	{
 		Box += MirrorMesh->Bounds.GetBox();
 	}
@@ -406,8 +516,11 @@ void AAerotelicEntityActor::RefreshMirror()
 	if (!bMirrored || Model == nullptr)
 	{
 		MirrorMesh->ClearAllMeshSections();
-		MirrorMesh->SetVisibility(false);
+		MirrorEdgeMesh->ClearAllMeshSections();
+		bMirrorHasTessellation = false;
+		ApplyMeshVisibility();
 		MirrorMaterials.Reset();
+		MirrorEdgeMaterials.Reset();
 		return;
 	}
 
@@ -425,15 +538,20 @@ void AAerotelicEntityActor::RefreshMirror()
 	{
 		UE_LOG(LogTemp, Warning, TEXT("AerotelicEntityActor: mirror of '%s' failed: %s"), *EntityName, UTF8_TO_TCHAR(e.what()));
 		MirrorMesh->ClearAllMeshSections();
-		MirrorMesh->SetVisibility(false);
+		MirrorEdgeMesh->ClearAllMeshSections();
+		bMirrorHasTessellation = false;
+		ApplyMeshVisibility();
 		return;
 	}
 
-	const TArray<FString> Roles = RefreshTessellatedMesh(Placed, MirrorMesh, MirrorMaterials);
-	MirrorMesh->SetVisibility(Roles.Num() > 0);
+	const TArray<FString> Roles = RefreshTessellatedMesh(Placed, MirrorMesh, MirrorMaterials, MirrorEdgeMesh, MirrorEdgeMaterials);
+	bMirrorHasTessellation = Roles.Num() > 0;
+	ApplyMeshVisibility();
 	for (int32 i = 0; i < Roles.Num(); ++i)
 	{
-		MirrorMesh->SetMeshSectionVisible(i, !Bodies.IsValidIndex(i) || Bodies[i].bMirrorVisible);
+		const bool bVisible = !Bodies.IsValidIndex(i) || Bodies[i].bMirrorVisible;
+		MirrorMesh->SetMeshSectionVisible(i, bVisible);
+		MirrorEdgeMesh->SetMeshSectionVisible(i, bVisible);
 	}
 	ApplyColors();
 }
@@ -468,8 +586,9 @@ void AAerotelicEntityActor::RefreshProxy()
 		// sections) must not leave either visual in a half-built state --
 		// hide both rather than show something stale or wrong.
 		UE_LOG(LogTemp, Warning, TEXT("AerotelicEntityActor: BuildSolid failed for '%s': %s"), *EntityName, UTF8_TO_TCHAR(e.what()));
-		ProxyMesh->SetVisibility(false);
-		MirrorMesh->SetVisibility(false);
+		bHasTessellation = false;
+		bMirrorHasTessellation = false;
+		ApplyMeshVisibility();
 		for (UStaticMeshComponent* Edge : ProxyEdges)
 		{
 			Edge->SetVisibility(false);
@@ -480,7 +599,7 @@ void AAerotelicEntityActor::RefreshProxy()
 	// Keep each body's display state across a rebuild by role name, so a
 	// hidden or recoloured blade stays so when the propeller is edited.
 	const TArray<FAerotelicBody> Previous = Bodies;
-	const TArray<FString> Roles = RefreshTessellatedMesh(Shape, ProxyMesh, BodyMaterials);
+	const TArray<FString> Roles = RefreshTessellatedMesh(Shape, ProxyMesh, BodyMaterials, EdgeMesh, EdgeMaterials);
 	Bodies.Reset();
 	for (const FString& BodyRole : Roles)
 	{
@@ -501,12 +620,14 @@ void AAerotelicEntityActor::RefreshProxy()
 		bBodiesChanged = Previous[i].Name != Bodies[i].Name;
 	}
 
-	if (Roles.Num() > 0)
+	bHasTessellation = Roles.Num() > 0;
+	ApplyMeshVisibility();
+	if (bHasTessellation)
 	{
-		ProxyMesh->SetVisibility(true);
 		for (int32 i = 0; i < Bodies.Num(); ++i)
 		{
 			ProxyMesh->SetMeshSectionVisible(i, Bodies[i].bVisible);
+			EdgeMesh->SetMeshSectionVisible(i, Bodies[i].bVisible);
 		}
 		for (UStaticMeshComponent* Edge : ProxyEdges)
 		{
@@ -515,7 +636,6 @@ void AAerotelicEntityActor::RefreshProxy()
 	}
 	else
 	{
-		ProxyMesh->SetVisibility(false);
 		ShowBoxFallback(Shape);
 	}
 	ApplyColors();
@@ -527,7 +647,8 @@ void AAerotelicEntityActor::RefreshProxy()
 }
 
 TArray<FString> AAerotelicEntityActor::RefreshTessellatedMesh(const TopoDS_Shape& Shape,
-	UProceduralMeshComponent* Target, TArray<TObjectPtr<UMaterialInstanceDynamic>>& Materials)
+	UProceduralMeshComponent* Target, TArray<TObjectPtr<UMaterialInstanceDynamic>>& Materials,
+	UProceduralMeshComponent* EdgeTarget, TArray<TObjectPtr<UMaterialInstanceDynamic>>& EdgeMaterialsOut)
 {
 	TArray<FString> Roles;
 	if (Target == nullptr)
@@ -535,6 +656,10 @@ TArray<FString> AAerotelicEntityActor::RefreshTessellatedMesh(const TopoDS_Shape
 		return Roles;
 	}
 	Target->ClearAllMeshSections();
+	if (EdgeTarget != nullptr)
+	{
+		EdgeTarget->ClearAllMeshSections();
+	}
 
 	Bnd_Box Box;
 	BRepBndLib::AddOptimal(Shape, Box);
@@ -556,8 +681,11 @@ TArray<FString> AAerotelicEntityActor::RefreshTessellatedMesh(const TopoDS_Shape
 	}
 
 	UMaterialInterface* Base = BaseMaterial();
+	UMaterialInterface* Wire = WireMaterial();
 	const TArray<TopoDS_Shape> Solids = TopLevelSolids(Shape);
 	TArray<TObjectPtr<UMaterialInstanceDynamic>> NewMaterials;
+	TArray<TObjectPtr<UMaterialInstanceDynamic>> NewEdgeMaterials;
+	UAerotelicDocumentSubsystem* Doc = UAerotelicDocumentSubsystem::Get();
 
 	for (int32 s = 0; s < Solids.Num(); ++s)
 	{
@@ -641,14 +769,16 @@ TArray<FString> AAerotelicEntityActor::RefreshTessellatedMesh(const TopoDS_Shape
 		Target->CreateMeshSection(Section, Vertices, Triangles, Normals, TArray<FVector2D>(), TArray<FColor>(), TArray<FProcMeshTangent>(), true);
 
 		// Reuse the section's material instance across rebuilds; make one
-		// the first time.
+		// the first time. A new instance picks up the scene-wide finish and
+		// section plane itself.
 		UMaterialInstanceDynamic* Mid = Materials.IsValidIndex(Section) ? Materials[Section].Get() : nullptr;
 		if (Mid == nullptr && Base != nullptr)
 		{
 			Mid = UMaterialInstanceDynamic::Create(Base, this);
-			if (UAerotelicDocumentSubsystem* Doc = UAerotelicDocumentSubsystem::Get())
+			if (Doc != nullptr)
 			{
 				ApplyStyleTo(Mid, Doc->GetSurfaceStyle());
+				ApplyClipTo(Mid, Doc->GetSectionPlane());
 			}
 		}
 		if (Mid != nullptr)
@@ -656,9 +786,30 @@ TArray<FString> AAerotelicEntityActor::RefreshTessellatedMesh(const TopoDS_Shape
 			Target->SetMaterial(Section, Mid);
 		}
 		NewMaterials.Add(Mid);
+
+		// The edge copy: same triangles, wireframe material, no collision.
+		if (EdgeTarget != nullptr)
+		{
+			EdgeTarget->CreateMeshSection(Section, Vertices, Triangles, Normals, TArray<FVector2D>(), TArray<FColor>(), TArray<FProcMeshTangent>(), false);
+			UMaterialInstanceDynamic* EdgeMid = EdgeMaterialsOut.IsValidIndex(Section) ? EdgeMaterialsOut[Section].Get() : nullptr;
+			if (EdgeMid == nullptr && Wire != nullptr)
+			{
+				EdgeMid = UMaterialInstanceDynamic::Create(Wire, this);
+				if (Doc != nullptr)
+				{
+					ApplyClipTo(EdgeMid, Doc->GetSectionPlane());
+				}
+			}
+			if (EdgeMid != nullptr)
+			{
+				EdgeTarget->SetMaterial(Section, EdgeMid);
+			}
+			NewEdgeMaterials.Add(EdgeMid);
+		}
 		Roles.Add(RoleName(EntityType, s, Solids.Num()));
 	}
 	Materials = MoveTemp(NewMaterials);
+	EdgeMaterialsOut = MoveTemp(NewEdgeMaterials);
 	return Roles;
 }
 

@@ -40,13 +40,13 @@ void FAerotelicCommands::RegisterCommands()
 
 	// Left toolbar dropdowns (_setup_panel_toolbar)
 	UI_COMMAND(StyleShaded, "Shaded", "Draw the bodies shaded", EUserInterfaceActionType::RadioButton, FInputChord());
-	UI_COMMAND(StyleShadedEdges, "Shaded with Edges", "Draw the bodies shaded, with the triangulation's edges. Not available yet in this version.", EUserInterfaceActionType::RadioButton, FInputChord());
-	UI_COMMAND(StyleWireframe, "Wireframe", "Draw the triangulation's edges alone. Not available yet in this version.", EUserInterfaceActionType::RadioButton, FInputChord());
+	UI_COMMAND(StyleShadedEdges, "Shaded with Edges", "Draw the bodies shaded, with the triangulation's edges", EUserInterfaceActionType::RadioButton, FInputChord());
+	UI_COMMAND(StyleWireframe, "Wireframe", "Draw the triangulation's edges alone", EUserInterfaceActionType::RadioButton, FInputChord());
 	UI_COMMAND(SectionNone, "None", "No section cut", EUserInterfaceActionType::RadioButton, FInputChord());
-	UI_COMMAND(SectionX, "X Plane", "Cut the bodies with a plane normal to X. Not available yet in this version.", EUserInterfaceActionType::RadioButton, FInputChord());
-	UI_COMMAND(SectionY, "Y Plane", "Cut the bodies with a plane normal to Y. Not available yet in this version.", EUserInterfaceActionType::RadioButton, FInputChord());
-	UI_COMMAND(SectionZ, "Z Plane", "Cut the bodies with a plane normal to Z. Not available yet in this version.", EUserInterfaceActionType::RadioButton, FInputChord());
-	UI_COMMAND(SectionFlip, "Flip Side", "Hide the other side of the section plane. Not available yet in this version.", EUserInterfaceActionType::ToggleButton, FInputChord());
+	UI_COMMAND(SectionX, "X Plane", "Cut the bodies with a plane normal to X; drag the arrow in the view to move it", EUserInterfaceActionType::RadioButton, FInputChord());
+	UI_COMMAND(SectionY, "Y Plane", "Cut the bodies with a plane normal to Y; drag the arrow in the view to move it", EUserInterfaceActionType::RadioButton, FInputChord());
+	UI_COMMAND(SectionZ, "Z Plane", "Cut the bodies with a plane normal to Z; drag the arrow in the view to move it", EUserInterfaceActionType::RadioButton, FInputChord());
+	UI_COMMAND(SectionFlip, "Flip Side", "Hide the other side of the section plane", EUserInterfaceActionType::ToggleButton, FInputChord());
 
 	// Help
 	UI_COMMAND(WelcomeScreen, "Welcome Screen...", "The welcome screen: licence state, the legal text, the tutorial projects", EUserInterfaceActionType::Button, FInputChord());

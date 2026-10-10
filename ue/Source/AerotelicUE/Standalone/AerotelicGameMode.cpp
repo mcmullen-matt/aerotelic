@@ -16,6 +16,7 @@
 #include "AerotelicCameraPawn.h"
 #include "AerotelicGridGround.h"
 #include "AerotelicPlayerController.h"
+#include "AerotelicSectionGizmo.h"
 #include "Entity/AerotelicDocumentSubsystem.h"
 #include "Entity/AerotelicEntityActor.h"
 
@@ -58,6 +59,8 @@ void AAerotelicGameMode::SpawnGround()
 	Params.ObjectFlags |= RF_Transient;
 	Ground = World->SpawnActor<AAerotelicGridGround>(FVector::ZeroVector, FRotator::ZeroRotator, Params);
 	FitGroundToScene();
+	// The section plane's handle; hidden until a Section axis is chosen.
+	World->SpawnActor<AAerotelicSectionGizmo>(FVector::ZeroVector, FRotator::ZeroRotator, Params);
 }
 
 void AAerotelicGameMode::FitGroundToScene()

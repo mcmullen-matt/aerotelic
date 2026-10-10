@@ -7,19 +7,9 @@
 
 #include "aerotelic/solid_model.hpp"
 #include "aerotelic/project_yaml.hpp"
+#include "AerotelicViewStyle.h"
 
 #include "AerotelicEntityActor.generated.h"
-
-// The finish every body is drawn with -- View -> Surface... sets it for the
-// whole scene. Metallic 0..1; Specular 0..1 (how strong the highlights
-// are, "glossy"); Roughness 0..1 (how blurred the reflections are, 0 is a
-// mirror polish). The defaults are the surface material's own.
-struct FAerotelicSurfaceStyle
-{
-	float Metallic = 0.0f;
-	float Specular = 0.5f;
-	float Roughness = 0.5f;
-};
 
 // One solid the entity's parameterisation produces. Most entities make a
 // single "Main" body; a propeller makes a Spinner and one Blade per blade.
@@ -124,16 +114,26 @@ public:
 	FLinearColor GetDisplayColor() const;
 	static FLinearColor DefaultColorFor(aerotelic::project_yaml::EntityType Type);
 
-	// ---- surface finish ----
+	// ---- surface finish, style, section ----
 
 	// Re-applies the scene-wide finish to every body and mirror material.
 	// The document subsystem calls this on all entities when the style
 	// changes; a freshly built body picks the current style up itself.
 	void ApplySurfaceStyle(const FAerotelicSurfaceStyle& Style);
+	// Shaded / Shaded with Edges / Wireframe: which of the surface and the
+	// edge meshes are shown and what colour the edges take.
+	void ApplyRenderStyle(EAerotelicRenderStyle Style);
+	// The section plane, as the materials' ClipPoint/ClipNormal parameters
+	// (world space, so a moved entity needs nothing re-done).
+	void ApplySectionPlane(const FAerotelicSectionPlane& Plane);
 	// "/Game/Materials/M_AerotelicSurface" -- the asset
 	// AerotelicMaterialSetupCommandlet authors. Falls back to the engine's
 	// BasicShapeMaterial (colour only) if the asset is missing.
 	static FString SurfaceMaterialPackage();
+	// "/Game/Materials/M_AerotelicWire": the unlit wireframe material the
+	// edge meshes use (same commandlet). No fallback: without it the
+	// Shaded with Edges / Wireframe styles draw no edges.
+	static FString WireMaterialPackage();
 
 	// ---- mirroring ----
 
@@ -186,6 +186,15 @@ private:
 	UPROPERTY(VisibleAnywhere, Category = "Aerotelic")
 	TObjectPtr<class UProceduralMeshComponent> MirrorMesh;
 
+	// The same triangles again, drawn with the wireframe material: the
+	// edges of "Shaded with Edges" and all of "Wireframe". No collision --
+	// picking goes through the surface mesh even while it is hidden.
+	UPROPERTY(VisibleAnywhere, Category = "Aerotelic")
+	TObjectPtr<class UProceduralMeshComponent> EdgeMesh;
+
+	UPROPERTY(VisibleAnywhere, Category = "Aerotelic")
+	TObjectPtr<class UProceduralMeshComponent> MirrorEdgeMesh;
+
 	// One dynamic material per body per mesh, so a body's colour and the
 	// selection tint can be set without touching its siblings.
 	UPROPERTY()
@@ -195,23 +204,37 @@ private:
 	TArray<TObjectPtr<class UMaterialInstanceDynamic>> MirrorMaterials;
 
 	UPROPERTY()
+	TArray<TObjectPtr<class UMaterialInstanceDynamic>> EdgeMaterials;
+
+	UPROPERTY()
+	TArray<TObjectPtr<class UMaterialInstanceDynamic>> MirrorEdgeMaterials;
+
+	UPROPERTY()
 	TArray<FAerotelicBody> Bodies;
 
 	aerotelic::project_yaml::EntityType EntityType = aerotelic::project_yaml::EntityType::Primitive;
 	std::unique_ptr<aerotelic::ISolidModel> Model;
 	bool bSelected = false;
 	bool bMirrored = false;
+	// Whether the surface/mirror meshes hold any triangles (else the box
+	// fallback, or nothing, is on screen).
+	bool bHasTessellation = false;
+	bool bMirrorHasTessellation = false;
+	EAerotelicRenderStyle RenderStyle = EAerotelicRenderStyle::Shaded;
 	TOptional<FLinearColor> ColorOverride;
 	FDelegateHandle TransformHandle;
 
 	void EnsureProxyEdges();
 	void ApplyColors();
+	void ApplyMeshVisibility();
 	void ShowBoxFallback(const TopoDS_Shape& Shape);
-	// Tessellates Shape into Target, one section per top-level solid.
-	// Returns the role names of the sections written, empty if there was
-	// nothing to tessellate (caller falls back to ShowBoxFallback()).
+	// Tessellates Shape into Target (surface material) and EdgeTarget
+	// (wireframe material), one section per top-level solid. Returns the
+	// role names of the sections written, empty if there was nothing to
+	// tessellate (caller falls back to ShowBoxFallback()).
 	TArray<FString> RefreshTessellatedMesh(const TopoDS_Shape& Shape,
-		class UProceduralMeshComponent* Target, TArray<TObjectPtr<class UMaterialInstanceDynamic>>& Materials);
+		class UProceduralMeshComponent* Target, TArray<TObjectPtr<class UMaterialInstanceDynamic>>& Materials,
+		class UProceduralMeshComponent* EdgeTarget, TArray<TObjectPtr<class UMaterialInstanceDynamic>>& EdgeMaterialsOut);
 	// Rebuilds MirrorMesh from the placed-then-reflected shape. Cheap no-op
 	// when the entity is not mirrored.
 	void RefreshMirror();

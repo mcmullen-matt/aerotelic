@@ -66,6 +66,72 @@ void UAerotelicDocumentSubsystem::SetSurfaceStyle(const FAerotelicSurfaceStyle& 
 	}
 }
 
+void UAerotelicDocumentSubsystem::SetRenderStyle(EAerotelicRenderStyle Style)
+{
+	RenderStyle = Style;
+	for (auto& WeakEntity : Entities)
+	{
+		if (WeakEntity.IsValid())
+		{
+			WeakEntity->ApplyRenderStyle(Style);
+		}
+	}
+}
+
+void UAerotelicDocumentSubsystem::ApplySectionPlaneToEntities()
+{
+	for (auto& WeakEntity : Entities)
+	{
+		if (WeakEntity.IsValid())
+		{
+			WeakEntity->ApplySectionPlane(SectionPlane);
+		}
+	}
+	OnSectionChanged.Broadcast();
+}
+
+void UAerotelicDocumentSubsystem::SetSectionAxis(EAerotelicSectionAxis Axis)
+{
+	SectionPlane.Axis = Axis;
+	if (Axis != EAerotelicSectionAxis::None)
+	{
+		// view_gizmo.py set_axis: start at the midpoint of the scene box
+		// along the chosen axis (the origin when the scene is empty).
+		const FBox Bounds = GetSceneBounds();
+		SectionPlane.Position = Bounds.IsValid ? Bounds.GetCenter()[FAerotelicSectionPlane::AxisIndex(Axis)] : 0.0;
+	}
+	ApplySectionPlaneToEntities();
+}
+
+void UAerotelicDocumentSubsystem::SetSectionFlipped(bool bFlipped)
+{
+	SectionPlane.bFlipped = bFlipped;
+	ApplySectionPlaneToEntities();
+}
+
+void UAerotelicDocumentSubsystem::SetSectionPosition(double Position)
+{
+	SectionPlane.Position = Position;
+	ApplySectionPlaneToEntities();
+}
+
+FBox UAerotelicDocumentSubsystem::GetSceneBounds() const
+{
+	FBox All(ForceInit);
+	for (const auto& WeakEntity : Entities)
+	{
+		if (WeakEntity.IsValid())
+		{
+			const FBox Box = WeakEntity->GetVisibleWorldBounds();
+			if (Box.IsValid)
+			{
+				All += Box;
+			}
+		}
+	}
+	return All;
+}
+
 bool UAerotelicDocumentSubsystem::ConfirmReplaceSceneIfNeeded() const
 {
 	if (Entities.Num() == 0)
@@ -139,6 +205,7 @@ AAerotelicEntityActor* UAerotelicDocumentSubsystem::SpawnEntity(EntityType Type,
 	}
 #endif
 	Actor->InitializeFrom(Type, std::move(Model), Name);
+	Actor->ApplyRenderStyle(RenderStyle);
 	Entities.Add(Actor);
 	OnEntityListChanged.Broadcast();
 	return Actor;

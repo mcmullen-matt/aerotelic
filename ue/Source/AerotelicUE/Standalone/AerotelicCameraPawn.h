@@ -67,6 +67,9 @@ private:
 	// Drag tracking (screen pixels).
 	bool bDragging = false;
 	bool bDragIsLeftButton = false;
+	// A left press on the section gizmo's arrow moves the section plane
+	// instead of orbiting (and never counts as a click-select).
+	bool bDraggingSection = false;
 	FVector2D LastMouse = FVector2D::ZeroVector;
 	double DragTravel = 0.0;
 
@@ -82,4 +85,8 @@ private:
 	void Pan(double DeltaX, double DeltaY, const FVector2D& ViewportSize);
 	void Zoom(double Factor);
 	void ClickSelect(class APlayerController* PC);
+	// True (and the drag begun) if the cursor is over the section gizmo's
+	// arrow handle.
+	bool TryBeginSectionDrag(class APlayerController* PC);
+	void ContinueSectionDrag(class APlayerController* PC);
 };

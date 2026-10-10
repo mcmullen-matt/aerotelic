@@ -85,6 +85,29 @@ public:
 	const FAerotelicSurfaceStyle& GetSurfaceStyle() const { return SurfaceStyle; }
 	void SetSurfaceStyle(const FAerotelicSurfaceStyle& Style);
 
+	// The Style dropdown (occ_viewer.py set_render_style). Not saved either;
+	// every launch starts Shaded, as the Qt app does.
+	EAerotelicRenderStyle GetRenderStyle() const { return RenderStyle; }
+	void SetRenderStyle(EAerotelicRenderStyle Style);
+
+	// The Section dropdown (view_gizmo.py SectionPlane). Choosing an axis
+	// starts the plane at the middle of the scene along it; the gizmo's
+	// drag moves it (SetSectionPosition, clamped by the caller to the scene
+	// plus a margin); Flip Side keeps the other half.
+	const FAerotelicSectionPlane& GetSectionPlane() const { return SectionPlane; }
+	void SetSectionAxis(EAerotelicSectionAxis Axis);
+	void SetSectionFlipped(bool bFlipped);
+	void SetSectionPosition(double Position);
+
+	// Union of every visible entity's world bounds (the mirrored halves
+	// included); invalid when the scene is empty or everything is hidden.
+	FBox GetSceneBounds() const;
+
+	// Fired after the section plane changes in any way (axis, side,
+	// position) -- the gizmo actor follows it.
+	DECLARE_MULTICAST_DELEGATE(FOnSectionChanged);
+	FOnSectionChanged OnSectionChanged;
+
 	// Fired after the entity list changes shape (add/remove/New/Open) --
 	// not on every in-place edit, which is each entity's own OnChanged.
 	DECLARE_MULTICAST_DELEGATE(FOnEntityListChanged);
@@ -108,4 +131,8 @@ private:
 
 	FString CurrentPath;
 	FAerotelicSurfaceStyle SurfaceStyle;
+	EAerotelicRenderStyle RenderStyle = EAerotelicRenderStyle::Shaded;
+	FAerotelicSectionPlane SectionPlane;
+
+	void ApplySectionPlaneToEntities();
 };

@@ -331,15 +331,33 @@ void SAerotelicMainShell::BindCommands()
 	Commands->MapAction(C.SurfaceStyle, FExecuteAction::CreateLambda([]() { OpenAerotelicSurfaceDialog(); }));
 	Commands->MapAction(C.Rebuild, FExecuteAction::CreateSP(this, &SAerotelicMainShell::OnRebuild));
 
-	// Style / Section dropdowns: only the current defaults are selectable.
-	Commands->MapAction(C.StyleShaded, FExecuteAction::CreateLambda([]() {}), FCanExecuteAction(), FIsActionChecked::CreateLambda([]() { return true; }));
-	Commands->MapAction(C.StyleShadedEdges, FExecuteAction(), Never(), FIsActionChecked::CreateLambda([]() { return false; }));
-	Commands->MapAction(C.StyleWireframe, FExecuteAction(), Never(), FIsActionChecked::CreateLambda([]() { return false; }));
-	Commands->MapAction(C.SectionNone, FExecuteAction::CreateLambda([]() {}), FCanExecuteAction(), FIsActionChecked::CreateLambda([]() { return true; }));
-	Commands->MapAction(C.SectionX, FExecuteAction(), Never(), FIsActionChecked::CreateLambda([]() { return false; }));
-	Commands->MapAction(C.SectionY, FExecuteAction(), Never(), FIsActionChecked::CreateLambda([]() { return false; }));
-	Commands->MapAction(C.SectionZ, FExecuteAction(), Never(), FIsActionChecked::CreateLambda([]() { return false; }));
-	Commands->MapAction(C.SectionFlip, FExecuteAction(), Never(), FIsActionChecked::CreateLambda([]() { return false; }));
+	// Style / Section dropdowns (occ_viewer.py set_render_style /
+	// view_gizmo.py SectionPlane), radio groups ticked from the document.
+	auto StyleAction = [this](TSharedPtr<FUICommandInfo> Cmd, EAerotelicRenderStyle Style)
+	{
+		Commands->MapAction(Cmd,
+			FExecuteAction::CreateLambda([Style]() { if (UAerotelicDocumentSubsystem* Doc = UAerotelicDocumentSubsystem::Get()) Doc->SetRenderStyle(Style); }),
+			FCanExecuteAction(),
+			FIsActionChecked::CreateLambda([Style]() { UAerotelicDocumentSubsystem* Doc = UAerotelicDocumentSubsystem::Get(); return Doc != nullptr && Doc->GetRenderStyle() == Style; }));
+	};
+	StyleAction(C.StyleShaded, EAerotelicRenderStyle::Shaded);
+	StyleAction(C.StyleShadedEdges, EAerotelicRenderStyle::ShadedEdges);
+	StyleAction(C.StyleWireframe, EAerotelicRenderStyle::Wireframe);
+	auto SectionAction = [this](TSharedPtr<FUICommandInfo> Cmd, EAerotelicSectionAxis Axis)
+	{
+		Commands->MapAction(Cmd,
+			FExecuteAction::CreateLambda([Axis]() { if (UAerotelicDocumentSubsystem* Doc = UAerotelicDocumentSubsystem::Get()) Doc->SetSectionAxis(Axis); }),
+			FCanExecuteAction(),
+			FIsActionChecked::CreateLambda([Axis]() { UAerotelicDocumentSubsystem* Doc = UAerotelicDocumentSubsystem::Get(); return Doc != nullptr && Doc->GetSectionPlane().Axis == Axis; }));
+	};
+	SectionAction(C.SectionNone, EAerotelicSectionAxis::None);
+	SectionAction(C.SectionX, EAerotelicSectionAxis::X);
+	SectionAction(C.SectionY, EAerotelicSectionAxis::Y);
+	SectionAction(C.SectionZ, EAerotelicSectionAxis::Z);
+	Commands->MapAction(C.SectionFlip,
+		FExecuteAction::CreateLambda([]() { if (UAerotelicDocumentSubsystem* Doc = UAerotelicDocumentSubsystem::Get()) Doc->SetSectionFlipped(!Doc->GetSectionPlane().bFlipped); }),
+		FCanExecuteAction(),
+		FIsActionChecked::CreateLambda([]() { UAerotelicDocumentSubsystem* Doc = UAerotelicDocumentSubsystem::Get(); return Doc != nullptr && Doc->GetSectionPlane().bFlipped; }));
 
 	// Help
 	// Forced: Help -> Welcome Screen... shows it even when ticked off at

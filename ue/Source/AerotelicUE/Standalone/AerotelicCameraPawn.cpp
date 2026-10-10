@@ -8,6 +8,7 @@
 #include "Engine/LocalPlayer.h"
 #include "InputCoreTypes.h"
 
+#include "AerotelicSectionGizmo.h"
 #include "Entity/AerotelicDocumentSubsystem.h"
 #include "Entity/AerotelicEntityActor.h"
 
@@ -249,6 +250,45 @@ void AAerotelicCameraPawn::ClickSelect(APlayerController* PC)
 	Doc->SetSelectedEntity(HitEntity);
 }
 
+bool AAerotelicCameraPawn::TryBeginSectionDrag(APlayerController* PC)
+{
+	AAerotelicSectionGizmo* Gizmo = AAerotelicSectionGizmo::FindInGameWorld();
+	if (Gizmo == nullptr)
+	{
+		return false;
+	}
+	float MX = 0.f, MY = 0.f;
+	FVector O, D;
+	if (!PC->GetMousePosition(MX, MY) || !Gizmo->IsCursorOnHandle(PC, MX, MY) || !PC->DeprojectScreenPositionToWorld(MX, MY, O, D))
+	{
+		return false;
+	}
+	double T = 0.0;
+	if (!Gizmo->DragParameter(O, D, T))
+	{
+		return false;
+	}
+	Gizmo->BeginDrag(T);
+	UE_LOG(LogAerotelicCamera, Verbose, TEXT("camera: section drag start, t0 %.3f"), T);
+	return true;
+}
+
+void AAerotelicCameraPawn::ContinueSectionDrag(APlayerController* PC)
+{
+	AAerotelicSectionGizmo* Gizmo = AAerotelicSectionGizmo::FindInGameWorld();
+	float MX = 0.f, MY = 0.f;
+	FVector O, D;
+	if (Gizmo == nullptr || !PC->GetMousePosition(MX, MY) || !PC->DeprojectScreenPositionToWorld(MX, MY, O, D))
+	{
+		return;
+	}
+	double T = 0.0;
+	if (Gizmo->DragParameter(O, D, T))
+	{
+		Gizmo->DragTo(T);
+	}
+}
+
 void AAerotelicCameraPawn::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
@@ -326,6 +366,9 @@ void AAerotelicCameraPawn::Tick(float DeltaSeconds)
 		{
 			bDragging = true;
 			bDragIsLeftButton = bLeft && !bRight && !bMiddle;
+			// A left press on the section arrow drags the plane (the press
+			// is swallowed: it neither orbits nor selects).
+			bDraggingSection = bDragIsLeftButton && TryBeginSectionDrag(PC);
 			LastMouse = Mouse;
 			DragTravel = 0.0;
 			UE_LOG(LogAerotelicCamera, Verbose, TEXT("camera: drag start L=%d R=%d M=%d at (%.0f, %.0f)"), bLeft, bRight, bMiddle, Mouse.X, Mouse.Y);
@@ -335,7 +378,11 @@ void AAerotelicCameraPawn::Tick(float DeltaSeconds)
 			const FVector2D Delta = Mouse - LastMouse;
 			LastMouse = Mouse;
 			DragTravel += FMath::Abs(Delta.X) + FMath::Abs(Delta.Y);
-			if (bLeft && !bRight && !bMiddle)
+			if (bDraggingSection)
+			{
+				ContinueSectionDrag(PC);
+			}
+			else if (bLeft && !bRight && !bMiddle)
 			{
 				Orbit(Delta.X, Delta.Y);
 			}
@@ -359,7 +406,11 @@ void AAerotelicCameraPawn::Tick(float DeltaSeconds)
 	{
 		bDragging = false;
 		UE_LOG(LogAerotelicCamera, Verbose, TEXT("camera: drag end, travel %.0f px"), DragTravel);
-		if (bDragIsLeftButton && DragTravel < kClickTravelPixels)
+		if (bDraggingSection)
+		{
+			bDraggingSection = false;
+		}
+		else if (bDragIsLeftButton && DragTravel < kClickTravelPixels)
 		{
 			ClickSelect(PC);
 		}
