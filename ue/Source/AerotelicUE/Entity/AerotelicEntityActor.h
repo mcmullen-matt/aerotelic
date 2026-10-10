@@ -10,6 +10,17 @@
 
 #include "AerotelicEntityActor.generated.h"
 
+// The finish every body is drawn with -- View -> Surface... sets it for the
+// whole scene. Metallic 0..1; Specular 0..1 (how strong the highlights
+// are, "glossy"); Roughness 0..1 (how blurred the reflections are, 0 is a
+// mirror polish). The defaults are the surface material's own.
+struct FAerotelicSurfaceStyle
+{
+	float Metallic = 0.0f;
+	float Specular = 0.5f;
+	float Roughness = 0.5f;
+};
+
 // One solid the entity's parameterisation produces. Most entities make a
 // single "Main" body; a propeller makes a Spinner and one Blade per blade.
 // Name is the role (what the body IS); the scene tree shows the display
@@ -26,9 +37,9 @@ struct FAerotelicBody
 	UPROPERTY()
 	bool bVisible = true;
 
-	// The mirrored copy of this body, when the entity is mirrored. Hiding
-	// the body hides its mirror too; showing it again leaves a mirror the
-	// user hid on its own hidden (WingDesigner's asymmetric coupling).
+	// The mirrored copy of this body, when the entity is mirrored: shown or
+	// hidden on its own, independently of the body (WingDesigner's two
+	// rows). Hiding the whole entity hides both.
 	UPROPERTY()
 	bool bMirrorVisible = true;
 
@@ -112,6 +123,17 @@ public:
 	// Override if set, else the type default -- what is on screen.
 	FLinearColor GetDisplayColor() const;
 	static FLinearColor DefaultColorFor(aerotelic::project_yaml::EntityType Type);
+
+	// ---- surface finish ----
+
+	// Re-applies the scene-wide finish to every body and mirror material.
+	// The document subsystem calls this on all entities when the style
+	// changes; a freshly built body picks the current style up itself.
+	void ApplySurfaceStyle(const FAerotelicSurfaceStyle& Style);
+	// "/Game/Materials/M_AerotelicSurface" -- the asset
+	// AerotelicMaterialSetupCommandlet authors. Falls back to the engine's
+	// BasicShapeMaterial (colour only) if the asset is missing.
+	static FString SurfaceMaterialPackage();
 
 	// ---- mirroring ----
 

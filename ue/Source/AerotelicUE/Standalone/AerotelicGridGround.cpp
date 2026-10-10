@@ -87,6 +87,9 @@ void AAerotelicGridGround::FitToContent(const FBox& Content)
 	CellSize = (float)(Limit / CellsPerHalf);
 	CellsX = 2 * CellsPerHalf;
 	CellsY = CellsX;
+	// The plane sits below the origin by a tenth of the limit, so the model
+	// floats clear of it rather than cutting through the floor.
+	SetActorLocation(FVector(0.0, 0.0, -0.1 * Limit));
 	// Lines keep the reference project's proportions: 3% and 2% of a cell.
 	LineWidth = CellSize * 0.03f;
 	LineHeight = CellSize * 0.02f;

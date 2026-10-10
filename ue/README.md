@@ -58,13 +58,24 @@ The layout follows the Python/Qt version's main window (`aerotelic/ui/main_windo
   an entity colour drops its bodies' overrides. Only overrides are saved
   (`color: [r, g, b]`, 0..1), as the Qt app does; `hidden: true` is
   saved too.
+* **Surface** (View -> Surface...): a modeless window with Metallic,
+  Glossiness (specular) and Blur (roughness) sliders and Matte / Satin /
+  Glossy / Metal presets, setting the finish of every body in the scene at
+  once. The bodies are drawn with `Content/Materials/M_AerotelicSurface`
+  (Color, Metallic, Specular and Roughness parameters), an asset authored
+  by `setup_materials.bat` (the `AerotelicMaterialSetup` commandlet, Editor
+  binaries) because shaders cannot be compiled inside a packaged game. If
+  the asset is missing the bodies fall back to BasicShapeMaterial and the
+  dialog has no effect. View -> Ground Grid (Ctrl+G) shows or hides the
+  ground.
 * **Ground**: the GridCube-UE5.8 reference project's grid lattice (thin cube
   instances over a dark base plane, engine basic shapes only) ported in
   `Standalone/AerotelicGridGround`, scaled to model units and refitted
   whenever the entity list changes: square and symmetric about the origin,
   from -L to +L in X and Y with L = 1.2 x the scene's largest |X| or |Y|,
-  the lines falling exactly on 0 and +/-L. It has no collision, so clicks
-  on it still clear the selection.
+  the lines falling exactly on 0 and +/-L, and the plane sitting at
+  Z = -0.1 L below the origin. It has no collision, so clicks on it still
+  clear the selection.
 * **3D view** in the middle: left-drag orbits, right/middle-drag pans, wheel
   zooms, `F` frames the selected entity, `Home` frames everything. Clicking
   an object selects it (orange tint); clicking empty space clears the

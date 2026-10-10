@@ -5,6 +5,7 @@
 #include <memory>
 
 #include "aerotelic/project_yaml.hpp"
+#include "AerotelicEntityActor.h"
 
 #include "AerotelicDocumentSubsystem.generated.h"
 
@@ -76,6 +77,11 @@ public:
 	void SetSelectedEntity(AAerotelicEntityActor* Entity);
 	AAerotelicEntityActor* GetSelectedEntity() const;
 
+	// The scene-wide surface finish (View -> Surface...). Not saved with the
+	// project: it is how the scene is viewed, not what it is.
+	const FAerotelicSurfaceStyle& GetSurfaceStyle() const { return SurfaceStyle; }
+	void SetSurfaceStyle(const FAerotelicSurfaceStyle& Style);
+
 	// Fired after the entity list changes shape (add/remove/New/Open) --
 	// not on every in-place edit, which is each entity's own OnChanged.
 	DECLARE_MULTICAST_DELEGATE(FOnEntityListChanged);
@@ -98,4 +104,5 @@ private:
 	TWeakObjectPtr<AAerotelicEntityActor> SelectedEntity;
 
 	FString CurrentPath;
+	FAerotelicSurfaceStyle SurfaceStyle;
 };

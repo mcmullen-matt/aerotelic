@@ -37,6 +37,7 @@ public:
 	TSharedPtr<FUICommandInfo> GroundGrid;
 	TSharedPtr<FUICommandInfo> NavigationCube;
 	TSharedPtr<FUICommandInfo> ShowIntermediateFeatures;
+	TSharedPtr<FUICommandInfo> SurfaceStyle;
 	TSharedPtr<FUICommandInfo> Rebuild;
 
 	// Left toolbar dropdowns

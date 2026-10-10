@@ -2,6 +2,11 @@
 #include "AerotelicCommands.h"
 #include "AerotelicSceneTree.h"
 #include "AerotelicDesignDock.h"
+#include "AerotelicSurfaceDialog.h"
+
+#include "Engine/Engine.h"
+#include "Engine/GameViewportClient.h"
+#include "EngineUtils.h"
 
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Layout/SBox.h"
@@ -21,6 +26,7 @@
 #include "Entity/AerotelicDocumentSubsystem.h"
 #include "Entity/AerotelicEntityActor.h"
 #include "Standalone/AerotelicCameraPawn.h"
+#include "Standalone/AerotelicGridGround.h"
 #include "Widgets/AerotelicDialogWindow.h"
 #include "Widgets/InputSink.h"
 
@@ -28,6 +34,21 @@
 
 namespace
 {
+	// The ground lattice the game mode spawned (null in the Editor host).
+	AAerotelicGridGround* FindGround()
+	{
+		UWorld* World = (GEngine != nullptr && GEngine->GameViewport != nullptr) ? GEngine->GameViewport->GetWorld() : nullptr;
+		if (World == nullptr)
+		{
+			return nullptr;
+		}
+		for (TActorIterator<AAerotelicGridGround> It(World); It; ++It)
+		{
+			return *It;
+		}
+		return nullptr;
+	}
+
 	// Widths of the frame's columns. The Qt window (1600 wide by default)
 	// gives the scene tree ~200 px and the design dock column a quarter of
 	// the window. Keep kViewToolbarWidth + kSceneTreeWidth in sync with
@@ -298,9 +319,13 @@ void SAerotelicMainShell::BindCommands()
 	Commands->MapAction(C.ViewTop, FExecuteAction::CreateSP(this, &SAerotelicMainShell::OnViewPreset, EAerotelicViewPreset::Top));
 	Commands->MapAction(C.ViewFront, FExecuteAction::CreateSP(this, &SAerotelicMainShell::OnViewPreset, EAerotelicViewPreset::Front));
 	Commands->MapAction(C.ViewSide, FExecuteAction::CreateSP(this, &SAerotelicMainShell::OnViewPreset, EAerotelicViewPreset::Side));
-	Commands->MapAction(C.GroundGrid, FExecuteAction(), Never(), FIsActionChecked::CreateLambda([]() { return false; }));
+	Commands->MapAction(C.GroundGrid,
+		FExecuteAction::CreateLambda([]() { if (AAerotelicGridGround* G = FindGround()) G->SetActorHiddenInGame(!G->IsHidden()); }),
+		FCanExecuteAction::CreateLambda([]() { return FindGround() != nullptr; }),
+		FIsActionChecked::CreateLambda([]() { AAerotelicGridGround* G = FindGround(); return G != nullptr && !G->IsHidden(); }));
 	Commands->MapAction(C.NavigationCube, FExecuteAction(), Never(), FIsActionChecked::CreateLambda([]() { return false; }));
 	Commands->MapAction(C.ShowIntermediateFeatures, FExecuteAction(), Never(), FIsActionChecked::CreateLambda([]() { return false; }));
+	Commands->MapAction(C.SurfaceStyle, FExecuteAction::CreateLambda([]() { OpenAerotelicSurfaceDialog(); }));
 	Commands->MapAction(C.Rebuild, FExecuteAction::CreateSP(this, &SAerotelicMainShell::OnRebuild));
 
 	// Style / Section dropdowns: only the current defaults are selectable.
@@ -400,6 +425,8 @@ void SAerotelicMainShell::FillViewMenu(FMenuBuilder& Menu)
 	Menu.AddMenuEntry(C.NavigationCube);
 	Menu.AddMenuSeparator();
 	Menu.AddMenuEntry(C.ShowIntermediateFeatures);
+	Menu.AddMenuSeparator();
+	Menu.AddMenuEntry(C.SurfaceStyle);
 	Menu.AddMenuSeparator();
 	Menu.AddMenuEntry(C.Rebuild);
 }

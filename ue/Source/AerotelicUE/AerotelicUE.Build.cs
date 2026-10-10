@@ -53,6 +53,8 @@ public class AerotelicUE : ModuleRules
 			PrivateDependencyModuleNames.AddRange(new string[] {
 				"UnrealEd", "LevelEditor", "ToolMenus", "EditorSubsystem",
 				"WorkspaceMenuStructure", "EditorStyle",
+				// AerotelicMaterialSetupCommandlet authors the surface material.
+				"MaterialEditor",
 			});
 		}
 

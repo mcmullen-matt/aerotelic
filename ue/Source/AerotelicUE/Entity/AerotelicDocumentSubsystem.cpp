@@ -51,6 +51,18 @@ UWorld* UAerotelicDocumentSubsystem::GetTargetWorld() const
 	return nullptr;
 }
 
+void UAerotelicDocumentSubsystem::SetSurfaceStyle(const FAerotelicSurfaceStyle& Style)
+{
+	SurfaceStyle = Style;
+	for (auto& WeakEntity : Entities)
+	{
+		if (WeakEntity.IsValid())
+		{
+			WeakEntity->ApplySurfaceStyle(Style);
+		}
+	}
+}
+
 bool UAerotelicDocumentSubsystem::ConfirmReplaceSceneIfNeeded() const
 {
 	if (Entities.Num() == 0)

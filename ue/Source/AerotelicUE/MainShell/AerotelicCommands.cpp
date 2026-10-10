@@ -32,9 +32,10 @@ void FAerotelicCommands::RegisterCommands()
 	UI_COMMAND(ViewTop, "Top", "Look straight down on the scene", EUserInterfaceActionType::Button, FInputChord());
 	UI_COMMAND(ViewFront, "Front", "Look at the scene from the front", EUserInterfaceActionType::Button, FInputChord());
 	UI_COMMAND(ViewSide, "Side", "Look at the scene from the side", EUserInterfaceActionType::Button, FInputChord());
-	UI_COMMAND(GroundGrid, "Ground Grid", "Orthogonal lattice in the Z = 0 plane, sized to the model. Not available yet in this version.", EUserInterfaceActionType::ToggleButton, FInputChord(EModifierKey::Control, EKeys::G));
+	UI_COMMAND(GroundGrid, "Ground Grid", "Show or hide the ground lattice, sized to the model", EUserInterfaceActionType::ToggleButton, FInputChord(EModifierKey::Control, EKeys::G));
 	UI_COMMAND(NavigationCube, "Navigation Cube", "Orientation widget in the top-right corner of the view. Not available yet in this version.", EUserInterfaceActionType::ToggleButton, FInputChord());
 	UI_COMMAND(ShowIntermediateFeatures, "Show Intermediate Features", "List the individual steps that make up each authored operation. Not available yet in this version.", EUserInterfaceActionType::ToggleButton, FInputChord());
+	UI_COMMAND(SurfaceStyle, "Surface...", "Metallic, glossiness and blur of every rendered surface", EUserInterfaceActionType::Button, FInputChord());
 	UI_COMMAND(Rebuild, "Rebuild Wing", "Rebuild the selected entity's geometry", EUserInterfaceActionType::Button, FInputChord(EKeys::F5));
 
 	// Left toolbar dropdowns (_setup_panel_toolbar)

@@ -8,6 +8,9 @@
 #include "UObject/ConstructorHelpers.h"
 #include "ProceduralMeshComponent.h"
 
+#include "AerotelicDocumentSubsystem.h"
+#include "Misc/PackageName.h"
+
 #include "aerotelic/feature_tree.hpp"
 
 #include <Bnd_Box.hxx>
@@ -35,7 +38,30 @@ namespace
 
 	UMaterialInterface* BaseMaterial()
 	{
-		return LoadObject<UMaterialInterface>(nullptr, TEXT("/Engine/BasicShapes/BasicShapeMaterial"));
+		static TWeakObjectPtr<UMaterialInterface> Cached;
+		if (Cached.IsValid())
+		{
+			return Cached.Get();
+		}
+		const FString Package = AAerotelicEntityActor::SurfaceMaterialPackage();
+		UMaterialInterface* M = LoadObject<UMaterialInterface>(nullptr, *FString::Printf(TEXT("%s.%s"), *Package, *FPackageName::GetLongPackageAssetName(Package)));
+		if (M == nullptr)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("AerotelicEntityActor: %s not found (run setup_materials.bat); bodies use BasicShapeMaterial, so View -> Surface has no effect."), *Package);
+			M = LoadObject<UMaterialInterface>(nullptr, TEXT("/Engine/BasicShapes/BasicShapeMaterial"));
+		}
+		Cached = M;
+		return M;
+	}
+
+	void ApplyStyleTo(UMaterialInstanceDynamic* Mid, const FAerotelicSurfaceStyle& Style)
+	{
+		if (Mid != nullptr)
+		{
+			Mid->SetScalarParameterValue(TEXT("Metallic"), Style.Metallic);
+			Mid->SetScalarParameterValue(TEXT("Specular"), Style.Specular);
+			Mid->SetScalarParameterValue(TEXT("Roughness"), Style.Roughness);
+		}
 	}
 
 	// The top-level solids of a built shape, in build order: a propeller's
@@ -244,6 +270,17 @@ void AAerotelicEntityActor::ApplyColors()
 	}
 }
 
+FString AAerotelicEntityActor::SurfaceMaterialPackage()
+{
+	return TEXT("/Game/Materials/M_AerotelicSurface");
+}
+
+void AAerotelicEntityActor::ApplySurfaceStyle(const FAerotelicSurfaceStyle& Style)
+{
+	for (UMaterialInstanceDynamic* Mid : BodyMaterials) ApplyStyleTo(Mid, Style);
+	for (UMaterialInstanceDynamic* Mid : MirrorMaterials) ApplyStyleTo(Mid, Style);
+}
+
 void AAerotelicEntityActor::SetSelected(bool bInSelected)
 {
 	if (bSelected == bInSelected)
@@ -273,14 +310,13 @@ void AAerotelicEntityActor::SetBodyVisible(int32 Index, bool bVisible)
 	{
 		return;
 	}
+	// A body and its mirrored copy are shown or hidden independently, as
+	// WingDesigner's two rows are; only hiding the whole entity takes
+	// both away.
 	Bodies[Index].bVisible = bVisible;
 	if (ProxyMesh != nullptr)
 	{
 		ProxyMesh->SetMeshSectionVisible(Index, bVisible);
-	}
-	if (MirrorMesh != nullptr)
-	{
-		MirrorMesh->SetMeshSectionVisible(Index, bVisible && Bodies[Index].bMirrorVisible);
 	}
 }
 
@@ -298,7 +334,7 @@ void AAerotelicEntityActor::SetMirrorBodyVisible(int32 Index, bool bVisible)
 	Bodies[Index].bMirrorVisible = bVisible;
 	if (MirrorMesh != nullptr)
 	{
-		MirrorMesh->SetMeshSectionVisible(Index, bVisible && Bodies[Index].bVisible);
+		MirrorMesh->SetMeshSectionVisible(Index, bVisible);
 	}
 }
 
@@ -397,7 +433,7 @@ void AAerotelicEntityActor::RefreshMirror()
 	MirrorMesh->SetVisibility(Roles.Num() > 0);
 	for (int32 i = 0; i < Roles.Num(); ++i)
 	{
-		MirrorMesh->SetMeshSectionVisible(i, !Bodies.IsValidIndex(i) || (Bodies[i].bVisible && Bodies[i].bMirrorVisible));
+		MirrorMesh->SetMeshSectionVisible(i, !Bodies.IsValidIndex(i) || Bodies[i].bMirrorVisible);
 	}
 	ApplyColors();
 }
@@ -610,6 +646,10 @@ TArray<FString> AAerotelicEntityActor::RefreshTessellatedMesh(const TopoDS_Shape
 		if (Mid == nullptr && Base != nullptr)
 		{
 			Mid = UMaterialInstanceDynamic::Create(Base, this);
+			if (UAerotelicDocumentSubsystem* Doc = UAerotelicDocumentSubsystem::Get())
+			{
+				ApplyStyleTo(Mid, Doc->GetSurfaceStyle());
+			}
 		}
 		if (Mid != nullptr)
 		{

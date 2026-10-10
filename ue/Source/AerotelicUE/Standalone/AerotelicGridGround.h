@@ -41,8 +41,8 @@ public:
 	// Resizes the grid to run from -L to +L in X and Y, symmetric about the
 	// origin, with L = 1.2 x the content's largest |X| or |Y|; the cell
 	// size is L over a whole number of cells so the lines fall exactly on 0
-	// and +/-L. An empty scene keeps a 20 x 20 unit grid. Call after the
-	// scene changes.
+	// and +/-L. The plane is placed at Z = -0.1 L, below the origin. An
+	// empty scene keeps a 20 x 20 unit grid. Call after the scene changes.
 	void FitToContent(const FBox& Content);
 
 	// Top of the lattice, for anything that wants to sit on the ground.
