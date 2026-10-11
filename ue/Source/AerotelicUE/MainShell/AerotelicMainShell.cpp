@@ -5,6 +5,7 @@
 #include "AerotelicSurfaceDialog.h"
 #include "AerotelicWelcomeScreen.h"
 #include "AerotelicTutorialDialog.h"
+#include "AerotelicTitleBar.h"
 #include "Branding/AerotelicBranding.h"
 #include "Dialogs/AirfoilLibraryDialog.h"
 #include "Dialogs/BooleanOperationDialog.h"
@@ -147,6 +148,13 @@ void SAerotelicMainShell::Construct(const FArguments& InArgs)
 	[
 		SNew(SVerticalBox)
 		.Visibility(EVisibility::SelfHitTestInvisible)
+
+		// The frameless window's own title bar (outside the input sink:
+		// the OS handles its drags through the window zone).
+		+ SVerticalBox::Slot().AutoHeight()
+		[
+			MakeAerotelicTitleBar()
+		]
 
 		// Menu bar + horizontal toolbar.
 		+ SVerticalBox::Slot().AutoHeight()

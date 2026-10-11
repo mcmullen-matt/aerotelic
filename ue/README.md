@@ -23,6 +23,13 @@ Both launchers accept an optional project file to open at startup
 
 The layout follows the Python/Qt version's main window (`aerotelic/ui/main_window.py`):
 
+* **Title bar**: the window is frameless (`bUseBorderlessWindow` in
+  `Config/DefaultGame.ini`, WingDesigner's Qt.FramelessWindowHint) and the
+  frame draws its own 32-px bar -- product and tagline on the left, the
+  engine's Minimise / Maximise-or-Restore / Close buttons on the right --
+  on the engine's `SWindowTitleBarArea`, so the OS handles dragging,
+  snapping, the double-click to maximise and the edge resizing. In the
+  Editor host, which has an OS border, the bar is collapsed.
 * **Menu bar**: File (New, Save, Save As, Open, Export STEP/STL, Quit), Edit
   (Preferences), Geometry (Airfoils, Boolean Operation), View (Isometric /
   Top / Front / Side, Ground Grid, Navigation Cube, Show Intermediate
@@ -296,8 +303,8 @@ The layout follows the Python/Qt version's main window (`aerotelic/ui/main_windo
 * Transform dialogs open just to the right of the scene tree, so they do not
   cover the 3D view's centre; a second, third and later dialog cascade down
   and to the right. Drag any of them wherever you like.
-* Not yet carried over from the Qt version: the custom frameless title bar,
-  Show Intermediate Features, Export STEP/STL (the OCCT STEP toolkits
+* Not yet carried over from the Qt version: Show Intermediate Features,
+  the theme preference, Export STEP/STL (the OCCT STEP toolkits
   collide with the engine's own zlib/png/tiff DLLs -- see
   `AerotelicUE.Build.cs`), the colour theme, and the wing Control Surfaces
   tab (the C++ core has no control-surface model yet; the tab is a
