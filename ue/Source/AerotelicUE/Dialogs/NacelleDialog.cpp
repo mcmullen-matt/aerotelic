@@ -1,4 +1,5 @@
 #include "NacelleDialog.h"
+#include "Widgets/MessageBox.h"
 #include "EntityDesignContent.h"
 #include "Widgets/TabStrip.h"
 #include "Widgets/NumericEntry.h"
@@ -105,7 +106,7 @@ void BuildNacelleDesignContent(AAerotelicEntityActor* Entity, FAerotelicDesignCo
 	TSharedRef<SCurveEditor> SideEditor = SNew(SCurveEditor)
 		.XLabel(LOCTEXT("XL", "Nacelle fraction (x/L)"))
 		.YLabel(LOCTEXT("YL", "Radius from axis (y/L)"))
-		.Title(LOCTEXT("SideTitle", "Side view  ·  outer and inner skin  ·  lip and trailing edge shared"))
+		.Title(LOCTEXT("SideTitle", "Side view  Ã‚Â·  outer and inner skin  Ã‚Â·  lip and trailing edge shared"))
 		.DefaultYMax(0.25)
 		.XScale(1.0).YScale(InvLength).EqualAspect(true)
 		.OnChanged(Rebuild);
@@ -146,9 +147,9 @@ void BuildNacelleDesignContent(AAerotelicEntityActor* Entity, FAerotelicDesignCo
 		return FrontSlot;
 	};
 	TSharedRef<SCurveEditor> FrontEditor = SNew(SCurveEditor)
-		.XLabel(LOCTEXT("LateralL", "Lateral (y/L)   ← starboard  ·  port →"))
+		.XLabel(LOCTEXT("LateralL", "Lateral (y/L)   Ã¢â€ Â starboard  Ã‚Â·  port Ã¢â€ â€™"))
 		.YLabel(LOCTEXT("VerticalL", "Vertical (z/L)"))
-		.Title(LOCTEXT("FrontTitle", "Front view  ·  inlet lip, looking aft  ·  the axis is the crosshair"))
+		.Title(LOCTEXT("FrontTitle", "Front view  Ã‚Â·  inlet lip, looking aft  Ã‚Â·  the axis is the crosshair"))
 		.XScale(InvLength).YScale(InvLength).EqualAspect(true)
 		.OnChanged(Rebuild);
 	FrontEditor->SetSlots({ MakeFrontSlot() });
@@ -167,7 +168,7 @@ void BuildNacelleDesignContent(AAerotelicEntityActor* Entity, FAerotelicDesignCo
 		DepthRatioLabel->SetText(N > 0 ? FormatF(Model->chevron_depth / FMath::Max(Model->length, 1e-9), 3) : DashText());
 		double Angle = 0.0;
 		try { Angle = N > 0 ? Model->ChevronTipAngle() : 0.0; } catch (const std::exception&) {}
-		TipAngleLabel->SetText(N > 0 && Angle > 0.0 ? FText::FromString(FString::Printf(TEXT("%.1f °"), Angle)) : DashText());
+		TipAngleLabel->SetText(N > 0 && Angle > 0.0 ? FText::FromString(FString::Printf(TEXT("%.1f Ã‚Â°"), Angle)) : DashText());
 		TePerimeterLabel->SetText(FormatG(Perim, 4));
 	};
 	RefreshChevronReadouts();
@@ -277,7 +278,7 @@ void BuildNacelleDesignContent(AAerotelicEntityActor* Entity, FAerotelicDesignCo
 					}
 					catch (const std::exception& e)
 					{
-						FMessageDialog::Open(EAppMsgType::Ok, FText::FromString(FString::Printf(TEXT("That radius was rejected:\n%s"), UTF8_TO_TCHAR(e.what()))));
+						AerotelicMessageBox(EAppMsgType::Ok, FText::FromString(FString::Printf(TEXT("That radius was rejected:\n%s"), UTF8_TO_TCHAR(e.what()))));
 						return FReply::Handled();
 					}
 					FrontEditor->SetSlots({ MakeFrontSlot() }); // SetFrontCurve replaces the curve object

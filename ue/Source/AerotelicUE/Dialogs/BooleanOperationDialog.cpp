@@ -1,4 +1,5 @@
 #include "BooleanOperationDialog.h"
+#include "Widgets/MessageBox.h"
 #include "BodyPicker.h"
 
 #include "Widgets/SWindow.h"
@@ -30,14 +31,14 @@ FText ShowAerotelicBooleanOperationDialog()
 	TArray<FAerotelicBodyChoicePtr> Choices = SceneBodyChoices();
 	if (Choices.Num() < 2)
 	{
-		FMessageDialog::Open(EAppMsgType::Ok,
+		AerotelicMessageBox(EAppMsgType::Ok,
 			LOCTEXT("NeedTwo", "Need at least two entities in the scene to run a boolean operation."),
 			LOCTEXT("Title", "Boolean Operation"));
 		return FText::GetEmpty();
 	}
 
 	TSharedPtr<SAerotelicBodyPicker> Picker;
-	TArray<TSharedPtr<FString>> Operations = { MakeShared<FString>(TEXT("Fuse")), MakeShared<FString>(TEXT("Cut (first − rest)")), MakeShared<FString>(TEXT("Common")) };
+	TArray<TSharedPtr<FString>> Operations = { MakeShared<FString>(TEXT("Fuse")), MakeShared<FString>(TEXT("Cut (first Ã¢Ë†â€™ rest)")), MakeShared<FString>(TEXT("Common")) };
 	TSharedPtr<FString> Operation = Operations[0];
 	const FString DefaultName = Doc->NextBooleanName();
 	TSharedPtr<SEditableTextBox> NameBox;
@@ -106,7 +107,7 @@ FText ShowAerotelicBooleanOperationDialog()
 	const TArray<FAerotelicBodyChoicePtr>& Chosen = Picker->GetChosen();
 	if (Chosen.Num() < 2)
 	{
-		FMessageDialog::Open(EAppMsgType::Ok, LOCTEXT("AtLeastTwo", "Select at least two operands."), LOCTEXT("Title", "Boolean Operation"));
+		AerotelicMessageBox(EAppMsgType::Ok, LOCTEXT("AtLeastTwo", "Select at least two operands."), LOCTEXT("Title", "Boolean Operation"));
 		return FText::GetEmpty();
 	}
 	const FString OpType = *Operation == TEXT("Fuse") ? TEXT("fuse") : (*Operation == TEXT("Common") ? TEXT("common") : TEXT("cut"));
@@ -117,7 +118,7 @@ FText ShowAerotelicBooleanOperationDialog()
 	}
 	if (Doc->IsNameTaken(Name))
 	{
-		FMessageDialog::Open(EAppMsgType::Ok,
+		AerotelicMessageBox(EAppMsgType::Ok,
 			FText::Format(LOCTEXT("NameTaken", "'{0}' is already in use. Names must be unique in the scene."), FText::FromString(Name)),
 			LOCTEXT("Title", "Boolean Operation"));
 		return FText::GetEmpty();
@@ -131,7 +132,7 @@ FText ShowAerotelicBooleanOperationDialog()
 	AAerotelicEntityActor* Result = Doc->AddBoolean(Name, Operands, OpType, Error);
 	if (Result == nullptr)
 	{
-		FMessageDialog::Open(EAppMsgType::Ok, FText::FromString(Error), LOCTEXT("Failed", "Boolean Operation Failed"));
+		AerotelicMessageBox(EAppMsgType::Ok, FText::FromString(Error), LOCTEXT("Failed", "Boolean Operation Failed"));
 		return FText::FromString(TEXT("Ready"));
 	}
 	Doc->SetSelectedEntity(Result);

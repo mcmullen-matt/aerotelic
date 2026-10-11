@@ -1,4 +1,5 @@
 #include "ExportDialogs.h"
+#include "Widgets/MessageBox.h"
 #include "BodyPicker.h"
 
 #include "Widgets/SWindow.h"
@@ -39,7 +40,7 @@ namespace
 
 	TSharedRef<STextBlock> Stat(TSharedPtr<STextBlock>& Out)
 	{
-		return SAssignNew(Out, STextBlock).Text(FText::FromString(TEXT("—")))
+		return SAssignNew(Out, STextBlock).Text(FText::FromString(TEXT("Ã¢â‚¬â€")))
 			.ColorAndOpacity(FSlateColor(FLinearColor(0.85f, 0.85f, 0.85f)));
 	}
 
@@ -77,7 +78,7 @@ void ShowAerotelicExportStlDialog(TFunction<void(const FText&)> Status)
 	TArray<FAerotelicBodyChoicePtr> Choices = SceneBodyChoices();
 	if (Choices.Num() == 0)
 	{
-		FMessageDialog::Open(EAppMsgType::Ok, LOCTEXT("NothingStl", "Nothing in the scene to export."), LOCTEXT("StlTitle", "Export STL"));
+		AerotelicMessageBox(EAppMsgType::Ok, LOCTEXT("NothingStl", "Nothing in the scene to export."), LOCTEXT("StlTitle", "Export STL"));
 		return;
 	}
 
@@ -103,9 +104,9 @@ void ShowAerotelicExportStlDialog(TFunction<void(const FText&)> Status)
 		if (Operands.Num() == 0)
 		{
 			Meshed.Nullify();
-			LblBodies->SetText(FText::FromString(TEXT("—")));
-			LblNodes->SetText(FText::FromString(TEXT("—")));
-			LblTris->SetText(FText::FromString(TEXT("—")));
+			LblBodies->SetText(FText::FromString(TEXT("Ã¢â‚¬â€")));
+			LblNodes->SetText(FText::FromString(TEXT("Ã¢â‚¬â€")));
+			LblTris->SetText(FText::FromString(TEXT("Ã¢â‚¬â€")));
 			Status(LOCTEXT("SelectBody", "Select at least one body to export."));
 			return;
 		}
@@ -116,16 +117,16 @@ void ShowAerotelicExportStlDialog(TFunction<void(const FText&)> Status)
 		Meshed = AerotelicExport::MeshForStl(Operands, Labels, Deflection, AngleDeg, Bodies, Nodes, Tris, Failures);
 		if (Meshed.IsNull())
 		{
-			LblBodies->SetText(FText::FromString(TEXT("—")));
-			LblNodes->SetText(FText::FromString(TEXT("—")));
-			LblTris->SetText(FText::FromString(TEXT("—")));
+			LblBodies->SetText(FText::FromString(TEXT("Ã¢â‚¬â€")));
+			LblNodes->SetText(FText::FromString(TEXT("Ã¢â‚¬â€")));
+			LblTris->SetText(FText::FromString(TEXT("Ã¢â‚¬â€")));
 			Status(FText::FromString(TEXT("No body could be built: ") + FString::Join(Failures, TEXT("; "))));
 			return;
 		}
 		LblBodies->SetText(FText::FromString(Thousands(Bodies)));
 		LblNodes->SetText(FText::FromString(Thousands(Nodes)));
 		LblTris->SetText(FText::FromString(Thousands(Tris)));
-		Status(FText::FromString(FString::Printf(TEXT("%s triangles across %s bodies at %g / %g°%s"), *Thousands(Tris), *Thousands(Bodies), Deflection, AngleDeg,
+		Status(FText::FromString(FString::Printf(TEXT("%s triangles across %s bodies at %g / %gÃ‚Â°%s"), *Thousands(Tris), *Thousands(Bodies), Deflection, AngleDeg,
 			Failures.Num() ? *(TEXT("; skipped: ") + FString::Join(Failures, TEXT("; "))) : TEXT(""))));
 	};
 
@@ -133,7 +134,7 @@ void ShowAerotelicExportStlDialog(TFunction<void(const FText&)> Status)
 	{
 		if (Meshed.IsNull())
 		{
-			FMessageDialog::Open(EAppMsgType::Ok, LOCTEXT("SelectBodyWarn", "Select at least one body to export."), LOCTEXT("StlTitle", "Export STL"));
+			AerotelicMessageBox(EAppMsgType::Ok, LOCTEXT("SelectBodyWarn", "Select at least one body to export."), LOCTEXT("StlTitle", "Export STL"));
 			return;
 		}
 		FString Path;
@@ -146,10 +147,10 @@ void ShowAerotelicExportStlDialog(TFunction<void(const FText&)> Status)
 		if (!AerotelicExport::WriteStl(Meshed, Path, bAscii, Error))
 		{
 			Status(LOCTEXT("Ready", "Ready"));
-			FMessageDialog::Open(EAppMsgType::Ok, FText::FromString(Error), LOCTEXT("ExportError", "Export Error"));
+			AerotelicMessageBox(EAppMsgType::Ok, FText::FromString(Error), LOCTEXT("ExportError", "Export Error"));
 			return;
 		}
-		Status(FText::FromString(FString::Printf(TEXT("Exported %s triangles → %s"), *LblTris->GetText().ToString(), *Path)));
+		Status(FText::FromString(FString::Printf(TEXT("Exported %s triangles Ã¢â€ â€™ %s"), *LblTris->GetText().ToString(), *Path)));
 		Window->RequestDestroyWindow();
 	};
 
@@ -177,7 +178,7 @@ void ShowAerotelicExportStlDialog(TFunction<void(const FText&)> Status)
 				MakeGroup(LOCTEXT("Density", "Mesh Density"),
 					SNew(SVerticalBox)
 					+ SVerticalBox::Slot().AutoHeight().Padding(0, 2) [ FormRow(LOCTEXT("Linear", "Linear deflection:"), Spin(Deflection, 1e-9, 1e9, 0.005, FText::GetEmpty())) ]
-					+ SVerticalBox::Slot().AutoHeight().Padding(0, 2) [ FormRow(LOCTEXT("Angular", "Angular deflection:"), Spin(AngleDeg, 1e-9, 180.0, 1.0, FText::FromString(TEXT(" °")))) ]
+					+ SVerticalBox::Slot().AutoHeight().Padding(0, 2) [ FormRow(LOCTEXT("Angular", "Angular deflection:"), Spin(AngleDeg, 1e-9, 180.0, 1.0, FText::FromString(TEXT(" Ã‚Â°")))) ]
 					+ SVerticalBox::Slot().AutoHeight().Padding(0, 4, 0, 0)
 					[ MakeInfoLabel(LOCTEXT("DensityHint", "Linear: the chordal sag a triangle may have from the true surface. Angular: the most adjacent facet normals may differ. Smaller is denser.")) ])
 			]
@@ -216,12 +217,12 @@ void ShowAerotelicExportStepDialog(TFunction<void(const FText&)> Status)
 	TArray<FAerotelicBodyChoicePtr> Choices = SceneBodyChoices();
 	if (Choices.Num() == 0)
 	{
-		FMessageDialog::Open(EAppMsgType::Ok, LOCTEXT("NothingStep", "Nothing in the scene to export."), LOCTEXT("StepTitle", "Export STEP"));
+		AerotelicMessageBox(EAppMsgType::Ok, LOCTEXT("NothingStep", "Nothing in the scene to export."), LOCTEXT("StepTitle", "Export STEP"));
 		return;
 	}
 	if (AerotelicExport::FindStepWriter().IsEmpty())
 	{
-		FMessageDialog::Open(EAppMsgType::Ok,
+		AerotelicMessageBox(EAppMsgType::Ok,
 			LOCTEXT("NoWriter", "The STEP writer (aerotelic_step_writer.exe) is not installed beside the application.\nBuild the core and run ue\\tools\\stage_step_writer.ps1."),
 			LOCTEXT("StepTitle", "Export STEP"));
 		return;
@@ -236,7 +237,7 @@ void ShowAerotelicExportStepDialog(TFunction<void(const FText&)> Status)
 	auto RefreshCount = [&]()
 	{
 		const int32 N = Picker->GetChosen().Num();
-		LblBodies->SetText(FText::FromString(N ? Thousands(N) : TEXT("—")));
+		LblBodies->SetText(FText::FromString(N ? Thousands(N) : TEXT("Ã¢â‚¬â€")));
 		Status(N ? FText::FromString(FString::Printf(TEXT("%s bodies selected for STEP export"), *Thousands(N))) : LOCTEXT("SelectBody", "Select at least one body to export."));
 	};
 
@@ -245,7 +246,7 @@ void ShowAerotelicExportStepDialog(TFunction<void(const FText&)> Status)
 		const TArray<FAerotelicBodyChoicePtr>& Chosen = Picker->GetChosen();
 		if (Chosen.Num() == 0)
 		{
-			FMessageDialog::Open(EAppMsgType::Ok, LOCTEXT("SelectBodyWarn", "Select at least one body to export."), LOCTEXT("StepTitle", "Export STEP"));
+			AerotelicMessageBox(EAppMsgType::Ok, LOCTEXT("SelectBodyWarn", "Select at least one body to export."), LOCTEXT("StepTitle", "Export STEP"));
 			return;
 		}
 		FString Path;
@@ -271,7 +272,7 @@ void ShowAerotelicExportStepDialog(TFunction<void(const FText&)> Status)
 		if (Bodies.Num() == 0)
 		{
 			Status(LOCTEXT("Ready", "Ready"));
-			FMessageDialog::Open(EAppMsgType::Ok, FText::FromString(TEXT("No body could be built:\n") + FString::Join(Failures, TEXT("\n"))), LOCTEXT("StepTitle", "Export STEP"));
+			AerotelicMessageBox(EAppMsgType::Ok, FText::FromString(TEXT("No body could be built:\n") + FString::Join(Failures, TEXT("\n"))), LOCTEXT("StepTitle", "Export STEP"));
 			return;
 		}
 		Status(LOCTEXT("Writing", "Writing STEP..."));
@@ -279,13 +280,13 @@ void ShowAerotelicExportStepDialog(TFunction<void(const FText&)> Status)
 		if (!AerotelicExport::WriteStep(Bodies, Path, NamedCheck->IsChecked(), Error))
 		{
 			Status(LOCTEXT("Ready", "Ready"));
-			FMessageDialog::Open(EAppMsgType::Ok, FText::FromString(Error), LOCTEXT("ExportError", "Export Error"));
+			AerotelicMessageBox(EAppMsgType::Ok, FText::FromString(Error), LOCTEXT("ExportError", "Export Error"));
 			return;
 		}
-		Status(FText::FromString(FString::Printf(TEXT("Exported %s bodies → %s"), *Thousands(Bodies.Num()), *Path)));
+		Status(FText::FromString(FString::Printf(TEXT("Exported %s bodies Ã¢â€ â€™ %s"), *Thousands(Bodies.Num()), *Path)));
 		if (Failures.Num() > 0)
 		{
-			FMessageDialog::Open(EAppMsgType::Ok, FText::FromString(TEXT("Written without these bodies:\n") + FString::Join(Failures, TEXT("\n"))), LOCTEXT("StepTitle", "Export STEP"));
+			AerotelicMessageBox(EAppMsgType::Ok, FText::FromString(TEXT("Written without these bodies:\n") + FString::Join(Failures, TEXT("\n"))), LOCTEXT("StepTitle", "Export STEP"));
 		}
 		Window->RequestDestroyWindow();
 	};

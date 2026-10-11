@@ -1,4 +1,5 @@
 #include "ReferenceImageBar.h"
+#include "Widgets/MessageBox.h"
 #include "CurveEditor.h"
 #include "CurveTabControls.h"
 #include "ReferenceImageMath.h"
@@ -160,16 +161,16 @@ void SReferenceImageBar::Sync()
 		return;
 	}
 	const FIntPoint Size = Editor->GetReferenceImageSize();
-	FString Line = FString::Printf(TEXT("%s  ·  %d × %d px  ·  spans %.3f × %.3f (%s)"),
+	FString Line = FString::Printf(TEXT("%s  Ã‚Â·  %d Ãƒâ€” %d px  Ã‚Â·  spans %.3f Ãƒâ€” %.3f (%s)"),
 		*FPaths::GetCleanFilename(Path), Size.X, Size.Y,
 		ReferenceImageMath::Width(*S, Size), ReferenceImageMath::Height(*S, Size), *Units.ToString());
 	if (S->crop[0] > 0.0 || S->crop[1] > 0.0 || S->crop[2] < 1.0 || S->crop[3] < 1.0)
 	{
-		Line += FString::Printf(TEXT("  ·  cropped to %.0f%% × %.0f%%"), 100.0 * (S->crop[2] - S->crop[0]), 100.0 * (S->crop[3] - S->crop[1]));
+		Line += FString::Printf(TEXT("  Ã‚Â·  cropped to %.0f%% Ãƒâ€” %.0f%%"), 100.0 * (S->crop[2] - S->crop[0]), 100.0 * (S->crop[3] - S->crop[1]));
 	}
 	if (!FMath::IsNearlyZero(S->angle))
 	{
-		Line += FString::Printf(TEXT("  ·  turned %+.1f°"), S->angle);
+		Line += FString::Printf(TEXT("  Ã‚Â·  turned %+.1fÃ‚Â°"), S->angle);
 	}
 	StatusText->SetText(FText::FromString(Line));
 }
@@ -211,7 +212,7 @@ FReply SReferenceImageBar::OnImport()
 	{
 		Images->erase(TCHAR_TO_UTF8(*Key));
 		Editor->SetReferenceImage(nullptr, FString());
-		FMessageDialog::Open(EAppMsgType::Ok,
+		AerotelicMessageBox(EAppMsgType::Ok,
 			FText::Format(LOCTEXT("CouldNotRead", "Could not read:\n{0}\n\nSupported formats are PNG, JPEG, BMP and TIFF."), FText::FromString(Path)),
 			LOCTEXT("ImportTitleDlg", "Import Reference Image"));
 		Sync();

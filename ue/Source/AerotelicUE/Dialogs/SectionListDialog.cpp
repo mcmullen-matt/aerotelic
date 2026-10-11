@@ -1,4 +1,5 @@
 #include "SectionListDialog.h"
+#include "Widgets/MessageBox.h"
 
 #include "Widgets/Layout/SSeparator.h"
 #include "Widgets/Text/STextBlock.h"
@@ -107,7 +108,7 @@ namespace
 	// SAerotelicNumericEntry, so they need the same guard here.
 	void ReportSectionEditFailure(const std::exception& e)
 	{
-		FMessageDialog::Open(EAppMsgType::Ok,
+		AerotelicMessageBox(EAppMsgType::Ok,
 			FText::FromString(FString::Printf(TEXT("That change was rejected:\n%s"), UTF8_TO_TCHAR(e.what()))));
 	}
 }

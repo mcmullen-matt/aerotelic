@@ -1,4 +1,5 @@
 #include "AerotelicMainShell.h"
+#include "Widgets/MessageBox.h"
 #include "AerotelicCommands.h"
 #include "AerotelicSceneTree.h"
 #include "AerotelicDesignDock.h"
@@ -743,7 +744,7 @@ void SAerotelicMainShell::OnAbout()
 {
 	// The same identity and legal text as the welcome screen (branding.py's
 	// about_html), so the two cannot drift apart.
-	FMessageDialog::Open(EAppMsgType::Ok, FText::FromString(AerotelicBranding::AboutText()),
+	AerotelicMessageBox(EAppMsgType::Ok, FText::FromString(AerotelicBranding::AboutText()),
 		FText::FromString(FString::Printf(TEXT("About %s"), AerotelicBranding::Product)));
 }
 

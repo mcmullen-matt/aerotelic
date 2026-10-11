@@ -1,4 +1,5 @@
 #include "NumericEntry.h"
+#include "Widgets/MessageBox.h"
 #include "Misc/MessageDialog.h"
 
 namespace
@@ -18,7 +19,7 @@ namespace
 		}
 		catch (const std::exception& e)
 		{
-			FMessageDialog::Open(EAppMsgType::Ok,
+			AerotelicMessageBox(EAppMsgType::Ok,
 				FText::FromString(FString::Printf(TEXT("That value was rejected:\n%s"), UTF8_TO_TCHAR(e.what()))));
 		}
 	}

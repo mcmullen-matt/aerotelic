@@ -1,4 +1,5 @@
 #include "LoftedNacelleDialog.h"
+#include "Widgets/MessageBox.h"
 #include "EntityDesignContent.h"
 #include "Widgets/TabStrip.h"
 #include "Widgets/NumericEntry.h"
@@ -95,9 +96,9 @@ namespace
 			}
 
 			Editor = SNew(SCurveEditor)
-				.XLabel(LOCTEXT("LateralL", "Lateral (y/L)   ← starboard  ·  port →"))
+				.XLabel(LOCTEXT("LateralL", "Lateral (y/L)   Ã¢â€ Â starboard  Ã‚Â·  port Ã¢â€ â€™"))
 				.YLabel(LOCTEXT("VerticalL", "Vertical (z/L)"))
-				.Title(LOCTEXT("GuideTitle", "Guide curve  ·  front view  ·  the mean ring the cowl is revolved around"))
+				.Title(LOCTEXT("GuideTitle", "Guide curve  Ã‚Â·  front view  Ã‚Â·  the mean ring the cowl is revolved around"))
 				.XScale(1.0 / FMath::Max(Model->length, 1e-9)).YScale(1.0 / FMath::Max(Model->length, 1e-9)).EqualAspect(true)
 				.OnChanged(FSimpleDelegate::CreateSP(this, &SGuideCurvesTab::NotifyChanged));
 			Editor->SetOutlineProvider(FOnGetOutlinePaths::CreateSP(this, &SGuideCurvesTab::ContextOutlines));
@@ -323,7 +324,7 @@ namespace
 					}
 					catch (const std::exception& e)
 					{
-						FMessageDialog::Open(EAppMsgType::Ok, FText::FromString(UTF8_TO_TCHAR(e.what())), LOCTEXT("GuidesTitle", "Guide curves"));
+						AerotelicMessageBox(EAppMsgType::Ok, FText::FromString(UTF8_TO_TCHAR(e.what())), LOCTEXT("GuidesTitle", "Guide curves"));
 						return FReply::Handled();
 					}
 					// The new section is the one that was not present before.
@@ -349,7 +350,7 @@ namespace
 					}
 					catch (const std::exception& e)
 					{
-						FMessageDialog::Open(EAppMsgType::Ok, FText::FromString(UTF8_TO_TCHAR(e.what())), LOCTEXT("GuidesTitle", "Guide curves"));
+						AerotelicMessageBox(EAppMsgType::Ok, FText::FromString(UTF8_TO_TCHAR(e.what())), LOCTEXT("GuidesTitle", "Guide curves"));
 						return FReply::Handled();
 					}
 					const auto& S = Model->sections();
@@ -402,7 +403,7 @@ namespace
 					}
 					catch (const std::exception& e)
 					{
-						FMessageDialog::Open(EAppMsgType::Ok, FText::FromString(FString::Printf(TEXT("That radius was rejected:\n%s"), UTF8_TO_TCHAR(e.what()))));
+						AerotelicMessageBox(EAppMsgType::Ok, FText::FromString(FString::Printf(TEXT("That radius was rejected:\n%s"), UTF8_TO_TCHAR(e.what()))));
 						return FReply::Handled();
 					}
 					Editor->RequestRedraw();
@@ -416,7 +417,7 @@ namespace
 		{
 			const auto& S = Model->sections();
 			if (Index < 0 || Index >= (int32)S.size()) return FText::GetEmpty();
-			return FText::FromString(FString::Printf(TEXT("%d  ·  x/L %.3f"), Index + 1, S[Index].station));
+			return FText::FromString(FString::Printf(TEXT("%d  Ã‚Â·  x/L %.3f"), Index + 1, S[Index].station));
 		}
 
 		TSet<PeriodicNurbsCurve*> Known;
@@ -471,7 +472,7 @@ void BuildLoftedNacelleDesignContent(AAerotelicEntityActor* Entity, FAerotelicDe
 	TSharedRef<SCurveEditor> CentrelineEditor = SNew(SCurveEditor)
 		.XLabel(LOCTEXT("XL", "Nacelle fraction (x/L)"))
 		.YLabel(LOCTEXT("OffsetL", "Vertical offset (y/L)"))
-		.Title(LOCTEXT("CentrelineTitle", "Centreline  ·  side view  ·  inlet and trailing edge pinned in x/L"))
+		.Title(LOCTEXT("CentrelineTitle", "Centreline  Ã‚Â·  side view  Ã‚Â·  inlet and trailing edge pinned in x/L"))
 		.DefaultYMax(0.1)
 		.XScale(1.0).YScale(InvLength).EqualAspect(true);
 	CentrelineEditor->SetSlots({ CentrelineSlot });
@@ -517,7 +518,7 @@ void BuildLoftedNacelleDesignContent(AAerotelicEntityActor* Entity, FAerotelicDe
 	TSharedRef<SCurveEditor> SkinsEditor = SNew(SCurveEditor)
 		.XLabel(LOCTEXT("XL", "Nacelle fraction (x/L)"))
 		.YLabel(LOCTEXT("SkinOffsetL", "Offset from mean line (y/L)"))
-		.Title(LOCTEXT("SkinsTitle", "Skins  ·  outer and inner offsets  ·  the gap between them is the wall"))
+		.Title(LOCTEXT("SkinsTitle", "Skins  Ã‚Â·  outer and inner offsets  Ã‚Â·  the gap between them is the wall"))
 		.DefaultYMax(0.1)
 		.XScale(1.0).YScale(InvLength).EqualAspect(true)
 		.SupportsUserLinks(true)
@@ -555,7 +556,7 @@ void BuildLoftedNacelleDesignContent(AAerotelicEntityActor* Entity, FAerotelicDe
 		DepthRatioLabel->SetText(N > 0 ? FormatF(Model->chevron_depth / FMath::Max(Model->length, 1e-9), 3) : DashText());
 		double Angle = 0.0;
 		try { Angle = N > 0 ? Model->ChevronTipAngle() : 0.0; } catch (const std::exception&) {}
-		TipAngleLabel->SetText(N > 0 && Angle > 0.0 ? FText::FromString(FString::Printf(TEXT("%.1f °"), Angle)) : DashText());
+		TipAngleLabel->SetText(N > 0 && Angle > 0.0 ? FText::FromString(FString::Printf(TEXT("%.1f Ã‚Â°"), Angle)) : DashText());
 		TePerimeterLabel->SetText(FormatG(Perim, 4));
 	};
 	RefreshChevronReadouts();

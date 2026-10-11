@@ -1,4 +1,5 @@
 #include "AerotelicDocumentSubsystem.h"
+#include "Widgets/MessageBox.h"
 #include "AerotelicEntityActor.h"
 #include "AerotelicBooleanModel.h"
 
@@ -144,7 +145,7 @@ bool UAerotelicDocumentSubsystem::ConfirmReplaceSceneIfNeeded() const
 	{
 		return true;
 	}
-	const EAppReturnType::Type Result = FMessageDialog::Open(EAppMsgType::YesNo,
+	const EAppReturnType::Type Result = AerotelicMessageBox(EAppMsgType::YesNo,
 		FText::FromString(TEXT("Clear the entire project and start with an empty scene?\nAll unsaved changes will be lost.")));
 	return Result == EAppReturnType::Yes;
 }
@@ -382,7 +383,7 @@ namespace
 	// every other user-facing error path in this module.
 	void ReportAddEntityFailure(const std::exception& e)
 	{
-		FMessageDialog::Open(EAppMsgType::Ok,
+		AerotelicMessageBox(EAppMsgType::Ok,
 			FText::FromString(FString::Printf(TEXT("Could not add entity:\n%s"), UTF8_TO_TCHAR(e.what()))));
 	}
 }
@@ -546,7 +547,7 @@ bool UAerotelicDocumentSubsystem::OpenProjectPath(const FString& InPath, bool bA
 	}
 	catch (const std::exception& e)
 	{
-		FMessageDialog::Open(EAppMsgType::Ok,
+		AerotelicMessageBox(EAppMsgType::Ok,
 			FText::FromString(FString::Printf(TEXT("Could not open project:\n%s"), UTF8_TO_TCHAR(e.what()))));
 		return false;
 	}
@@ -677,7 +678,7 @@ bool UAerotelicDocumentSubsystem::OpenProjectPath(const FString& InPath, bool bA
 	}
 	if (Failures.Num() > 0 && !IsRunningCommandlet() && !FApp::IsUnattended())
 	{
-		FMessageDialog::Open(EAppMsgType::Ok,
+		AerotelicMessageBox(EAppMsgType::Ok,
 			FText::FromString(TEXT("Some boolean operations could not be rebuilt and were left out:\n") + FString::Join(Failures, TEXT("\n"))));
 	}
 	CurrentPath = bAdopt ? Path : FString();
@@ -690,7 +691,7 @@ bool UAerotelicDocumentSubsystem::SaveProjectToPath(const FString& InPath)
 	const FString Path = FPaths::ConvertRelativePathToFull(InPath); // see OpenProjectPath
 	if (Entities.Num() == 0)
 	{
-		FMessageDialog::Open(EAppMsgType::Ok, FText::FromString(TEXT("Nothing to save -- the scene is empty.")));
+		AerotelicMessageBox(EAppMsgType::Ok, FText::FromString(TEXT("Nothing to save -- the scene is empty.")));
 		return false;
 	}
 
@@ -810,7 +811,7 @@ bool UAerotelicDocumentSubsystem::SaveProjectToPath(const FString& InPath)
 	}
 	catch (const std::exception& e)
 	{
-		FMessageDialog::Open(EAppMsgType::Ok,
+		AerotelicMessageBox(EAppMsgType::Ok,
 			FText::FromString(FString::Printf(TEXT("Save failed:\n%s"), UTF8_TO_TCHAR(e.what()))));
 		return false;
 	}
@@ -830,7 +831,7 @@ bool UAerotelicDocumentSubsystem::SaveProjectAsWithDialog()
 {
 	if (Entities.Num() == 0)
 	{
-		FMessageDialog::Open(EAppMsgType::Ok, FText::FromString(TEXT("Nothing to save -- the scene is empty.")));
+		AerotelicMessageBox(EAppMsgType::Ok, FText::FromString(TEXT("Nothing to save -- the scene is empty.")));
 		return false;
 	}
 	IDesktopPlatform* Desktop = FDesktopPlatformModule::Get();

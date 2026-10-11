@@ -1,4 +1,5 @@
 #include "AirfoilLibraryDialog.h"
+#include "Widgets/MessageBox.h"
 #include "AirfoilBrowser.h"
 
 #include "Framework/Application/SlateApplication.h"
@@ -56,7 +57,7 @@ void OpenAerotelicAirfoilLibrary()
 					{
 						ShowSeligDownloadDialog([Browser](bool bOk, const FString& Message)
 						{
-							FMessageDialog::Open(EAppMsgType::Ok, FText::FromString(Message), FText::FromString(bOk ? TEXT("Download Complete") : TEXT("Download")));
+							AerotelicMessageBox(EAppMsgType::Ok, FText::FromString(Message), FText::FromString(bOk ? TEXT("Download Complete") : TEXT("Download")));
 							if (TSharedPtr<SAerotelicAirfoilBrowser> B = Browser.Pin()) B->Refresh();
 						});
 						return FReply::Handled();

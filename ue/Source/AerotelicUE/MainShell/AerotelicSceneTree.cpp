@@ -1,4 +1,5 @@
 #include "AerotelicSceneTree.h"
+#include "Widgets/MessageBox.h"
 #include "AerotelicDesignDock.h"
 #include "AerotelicTransformDialog.h"
 
@@ -543,7 +544,7 @@ void SAerotelicSceneTree::RenameEntity(AAerotelicEntityActor* Entity)
 	{
 		if (Other.IsValid() && Other.Get() != Entity && Other->EntityName == Name)
 		{
-			FMessageDialog::Open(EAppMsgType::Ok,
+			AerotelicMessageBox(EAppMsgType::Ok,
 				FText::Format(LOCTEXT("NameTaken", "There is already an entity named \"{0}\"."), FText::FromString(Name)));
 			return;
 		}
@@ -578,7 +579,7 @@ void SAerotelicSceneTree::DeleteEntity(AAerotelicEntityActor* Entity)
 	const FText Question = Dependents.Num() == 0
 		? FText::Format(LOCTEXT("ConfirmDelete", "Delete {0}?"), FText::FromString(Name))
 		: FText::Format(LOCTEXT("ConfirmDeleteCascade", "Delete {0}?\nThe boolean operation(s) built on it go with it: {1}"), FText::FromString(Name), FText::FromString(FString::Join(Dependents, TEXT(", "))));
-	const EAppReturnType::Type Answer = FMessageDialog::Open(EAppMsgType::YesNo, Question);
+	const EAppReturnType::Type Answer = AerotelicMessageBox(EAppMsgType::YesNo, Question);
 	if (Answer != EAppReturnType::Yes)
 	{
 		return;

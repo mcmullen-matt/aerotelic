@@ -1,4 +1,5 @@
 #include "AirfoilBrowser.h"
+#include "Widgets/MessageBox.h"
 
 #include "Widgets/SWindow.h"
 #include "Widgets/SBoxPanel.h"
@@ -211,7 +212,7 @@ void SAerotelicAirfoilBrowser::RebuildList()
 	Items.Reset();
 	int32 Count = 0;
 
-	// In this project, de-duplicated (◆, gold).
+	// In this project, de-duplicated (Ã¢â€”â€ , gold).
 	if (Offers(EAirfoilSource::Project))
 	{
 		TArray<std::shared_ptr<aerotelic::Airfoil>> Unique;
@@ -227,7 +228,7 @@ void SAerotelicAirfoilBrowser::RebuildList()
 			{
 				TSharedPtr<FAirfoilListItem> It = MakeShared<FAirfoilListItem>();
 				It->Source = EAirfoilSource::Project;
-				It->Label = TEXT("◆ ") + Name;
+				It->Label = TEXT("Ã¢â€”â€  ") + Name;
 				It->Airfoil = A;
 				Items.Add(It);
 				++Count;
@@ -235,7 +236,7 @@ void SAerotelicAirfoilBrowser::RebuildList()
 		}
 	}
 
-	// Custom .dat (★, green).
+	// Custom .dat (Ã¢Ëœâ€¦, green).
 	if (Offers(EAirfoilSource::Custom))
 	{
 		for (const AerotelicSelig::FCustomAirfoil& C : AerotelicSelig::CustomAirfoils())
@@ -246,7 +247,7 @@ void SAerotelicAirfoilBrowser::RebuildList()
 			{
 				TSharedPtr<FAirfoilListItem> It = MakeShared<FAirfoilListItem>();
 				It->Source = EAirfoilSource::Custom;
-				It->Label = TEXT("★ ") + Name;
+				It->Label = TEXT("Ã¢Ëœâ€¦ ") + Name;
 				It->Key = C.Key;
 				It->Airfoil = C.Airfoil;
 				Items.Add(It);
@@ -420,7 +421,7 @@ void SAerotelicAirfoilBrowser::StartDownload()
 	TWeakPtr<SAerotelicAirfoilBrowser> Weak = SharedThis(this);
 	ShowSeligDownloadDialog([Weak](bool bOk, const FString& Message)
 	{
-		FMessageDialog::Open(bOk ? EAppMsgType::Ok : EAppMsgType::Ok, FText::FromString(Message),
+		AerotelicMessageBox(bOk ? EAppMsgType::Ok : EAppMsgType::Ok, FText::FromString(Message),
 			FText::FromString(bOk ? TEXT("Download Complete") : TEXT("Download")));
 		if (TSharedPtr<SAerotelicAirfoilBrowser> Self = Weak.Pin())
 		{
@@ -450,7 +451,7 @@ void SAerotelicAirfoilBrowser::LoadDatFiles()
 		std::shared_ptr<aerotelic::Airfoil> A = AerotelicSelig::LoadDatFile(File, Error);
 		if (!A)
 		{
-			FMessageDialog::Open(EAppMsgType::Ok, FText::FromString(FString::Printf(TEXT("%s: %s"), *FPaths::GetCleanFilename(File), *Error)),
+			AerotelicMessageBox(EAppMsgType::Ok, FText::FromString(FString::Printf(TEXT("%s: %s"), *FPaths::GetCleanFilename(File), *Error)),
 				FText::FromString(TEXT("Load Error")));
 			continue;
 		}
