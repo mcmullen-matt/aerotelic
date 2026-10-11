@@ -50,6 +50,7 @@ add_library(aerotelic_core STATIC
 	src/mesh.cpp
 	src/sdf.cpp
 	src/lattice.cpp
+	src/shell.cpp
 )
 target_include_directories(aerotelic_core PUBLIC include "${OCCT_ROOT}/include/opencascade" "${YAMLCPP_INCLUDE_DIR}")
 target_link_libraries(aerotelic_core PUBLIC ${OCCT_LINK_LIBS} "${YAMLCPP_LIB}")
@@ -111,6 +112,9 @@ target_link_libraries(mesh_check PRIVATE aerotelic_core)
 
 add_executable(sdf_check tests/sdf_check.cpp)
 target_link_libraries(sdf_check PRIVATE aerotelic_core)
+
+add_executable(shell_check tests/shell_check.cpp)
+target_link_libraries(shell_check PRIVATE aerotelic_core)
 
 add_executable(lattice_check tests/lattice_check.cpp)
 target_link_libraries(lattice_check PRIVATE aerotelic_core)

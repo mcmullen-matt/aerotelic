@@ -731,7 +731,29 @@ std::shared_ptr<Airfoil> WingModel::AirfoilAt(double eta) const {
 		if (sec.s < eta && (!lo || sec.s > lo->s)) lo = &sec;
 		if (sec.s > eta && (!hi || sec.s < hi->s)) hi = &sec;
 	}
+	// The same airfoil at both ends (the same object, or -- as a saved
+	// project reloads them -- two objects holding the same curve): the blend
+	// IS that airfoil. Re-fitting it from sampled points would give the
+	// interior stations a curve with a different parameterisation from the
+	// end stations', which the mesh builder sees as a jump in the surface at
+	// the user's sections and refines against in vain (a band of stations
+	// bunched at the root and tip).
 	if (lo->airfoil.get() == hi->airfoil.get()) return lo->airfoil;
+	{
+		const NurbsCurve& a = lo->airfoil->nurbs_curve();
+		const NurbsCurve& b = hi->airfoil->nurbs_curve();
+		bool same = a.degree() == b.degree() && a.n_poles() == b.n_poles();
+		if (same) {
+			Mat pa = a.poles(), pb = b.poles();
+			for (int i = 0; same && i < pa.rows(); ++i)
+				for (int j = 0; same && j < pa.cols(); ++j) same = std::abs(pa(i, j) - pb(i, j)) <= 1e-12;
+			auto [ka, ma] = a.GetUniqueKnots();
+			auto [kb, mb] = b.GetUniqueKnots();
+			same = same && ka.size() == kb.size() && ma == mb;
+			for (size_t i = 0; same && i < ka.size(); ++i) same = std::abs(ka[i] - kb[i]) <= 1e-12;
+		}
+		if (same) return lo->airfoil;
+	}
 
 	double w = (eta - lo->s) / (hi->s - lo->s);
 	const int n = 200;

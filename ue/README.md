@@ -385,6 +385,42 @@ The layout follows the Python/Qt version's main window (`aerotelic/ui/main_windo
   carry no collision (click-select them in the tree). Measured on p38: the
   default cell (a tenth of the largest extent) generates in 0.2 s; a
   0.4-unit cell (19.5 M samples) in well under a minute.
+* **Explicit skin layer** (`shell.hpp`, `src/shell.cpp`, 2026-10-11
+  afternoon; the first step of the tetrahedral route Matt chose): the
+  body's surface triangulation offset inward by the skin thickness as a
+  layer of prisms split into tetrahedra (Dompierre's lowest-index rule, so
+  the tets are conformal across prisms), the inner surface left as the
+  closed boundary of the interior (lattice) domain. No voxels: each offset
+  node is placed by walking inward along the vertex normal on the body's
+  signed-distance field and stopping where the field reaches the skin
+  depth, where it stops deepening (the mid-surface of a region thinner
+  than two skins: the node stays there, the vertex is "collapsed", and the
+  skin fills the thickness -- a trailing edge), or where the surface is
+  far nearer than the distance walked (a vertex already on the
+  mid-surface, e.g. on the trailing edge itself, which stays put). The
+  walk only moves to more negative field values, so no node can land in
+  the opposite skin or outside the body. Then: an edge-slope bound on the
+  walks, welding of coincident offset nodes (a symmetric section's two
+  sides meet on the same mid-surface points), cancellation of the
+  coincident opposite triangles of the collapsed double sheet, sealing of
+  the remaining pinch lenses (Euler circuit of the open edges, split into
+  simple cycles, each capped in its plane), and a relaxation that scales
+  back the walks of any prism whose three tets disagree in sign (the exact
+  fold test) -- a leading edge whose radius is near the skin thickness is
+  where that happens. `tests/shell_check.cpp`: a sphere's shell to 0.01%,
+  a plate thinner than two skins (all skin, no interior), and the P-38's
+  port wing (1% root-chord skin: 5,919 tets, no folds, every tet inside
+  the body, skin volume within 1.1% of the field-integrated shell, the
+  interior domain a closed manifold enclosing wing minus skin; writes
+  `build/p38_port_wing_skin.vtk` and the inner/outer STLs). Known limits:
+  an asymmetric section's two sides do not share mid-surface nodes, so its
+  collapsed double sheet stays (flagged) and the layer is not
+  node-conformal across it; interpenetrating bodies need a union first;
+  the skin is thinner than asked where the relaxation had to act (nose,
+  tip cap). Also fixed on the way: `WingModel::AirfoilAt` now recognises
+  two sections holding the same curve (as a reloaded project has them) and
+  no longer re-fits a blend whose different parameterisation made the
+  loft bunch stations at the root and tip.
 * **Negative chord** -- a planform whose trailing-edge curve crosses ahead
   of its leading-edge curve (the P-38 tailplane's tip as first saved, by
   10 mm) turns the section inside out and folds the loft; the wing's
