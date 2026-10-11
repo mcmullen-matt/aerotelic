@@ -10,6 +10,8 @@
 #include "Dialogs/AirfoilLibraryDialog.h"
 #include "Dialogs/BooleanOperationDialog.h"
 #include "Dialogs/ExportDialogs.h"
+#include "Dialogs/ThemeDialog.h"
+#include "Branding/AerotelicTheme.h"
 
 #include "Engine/Engine.h"
 #include "Engine/GameViewportClient.h"
@@ -68,8 +70,13 @@ namespace
 	constexpr float kSceneTreeWidth = 280.0f;
 	constexpr float kIconSize = 30.0f;
 
-	const FLinearColor kPanelBg(0.09f, 0.09f, 0.10f, 1.0f);
-	const FLinearColor kBarBg(0.07f, 0.07f, 0.08f, 1.0f);
+	// The chrome's colours come from the current theme (themes.py's
+	// panel_bg for the bars and panels, win_bg behind them, status_bg).
+	FSlateColor PanelBg() { return FSlateColor(AerotelicTheme::Current().PanelBg); }
+	FSlateColor BarBg() { return FSlateColor(AerotelicTheme::Current().PanelBg); }
+	FSlateColor StatusBg() { return FSlateColor(AerotelicTheme::Current().StatusBg); }
+	FSlateColor TextColor() { return FSlateColor(AerotelicTheme::Current().Text); }
+	FSlateColor MutedText() { return FSlateColor(AerotelicTheme::Current().TextMuted); }
 
 	FLinearColor Hex(const TCHAR* HexCode)
 	{
@@ -147,6 +154,14 @@ void SAerotelicMainShell::Construct(const FArguments& InArgs)
 
 	ChildSlot
 	[
+		// The theme's text colour reaches every label that uses the
+		// inherited foreground (the Slate default) through this border.
+		SNew(SBorder)
+		.BorderImage(FCoreStyle::Get().GetBrush("NoBorder"))
+		.Padding(0)
+		.Visibility(EVisibility::SelfHitTestInvisible)
+		.ForegroundColor_Static(&TextColor)
+		[
 		SNew(SVerticalBox)
 		.Visibility(EVisibility::SelfHitTestInvisible)
 
@@ -164,7 +179,7 @@ void SAerotelicMainShell::Construct(const FArguments& InArgs)
 			[
 				SNew(SBorder)
 				.BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush"))
-				.BorderBackgroundColor(kBarBg)
+				.BorderBackgroundColor_Static(&BarBg)
 				.Padding(0)
 				[
 					SNew(SVerticalBox)
@@ -188,7 +203,7 @@ void SAerotelicMainShell::Construct(const FArguments& InArgs)
 					[
 						SNew(SBorder)
 						.BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush"))
-						.BorderBackgroundColor(kBarBg)
+						.BorderBackgroundColor_Static(&BarBg)
 						.Padding(FMargin(4, 6))
 						[ BuildViewToolbar() ]
 					]
@@ -203,7 +218,7 @@ void SAerotelicMainShell::Construct(const FArguments& InArgs)
 					[
 						SNew(SBorder)
 						.BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush"))
-						.BorderBackgroundColor(kPanelBg)
+						.BorderBackgroundColor_Static(&PanelBg)
 						.Padding(FMargin(2))
 						[
 							SNew(SAerotelicSceneTree)
@@ -253,7 +268,7 @@ void SAerotelicMainShell::Construct(const FArguments& InArgs)
 						[
 							SNew(SBorder)
 							.BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush"))
-							.BorderBackgroundColor(kPanelBg)
+							.BorderBackgroundColor_Static(&PanelBg)
 							.Padding(FMargin(2))
 							[
 								BuildAerotelicDesignDock(FindAerotelicMainWindow())
@@ -269,6 +284,7 @@ void SAerotelicMainShell::Construct(const FArguments& InArgs)
 		[
 			SNew(SAerotelicInputSink)
 			[ BuildStatusBar() ]
+		]
 		]
 	];
 
@@ -336,7 +352,7 @@ void SAerotelicMainShell::BindCommands()
 	Commands->MapAction(C.Quit, FExecuteAction::CreateSP(this, &SAerotelicMainShell::OnQuit));
 
 	// Edit
-	Commands->MapAction(C.ColorTheme, FExecuteAction(), Never());
+	Commands->MapAction(C.ColorTheme, FExecuteAction::CreateLambda([]() { ShowAerotelicThemeDialog(); }));
 
 	// Geometry
 	Commands->MapAction(C.Airfoils, FExecuteAction::CreateLambda([]() { OpenAerotelicAirfoilLibrary(); }));
@@ -456,6 +472,8 @@ void SAerotelicMainShell::FillEditMenu(FMenuBuilder& Menu)
 	Menu.AddSubMenu(LOCTEXT("Preferences", "Preferences"), LOCTEXT("PreferencesTip", "Application preferences"),
 		FNewMenuDelegate::CreateLambda([](FMenuBuilder& Sub)
 		{
+			// No search box on a one-entry submenu (the Qt menus have none).
+			Sub.SetSearchable(false);
 			Sub.AddMenuEntry(FAerotelicCommands::Get().ColorTheme);
 		}));
 }
@@ -643,7 +661,7 @@ TSharedRef<SWidget> SAerotelicMainShell::BuildStatusBar()
 {
 	return SNew(SBorder)
 		.BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush"))
-		.BorderBackgroundColor(kBarBg)
+		.BorderBackgroundColor_Static(&StatusBg)
 		.Padding(FMargin(8, 3))
 		[
 			SNew(SHorizontalBox)
@@ -655,7 +673,7 @@ TSharedRef<SWidget> SAerotelicMainShell::BuildStatusBar()
 			[
 				SNew(STextBlock)
 				.Text(this, &SAerotelicMainShell::GetProjectPathText)
-				.ColorAndOpacity(FSlateColor(FLinearColor(0.6f, 0.6f, 0.6f)))
+				.ColorAndOpacity_Static(&MutedText)
 			]
 		];
 }

@@ -17,6 +17,7 @@
 #include "AerotelicGridGround.h"
 #include "AerotelicPlayerController.h"
 #include "AerotelicSectionGizmo.h"
+#include "Branding/AerotelicTheme.h"
 #include "Entity/AerotelicDocumentSubsystem.h"
 #include "Entity/AerotelicEntityActor.h"
 
@@ -45,6 +46,7 @@ void AAerotelicGameMode::EndPlay(const EEndPlayReason::Type EndPlayReason)
 	{
 		Doc->OnEntityListChanged.Remove(ListChangedHandle);
 	}
+	AerotelicTheme::OnChanged().Remove(ThemeHandle);
 	Super::EndPlay(EndPlayReason);
 }
 
@@ -206,8 +208,23 @@ void AAerotelicGameMode::SpawnBackdrop()
 	if (BaseMaterial != nullptr)
 	{
 		UMaterialInstanceDynamic* Mid = UMaterialInstanceDynamic::Create(BaseMaterial, Backdrop);
-		Mid->SetVectorParameterValue(TEXT("Color"), FLinearColor(0.11f, 0.12f, 0.14f));
+		BackdropMID = Mid;
 		Mesh->SetMaterial(0, Mid);
+		ApplyThemeToBackdrop();
+		ThemeHandle = AerotelicTheme::OnChanged().AddUObject(this, &AAerotelicGameMode::ApplyThemeToBackdrop);
+	}
+}
+
+void AAerotelicGameMode::ApplyThemeToBackdrop()
+{
+	// The theme's viewport background (themes.py viewport_bg_top/bot, a
+	// vertical gradient in the Qt viewer): the sphere takes the midpoint,
+	// lifted a little so the models keep reading against it.
+	if (BackdropMID != nullptr)
+	{
+		const FAerotelicPalette& P = AerotelicTheme::Current();
+		const FLinearColor Mid = (P.ViewportBgTop + P.ViewportBgBot) * 0.5f;
+		BackdropMID->SetVectorParameterValue(TEXT("Color"), FLinearColor(Mid.R + 0.06f, Mid.G + 0.06f, Mid.B + 0.07f));
 	}
 }
 

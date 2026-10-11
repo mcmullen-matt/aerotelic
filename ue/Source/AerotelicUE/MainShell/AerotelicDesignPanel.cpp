@@ -1,4 +1,5 @@
 #include "AerotelicDesignPanel.h"
+#include "Branding/AerotelicTheme.h"
 
 #include "Widgets/Layout/SBox.h"
 #include "Widgets/Layout/SBorder.h"
@@ -59,12 +60,12 @@ void SAerotelicDesignPanel::Refresh()
 		Host->SetContent(
 			SNew(SBorder)
 			.BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush"))
-			.BorderBackgroundColor(FLinearColor(0.12f, 0.12f, 0.13f, 1.0f))
+			.BorderBackgroundColor_Lambda([]() { return FSlateColor(AerotelicTheme::Current().WinBg); })
 			.Padding(FMargin(12))
 			[
 				SNew(STextBlock)
 				.AutoWrapText(true)
-				.ColorAndOpacity(FSlateColor(FLinearColor(0.6f, 0.6f, 0.6f)))
+				.ColorAndOpacity_Lambda([]() { return FSlateColor(AerotelicTheme::Current().TextMuted); })
 				.Text(LOCTEXT("NothingSelected", "No entity selected.\n\nClick an entity in the 3D view or in the Scene tree, or add one from the toolbar, and its design panel appears here."))
 			]);
 		return;

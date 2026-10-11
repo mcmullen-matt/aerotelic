@@ -30,9 +30,15 @@ private:
 	// changes, so a model of any size lands on a sensibly scaled floor.
 	void FitGroundToScene();
 	void OpenProjectFromCommandLine();
+	// The backdrop sphere takes the theme's viewport background.
+	void ApplyThemeToBackdrop();
 
 	UPROPERTY()
 	TObjectPtr<class AAerotelicGridGround> Ground;
 
+	UPROPERTY()
+	TObjectPtr<class UMaterialInstanceDynamic> BackdropMID;
+
 	FDelegateHandle ListChangedHandle;
+	FDelegateHandle ThemeHandle;
 };

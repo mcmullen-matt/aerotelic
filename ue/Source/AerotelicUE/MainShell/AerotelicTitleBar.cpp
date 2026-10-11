@@ -8,14 +8,15 @@
 #include "Styling/CoreStyle.h"
 
 #include "Branding/AerotelicBranding.h"
+#include "Branding/AerotelicTheme.h"
 #include "Widgets/AerotelicDialogWindow.h"
 
 namespace
 {
 	constexpr float kTitleBarHeight = 32.0f;
-	// The Qt theme's titlebar_bg / titlebar_text.
-	const FLinearColor kBarBg(FColor::FromHex(TEXT("#0b0d10")));
-	const FLinearColor kBarText(FColor::FromHex(TEXT("#bbbbbb")));
+	// The theme's titlebar_bg / titlebar_text.
+	FSlateColor BarBg() { return FSlateColor(AerotelicTheme::Current().TitleBarBg); }
+	FSlateColor BarText() { return FSlateColor(AerotelicTheme::Current().TitleBarText); }
 }
 
 TSharedRef<SWidget> MakeAerotelicTitleBar()
@@ -33,7 +34,7 @@ TSharedRef<SWidget> MakeAerotelicTitleBar()
 			SNew(SBorder)
 			.Visibility(EVisibility::HitTestInvisible)
 			.BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush"))
-			.BorderBackgroundColor(kBarBg)
+			.BorderBackgroundColor_Static(&BarBg)
 			.Padding(FMargin(10, 0, 4, 0))
 			[
 				SNew(SBox).HeightOverride(kTitleBarHeight).VAlign(VAlign_Center)
@@ -41,7 +42,7 @@ TSharedRef<SWidget> MakeAerotelicTitleBar()
 					SNew(STextBlock)
 					.Text(FText::FromString(FString::Printf(TEXT("%s — %s"), AerotelicBranding::Product, AerotelicBranding::Tagline)))
 					.Font(FCoreStyle::GetDefaultFontStyle("Bold", 11))
-					.ColorAndOpacity(FSlateColor(kBarText))
+					.ColorAndOpacity_Static(&BarText)
 				]
 			]
 		];

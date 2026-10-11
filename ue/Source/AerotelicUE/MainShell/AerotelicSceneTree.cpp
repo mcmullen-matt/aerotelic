@@ -16,6 +16,7 @@
 #include "Entity/AerotelicDocumentSubsystem.h"
 #include "Entity/AerotelicEntityActor.h"
 #include "Entity/AerotelicBooleanModel.h"
+#include "Branding/AerotelicTheme.h"
 #include "Widgets/PromptDialogs.h"
 
 #define LOCTEXT_NAMESPACE "AerotelicSceneTree"
@@ -78,7 +79,7 @@ void SAerotelicSceneTree::Construct(const FArguments& InArgs)
 		[
 			SNew(SBorder)
 			.BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush"))
-			.BorderBackgroundColor(FLinearColor(0.03f, 0.03f, 0.035f, 1.0f))
+			.BorderBackgroundColor_Lambda([]() { return FSlateColor(AerotelicTheme::Current().InputBg); })
 			.Padding(2)
 			[
 				SAssignNew(Tree, STreeView<FItem>)

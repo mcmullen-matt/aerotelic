@@ -21,7 +21,7 @@ void FAerotelicCommands::RegisterCommands()
 	UI_COMMAND(Quit, "Quit", "Close the application", EUserInterfaceActionType::Button, FInputChord());
 
 	// Edit -> Preferences
-	UI_COMMAND(ColorTheme, "Color Theme...", "Not available yet in this version", EUserInterfaceActionType::Button, FInputChord());
+	UI_COMMAND(ColorTheme, "Color Theme...", "Pick the application's colour theme (dark, light and operational palettes)", EUserInterfaceActionType::Button, FInputChord());
 
 	// Geometry
 	UI_COMMAND(Airfoils, "Airfoils...", "The airfoil library: the Selig database, NACA codes and .dat files, with a preview (assign one from a wing's Sections tab)", EUserInterfaceActionType::Button, FInputChord());

@@ -30,6 +30,16 @@ The layout follows the Python/Qt version's main window (`aerotelic/ui/main_windo
   on the engine's `SWindowTitleBarArea`, so the OS handles dragging,
   snapping, the double-click to maximise and the edge resizing. In the
   Editor host, which has an OS border, the bar is collapsed.
+* **Colour theme** (Edit -> Preferences -> Color Theme...): WingDesigner's
+  thirteen palettes (`ui/themes.py`) in their Dark / Light / Operational
+  groups; selecting one applies it at once, Cancel restores the previous
+  one, and the choice persists in the game user settings (the Qt app's
+  `appearance/theme`; a name saved under the old product name is mapped).
+  The theme colours the frame's chrome -- title bar, menu and tool bars,
+  scene tree, panels, status bar, the inherited text colour -- and the 3D
+  view's backdrop. Dialog windows, menus and the design panels' controls
+  keep the engine's own dark style, so a light theme lightens the frame
+  around them rather than the whole application.
 * **Menu bar**: File (New, Save, Save As, Open, Export STEP/STL, Quit), Edit
   (Preferences), Geometry (Airfoils, Boolean Operation), View (Isometric /
   Top / Front / Side, Ground Grid, Navigation Cube, Show Intermediate
@@ -328,7 +338,7 @@ The layout follows the Python/Qt version's main window (`aerotelic/ui/main_windo
   cover the 3D view's centre; a second, third and later dialog cascade down
   and to the right. Drag any of them wherever you like.
 * Not yet carried over from the Qt version: Show Intermediate Features,
-  the colour theme, the STL dialog's mesh preview in the viewport, and
+  the STL dialog's mesh preview in the viewport, and
   the wing Control Surfaces tab (the C++ core has no control-surface model
   yet; the tab is a placeholder note). A section plane cuts without
   capping (see above), and the engine cannot rasterise SVG reference
