@@ -77,7 +77,10 @@ public:
 	void RefreshProxy();
 
 	// Selection highlight (the standalone app's equivalent of the Editor's
-	// selection outline): tints the mesh. Driven by the document subsystem.
+	// selection outline): the entity's triangulation edges drawn in orange
+	// over its surface, which keeps its own colour (WingDesigner draws the
+	// selected entity no differently, so a colour picked for it shows at
+	// once). Driven by the document subsystem.
 	void SetSelected(bool bInSelected);
 	bool IsSelectedEntity() const { return bSelected; }
 

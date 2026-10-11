@@ -109,7 +109,9 @@ The layout follows the Python/Qt version's main window (`aerotelic/ui/main_windo
   and edit of its entity, inherits its colours, and is never edited on
   its own. Saved as the entity's `mirror:` flag.
 * **Colour**: per entity and per body, chosen with the engine's own colour
-  picker (AppFramework's SColorPicker, no alpha). Defaults are
+  picker (AppFramework's SColorPicker, no alpha), floating beside the
+  frame so the body takes each colour live as it is chosen; Cancel puts
+  the previous one back. Defaults are
   WingDesigner's per-kind colours (steel blue wing, green fuselage, bronze
   nacelle, rose lofted nacelle, aluminium propeller, ochre primitive);
   resolution is body override, else entity override, else default. Setting
@@ -230,8 +232,10 @@ The layout follows the Python/Qt version's main window (`aerotelic/ui/main_windo
   clear the selection.
 * **3D view** in the middle: left-drag orbits, right/middle-drag pans, wheel
   zooms, `F` frames the selected entity, `Home` frames everything. Clicking
-  an object selects it (orange tint); clicking empty space clears the
-  selection. Rendering is confined to this region (the frame sets the local
+  an object selects it: its triangulation edges are drawn in orange over
+  its surface, which keeps its own colour (so a colour picked for it shows
+  at once, as in WingDesigner, whose viewer has no selection highlight at
+  all); clicking empty space clears the selection. Rendering is confined to this region (the frame sets the local
   player's split-screen rectangle), so framing and picking are relative to
   the visible view, not the whole window.
 * **Design dock** on the right: the selected entity's design panel (Wing,

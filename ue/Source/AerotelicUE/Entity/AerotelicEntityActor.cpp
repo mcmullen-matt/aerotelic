@@ -353,14 +353,15 @@ void AAerotelicEntityActor::SetBodyColor(int32 Index, TOptional<FLinearColor> In
 
 void AAerotelicEntityActor::ApplyColors()
 {
-	// BasicShapeMaterial exposes its base colour as the "Color" vector
-	// parameter. The selection tint overrides every body's colour while
-	// the entity is selected.
+	// The surface always shows the body's own colour (WingDesigner draws
+	// the selected entity no differently; a colour picked for it must be
+	// visible at once). The selection shows on the edge copy instead: the
+	// selected entity's triangulation edges in orange over its surface.
 	for (int32 i = 0; i < BodyMaterials.Num(); ++i)
 	{
 		if (BodyMaterials[i] != nullptr)
 		{
-			BodyMaterials[i]->SetVectorParameterValue(TEXT("Color"), bSelected ? kSelectedColor : GetBodyDisplayColor(i));
+			BodyMaterials[i]->SetVectorParameterValue(TEXT("Color"), GetBodyDisplayColor(i));
 		}
 	}
 	// The mirror inherits its source body's colour (REQ-VIZ-020).
@@ -368,11 +369,12 @@ void AAerotelicEntityActor::ApplyColors()
 	{
 		if (MirrorMaterials[i] != nullptr)
 		{
-			MirrorMaterials[i]->SetVectorParameterValue(TEXT("Color"), bSelected ? kSelectedColor : GetBodyDisplayColor(i));
+			MirrorMaterials[i]->SetVectorParameterValue(TEXT("Color"), GetBodyDisplayColor(i));
 		}
 	}
-	// Edges: near-black over a shaded surface, the body's own colour when
-	// they are all there is (occ_viewer.py _apply_style's SetEdgeColor).
+	// Edges: orange while selected; else near-black over a shaded surface,
+	// or the body's own colour when they are all there is (occ_viewer.py
+	// _apply_style's SetEdgeColor).
 	const bool bWire = RenderStyle == EAerotelicRenderStyle::Wireframe;
 	for (int32 i = 0; i < EdgeMaterials.Num(); ++i)
 	{
@@ -425,8 +427,10 @@ void AAerotelicEntityActor::ApplyMeshVisibility()
 {
 	// Which meshes the style shows. The surface mesh stays registered and
 	// collidable while hidden, so a wireframe body is still click-selectable.
+	// The edge copy also carries the selection highlight, so it shows for
+	// the selected entity in every style.
 	const bool bSurface = RenderStyle != EAerotelicRenderStyle::Wireframe;
-	const bool bEdges = RenderStyle != EAerotelicRenderStyle::Shaded;
+	const bool bEdges = RenderStyle != EAerotelicRenderStyle::Shaded || bSelected;
 	if (ProxyMesh != nullptr)      ProxyMesh->SetVisibility(bHasTessellation && bSurface);
 	if (EdgeMesh != nullptr)       EdgeMesh->SetVisibility(bHasTessellation && bEdges);
 	if (MirrorMesh != nullptr)     MirrorMesh->SetVisibility(bMirrorHasTessellation && bSurface);
@@ -440,6 +444,7 @@ void AAerotelicEntityActor::SetSelected(bool bInSelected)
 		return;
 	}
 	bSelected = bInSelected;
+	ApplyMeshVisibility();
 	ApplyColors();
 }
 

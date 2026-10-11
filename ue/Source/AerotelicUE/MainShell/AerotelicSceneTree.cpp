@@ -44,13 +44,15 @@ namespace
 
 	// Opens the engine's colour picker (AppFramework's SColorPicker, the
 	// same one the Editor uses) on Initial, calling OnPicked live as the
-	// user drags. Modal, as QColorDialog.getColor is: the window is always
-	// in front and focused, and nothing else happens until OK or Cancel.
-	// No alpha: WingDesigner's colours have none.
+	// user drags. Modeless, unlike QColorDialog.getColor: the game viewport
+	// does not repaint while a Slate modal runs, so a modal picker would
+	// hide its own live preview until OK; a floating picker lets the body
+	// take each colour as it is chosen. No alpha: WingDesigner's colours
+	// have none.
 	void PickColor(const FText& Title, FLinearColor Initial, TSharedPtr<SWidget> Parent, TFunction<void(FLinearColor)> OnPicked)
 	{
 		FColorPickerArgs Args;
-		Args.bIsModal = true;
+		Args.bIsModal = false;
 		Args.bUseAlpha = false;
 		Args.bExpandAdvancedSection = false;
 		Args.InitialColor = Initial;
