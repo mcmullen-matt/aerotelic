@@ -281,6 +281,58 @@ void CheckRealPythonProjectFile() {
 		}
 	}
 	Check(true, "p38.yaml: every entity constructed and the sampled ones built real solids without throwing");
+
+	// Every body's own mesh is a closed, outward manifold -- what the
+	// lattice generator's distance field needs for its sign. The booms end
+	// in knife edges (zero width, some height), the tailplane's tip chord
+	// closes to zero: both must come out closed.
+	for (auto& e : project.entities) {
+		std::vector<NamedMesh> meshes;
+		try {
+			if (auto* ws = std::get_if<WingModelSpec>(&e.model)) meshes = WingModel(*ws).BuildMeshes(2e-3);
+			else if (auto* fs = std::get_if<FuselageSpec>(&e.model)) meshes = FuselageModel(*fs).BuildMeshes(2e-3);
+			else if (auto* ns = std::get_if<NacelleSpec>(&e.model)) meshes = NacelleModel(*ns).BuildMeshes(2e-3);
+			else if (auto* ps = std::get_if<PropellerSpec>(&e.model)) meshes = PropellerModel(*ps).BuildMeshes(2e-3);
+		} catch (const std::exception& ex) {
+			Check(false, "p38.yaml entity '" + e.name + "' failed to mesh: " + ex.what());
+			continue;
+		}
+		Check(!meshes.empty(), "p38.yaml entity '" + e.name + "' has a mesh builder");
+		for (const NamedMesh& m : meshes) {
+			Check(m.mesh.IsClosedManifold() && m.mesh.SignedVolume() > 0.0, "p38.yaml '" + e.name + "/" + m.name + "': closed, outward mesh");
+		}
+	}
+
+	// A planform whose trailing edge crosses ahead of the leading edge at
+	// the tip (the tailplane as it was saved before 2026-10-11) is refused
+	// with the span range named, by both build paths.
+	for (auto& e : project.entities) {
+		auto* ws = std::get_if<WingModelSpec>(&e.model);
+		if (!ws || e.name != "HT") continue;
+		WingModelSpec bad = *ws;
+		Mat te = bad.planform.te_curve->poles;
+		te(te.rows() - 1, 1) = te(te.rows() - 1, 1) - 0.01; // tip trailing edge 10 mm ahead of the leading edge
+		bad.planform.te_curve->poles = te;
+		WingModel wm(bad);
+		Check(wm.NegativeChordRange().has_value(), "negative tip chord: NegativeChordRange reports it");
+		std::string msg;
+		try {
+			wm.BuildMeshes(2e-3);
+			Check(false, "negative tip chord: BuildMeshes should refuse");
+		} catch (const std::invalid_argument& ex) {
+			msg = ex.what();
+			Check(msg.find("negative chord") != std::string::npos && msg.find("100.00%") != std::string::npos,
+				"negative tip chord: BuildMeshes refuses, naming the span range (" + msg + ")");
+		}
+		try {
+			wm.BuildSolid();
+			Check(false, "negative tip chord: BuildSolid should refuse");
+		} catch (const std::invalid_argument&) {
+			Check(true, "negative tip chord: BuildSolid refuses too");
+		}
+		// The saved file itself (tip chord exactly zero: a pointed tip) builds.
+		Check(!WingModel(*ws).NegativeChordRange().has_value(), "p38 HT as saved: no negative chord (tip chord is zero)");
+	}
 }
 
 } // namespace

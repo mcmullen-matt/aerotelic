@@ -37,9 +37,17 @@ public:
 	virtual TopoDS_Shape BuildSolid() const override;
 
 	// Generates the lattice (ignoring `tolerance`: the resolution is the
-	// spec's voxels per cell), or returns the last generated mesh until
-	// Invalidate(). Throws std::runtime_error with the reason when a target
-	// is gone, no target has geometry, or the grid is too large.
+	// spec's voxels per cell), or returns the last generated meshes until
+	// Invalidate(). Two bodies: "Skin", the solid shell between each body's
+	// surface and its inward offset by the spec's skin thickness, and
+	// "Lattice", the infill inside that offset -- separate so a downstream
+	// analysis can give the shell and the infill their own materials (the
+	// two meet on the offset surface vertex for vertex; their union is the
+	// part). Throws std::runtime_error with the reason when a target is
+	// gone, no target has geometry, a target or reserved volume is not a
+	// closed outward surface (the distance field's sign would be wrong
+	// around it), the skin thickness is not positive, or the grid is too
+	// large.
 	virtual std::vector<aerotelic::NamedMesh> BuildMeshes(double tolerance) const override;
 
 	// Drops the generated mesh so the next build regenerates.

@@ -198,6 +198,46 @@ int Run() {
 		Check(ell.IsClosedManifold() && std::fabs(ell.SignedVolume() - 4.18879020478639) / 4.18879020478639 < 5e-3, "ellipsoid: closed, volume within 0.5%");
 	}
 
+	// ---- a knife-edge end: a section squeezed flat (zero width, some height) ----
+	{
+		// A body whose u = 0 section is a vertical line segment traced out
+		// and back (every point on the way back coincides with one on the
+		// way out), opening into a circle by u = 1: what a fuselage nose or
+		// tail with zero half-width but z_top != z_bot produces. The flat
+		// section can carry no cap; the mesh is closed only if the strip on
+		// each side of it shares the edge.
+		LoftSource src;
+		src.section = [](double u, const std::vector<double>& v) {
+			Mat out(static_cast<int>(v.size()), 3);
+			for (size_t j = 0; j < v.size(); ++j) {
+				double phi = 2.0 * 3.14159265358979323846 * v[j];
+				out(static_cast<int>(j), 0) = 2.0 * u;
+				out(static_cast<int>(j), 1) = u * std::sin(phi);
+				out(static_cast<int>(j), 2) = std::cos(phi);
+			}
+			return out;
+		};
+		src.closed_curve = true;
+		src.v_seeds = {0.0, 0.25, 0.5, 0.75};
+		LoftOptions opt;
+		opt.tolerance = tol;
+		opt.min_v = 16;
+		opt.apex_tolerance = 1e-9;
+		TriMesh knife = TriangulateLoft(src, opt);
+		Check(!knife.IsEmpty(), "knife-edge loft: has triangles");
+		Check(knife.IsClosedManifold(), "knife-edge loft: closed manifold (the flat end's two sides share their edge)");
+		Check(knife.SignedVolume() > 0.0, "knife-edge loft: outward");
+		// The field's sign holds beyond the knife edge, where the pseudo-normal
+		// of an open slit would have been one-sided.
+		MeshSdf sdf(knife);
+		bool signs_ok = true;
+		for (double dy : {-1.5, -0.5, 0.5, 1.5})
+			for (double dz : {-0.4, 0.0, 0.4})
+				signs_ok = signs_ok && sdf.Distance({-0.3, dy, dz}) > 0.0;
+		Check(signs_ok, "knife-edge loft: points beyond the knife edge are outside");
+		Check(sdf.Distance({1.0, 0.0, 0.0}) < 0.0, "knife-edge loft: the axis is inside");
+	}
+
 	// ---- wing ----
 	{
 		PlanformSpec ps;

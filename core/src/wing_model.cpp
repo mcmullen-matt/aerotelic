@@ -167,23 +167,26 @@ DoubleTrapPlanform::DoubleTrapPlanform(const PlanformSpec& spec) {
 	dihedral_curve_ = std::make_unique<DihedralCurve>(spec.dihedral_curve);
 }
 
-Mat DoubleTrapPlanform::AirfoilCoordsToXyz(double s, const Mat& airfoil_coords) const {
+double DoubleTrapPlanform::ChordAt(double eta) const {
 	double tip_le = semi_span_ * std::tan(DegToRad(leading_edge_sweep_angle_deg_));
 	double kink_le = kink_fraction_ * tip_le;
 	double kink_te = root_chord_ + kink_fraction_ * semi_span_ * std::tan(DegToRad(trailing_edge_sweep_angle_deg_));
 	double kink_chord = kink_te - kink_le;
+	if (eta < kink_fraction_) {
+		double t = eta / kink_fraction_;
+		return root_chord_ * (1.0 - t) + kink_chord * t;
+	}
+	double t = (eta - kink_fraction_) / (1.0 - kink_fraction_);
+	return kink_chord * (1.0 - t) + tip_chord_ * t;
+}
+
+Mat DoubleTrapPlanform::AirfoilCoordsToXyz(double s, const Mat& airfoil_coords) const {
+	double tip_le = semi_span_ * std::tan(DegToRad(leading_edge_sweep_angle_deg_));
 
 	std::vector<double> eta_yz = dihedral_curve_->Evaluate(s);
 	double eta = eta_yz[0];
 	double le = eta * tip_le;
-	double chord;
-	if (eta < kink_fraction_) {
-		double t = eta / kink_fraction_;
-		chord = root_chord_ * (1.0 - t) + kink_chord * t;
-	} else {
-		double t = (eta - kink_fraction_) / (1.0 - kink_fraction_);
-		chord = kink_chord * (1.0 - t) + tip_chord_ * t;
-	}
+	double chord = ChordAt(eta);
 
 	std::array<double, 3> rotation_xyz = {le + rotation_fraction_ * chord, eta * semi_span_, eta_yz[1] * semi_span_};
 	std::vector<double> deta_yz_ds = dihedral_curve_->Derivative(s);
@@ -677,6 +680,42 @@ std::vector<double> WingModel::LoftStations(int n_span, std::optional<double> to
 	return out;
 }
 
+std::optional<std::pair<double, double>> WingModel::NegativeChordRange() const {
+	// The chord is a smooth function of eta (linear for the trapezoids, a
+	// NURBS difference otherwise), so a fine uniform grid plus the exact
+	// ends and the user's stations finds any crossing that matters. A
+	// zero chord is a pointed tip, not an error.
+	constexpr int kSamples = 2000;
+	constexpr double kEps = 1e-12;
+	std::vector<double> etas;
+	etas.reserve(kSamples + 1 + user_sections_.size());
+	for (int i = 0; i <= kSamples; ++i) etas.push_back(static_cast<double>(i) / kSamples);
+	for (const auto& sec : user_sections_) etas.push_back(std::clamp(sec.s, 0.0, 1.0));
+	std::sort(etas.begin(), etas.end());
+	std::optional<std::pair<double, double>> range;
+	for (double eta : etas) {
+		if (planform_->ChordAt(eta) < -kEps) {
+			if (!range) range = {eta, eta};
+			else range->second = eta;
+		}
+	}
+	return range;
+}
+
+void WingModel::RequirePositiveChord() const {
+	auto range = NegativeChordRange();
+	if (!range) return;
+	// No entity name here: the model's own `name` is the model kind ("Wing")
+	// in saved files; the application prefixes the scene name.
+	char buf[400];
+	std::snprintf(buf, sizeof buf,
+		"the planform has a negative chord from %.2f%% to %.2f%% of the semi-span: the trailing edge lies ahead of the leading edge "
+		"there, so the section is turned inside out. Move the trailing-edge curve aft of the leading-edge curve (or raise the tip "
+		"chord above zero) before this wing can be built.",
+		100.0 * range->first, 100.0 * range->second);
+	throw std::invalid_argument(buf);
+}
+
 std::shared_ptr<Airfoil> WingModel::AirfoilAt(double eta) const {
 	std::vector<WingSection> secs = user_sections_;
 	std::sort(secs.begin(), secs.end(), [](const WingSection& a, const WingSection& b) { return a.s < b.s; });
@@ -742,6 +781,7 @@ TopoDS_Wire WingModel::SectionWire(const WingSection& section) const {
 
 TopoDS_Shape WingModel::BuildSolid(int n_span, bool ruled, std::optional<double> station_tol_override) const {
 	if (user_sections_.empty()) throw std::invalid_argument("No airfoil sections provided to the wing loft");
+	RequirePositiveChord();
 	std::vector<double> stations = LoftStations(n_span, station_tol_override);
 
 	BRepOffsetAPI_ThruSections loft(true, ruled, 1e-6);
@@ -756,6 +796,7 @@ TopoDS_Shape WingModel::BuildSolid(int n_span, bool ruled, std::optional<double>
 
 TriMesh WingModel::BuildMesh(double tolerance, double s_min, double s_max) const {
 	if (user_sections_.empty()) throw std::invalid_argument("No airfoil sections provided to the wing loft");
+	RequirePositiveChord();
 	if (!(s_max > s_min)) throw std::invalid_argument("the wing mesh's span range is empty");
 	s_min = std::clamp(s_min, 0.0, 1.0);
 	s_max = std::clamp(s_max, 0.0, 1.0);

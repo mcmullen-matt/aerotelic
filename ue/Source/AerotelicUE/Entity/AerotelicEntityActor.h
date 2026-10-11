@@ -75,6 +75,11 @@ public:
 	// model's current BuildSolid() geometry. Called by a dialog's OnChanged
 	// after every edit.
 	void RefreshProxy();
+	// Why the last RefreshProxy() could not build the model (its exception's
+	// message, e.g. a wing with a negative chord), empty after a successful
+	// build. The entity shows nothing while this is set; the project loader
+	// and the editors report it to the user.
+	const FString& GetBuildError() const { return LastBuildError; }
 
 	// Selection highlight (the standalone app's equivalent of the Editor's
 	// selection outline): the entity's triangulation edges drawn in orange
@@ -261,6 +266,7 @@ private:
 	// them.
 	std::vector<aerotelic::NamedMesh> LastMeshes;
 	double LastMeshTolerance = 0.0;
+	FString LastBuildError;
 	// Local bounds of what was last shown, for the next build's tolerance.
 	FBox LastLocalBounds;
 

@@ -300,8 +300,12 @@ The layout follows the Python/Qt version's main window (`aerotelic/ui/main_windo
   stations are added wherever the ruled strip strays from the surface
   between them. Ends are capped by ear clipping; apexes (a fuselage nose, a
   spinner tip) collapse to a vertex; a rim of zero wall thickness shares
-  its vertices. The result is a closed, outward-oriented manifold within
-  the tolerance of the surface. `ISolidModel::BuildMeshes(tolerance)` is
+  its vertices; a section squeezed flat (a fuselage end of zero width but
+  some height -- the P-38 booms' knife-edge tails) shares the vertices it
+  retraces, gets no cap, and the strip on either side is split away from
+  the flat section, so the knife edge is a true shared edge. The result is
+  a closed, outward-oriented manifold within the tolerance of the surface
+  (`project_yaml_check` asserts this for every body of the p38 project). `ISolidModel::BuildMeshes(tolerance)` is
   implemented by every model: wing (section curves placed through
   `AirfoilCoordsToXyz`, stations from `LoftStations`), fuselage (the conic
   section as a curve, `ConicCrossSectionPoint`), both nacelles (one
@@ -337,35 +341,65 @@ The layout follows the Python/Qt version's main window (`aerotelic/ui/main_windo
   distance to the segment, normalised by the strut radius, minimum over
   struts), the radius calibrated the same way. `GenerateLattice` samples
   the lattice field intersected with the body's distance field (and minus
-  the reserved volumes, plus an optional solid skin) on a grid of N voxels
-  per cell, skipping whole blocks far from the body surface (a 1-Lipschitz
-  field lets one evaluation classify a block), and extracts the surface
-  with marching tetrahedra (vertex-shared, outward, parallel by slabs).
+  the reserved volumes) on a grid of N voxels per cell, skipping whole
+  blocks far from the body surface (a 1-Lipschitz field lets one
+  evaluation classify a block), and extracts the surface with marching
+  tetrahedra (vertex-shared, outward, parallel by slabs). With a skin
+  thickness it extracts TWO bodies from the same samples: `skin`, the solid
+  shell between each body's surface and its inward offset (a reserved
+  volume keeps a wall too), and `mesh`, the lattice clipped to that offset;
+  they meet on the offset surface vertex for vertex, and are kept apart so
+  an analysis can give shell and infill different materials. A region
+  thinner than two skins comes out solid shell, which is what a thin
+  trailing edge should be: the sampled field cannot represent a wedge
+  thinner than a voxel, and without a skin the infill's struts simply end
+  wherever they last met the skin, raggedly on a swept edge.
   `tests/lattice_check.cpp` calibrates every type, checks the marching
   tetrahedra on a sphere, and generates in a box and in a sphere with a
-  reserved sphere and a skin.
+  reserved sphere and a skin (both bodies closed, the shell's volume right).
 * **Lattice menu** -- *Generate Lattice...* opens the dialog: family (TPMS /
   Strut-based / Auxetic), type, TPMS phase, unit cell size, volume fraction
   (or wall thickness for the iso-surface phase), voxels per cell (the
-  paper's mesh density), solid skin thickness, the bodies to fill (every
-  non-primitive body, mirrored halves and boolean results included, chosen
-  by default), the reserved volumes (every primitive, chosen by default --
-  WingDesigner's primitives mark payload bays), a name, and a live estimate
-  of the sample grid. The result is a scene item of kind *lattice* (body
-  "Lattice"): shown, coloured, hidden, sectioned, exported to STL (not
-  STEP: it is a mesh) and saved under `lattices:` in the project file
-  (parameters and body names), regenerated on load. Edit (double-click or
-  the row menu) reopens the dialog and regenerates; *Regenerate Lattices*
-  rebuilds every lattice over its bodies as they now stand -- a lattice
-  does NOT follow edits to its bodies by itself (generation takes seconds,
-  which would make every keystroke in a wing panel wait). Deleting a filled
-  body deletes the lattice. Lattices carry no collision (click-select them
-  in the tree). Measured on p38: the default cell (a tenth of the largest
-  extent) generates in 0.2 s; a 0.4-unit cell (19.5 M samples) in well
-  under a minute.
+  paper's mesh density), solid skin thickness (always positive: one percent
+  of the largest root chord among the wings filled by default, else of the
+  largest body's longest extent; a saved lattice without one gets the same
+  default on load), the bodies to fill (every non-primitive body, mirrored
+  halves and boolean results included, chosen by default), the reserved
+  volumes (every primitive, chosen by default -- WingDesigner's primitives
+  mark payload bays), a name, and a live estimate of the sample grid. The
+  result is a scene item of kind *lattice* with two bodies, "Skin" (the
+  outer shell) and "Lattice" (the infill): each shown, coloured, hidden,
+  sectioned, exported to STL (not STEP: they are meshes; an ASCII STL
+  carries them as separate named `solid`s) and saved under `lattices:` in
+  the project file (parameters and body names), regenerated on load. Every
+  body filled or reserved must be a closed, outward mesh: the distance
+  field's sign is meaningless on an open one (it reported "inside" in
+  whole regions behind the P-38's boom tails before the knife-edge fix),
+  so generation is refused naming the body; and each body's field is
+  clamped positive outside the body's own bounding box as a second line of
+  defence. Edit (double-click or the row menu) reopens the dialog and
+  regenerates; *Regenerate Lattices* rebuilds every lattice over its bodies
+  as they now stand -- a lattice does NOT follow edits to its bodies by
+  itself (generation takes seconds, which would make every keystroke in a
+  wing panel wait). Deleting a filled body deletes the lattice. Lattices
+  carry no collision (click-select them in the tree). Measured on p38: the
+  default cell (a tenth of the largest extent) generates in 0.2 s; a
+  0.4-unit cell (19.5 M samples) in well under a minute.
+* **Negative chord** -- a planform whose trailing-edge curve crosses ahead
+  of its leading-edge curve (the P-38 tailplane's tip as first saved, by
+  10 mm) turns the section inside out and folds the loft; the wing's
+  distance field then reports the wrong side near the fold. `WingModel`
+  refuses to build (`RequirePositiveChord()`, every build path) naming the
+  span range; a zero chord (a pointed tip, the P-38 fin) is allowed. The
+  entity actor keeps the reason (`GetBuildError()`), the project loader
+  lists every entity that could not be built in one message, and the wing
+  editor reports it once when an edit causes it. The shipped p38.yaml has
+  the tailplane's tip pole corrected.
 * **STL export** now writes the models' own meshes at the linear
   deflection (OCCT's tessellation, with the angular deflection, only for
-  bodies that need it).
+  bodies that need it). An ASCII STL holds one `solid <entity>/<body>` per
+  body (spaces as underscores), so a lattice's shell and infill arrive as
+  separate parts; binary STL has no parts and holds the union.
 
 ## How the standalone build is put together
 

@@ -164,8 +164,18 @@ struct LatticeGrid {
 LatticeGrid PlanLatticeGrid(const LatticeSpec& spec, const Box3& bounds);
 
 struct LatticeResult {
+	// The lattice: the lattice field inside the body (inside the body's
+	// inner offset by the skin thickness when there is a skin).
 	TriMesh mesh;
-	// Solid fraction actually achieved inside the body, from the samples.
+	// The solid skin: the shell between the body surface and its inward
+	// offset by spec.skin_thickness, as a closed body of its own. Empty
+	// when the spec has no skin. Kept apart from `mesh` (the two share the
+	// offset surface exactly, being extracted from the same samples) so a
+	// downstream analysis can give the shell and the infill different
+	// materials; the union of the two is the printed part.
+	TriMesh skin;
+	// Solid fraction actually achieved inside the body (skin included),
+	// from the samples.
 	double achieved_fraction = 0.0;
 	LatticeGrid grid;
 	size_t nodes_evaluated = 0; // body SDF evaluations actually performed

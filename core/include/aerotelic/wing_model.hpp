@@ -70,6 +70,12 @@ public:
 	virtual Mat PlanformOutline(int n = 200) const = 0;
 
 	virtual double SemiSpan() const = 0;
+	// The signed chord at span fraction eta: trailing edge minus leading
+	// edge, exactly the scale AirfoilCoordsToXyz applies to the airfoil.
+	// Zero collapses the section to a point (a pointed tip); negative turns
+	// it inside out, which no loft can use -- WingModel refuses to build
+	// such a planform (see RequirePositiveChord()).
+	virtual double ChordAt(double eta) const = 0;
 	// Plain assignment for Trap*/DoubleTrap; NURBSPlanform overrides this to
 	// also rescale le_curve/te_curve proportionally (see its override).
 	virtual void SetSemiSpan(double new_value) = 0;
@@ -132,6 +138,7 @@ public:
 	Mat AirfoilCoordsToXyz(double s, const Mat& airfoil_coords) const override;
 	Mat PlanformOutline(int n = 200) const override;
 	double SemiSpan() const override { return semi_span_; }
+	double ChordAt(double eta) const override { return root_chord_ * (1.0 - eta) + tip_chord_ * eta; }
 	void SetSemiSpan(double new_value) override { semi_span_ = new_value; }
 	double RotationFraction() const override { return rotation_fraction_; }
 	double TipChord() const override { return tip_chord_; }
@@ -193,6 +200,7 @@ public:
 	Mat AirfoilCoordsToXyz(double s, const Mat& airfoil_coords) const override;
 	Mat PlanformOutline(int n = 200) const override;
 	double SemiSpan() const override { return semi_span_; }
+	double ChordAt(double eta) const override;
 	void SetSemiSpan(double new_value) override { semi_span_ = new_value; }
 	double RotationFraction() const override { return rotation_fraction_; }
 	double TipChord() const override { return tip_chord_; }
@@ -232,6 +240,7 @@ public:
 	Mat AirfoilCoordsToXyz(double s, const Mat& airfoil_coords) const override;
 	Mat PlanformOutline(int n = 200) const override;
 	double SemiSpan() const override { return semi_span_; }
+	double ChordAt(double eta) const override { return Chord(eta); }
 	// Rescales le_curve/te_curve poles proportionally -- the semi-span is
 	// NURBSPlanform's only dimensional input (see the Python docstring).
 	void SetSemiSpan(double new_value) override;
@@ -331,9 +340,23 @@ public:
 	void SetSectionS(int index, double new_s);
 	void SetSectionAirfoil(int index, std::shared_ptr<Airfoil> airfoil);
 
+	// The span fractions (eta, as fractions of the semi-span, first to last)
+	// over which the planform's chord is negative -- the trailing edge
+	// ahead of the leading edge, a section turned inside out -- or nothing
+	// when the chord is positive (or exactly zero, a pointed tip) all along.
+	// Sampled on a fine grid plus the user sections' stations.
+	std::optional<std::pair<double, double>> NegativeChordRange() const;
+	// Throws std::invalid_argument naming the wing and the span range when
+	// NegativeChordRange() finds one. Every build path calls this first: the
+	// geometry is refused until the planform is fixed, rather than lofted
+	// through an inverted section (a folded surface whose distance field
+	// reports inside and outside the wrong way round near it).
+	void RequirePositiveChord() const;
+
 	// Lofts a closed solid with BRepOffsetAPI_ThruSections through explicitly
-	// placed airfoil sections. Throws std::invalid_argument with no sections,
-	// std::runtime_error if the loft or a fold-free station set can't be found.
+	// placed airfoil sections. Throws std::invalid_argument with no sections
+	// or a negative chord (RequirePositiveChord()), std::runtime_error if the
+	// loft or a fold-free station set can't be found.
 	TopoDS_Shape BuildSolid(int n_span, bool ruled, std::optional<double> station_tol_override) const;
 	TopoDS_Shape BuildSolid() const override { return BuildSolid(40, true, std::nullopt); }
 

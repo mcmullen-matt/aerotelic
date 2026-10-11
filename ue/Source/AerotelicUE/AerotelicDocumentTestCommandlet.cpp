@@ -129,7 +129,16 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 		Spec.cell_size = 0.5;
 		Spec.volume_fraction = 0.35;
 		Spec.resolution = 6;
+		Spec.skin_thickness = 0.05;
 		FString Error;
+		{
+			// A lattice must have a skin.
+			aerotelic::LatticeSpec NoSkin = Spec;
+			NoSkin.skin_thickness = 0.0;
+			AAerotelicEntityActor* Refused = Doc->AddLattice(TEXT("Lattice 1"), NoSkin, Targets, TArray<FAerotelicBooleanOperand>(), Error);
+			Check(Refused == nullptr && Error.Contains(TEXT("skin")), FString::Printf(TEXT("a zero skin thickness is refused: %s"), *Error));
+			Check(UAerotelicDocumentSubsystem::DefaultSkinThickness(Targets) > 0.0, "the default skin thickness is positive");
+		}
 		AAerotelicEntityActor* Lattice = Doc->AddLattice(TEXT("Lattice 1"), Spec, Targets, TArray<FAerotelicBooleanOperand>(), Error);
 		Check(Lattice != nullptr, FString::Printf(TEXT("gyroid lattice in the sphere generated: %s"), *Error));
 		Check(Doc->GetEntities().Num() == 5, "the lattice is a fifth scene item");
@@ -138,13 +147,26 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 		{
 			const FAerotelicLatticeModel* M = Lattice->GetModelAs<FAerotelicLatticeModel>();
 			Check(M->GetStats().Triangles > 0, "the lattice has triangles");
-			Check(FMath::Abs(M->GetStats().AchievedFraction - 0.35) < 0.1, FString::Printf(TEXT("the lattice's achieved volume fraction (%.3f) is near the 0.35 asked"), M->GetStats().AchievedFraction));
+			// The skin counts as solid: 0.35 of the inside plus the 0.05 shell
+			// of a unit sphere, 1 - 0.95^3 = 0.143 of it.
+			const double Expected = 0.35 + (1.0 - 0.35) * (1.0 - 0.95 * 0.95 * 0.95);
+			Check(FMath::Abs(M->GetStats().AchievedFraction - Expected) < 0.1, FString::Printf(TEXT("the lattice's achieved volume fraction (%.3f) is near the %.3f expected with the skin"), M->GetStats().AchievedFraction, Expected));
 			std::vector<aerotelic::NamedMesh> Meshes = Lattice->GetPlacedMeshes(false, 1e-3);
-			Check(Meshes.size() == 1 && Meshes[0].name == "Lattice" && Meshes[0].mesh.IsClosedManifold(), "the lattice mesh is one closed body named Lattice");
-			// Every mesh vertex lies inside the sphere (radius 1 at the origin).
-			double Worst = 0.0;
-			for (const aerotelic::Vec3& V : Meshes[0].mesh.vertices) Worst = FMath::Max(Worst, aerotelic::Length(V) - 1.0);
+			Check(Meshes.size() == 2 && Meshes[0].name == "Skin" && Meshes[1].name == "Lattice", "the lattice is two bodies, Skin then Lattice");
+			bool bClosed = Meshes.size() == 2;
+			for (const aerotelic::NamedMesh& NM : Meshes) bClosed = bClosed && NM.mesh.IsClosedManifold() && NM.mesh.SignedVolume() > 0.0;
+			Check(bClosed, "both the skin and the lattice are closed, outward bodies");
+			// Every mesh vertex lies inside the sphere (radius 1 at the origin);
+			// the lattice's inside the skin's inner offset.
+			double Worst = 0.0, WorstLattice = 0.0;
+			for (const aerotelic::NamedMesh& NM : Meshes)
+				for (const aerotelic::Vec3& V : NM.mesh.vertices)
+				{
+					Worst = FMath::Max(Worst, aerotelic::Length(V) - 1.0);
+					if (NM.name == "Lattice") WorstLattice = FMath::Max(WorstLattice, aerotelic::Length(V) - 0.95);
+				}
 			Check(Worst < 0.1, FString::Printf(TEXT("the lattice stays inside the sphere (worst overshoot %.4f)"), Worst));
+			Check(WorstLattice < 0.1, FString::Printf(TEXT("the infill stays inside the skin (worst overshoot %.4f)"), WorstLattice));
 			bool bThrew = false;
 			try { Lattice->GetModel()->BuildSolid(); } catch (const std::exception&) { bThrew = true; }
 			Check(bThrew, "a lattice has no B-rep solid (BuildSolid throws)");

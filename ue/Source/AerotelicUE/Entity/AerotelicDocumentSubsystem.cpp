@@ -353,6 +353,29 @@ FString UAerotelicDocumentSubsystem::NextLatticeName() const
 	return Candidate;
 }
 
+double UAerotelicDocumentSubsystem::DefaultSkinThickness(const TArray<FAerotelicBooleanOperand>& Targets)
+{
+	double LargestRootChord = 0.0, LargestExtent = 0.0;
+	for (const FAerotelicBooleanOperand& Op : Targets)
+	{
+		if (!Op.Entity.IsValid())
+		{
+			continue;
+		}
+		if (Op.Entity->GetEntityType() == EntityType::Wing)
+		{
+			LargestRootChord = FMath::Max(LargestRootChord, Op.Entity->GetModelAs<WingModel>()->planform().RootChord());
+		}
+		const FBox Bounds = Op.Entity->GetPlacedBounds(Op.bMirror);
+		if (Bounds.IsValid)
+		{
+			LargestExtent = FMath::Max(LargestExtent, (double)Bounds.GetSize().GetMax());
+		}
+	}
+	const double Reference = LargestRootChord > 0.0 ? LargestRootChord : LargestExtent;
+	return FMath::Max(0.01 * Reference, 1e-4);
+}
+
 AAerotelicEntityActor* UAerotelicDocumentSubsystem::AddLattice(const FString& Name, const aerotelic::LatticeSpec& Spec,
 	const TArray<FAerotelicBooleanOperand>& Targets, const TArray<FAerotelicBooleanOperand>& Exclusions, FString& OutError)
 {
@@ -688,6 +711,10 @@ bool UAerotelicDocumentSubsystem::OpenProjectPath(const FString& InPath, bool bA
 	}
 
 	ClearScene();
+	// Anything that could not be built: entities whose model refuses (a
+	// wing with a negative chord), boolean operations, lattices. Reported
+	// together at the end; the rest of the project still opens.
+	TArray<FString> Failures;
 	for (const ProjectEntity& Entity : Project.entities)
 	{
 		std::unique_ptr<ISolidModel> Model;
@@ -734,6 +761,10 @@ bool UAerotelicDocumentSubsystem::OpenProjectPath(const FString& InPath, bool bA
 		{
 			Actor->ApplyPlacement(Entity.placement);
 			Actor->RefreshProxy();
+			if (!Actor->GetBuildError().IsEmpty())
+			{
+				Failures.Add(FString::Printf(TEXT("%s: %s"), *Name, *Actor->GetBuildError()));
+			}
 			// Display state saved with the entity: the mirrored half, a
 			// colour override, hidden. Absent means the defaults.
 			Actor->SetMirrored(Entity.mirror);
@@ -751,7 +782,6 @@ bool UAerotelicDocumentSubsystem::OpenProjectPath(const FString& InPath, bool bA
 	// The boolean operations, in build order, over what is now in the
 	// scene (main_window.py _load_boolean). One that cannot be built is
 	// reported and skipped; the rest of the project still opens.
-	TArray<FString> Failures;
 	for (const ProjectBoolean& B : Project.booleans)
 	{
 		TArray<FAerotelicBooleanOperand> Operands;
@@ -843,7 +873,13 @@ bool UAerotelicDocumentSubsystem::OpenProjectPath(const FString& InPath, bool bA
 		Resolve(L.targets, Targets);
 		if (Error.IsEmpty()) Resolve(L.exclusions, Exclusions);
 		const FString Name = UTF8_TO_TCHAR(L.name.c_str());
-		AAerotelicEntityActor* Actor = Error.IsEmpty() ? AddLattice(Name, L.spec, Targets, Exclusions, Error) : nullptr;
+		// A file saved before every lattice had a skin: give it the default.
+		aerotelic::LatticeSpec Spec = L.spec;
+		if (!(Spec.skin_thickness > 0.0) && Error.IsEmpty())
+		{
+			Spec.skin_thickness = DefaultSkinThickness(Targets);
+		}
+		AAerotelicEntityActor* Actor = Error.IsEmpty() ? AddLattice(Name, Spec, Targets, Exclusions, Error) : nullptr;
 		if (Actor == nullptr)
 		{
 			Failures.Add(FString::Printf(TEXT("%s: %s"), *Name, *Error));
@@ -862,7 +898,8 @@ bool UAerotelicDocumentSubsystem::OpenProjectPath(const FString& InPath, bool bA
 	if (Failures.Num() > 0 && !IsRunningCommandlet() && !FApp::IsUnattended())
 	{
 		AerotelicMessageBox(EAppMsgType::Ok,
-			FText::FromString(TEXT("Some boolean operations or lattices could not be rebuilt and were left out:\n") + FString::Join(Failures, TEXT("\n"))));
+			FText::FromString(TEXT("Some of the project could not be built. Entities that failed are listed but show no geometry until fixed; boolean operations and lattices that failed were left out:\n\n") + FString::Join(Failures, TEXT("\n"))),
+			FText::FromString(TEXT("Project Opened With Problems")));
 	}
 	CurrentPath = bAdopt ? Path : FString();
 	OnEntityListChanged.Broadcast();

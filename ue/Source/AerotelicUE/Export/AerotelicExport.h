@@ -20,10 +20,23 @@ namespace AerotelicExport
 
 	struct FStlTriangle { FVector3f N, A, B, C; };
 
+	// One body's run of triangles within FStlMesh::Triangles, named
+	// "<entity>/<body>" ("Lattice 1/Skin", "Lattice 1/Lattice"): an ASCII
+	// STL is written as one `solid` per part, so a mesher or FE
+	// pre-processor can pick the parts up separately (and give a lattice's
+	// shell and infill different materials). Binary STL has no parts.
+	struct FStlPart
+	{
+		FString Name;
+		int32 First = 0;
+		int32 Count = 0;
+	};
+
 	// The union of the chosen bodies' triangle meshes: what the file holds.
 	struct FStlMesh
 	{
 		TArray<FStlTriangle> Triangles;
+		TArray<FStlPart> Parts;
 		int32 Bodies = 0;
 		int64 Nodes = 0;
 		bool IsEmpty() const { return Triangles.Num() == 0; }

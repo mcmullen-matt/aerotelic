@@ -677,6 +677,7 @@ void AAerotelicEntityActor::RefreshProxy()
 		// sections) must not leave either visual in a half-built state --
 		// hide both rather than show something stale or wrong.
 		UE_LOG(LogTemp, Warning, TEXT("AerotelicEntityActor: build failed for '%s': %s"), *EntityName, UTF8_TO_TCHAR(e.what()));
+		LastBuildError = UTF8_TO_TCHAR(e.what());
 		LastSolid.Nullify();
 		LastMeshes.clear();
 		bHasTessellation = false;
@@ -689,6 +690,8 @@ void AAerotelicEntityActor::RefreshProxy()
 		OnGeometryChanged.Broadcast(this);
 		return;
 	}
+
+	LastBuildError.Empty();
 
 	// Keep each body's display state across a rebuild by role name, so a
 	// hidden or recoloured blade stays so when the propeller is edited.

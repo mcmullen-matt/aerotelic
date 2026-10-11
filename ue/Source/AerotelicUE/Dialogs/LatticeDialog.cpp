@@ -131,6 +131,11 @@ void ShowAerotelicLatticeDialog(AAerotelicEntityActor* Existing, TFunction<void(
 	}
 
 	aerotelic::LatticeSpec Spec = bEdit ? ExistingModel->Spec : aerotelic::LatticeSpec();
+	TArray<FAerotelicBooleanOperand> FillableOperands;
+	for (const FAerotelicBodyChoicePtr& C : Fillable)
+	{
+		FillableOperands.Add(C->Operand);
+	}
 	if (!bEdit)
 	{
 		// A cell a tenth of the largest body's extent: a visible lattice at
@@ -145,6 +150,13 @@ void ShowAerotelicLatticeDialog(AAerotelicEntityActor* Existing, TFunction<void(
 			const double Largest = Bounds.GetSize().GetMax();
 			Spec.cell_size = FMath::Max(Largest / 10.0, 1e-4);
 		}
+	}
+	// Every lattice has a solid skin (the part's outer shell, its own body
+	// "Skin"): one percent of the largest root chord to start with. A
+	// lattice saved without one gets the same default.
+	if (!(Spec.skin_thickness > 0.0))
+	{
+		Spec.skin_thickness = UAerotelicDocumentSubsystem::DefaultSkinThickness(bEdit ? ExistingModel->Targets : FillableOperands);
 	}
 
 	// ---- option lists ----
@@ -295,9 +307,9 @@ void ShowAerotelicLatticeDialog(AAerotelicEntityActor* Existing, TFunction<void(
 						+ SVerticalBox::Slot().AutoHeight().Padding(0, 2) [ SAssignNew(FractionRow, SBox) [ FormRow(LOCTEXT("Fraction", "Volume fraction:"), Spin(Spec.volume_fraction, 0.02, 0.95, 0.05, FText::GetEmpty())) ] ]
 						+ SVerticalBox::Slot().AutoHeight().Padding(0, 2) [ SAssignNew(WallRow, SBox) [ FormRow(LOCTEXT("Wall", "Wall thickness:"), Spin(Spec.wall_thickness, 1e-6, 1e9, 0.001, FText::GetEmpty())) ] ]
 						+ SVerticalBox::Slot().AutoHeight().Padding(0, 2) [ FormRow(LOCTEXT("Resolution", "Voxels per cell:"), Spin(Resolution, 2, 64, 1, FText::GetEmpty())) ]
-						+ SVerticalBox::Slot().AutoHeight().Padding(0, 2) [ FormRow(LOCTEXT("Skin", "Solid skin thickness:"), Spin(Spec.skin_thickness, 0.0, 1e9, 0.001, FText::GetEmpty())) ]
+						+ SVerticalBox::Slot().AutoHeight().Padding(0, 2) [ FormRow(LOCTEXT("Skin", "Solid skin thickness:"), Spin(Spec.skin_thickness, 1e-6, 1e9, 0.001, FText::GetEmpty())) ]
 						+ SVerticalBox::Slot().AutoHeight().Padding(0, 4, 0, 0)
-						[ MakeInfoLabel(LOCTEXT("ParamHint", "Sizes are in model units. Volume fraction is the lattice's share of the filled volume (its level-set parameter or strut radius is calibrated to it). Voxels per cell is the sampling resolution of the surface extraction (OpenLattice's mesh density); 8-16 is usual, more is finer and slower. A skin keeps the body's outer shell solid to that depth.")) ]
+						[ MakeInfoLabel(LOCTEXT("ParamHint", "Sizes are in model units. Volume fraction is the lattice's share of the filled volume (its level-set parameter or strut radius is calibrated to it). Voxels per cell is the sampling resolution of the surface extraction (OpenLattice's mesh density); 8-16 is usual, more is finer and slower. The skin is the part's solid outer shell to that depth, always present (one percent of the largest root chord by default) and generated as its own body, 'Skin', beside the 'Lattice' body, so the two can be coloured, exported and given materials separately. A region thinner than two skins comes out solid.")) ]
 						+ SVerticalBox::Slot().AutoHeight().Padding(0, 6, 0, 0)
 						[ SAssignNew(EstimateLabel, STextBlock).AutoWrapText(true) ])
 				]
@@ -346,6 +358,11 @@ void ShowAerotelicLatticeDialog(AAerotelicEntityActor* Existing, TFunction<void(
 	if (Targets.Num() == 0)
 	{
 		AerotelicMessageBox(EAppMsgType::Ok, LOCTEXT("NeedTarget", "Select at least one body to fill."), LOCTEXT("Title", "Generate Lattice"));
+		return;
+	}
+	if (!(Final.skin_thickness > 0.0))
+	{
+		AerotelicMessageBox(EAppMsgType::Ok, LOCTEXT("NeedSkin", "The solid skin thickness must be greater than zero: the skin is the part's outer shell."), LOCTEXT("Title", "Generate Lattice"));
 		return;
 	}
 	FString Name = NameBox.IsValid() ? NameBox->GetText().ToString().TrimStartAndEnd() : FString();

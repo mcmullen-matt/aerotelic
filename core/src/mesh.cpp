@@ -230,6 +230,21 @@ void AppendRuledStrip(TriMesh& mesh, const std::vector<int>& ring_a, const std::
 	if (ring_a.size() != ring_b.size()) throw std::invalid_argument("AppendRuledStrip: rings differ in size");
 	int n = static_cast<int>(ring_a.size());
 	int n_quads = closed ? n : n - 1;
+	// How often each vertex occurs in its ring. A ring squeezed flat (a
+	// knife edge: a fuselage end of zero width) retraces itself, so every
+	// vertex of it but the two ends occurs twice; the quads on either side
+	// of an end then mirror each other across the flat section, and the
+	// diagonal from the repeated vertex next to the end lies IN the flat
+	// section, so both quads would split along the same segment and leave
+	// a coincident, oppositely wound pair of slivers behind (an edge with
+	// four triangles). Preferring the diagonal from the unrepeated end
+	// vertex keeps both quads' triangles off the section and the mesh a
+	// manifold. Elsewhere the counts tie and the shorter diagonal decides.
+	std::unordered_map<int, int> count;
+	count.reserve(2 * ring_a.size());
+	for (int idx : ring_a) ++count[idx];
+	for (int idx : ring_b) ++count[idx];
+	auto repeated = [&](int idx) { return count[idx] > 1 ? 1 : 0; };
 	for (int j = 0; j < n_quads; ++j) {
 		int j1 = (j + 1) % n;
 		int a0 = ring_a[j], a1 = ring_a[j1], b1 = ring_b[j1], b0 = ring_b[j];
@@ -255,8 +270,11 @@ void AppendRuledStrip(TriMesh& mesh, const std::vector<int>& ring_a, const std::
 		const Vec3& pa1 = mesh.vertices[a1];
 		const Vec3& pb1 = mesh.vertices[b1];
 		const Vec3& pb0 = mesh.vertices[b0];
-		// Split along the shorter diagonal: a0-b1 or a1-b0.
-		if (DistanceSq(pa0, pb1) <= DistanceSq(pa1, pb0)) {
+		// Split along the diagonal touching fewer repeated vertices (see
+		// above), then the shorter one: a0-b1 or a1-b0.
+		int rep_a0b1 = repeated(a0) + repeated(b1), rep_a1b0 = repeated(a1) + repeated(b0);
+		bool use_a0b1 = rep_a0b1 != rep_a1b0 ? rep_a0b1 < rep_a1b0 : DistanceSq(pa0, pb1) <= DistanceSq(pa1, pb0);
+		if (use_a0b1) {
 			mesh.triangles.push_back({a0, a1, b1});
 			mesh.triangles.push_back({a0, b1, b0});
 		} else {
@@ -281,15 +299,25 @@ bool AppendPolygonCap(TriMesh& mesh, const std::vector<int>& ring_in) {
 	}
 
 	// Newell's normal, then project onto the plane dropping the dominant axis.
+	// A polygon with no area -- a section squeezed flat into a line, traced
+	// out and back -- must add nothing: judged against its own perimeter,
+	// not against exact zero, since the rounding in the sums leaves ~1e-17
+	// behind and ear clipping that would emit collinear triangles that
+	// break the manifold along the flat section's edge.
 	Vec3 normal{0, 0, 0};
+	double perimeter2 = 0.0;
 	for (int i = 0; i < n; ++i) {
 		const Vec3& p = mesh.vertices[ring[i]];
 		const Vec3& q = mesh.vertices[ring[(i + 1) % n]];
 		normal.x += (p.y - q.y) * (p.z + q.z);
 		normal.y += (p.z - q.z) * (p.x + q.x);
 		normal.z += (p.x - q.x) * (p.y + q.y);
+		perimeter2 += DistanceSq(p, q);
 	}
-	if (LengthSq(normal) <= 0.0) return false;
+	// |normal| is twice the area; an area below 1e-9 of the squared
+	// perimeter is a line (a real sliver cap, e.g. a thin wing tip, is
+	// orders of magnitude above this).
+	if (LengthSq(normal) <= 4e-18 * perimeter2 * perimeter2) return false;
 	int drop = 0;
 	if (std::fabs(normal.y) > std::fabs(normal[drop])) drop = 1;
 	if (std::fabs(normal.z) > std::fabs(normal[drop])) drop = 2;
@@ -306,7 +334,7 @@ bool AppendPolygonCap(TriMesh& mesh, const std::vector<int>& ring_in) {
 		int j = (i + 1) % n;
 		area2 += Cross2(px[i], py[i], px[j], py[j]);
 	}
-	if (std::fabs(area2) <= 0.0) return false;
+	if (std::fabs(area2) <= 2e-9 * perimeter2) return false;
 	// Work on a counter-clockwise copy; remember whether we reversed so the
 	// emitted triangles keep the caller's winding.
 	std::vector<int> order(n);
@@ -560,11 +588,25 @@ TriMesh TriangulateLoft(const LoftSource& src, const LoftOptions& opt, LoftStats
 		const std::vector<int>* first_ring = (src.periodic_u && i == nu - 1) ? &rings[0] : nullptr;
 		for (int j = 0; j < nv; ++j) {
 			Vec3 p = RowVec(s, j);
-			// Alias a point that coincides with its predecessor (a collapsed
-			// edge, e.g. a closed trailing edge) rather than duplicate it.
-			if (j > 0 && DistanceSq(p, mesh.vertices[ring[j - 1]]) <= apex2) {
-				ring[j] = ring[j - 1];
-				continue;
+			// Alias a point that coincides with ANY earlier point of this ring
+			// rather than duplicate it: a collapsed edge (a closed trailing
+			// edge) repeats its predecessor, and a section squeezed flat (a
+			// fuselage end with zero width but some height -- a knife edge)
+			// retraces itself, so each point on the way back coincides with
+			// one on the way out. Sharing those makes the strip on both sides
+			// of the flat section meet along common edges, which keeps the
+			// mesh a closed manifold; left as separate vertices the two sides
+			// would be joined by nothing and the mesh would be open along the
+			// edge (the distance field's sign is then wrong near it).
+			{
+				int alias = -1;
+				for (int k = j - 1; k >= 0 && alias < 0; --k) {
+					if (DistanceSq(p, mesh.vertices[ring[k]]) <= apex2) alias = ring[k];
+				}
+				if (alias >= 0) {
+					ring[j] = alias;
+					continue;
+				}
 			}
 			if (prev && DistanceSq(p, mesh.vertices[(*prev)[j]]) <= apex2) {
 				ring[j] = (*prev)[j];

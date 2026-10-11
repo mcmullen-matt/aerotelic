@@ -4,6 +4,7 @@
 #include "Widgets/TabStrip.h"
 
 #include "Entity/AerotelicEntityActor.h"
+#include "Widgets/MessageBox.h"
 #include "aerotelic/wing_model.hpp"
 
 using namespace aerotelic;
@@ -17,11 +18,23 @@ void BuildWingDesignContent(AAerotelicEntityActor* Entity, FAerotelicDesignConte
 
 	WingModel* Model = Entity->GetModelAs<WingModel>();
 	TWeakObjectPtr<AAerotelicEntityActor> WeakEntity = Entity;
-	TSharedRef<FWingDesignTabs> DesignTabs = MakeShared<FWingDesignTabs>(Model, FSimpleDelegate::CreateLambda([WeakEntity]()
+	// The reason the last rebuild was refused, so the user is told once
+	// when an edit makes the wing unbuildable (a negative chord), not on
+	// every further edit until it is fixed.
+	TSharedRef<FString> LastReported = MakeShared<FString>(Entity->GetBuildError());
+	TSharedRef<FWingDesignTabs> DesignTabs = MakeShared<FWingDesignTabs>(Model, FSimpleDelegate::CreateLambda([WeakEntity, LastReported]()
 	{
 		if (WeakEntity.IsValid())
 		{
 			WeakEntity->RefreshProxy();
+			const FString& Error = WeakEntity->GetBuildError();
+			if (!Error.IsEmpty() && Error != *LastReported)
+			{
+				AerotelicMessageBox(EAppMsgType::Ok,
+					FText::FromString(FString::Printf(TEXT("'%s' cannot be built as it now stands and shows no geometry until this is fixed:\n\n%s"), *WeakEntity->EntityName, *Error)),
+					NSLOCTEXT("WingDialog", "BuildRefused", "Wing Cannot Be Built"));
+			}
+			*LastReported = Error;
 		}
 	}));
 

@@ -152,27 +152,43 @@ int Run() {
 		dom.exclusion = [&](const Vec3& p) { return hole_sdf.Distance(p); };
 		dom.bounds = sph.Bounds();
 		LatticeResult r = GenerateLattice(spec, dom);
-		std::printf("BCC in sphere: %zu triangles\n", r.mesh.triangles.size());
-		Check(r.mesh.IsClosedManifold(), "BCC in sphere: closed manifold");
-		double worst_out = 0.0, worst_in = 0.0;
-		for (const auto& p : r.mesh.vertices) {
+		std::printf("BCC in sphere: %zu lattice triangles, %zu skin triangles\n", r.mesh.triangles.size(), r.skin.triangles.size());
+		Check(r.mesh.IsClosedManifold(), "BCC in sphere: lattice is a closed manifold");
+		Check(!r.skin.IsEmpty() && r.skin.IsClosedManifold() && r.skin.SignedVolume() > 0.0, "BCC in sphere: the skin is a closed, outward body of its own");
+		double worst_out = 0.0, worst_in = 0.0, worst_lat_out = 0.0;
+		for (const auto& p : r.skin.vertices) {
 			worst_out = std::max(worst_out, Length(p) - 1.0);
 			worst_in = std::max(worst_in, 0.4 - Length(p));
 		}
-		Check(worst_out < r.grid.h, "BCC in sphere: no vertex outside the sphere");
+		for (const auto& p : r.mesh.vertices) {
+			worst_lat_out = std::max(worst_lat_out, Length(p) - (1.0 - spec.skin_thickness));
+			worst_in = std::max(worst_in, 0.4 - Length(p));
+		}
+		Check(worst_out < r.grid.h, "BCC in sphere: no skin vertex outside the sphere");
+		Check(worst_lat_out < r.grid.h, "BCC in sphere: the lattice stays inside the skin's inner offset");
 		Check(worst_in < r.grid.h, "BCC in sphere: no vertex inside the reserved volume");
-		// The skin: points just inside the sphere are solid.
-		MeshSdf lat(r.mesh);
-		int solid = 0, n = 0;
+		// The skin body: points just inside the sphere are solid; points
+		// deeper than the skin are not part of it.
+		MeshSdf sk(r.skin);
+		int solid = 0, deep_solid = 0, n = 0;
 		for (int i = 0; i < 200; ++i) {
 			double a = 2 * kPi * i / 200.0, b = kPi * (i % 17) / 17.0 - kPi / 2;
-			Vec3 p{0.975 * std::cos(b) * std::cos(a), 0.975 * std::cos(b) * std::sin(a), 0.975 * std::sin(b)};
+			Vec3 dir{std::cos(b) * std::cos(a), std::cos(b) * std::sin(a), std::sin(b)};
 			++n;
-			if (lat.Distance(p) < 0.0) ++solid;
+			if (sk.Distance(dir * 0.975) < 0.0) ++solid;
+			if (sk.Distance(dir * 0.85) < 0.0) ++deep_solid;
 		}
 		char buf[160];
-		std::snprintf(buf, sizeof buf, "BCC in sphere: %d of %d points 25 mm under the surface are inside the skin", solid, n);
+		std::snprintf(buf, sizeof buf, "BCC in sphere: %d of %d points 25 mm under the surface are inside the skin body", solid, n);
 		Check(solid >= n - 2, buf);
+		std::snprintf(buf, sizeof buf, "BCC in sphere: %d of %d points 150 mm under the surface are inside the skin body (expected none)", deep_solid, n);
+		Check(deep_solid == 0, buf);
+		// The skin's volume is the two shells': 0.05 inside the sphere,
+		// 4/3 pi (1 - 0.95^3) = 0.597, plus 0.05 around the reserved volume
+		// (a payload bay keeps a solid wall too), 4/3 pi (0.45^3 - 0.4^3) =
+		// 0.114; the inscribed polyhedra come out a little under.
+		std::snprintf(buf, sizeof buf, "BCC in sphere: skin volume %.3f within 10%% of the two 0.05-thick shells' 0.711", r.skin.SignedVolume());
+		Check(std::fabs(r.skin.SignedVolume() - 0.711) < 0.071, buf);
 	}
 
 	// ---- iso-surface phase with a wall thickness ----

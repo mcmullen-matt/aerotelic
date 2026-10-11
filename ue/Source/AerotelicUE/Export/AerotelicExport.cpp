@@ -93,7 +93,12 @@ namespace AerotelicExport
 			{
 				if (!M.mesh.IsEmpty())
 				{
+					FStlPart Part;
+					Part.Name = FString::Printf(TEXT("%s/%s"), *Label, UTF8_TO_TCHAR(M.name.c_str()));
+					Part.First = Out.Triangles.Num();
 					AppendMesh(M.mesh, Out);
+					Part.Count = Out.Triangles.Num() - Part.First;
+					Out.Parts.Add(Part);
 					bAny = true;
 				}
 			}
@@ -120,13 +125,29 @@ namespace AerotelicExport
 		{
 			FString Text;
 			Text.Reserve(Tris.Num() * 200);
-			Text += TEXT("solid aerotelic\n");
-			for (const FTriangle& T : Tris)
+			// One `solid` per part (see FStlPart), or one for the lot when
+			// the mesh carries no parts. Names keep to one token: readers
+			// that take the solid name commonly stop at the first space.
+			TArray<FStlPart> Parts = Mesh.Parts;
+			if (Parts.Num() == 0)
 			{
-				Text += FString::Printf(TEXT("  facet normal %e %e %e\n    outer loop\n      vertex %e %e %e\n      vertex %e %e %e\n      vertex %e %e %e\n    endloop\n  endfacet\n"),
-					T.N.X, T.N.Y, T.N.Z, T.A.X, T.A.Y, T.A.Z, T.B.X, T.B.Y, T.B.Z, T.C.X, T.C.Y, T.C.Z);
+				FStlPart All;
+				All.Name = TEXT("aerotelic");
+				All.Count = Tris.Num();
+				Parts.Add(All);
 			}
-			Text += TEXT("endsolid aerotelic\n");
+			for (const FStlPart& Part : Parts)
+			{
+				FString SolidName = Part.Name.Replace(TEXT(" "), TEXT("_"));
+				Text += FString::Printf(TEXT("solid %s\n"), *SolidName);
+				for (int32 i = Part.First; i < Part.First + Part.Count && i < Tris.Num(); ++i)
+				{
+					const FTriangle& T = Tris[i];
+					Text += FString::Printf(TEXT("  facet normal %e %e %e\n    outer loop\n      vertex %e %e %e\n      vertex %e %e %e\n      vertex %e %e %e\n    endloop\n  endfacet\n"),
+						T.N.X, T.N.Y, T.N.Z, T.A.X, T.A.Y, T.A.Z, T.B.X, T.B.Y, T.B.Z, T.C.X, T.C.Y, T.C.Z);
+				}
+				Text += FString::Printf(TEXT("endsolid %s\n"), *SolidName);
+			}
 			if (!FFileHelper::SaveStringToFile(Text, *Path, FFileHelper::EEncodingOptions::ForceAnsi))
 			{
 				OutError = FString::Printf(TEXT("could not write %s"), *Path);

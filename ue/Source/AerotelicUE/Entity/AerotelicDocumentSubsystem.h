@@ -101,6 +101,12 @@ public:
 	int32 RegenerateLattices(TArray<FString>& OutErrors);
 	// A default "Lattice n".
 	FString NextLatticeName() const;
+	// The solid skin thickness a new lattice over Targets starts with: one
+	// percent of the largest root chord among the wings filled, or, with no
+	// wing, one percent of the largest body's longest extent. A lattice
+	// always has a skin (its outer shell, a body of its own); a saved
+	// lattice without one is given this on load.
+	static double DefaultSkinThickness(const TArray<struct FAerotelicBooleanOperand>& Targets);
 	// True if Entity is a boolean result or lattice built on Other.
 	static bool DependsOn(const AAerotelicEntityActor* Entity, const AAerotelicEntityActor* Other);
 

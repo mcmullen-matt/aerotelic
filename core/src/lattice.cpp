@@ -526,19 +526,24 @@ LatticeResult GenerateLattice(const LatticeSpec& spec, const LatticeDomain& doma
 	if (progress && !progress(0.0)) { result.cancelled = true; return result; }
 
 	const double skin = std::max(spec.skin_thickness, 0.0);
+	const bool has_skin = skin > 0.0;
 	auto body = [&](const Vec3& p) {
 		double b = domain.body(p);
 		if (domain.exclusion) b = std::max(b, -domain.exclusion(p));
 		return b;
 	};
-	auto combined = [&](const Vec3& p, double b) {
-		double f = std::max(lattice(p), b);
-		if (skin > 0.0) f = std::min(f, std::max(b, -skin - b));
-		return f;
-	};
+	// Two fields when there is a skin, extracted separately (the result's
+	// `mesh` and `skin`): the lattice clipped to the body's inner offset
+	// (b + skin <= 0), and the shell between the surface and that offset
+	// (b <= 0 and -skin - b <= 0). Both see the offset as the same iso-
+	// surface of b, so their meshes meet there vertex for vertex. Without
+	// a skin the lattice is simply clipped to the body.
+	auto lattice_value = [&](const Vec3& p, double b) { return std::max(lattice(p), has_skin ? b + skin : b); };
+	auto skin_value = [&](double b) { return std::max(b, -skin - b); };
 
 	const int NX = g.nx + 1, NY = g.ny + 1, NZ = g.nz + 1;
 	std::vector<float> values(g.Nodes(), 0.0f);
+	std::vector<float> skin_values(has_skin ? g.Nodes() : 0, 0.0f);
 	auto node_index = [&](int i, int j, int k) { return (static_cast<size_t>(k) * NY + j) * NX + i; };
 
 	// Blocks of nodes, classified from one body evaluation at the centre:
@@ -566,15 +571,20 @@ LatticeResult GenerateLattice(const LatticeSpec& spec, const LatticeDomain& doma
 		double bc = body(centre);
 		size_t n_body = 0, n_lat = 0, n_eval = 1;
 		if (bc - radius > g.h) {
-			// Entirely outside: a positive lower bound on the distance.
+			// Entirely outside: a positive lower bound on the distance, for
+			// both fields.
 			for (int k = k0; k < k1; ++k)
 				for (int j = j0; j < j1; ++j)
 					for (int i = i0; i < i1; ++i) {
 						Vec3 p = g.origin + Vec3{i * g.h, j * g.h, k * g.h};
-						values[node_index(i, j, k)] = static_cast<float>(std::max(bc - Distance(p, centre), 0.5 * g.h));
+						float f = static_cast<float>(std::max(bc - Distance(p, centre), 0.5 * g.h));
+						values[node_index(i, j, k)] = f;
+						if (has_skin) skin_values[node_index(i, j, k)] = f;
 					}
 		} else if (bc + radius < -(skin + g.h)) {
-			// Entirely inside, past the skin: the lattice alone.
+			// Entirely inside, past the skin: the lattice alone. The skin
+			// field is positive here (the node is deeper than the skin) by
+			// at least a voxel: -skin - b >= -skin - bc - |p - centre| > h.
 			for (int k = k0; k < k1; ++k)
 				for (int j = j0; j < j1; ++j)
 					for (int i = i0; i < i1; ++i) {
@@ -582,6 +592,7 @@ LatticeResult GenerateLattice(const LatticeSpec& spec, const LatticeDomain& doma
 						float f = static_cast<float>(lattice(p));
 						if (f == 0.0f) f = -tiny;
 						values[node_index(i, j, k)] = f;
+						if (has_skin) skin_values[node_index(i, j, k)] = static_cast<float>(std::max(-skin - bc - Distance(p, centre), 0.5 * g.h));
 						++n_body;
 						if (f <= 0.0f) ++n_lat;
 					}
@@ -592,12 +603,18 @@ LatticeResult GenerateLattice(const LatticeSpec& spec, const LatticeDomain& doma
 						Vec3 p = g.origin + Vec3{i * g.h, j * g.h, k * g.h};
 						double b = body(p);
 						++n_eval;
-						float f = static_cast<float>(combined(p, b));
+						float f = static_cast<float>(lattice_value(p, b));
 						if (f == 0.0f) f = -tiny;
 						values[node_index(i, j, k)] = f;
+						float fs = 1.0f;
+						if (has_skin) {
+							fs = static_cast<float>(skin_value(b));
+							if (fs == 0.0f) fs = -tiny;
+							skin_values[node_index(i, j, k)] = fs;
+						}
 						if (b <= 0.0) {
 							++n_body;
-							if (f <= 0.0f) ++n_lat;
+							if (f <= 0.0f || (has_skin && fs <= 0.0f)) ++n_lat;
 						}
 					}
 		}
@@ -610,6 +627,10 @@ LatticeResult GenerateLattice(const LatticeSpec& spec, const LatticeDomain& doma
 	if (progress && !progress(0.6)) { result.cancelled = true; return result; }
 
 	result.mesh = MarchingTetrahedra(g, values, threads);
+	if (has_skin) {
+		if (progress && !progress(0.8)) { result.cancelled = true; return result; }
+		result.skin = MarchingTetrahedra(g, skin_values, threads);
+	}
 	if (progress) progress(1.0);
 	return result;
 }
