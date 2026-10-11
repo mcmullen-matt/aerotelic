@@ -9,6 +9,7 @@
 #include "Branding/AerotelicBranding.h"
 #include "Dialogs/AirfoilLibraryDialog.h"
 #include "Dialogs/BooleanOperationDialog.h"
+#include "Dialogs/ExportDialogs.h"
 
 #include "Engine/Engine.h"
 #include "Engine/GameViewportClient.h"
@@ -330,8 +331,8 @@ void SAerotelicMainShell::BindCommands()
 	Commands->MapAction(C.Save, FExecuteAction::CreateSP(this, &SAerotelicMainShell::OnSave));
 	Commands->MapAction(C.SaveAs, FExecuteAction::CreateSP(this, &SAerotelicMainShell::OnSaveAs));
 	Commands->MapAction(C.OpenProject, FExecuteAction::CreateSP(this, &SAerotelicMainShell::OnOpen));
-	Commands->MapAction(C.ExportStep, FExecuteAction(), Never());
-	Commands->MapAction(C.ExportStl, FExecuteAction(), Never());
+	Commands->MapAction(C.ExportStep, FExecuteAction::CreateLambda([this]() { ShowAerotelicExportStepDialog([this](const FText& T) { SetStatus(T); }); }));
+	Commands->MapAction(C.ExportStl, FExecuteAction::CreateLambda([this]() { ShowAerotelicExportStlDialog([this](const FText& T) { SetStatus(T); }); }));
 	Commands->MapAction(C.Quit, FExecuteAction::CreateSP(this, &SAerotelicMainShell::OnQuit));
 
 	// Edit

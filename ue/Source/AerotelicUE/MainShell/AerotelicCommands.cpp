@@ -16,8 +16,8 @@ void FAerotelicCommands::RegisterCommands()
 	UI_COMMAND(Save, "Save", "Save to the file this project was opened from or last saved as; asks for a file only if there is none yet.", EUserInterfaceActionType::Button, FInputChord(EModifierKey::Control, EKeys::S));
 	UI_COMMAND(SaveAs, "Save As...", "Save the project to a new file", EUserInterfaceActionType::Button, FInputChord(EModifierKey::Control | EModifierKey::Shift, EKeys::S));
 	UI_COMMAND(OpenProject, "Open Project...", "Open a project file", EUserInterfaceActionType::Button, FInputChord(EModifierKey::Control, EKeys::O));
-	UI_COMMAND(ExportStep, "Export STEP...", "Not available yet in this version", EUserInterfaceActionType::Button, FInputChord());
-	UI_COMMAND(ExportStl, "Export STL...", "Not available yet in this version", EUserInterfaceActionType::Button, FInputChord());
+	UI_COMMAND(ExportStep, "Export STEP...", "Write chosen bodies to one STEP file as named parts, rebuilt at the export tolerance", EUserInterfaceActionType::Button, FInputChord());
+	UI_COMMAND(ExportStl, "Export STL...", "Mesh chosen bodies at one density and write them to one STL file", EUserInterfaceActionType::Button, FInputChord());
 	UI_COMMAND(Quit, "Quit", "Close the application", EUserInterfaceActionType::Button, FInputChord());
 
 	// Edit -> Preferences

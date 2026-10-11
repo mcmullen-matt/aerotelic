@@ -139,6 +139,30 @@ The layout follows the Python/Qt version's main window (`aerotelic/ui/main_windo
   file is saved relative to it, others absolute; a missing file draws
   nothing and keeps its placement. PNG, JPEG, BMP and TIFF (no SVG: the
   engine has no SVG rasteriser).
+* **Export STL / Export STEP** (File menu; main_window.py's
+  `_export_stl_dialog` / `_export_step_dialog`): both start from the same
+  body picker as the boolean dialog -- every entity, each mirrored half as
+  a row of its own, every boolean result -- so "what can I export" and
+  "what can I operate on" are one question. STL: one mesh density (linear
+  deflection 0.01, angular 20 degrees), the mesh statistics (bodies,
+  nodes, triangles) recomputed on every change, binary or ASCII; copies of
+  the placed shapes are meshed into one compound and the file holds
+  exactly that triangulation, written by the application itself. STEP:
+  the loft station tolerance (WingDesigner's EXPORT_STATION_TOL, 0.2 mm,
+  finer than the interactive preview) with "Rebuild bodies at this
+  tolerance" (wings, fuselages, lofted nacelles and propellers are
+  re-lofted; booleans and mirrors' sources likewise, then reflected), and
+  "Write named parts (STEP assembly)" for an XCAF product structure. The
+  STEP file is written by `aerotelic_step_writer.exe`, a console program
+  built by the core's CMake (`core/src/tools/step_writer.cpp`) and run as
+  a separate process over temporary .brep files: OCCT's STEP toolkits
+  drag in zlib/libpng/freetype/tiff DLLs under the names the engine loads
+  its own copies of, which must never enter the engine's process (see
+  `AerotelicUE.Build.cs`). `tools\stage_step_writer.ps1` copies the writer
+  and its DLL closure (found with dumpbin) into
+  `Binaries\Win64\StepWriter\`, which the packaged build stages; a
+  developer checkout falls back to the core build tree. Without the
+  writer, Export STEP says so and does nothing.
 * **Boolean operations** (Geometry -> Boolean Operation...): WingDesigner's
   dialog -- the operands in order (every entity, the mirrored half of each
   mirrored one as its own row, every earlier boolean result), Add / Select
@@ -304,12 +328,11 @@ The layout follows the Python/Qt version's main window (`aerotelic/ui/main_windo
   cover the 3D view's centre; a second, third and later dialog cascade down
   and to the right. Drag any of them wherever you like.
 * Not yet carried over from the Qt version: Show Intermediate Features,
-  the theme preference, Export STEP/STL (the OCCT STEP toolkits
-  collide with the engine's own zlib/png/tiff DLLs -- see
-  `AerotelicUE.Build.cs`), the colour theme, and the wing Control Surfaces
-  tab (the C++ core has no control-surface model yet; the tab is a
-  placeholder note). A section plane cuts without capping (see above), and
-  the engine cannot rasterise SVG reference images.
+  the colour theme, the STL dialog's mesh preview in the viewport, and
+  the wing Control Surfaces tab (the C++ core has no control-surface model
+  yet; the tab is a placeholder note). A section plane cuts without
+  capping (see above), and the engine cannot rasterise SVG reference
+  images.
 * Legacy project files: WingDesigner's older format keys entities by `id`
   with a display `label` (`Projects/cessna_172.yaml`); the label becomes
   the name and the raw `features` graph is ignored (the mirror nodes it

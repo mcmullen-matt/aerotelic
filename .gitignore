@@ -4,8 +4,9 @@
 
 # ---- core (CMake) ----
 /core/build/
-# scratch file written by project_yaml_check
+# scratch files written by project_yaml_check / step_writer_check
 /core/tests/project_yaml_check_tmp.yaml
+/core/tests/step_writer_check_tmp.*
 
 # ---- ue (Unreal) ----
 /ue/Binaries/

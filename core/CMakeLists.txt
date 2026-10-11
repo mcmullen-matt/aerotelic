@@ -52,6 +52,21 @@ target_include_directories(aerotelic_core PUBLIC include "${OCCT_ROOT}/include/o
 target_link_libraries(aerotelic_core PUBLIC ${OCCT_LINK_LIBS} "${YAMLCPP_LIB}")
 target_compile_definitions(aerotelic_core PUBLIC YAML_CPP_STATIC_DEFINE)
 
+# The STEP writer the application runs as a separate process (see
+# src/tools/step_writer.cpp): the STEP + XCAF toolkits, which the
+# application itself must not load.
+add_executable(aerotelic_step_writer src/tools/step_writer.cpp)
+target_include_directories(aerotelic_step_writer PRIVATE "${OCCT_ROOT}/include/opencascade")
+foreach(lib TKernel TKMath TKG2d TKG3d TKGeomBase TKGeomAlgo TKBRep TKTopAlgo
+		TKDE TKXSBase TKDESTEP TKCDF TKLCAF TKXCAF TKVCAF TKV3d TKService)
+	target_link_libraries(aerotelic_step_writer PRIVATE "${OCCT_ROOT}/lib/${lib}.lib")
+endforeach()
+
+add_executable(step_writer_check tests/step_writer_check.cpp)
+target_link_libraries(step_writer_check PRIVATE aerotelic_core)
+target_compile_definitions(step_writer_check PRIVATE AEROTELIC_STEP_WRITER="$<TARGET_FILE:aerotelic_step_writer>")
+add_dependencies(step_writer_check aerotelic_step_writer)
+
 add_executable(nurbs_fixture_check tests/nurbs_fixture_check.cpp)
 target_link_libraries(nurbs_fixture_check PRIVATE aerotelic_core)
 

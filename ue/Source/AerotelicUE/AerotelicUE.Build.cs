@@ -141,5 +141,20 @@ public class AerotelicUE : ModuleRules
 			string FileName = Path.GetFileName(DllPath);
 			RuntimeDependencies.Add(Path.Combine("$(BinaryOutputDir)", FileName), DllPath);
 		}
+
+		// File -> Export STEP runs aerotelic_step_writer.exe as a separate
+		// process, with the STEP toolkits and their imaging DLLs (the very
+		// names the engine loads its own copies of -- see above) beside it
+		// in their own folder, never in the application's. The folder is
+		// filled by ue/tools/stage_step_writer.ps1 after the core builds;
+		// when present it is staged with the packaged build.
+		string StepWriterDir = Path.GetFullPath(Path.Combine(ModuleDirectory, "..", "..", "Binaries", "Win64", "StepWriter"));
+		if (Directory.Exists(StepWriterDir)) {
+			foreach (string File in Directory.GetFiles(StepWriterDir)) {
+				// Already in place under the project: mark it for staging
+				// as-is (a source/target pair naming the same file is refused).
+				RuntimeDependencies.Add(File, StagedFileType.NonUFS);
+			}
+		}
 	}
 }
