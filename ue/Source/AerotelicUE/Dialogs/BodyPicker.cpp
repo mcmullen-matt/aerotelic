@@ -47,6 +47,13 @@ TArray<FAerotelicBodyChoicePtr> SceneBodyChoices()
 void SAerotelicBodyPicker::Construct(const FArguments& InArgs)
 {
 	Available = InArgs._Choices;
+	for (const FAerotelicBodyChoicePtr& C : InArgs._InitiallyChosen)
+	{
+		if (C.IsValid() && !Chosen.Contains(C))
+		{
+			Chosen.Add(C);
+		}
+	}
 	OnChanged = InArgs._OnChanged;
 	const bool bReorder = InArgs._AllowReorder;
 

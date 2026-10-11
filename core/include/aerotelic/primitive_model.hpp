@@ -43,6 +43,8 @@ public:
 
 	// Builds and returns the primitive as an OCC solid, centred on the origin.
 	TopoDS_Shape BuildSolid() const override;
+	// The same solid as a closed triangle mesh, analytically (mesh.hpp).
+	std::vector<NamedMesh> BuildMeshes(double tolerance) const override;
 };
 
 PrimitiveShape ParseShape(const std::string& s);

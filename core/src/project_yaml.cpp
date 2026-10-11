@@ -454,6 +454,7 @@ const char* EntityTypeName(EntityType t) {
 		case EntityType::Propeller: return "propeller";
 		case EntityType::Primitive: return "primitive";
 		case EntityType::Boolean: return "boolean";
+		case EntityType::Lattice: return "lattice";
 	}
 	return "";
 }
@@ -466,6 +467,7 @@ EntityType ParseEntityType(const std::string& s) {
 	if (s == "propeller") return EntityType::Propeller;
 	if (s == "primitive") return EntityType::Primitive;
 	if (s == "boolean") return EntityType::Boolean;
+	if (s == "lattice") return EntityType::Lattice;
 	throw std::invalid_argument("Unknown entity type '" + s + "'");
 }
 
@@ -557,6 +559,113 @@ ProjectBoolean DecodeProjectBoolean(const YAML::Node& node) {
 }
 
 // ===========================================================================
+// Lattices (`lattices:`)
+// ===========================================================================
+
+namespace {
+
+YAML::Node EncodeOperands(const std::vector<BooleanOperand>& ops) {
+	YAML::Node out(YAML::NodeType::Sequence);
+	for (const BooleanOperand& op : ops) {
+		if (op.mirror) {
+			YAML::Node m;
+			m["mirror"] = op.name;
+			m.SetStyle(YAML::EmitterStyle::Flow);
+			out.push_back(m);
+		} else {
+			out.push_back(op.name);
+		}
+	}
+	return out;
+}
+
+std::vector<BooleanOperand> DecodeOperands(const YAML::Node& node) {
+	std::vector<BooleanOperand> out;
+	if (!node) return out;
+	for (const auto& ref : node) {
+		BooleanOperand op;
+		if (ref.IsMap() && ref["mirror"]) {
+			op.name = ref["mirror"].as<std::string>();
+			op.mirror = true;
+		} else {
+			op.name = ref.as<std::string>();
+		}
+		out.push_back(op);
+	}
+	return out;
+}
+
+} // namespace
+
+YAML::Node Encode(const LatticeSpec& spec) {
+	YAML::Node n;
+	n["family"] = std::string(LatticeFamilyName(spec.family));
+	n["type"] = spec.type;
+	if (spec.family == LatticeFamily::Tpms) n["phase"] = std::string(TpmsPhaseName(spec.phase));
+	n["cell_size"] = spec.cell_size;
+	n["volume_fraction"] = spec.volume_fraction;
+	n["wall_thickness"] = spec.wall_thickness;
+	n["resolution"] = spec.resolution;
+	n["skin_thickness"] = spec.skin_thickness;
+	YAML::Node origin;
+	origin.push_back(spec.origin.x);
+	origin.push_back(spec.origin.y);
+	origin.push_back(spec.origin.z);
+	origin.SetStyle(YAML::EmitterStyle::Flow);
+	n["origin"] = origin;
+	return n;
+}
+
+LatticeSpec DecodeLatticeSpec(const YAML::Node& node) {
+	LatticeSpec s;
+	if (!node) return s;
+	if (node["family"]) s.family = ParseLatticeFamily(node["family"].as<std::string>());
+	if (node["type"]) s.type = node["type"].as<std::string>();
+	if (node["phase"]) s.phase = ParseTpmsPhase(node["phase"].as<std::string>());
+	if (node["cell_size"]) s.cell_size = node["cell_size"].as<double>();
+	if (node["volume_fraction"]) s.volume_fraction = node["volume_fraction"].as<double>();
+	if (node["wall_thickness"]) s.wall_thickness = node["wall_thickness"].as<double>();
+	if (node["resolution"]) s.resolution = node["resolution"].as<int>();
+	if (node["skin_thickness"]) s.skin_thickness = node["skin_thickness"].as<double>();
+	if (node["origin"] && node["origin"].IsSequence() && node["origin"].size() >= 3) {
+		s.origin = Vec3{node["origin"][0].as<double>(), node["origin"][1].as<double>(), node["origin"][2].as<double>()};
+	}
+	const auto& names = LatticeTypeNames(s.family);
+	bool known = false;
+	for (const std::string& nm : names) {
+		if (nm == s.type) known = true;
+	}
+	if (!known) throw std::invalid_argument("unknown " + std::string(LatticeFamilyName(s.family)) + " lattice type '" + s.type + "'");
+	if (!(s.cell_size > 0.0)) throw std::invalid_argument("the lattice cell size must be greater than zero");
+	if (s.resolution < 2) throw std::invalid_argument("the lattice resolution must be at least 2 voxels per cell");
+	return s;
+}
+
+YAML::Node Encode(const ProjectLattice& l) {
+	YAML::Node n;
+	n["name"] = l.name;
+	n["lattice"] = Encode(l.spec);
+	n["targets"] = EncodeOperands(l.targets);
+	if (!l.exclusions.empty()) n["exclusions"] = EncodeOperands(l.exclusions);
+	if (l.hidden) n["hidden"] = true;
+	if (l.color) n["color"] = EncodeColor(*l.color);
+	return n;
+}
+
+ProjectLattice DecodeProjectLattice(const YAML::Node& node) {
+	ProjectLattice l;
+	if (!node["name"]) throw std::invalid_argument("a lattice has no name");
+	l.name = node["name"].as<std::string>();
+	l.spec = DecodeLatticeSpec(node["lattice"]);
+	l.targets = DecodeOperands(node["targets"]);
+	l.exclusions = DecodeOperands(node["exclusions"]);
+	if (l.targets.empty()) throw std::invalid_argument("Lattice '" + l.name + "' fills no bodies.");
+	l.hidden = node["hidden"] ? node["hidden"].as<bool>() : false;
+	l.color = DecodeColor(node["color"]);
+	return l;
+}
+
+// ===========================================================================
 // Project file
 // ===========================================================================
 
@@ -602,6 +711,7 @@ ProjectEntity DecodeEntity(const YAML::Node& node) {
 		case EntityType::Propeller: e.model = DecodePropellerSpec(model_node); break;
 		case EntityType::Primitive: e.model = DecodePrimitiveSpec(model_node); break;
 		case EntityType::Boolean: throw std::invalid_argument("Entity '" + e.name + "': boolean results belong under 'booleans', not 'entities'");
+		case EntityType::Lattice: throw std::invalid_argument("Entity '" + e.name + "': lattices belong under 'lattices', not 'entities'");
 	}
 	if (node["color"] && node["color"].size() >= 3) {
 		const YAML::Node& c = node["color"];
@@ -642,6 +752,22 @@ ProjectFile LoadProjectYaml(const std::string& path) {
 			project.booleans.push_back(std::move(b));
 		}
 	}
+	if (root["lattices"]) {
+		for (const auto& ln : root["lattices"]) {
+			ProjectLattice l = DecodeProjectLattice(ln);
+			for (const auto* list : {&l.targets, &l.exclusions}) {
+				for (const BooleanOperand& op : *list) {
+					if (!seen.count(op.name)) {
+						throw std::invalid_argument("Lattice '" + l.name + "' refers to '" + op.name + "', which does not exist.");
+					}
+					if (op.mirror && !mirrored.count(op.name)) {
+						throw std::invalid_argument("Lattice '" + l.name + "' refers to the mirror of '" + op.name + "', which is not mirrored.");
+					}
+				}
+			}
+			project.lattices.push_back(std::move(l));
+		}
+	}
 	return project;
 }
 
@@ -654,6 +780,11 @@ void SaveProjectYaml(const ProjectFile& project, const std::string& path) {
 		YAML::Node booleans(YAML::NodeType::Sequence);
 		for (const auto& b : project.booleans) booleans.push_back(Encode(b));
 		root["booleans"] = booleans;
+	}
+	if (!project.lattices.empty()) {
+		YAML::Node lattices(YAML::NodeType::Sequence);
+		for (const auto& l : project.lattices) lattices.push_back(Encode(l));
+		root["lattices"] = lattices;
 	}
 
 	std::ofstream out(path);

@@ -10,6 +10,7 @@
 
 #include "AerotelicDocumentSubsystem.h"
 #include "AerotelicBooleanModel.h"
+#include "AerotelicMeshing.h"
 #include "Misc/PackageName.h"
 
 #include "aerotelic/feature_tree.hpp"
@@ -137,6 +138,10 @@ namespace
 		if (Type == EntityType::Boolean)
 		{
 			return FString::Printf(TEXT("Body %d"), Index + 1);
+		}
+		if (Type == EntityType::Lattice)
+		{
+			return FString(TEXT("Lattice"));
 		}
 		return Count > 1 ? FString::Printf(TEXT("Part %d"), Index + 1) : FString(TEXT("Main"));
 	}
@@ -305,6 +310,7 @@ FLinearColor AAerotelicEntityActor::DefaultColorFor(aerotelic::project_yaml::Ent
 	case EType::Propeller:     return FLinearColor(0.66f, 0.68f, 0.74f); // propeller aluminium
 	case EType::Primitive:     return FLinearColor(0.85f, 0.80f, 0.30f); // primitive ochre
 	case EType::Boolean:       return FLinearColor(0.62f, 0.56f, 0.78f); // boolean result lilac
+	case EType::Lattice:       return FLinearColor(0.42f, 0.76f, 0.70f); // lattice teal
 	case EType::Wing:
 	default:                   return FLinearColor(0.20f, 0.50f, 0.90f); // steel blue
 	}
@@ -582,28 +588,44 @@ void AAerotelicEntityActor::RefreshMirror()
 		return;
 	}
 
-	TopoDS_Shape Placed;
-	try
+	TArray<FString> Roles;
+	if (!LastMeshes.empty())
 	{
-		// Reflect the *placed* shape about Y = 0, as MirrorFeature does to
-		// EntityShapeFeature's result: an off-centreline boom lands on the
-		// other side, and a rotated propeller comes out the opposite hand.
-		// (From the solid RefreshProxy() just cached, not a second loft.)
-		const aerotelic::EntityTransform T = GetEntityTransform();
-		Placed = aerotelic::Place(LastSolid.IsNull() ? Model->BuildSolid() : LastSolid, { T.tx, T.ty, T.tz }, { T.ax, T.ay, T.az }, T.angle_deg);
-		Placed = aerotelic::ApplyMirror(Placed, { 0.0, 0.0, 0.0 }, { 0.0, 1.0, 0.0 });
+		// The model's own meshes, placed and reflected about Y = 0 (what
+		// MirrorFeature does to EntityShapeFeature's result): an
+		// off-centreline boom lands on the other side, and a rotated
+		// propeller comes out the opposite hand.
+		std::vector<aerotelic::NamedMesh> Mirrored = LastMeshes;
+		const FTransform Transform = GetActorTransform();
+		for (aerotelic::NamedMesh& M : Mirrored)
+		{
+			AerotelicMeshing::PlaceMesh(M.mesh, Transform);
+			AerotelicMeshing::MirrorY(M.mesh);
+		}
+		Roles = RefreshMeshFromTriangles(Mirrored, MirrorMesh, MirrorMaterials, MirrorEdgeMesh, MirrorEdgeMaterials);
 	}
-	catch (const std::exception& e)
+	else
 	{
-		UE_LOG(LogTemp, Warning, TEXT("AerotelicEntityActor: mirror of '%s' failed: %s"), *EntityName, UTF8_TO_TCHAR(e.what()));
-		MirrorMesh->ClearAllMeshSections();
-		MirrorEdgeMesh->ClearAllMeshSections();
-		bMirrorHasTessellation = false;
-		ApplyMeshVisibility();
-		return;
+		TopoDS_Shape Placed;
+		try
+		{
+			// The OCCT path: the solid RefreshProxy() cached, placed and
+			// reflected.
+			const aerotelic::EntityTransform T = GetEntityTransform();
+			Placed = aerotelic::Place(LastSolid.IsNull() ? Model->BuildSolid() : LastSolid, { T.tx, T.ty, T.tz }, { T.ax, T.ay, T.az }, T.angle_deg);
+			Placed = aerotelic::ApplyMirror(Placed, { 0.0, 0.0, 0.0 }, { 0.0, 1.0, 0.0 });
+		}
+		catch (const std::exception& e)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("AerotelicEntityActor: mirror of '%s' failed: %s"), *EntityName, UTF8_TO_TCHAR(e.what()));
+			MirrorMesh->ClearAllMeshSections();
+			MirrorEdgeMesh->ClearAllMeshSections();
+			bMirrorHasTessellation = false;
+			ApplyMeshVisibility();
+			return;
+		}
+		Roles = RefreshTessellatedMesh(Placed, MirrorMesh, MirrorMaterials, MirrorEdgeMesh, MirrorEdgeMaterials);
 	}
-
-	const TArray<FString> Roles = RefreshTessellatedMesh(Placed, MirrorMesh, MirrorMaterials, MirrorEdgeMesh, MirrorEdgeMaterials);
 	bMirrorHasTessellation = Roles.Num() > 0;
 	ApplyMeshVisibility();
 	for (int32 i = 0; i < Roles.Num(); ++i)
@@ -634,18 +656,29 @@ void AAerotelicEntityActor::RefreshProxy()
 	}
 	EnsureProxyEdges();
 
+	// The model's own meshes first (every lofted body and primitive builds
+	// them straight from its section curves, in milliseconds); the OCCT
+	// solid, tessellated, only for a model without a mesh builder (a
+	// boolean result, a nacelle with chevrons).
+	std::vector<aerotelic::NamedMesh> Meshes;
 	TopoDS_Shape Shape;
+	const double Tolerance = DisplayTolerance();
 	try
 	{
-		Shape = Model->BuildSolid();
+		Meshes = Model->BuildMeshes(Tolerance);
+		if (Meshes.empty())
+		{
+			Shape = Model->BuildSolid();
+		}
 	}
 	catch (const std::exception& e)
 	{
-		// A model in a state BuildSolid() can't loft (e.g. a wing with no
+		// A model in a state that can't be built (e.g. a wing with no
 		// sections) must not leave either visual in a half-built state --
 		// hide both rather than show something stale or wrong.
-		UE_LOG(LogTemp, Warning, TEXT("AerotelicEntityActor: BuildSolid failed for '%s': %s"), *EntityName, UTF8_TO_TCHAR(e.what()));
+		UE_LOG(LogTemp, Warning, TEXT("AerotelicEntityActor: build failed for '%s': %s"), *EntityName, UTF8_TO_TCHAR(e.what()));
 		LastSolid.Nullify();
+		LastMeshes.clear();
 		bHasTessellation = false;
 		bMirrorHasTessellation = false;
 		ApplyMeshVisibility();
@@ -656,12 +689,37 @@ void AAerotelicEntityActor::RefreshProxy()
 		OnGeometryChanged.Broadcast(this);
 		return;
 	}
-	LastSolid = Shape;
 
 	// Keep each body's display state across a rebuild by role name, so a
 	// hidden or recoloured blade stays so when the propeller is edited.
 	const TArray<FAerotelicBody> Previous = Bodies;
-	const TArray<FString> Roles = RefreshTessellatedMesh(Shape, ProxyMesh, BodyMaterials, EdgeMesh, EdgeMaterials);
+	TArray<FString> Roles;
+	LastLocalBounds = FBox(ForceInit);
+	if (!Meshes.empty())
+	{
+		LastMeshes = Meshes;
+		LastMeshTolerance = Tolerance;
+		LastSolid.Nullify();
+		for (const aerotelic::NamedMesh& M : Meshes)
+		{
+			LastLocalBounds += AerotelicMeshing::BoundsOf(M.mesh);
+		}
+		Roles = RefreshMeshFromTriangles(Meshes, ProxyMesh, BodyMaterials, EdgeMesh, EdgeMaterials);
+	}
+	else
+	{
+		LastSolid = Shape;
+		LastMeshes.clear();
+		Bnd_Box Box;
+		BRepBndLib::AddOptimal(Shape, Box);
+		if (!Box.IsVoid())
+		{
+			double Xmin, Ymin, Zmin, Xmax, Ymax, Zmax;
+			Box.Get(Xmin, Ymin, Zmin, Xmax, Ymax, Zmax);
+			LastLocalBounds = FBox(FVector(Xmin, Ymin, Zmin), FVector(Xmax, Ymax, Zmax));
+		}
+		Roles = RefreshTessellatedMesh(Shape, ProxyMesh, BodyMaterials, EdgeMesh, EdgeMaterials);
+	}
 	Bodies.Reset();
 	for (const FString& BodyRole : Roles)
 	{
@@ -743,12 +801,9 @@ TArray<FString> AAerotelicEntityActor::RefreshTessellatedMesh(const TopoDS_Shape
 		return Roles;
 	}
 
-	UMaterialInterface* Base = BaseMaterial();
-	UMaterialInterface* Wire = WireMaterial();
 	const TArray<TopoDS_Shape> Solids = TopLevelSolids(Shape);
 	TArray<TObjectPtr<UMaterialInstanceDynamic>> NewMaterials;
 	TArray<TObjectPtr<UMaterialInstanceDynamic>> NewEdgeMaterials;
-	UAerotelicDocumentSubsystem* Doc = UAerotelicDocumentSubsystem::Get();
 
 	for (int32 s = 0; s < Solids.Num(); ++s)
 	{
@@ -826,54 +881,192 @@ TArray<FString> AAerotelicEntityActor::RefreshTessellatedMesh(const TopoDS_Shape
 			N = N.GetSafeNormal();
 		}
 
-		const int32 Section = Roles.Num();
-		// bCreateCollision = true: the triangle mesh doubles as the pick
-		// geometry for the standalone app's click-to-select.
-		Target->CreateMeshSection(Section, Vertices, Triangles, Normals, TArray<FVector2D>(), TArray<FColor>(), TArray<FProcMeshTangent>(), true);
-
-		// Reuse the section's material instance across rebuilds; make one
-		// the first time. A new instance picks up the scene-wide finish and
-		// section plane itself.
-		UMaterialInstanceDynamic* Mid = Materials.IsValidIndex(Section) ? Materials[Section].Get() : nullptr;
-		if (Mid == nullptr && Base != nullptr)
-		{
-			Mid = UMaterialInstanceDynamic::Create(Base, this);
-			if (Doc != nullptr)
-			{
-				ApplyStyleTo(Mid, Doc->GetSurfaceStyle());
-				ApplyClipTo(Mid, Doc->GetSectionPlane());
-			}
-		}
-		if (Mid != nullptr)
-		{
-			Target->SetMaterial(Section, Mid);
-		}
-		NewMaterials.Add(Mid);
-
-		// The edge copy: same triangles, wireframe material, no collision.
-		if (EdgeTarget != nullptr)
-		{
-			EdgeTarget->CreateMeshSection(Section, Vertices, Triangles, Normals, TArray<FVector2D>(), TArray<FColor>(), TArray<FProcMeshTangent>(), false);
-			UMaterialInstanceDynamic* EdgeMid = EdgeMaterialsOut.IsValidIndex(Section) ? EdgeMaterialsOut[Section].Get() : nullptr;
-			if (EdgeMid == nullptr && Wire != nullptr)
-			{
-				EdgeMid = UMaterialInstanceDynamic::Create(Wire, this);
-				if (Doc != nullptr)
-				{
-					ApplyClipTo(EdgeMid, Doc->GetSectionPlane());
-				}
-			}
-			if (EdgeMid != nullptr)
-			{
-				EdgeTarget->SetMaterial(Section, EdgeMid);
-			}
-			NewEdgeMaterials.Add(EdgeMid);
-		}
+		CreateBodySection(Roles.Num(), Vertices, Triangles, Normals, Target, Materials, EdgeTarget, EdgeMaterialsOut, NewMaterials, NewEdgeMaterials);
 		Roles.Add(RoleName(EntityType, s, Solids.Num()));
 	}
 	Materials = MoveTemp(NewMaterials);
 	EdgeMaterialsOut = MoveTemp(NewEdgeMaterials);
 	return Roles;
+}
+
+TArray<FString> AAerotelicEntityActor::RefreshMeshFromTriangles(const std::vector<aerotelic::NamedMesh>& Meshes,
+	UProceduralMeshComponent* Target, TArray<TObjectPtr<UMaterialInstanceDynamic>>& Materials,
+	UProceduralMeshComponent* EdgeTarget, TArray<TObjectPtr<UMaterialInstanceDynamic>>& EdgeMaterialsOut)
+{
+	TArray<FString> Roles;
+	if (Target == nullptr)
+	{
+		return Roles;
+	}
+	Target->ClearAllMeshSections();
+	if (EdgeTarget != nullptr)
+	{
+		EdgeTarget->ClearAllMeshSections();
+	}
+	TArray<TObjectPtr<UMaterialInstanceDynamic>> NewMaterials;
+	TArray<TObjectPtr<UMaterialInstanceDynamic>> NewEdgeMaterials;
+	for (const aerotelic::NamedMesh& M : Meshes)
+	{
+		if (M.mesh.IsEmpty())
+		{
+			continue;
+		}
+		TArray<FVector> Vertices;
+		TArray<int32> Triangles;
+		TArray<FVector> Normals;
+		AerotelicMeshing::ToProceduralMesh(M.mesh, Vertices, Triangles, Normals);
+		CreateBodySection(Roles.Num(), Vertices, Triangles, Normals, Target, Materials, EdgeTarget, EdgeMaterialsOut, NewMaterials, NewEdgeMaterials);
+		Roles.Add(UTF8_TO_TCHAR(M.name.c_str()));
+	}
+	Materials = MoveTemp(NewMaterials);
+	EdgeMaterialsOut = MoveTemp(NewEdgeMaterials);
+	return Roles;
+}
+
+void AAerotelicEntityActor::CreateBodySection(int32 Section, const TArray<FVector>& Vertices, const TArray<int32>& Triangles, const TArray<FVector>& Normals,
+	UProceduralMeshComponent* Target, TArray<TObjectPtr<UMaterialInstanceDynamic>>& Materials,
+	UProceduralMeshComponent* EdgeTarget, TArray<TObjectPtr<UMaterialInstanceDynamic>>& EdgeMaterialsOut,
+	TArray<TObjectPtr<UMaterialInstanceDynamic>>& NewMaterials, TArray<TObjectPtr<UMaterialInstanceDynamic>>& NewEdgeMaterials)
+{
+	UMaterialInterface* Base = BaseMaterial();
+	UMaterialInterface* Wire = WireMaterial();
+	UAerotelicDocumentSubsystem* Doc = UAerotelicDocumentSubsystem::Get();
+
+	// bCreateCollision = true: the triangle mesh doubles as the pick
+	// geometry for the standalone app's click-to-select. A lattice (often
+	// millions of triangles) does without: cooking its collision would
+	// take far longer than generating it, and it is selected in the tree.
+	const bool bCollision = EntityType != aerotelic::project_yaml::EntityType::Lattice;
+	Target->CreateMeshSection(Section, Vertices, Triangles, Normals, TArray<FVector2D>(), TArray<FColor>(), TArray<FProcMeshTangent>(), bCollision);
+
+	// Reuse the section's material instance across rebuilds; make one
+	// the first time. A new instance picks up the scene-wide finish and
+	// section plane itself.
+	UMaterialInstanceDynamic* Mid = Materials.IsValidIndex(Section) ? Materials[Section].Get() : nullptr;
+	if (Mid == nullptr && Base != nullptr)
+	{
+		Mid = UMaterialInstanceDynamic::Create(Base, this);
+		if (Doc != nullptr)
+		{
+			ApplyStyleTo(Mid, Doc->GetSurfaceStyle());
+			ApplyClipTo(Mid, Doc->GetSectionPlane());
+		}
+	}
+	if (Mid != nullptr)
+	{
+		Target->SetMaterial(Section, Mid);
+	}
+	NewMaterials.Add(Mid);
+
+	// The edge copy: same triangles, wireframe material, no collision.
+	if (EdgeTarget != nullptr)
+	{
+		EdgeTarget->CreateMeshSection(Section, Vertices, Triangles, Normals, TArray<FVector2D>(), TArray<FColor>(), TArray<FProcMeshTangent>(), false);
+		UMaterialInstanceDynamic* EdgeMid = EdgeMaterialsOut.IsValidIndex(Section) ? EdgeMaterialsOut[Section].Get() : nullptr;
+		if (EdgeMid == nullptr && Wire != nullptr)
+		{
+			EdgeMid = UMaterialInstanceDynamic::Create(Wire, this);
+			if (Doc != nullptr)
+			{
+				ApplyClipTo(EdgeMid, Doc->GetSectionPlane());
+			}
+		}
+		if (EdgeMid != nullptr)
+		{
+			EdgeTarget->SetMaterial(Section, EdgeMid);
+		}
+		NewEdgeMaterials.Add(EdgeMid);
+	}
+}
+
+double AAerotelicEntityActor::DisplayTolerance() const
+{
+	// Relative to the body's own size, so a span-10 wing and a span-1 blade
+	// both come out at a comparable visual fidelity (the same 0.15% of the
+	// diagonal the OCCT deflection used). Before the first build the size
+	// is unknown: build fine, and the next build takes its size from this.
+	if (LastLocalBounds.IsValid)
+	{
+		const double Diag = FMath::Max(LastLocalBounds.GetSize().Size(), 1e-6);
+		return FMath::Clamp(Diag * 0.0015, 1e-4, 1e9);
+	}
+	return 2e-3;
+}
+
+std::vector<aerotelic::NamedMesh> AAerotelicEntityActor::GetPlacedMeshes(bool bMirror, double Tolerance) const
+{
+	std::vector<aerotelic::NamedMesh> Meshes;
+	if (Model == nullptr)
+	{
+		return Meshes;
+	}
+	try
+	{
+		// The viewport's own meshes when they are at least as fine as asked.
+		if (!LastMeshes.empty() && LastMeshTolerance <= Tolerance)
+		{
+			Meshes = LastMeshes;
+		}
+		else
+		{
+			Meshes = Model->BuildMeshes(Tolerance);
+		}
+	}
+	catch (const std::exception& e)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("AerotelicEntityActor: meshes of '%s' failed: %s"), *EntityName, UTF8_TO_TCHAR(e.what()));
+		return {};
+	}
+	if (Meshes.empty())
+	{
+		// No mesh builder: tessellate the OCCT solid, already placed.
+		return AerotelicMeshing::MeshesFromShape(GetPlacedShape(bMirror), Tolerance);
+	}
+	const FTransform Transform = GetActorTransform();
+	for (aerotelic::NamedMesh& M : Meshes)
+	{
+		AerotelicMeshing::PlaceMesh(M.mesh, Transform);
+		if (bMirror)
+		{
+			AerotelicMeshing::MirrorY(M.mesh);
+		}
+	}
+	return Meshes;
+}
+
+FBox AAerotelicEntityActor::GetPlacedBounds(bool bMirror) const
+{
+	FBox Box(ForceInit);
+	if (!LastMeshes.empty())
+	{
+		// The eight corners of the local bounds, placed.
+		const FTransform Transform = GetActorTransform();
+		FBox Local(ForceInit);
+		for (const aerotelic::NamedMesh& M : LastMeshes)
+		{
+			Local += AerotelicMeshing::BoundsOf(M.mesh);
+		}
+		if (!Local.IsValid)
+		{
+			return Box;
+		}
+		for (int32 i = 0; i < 8; ++i)
+		{
+			FVector Corner((i & 1) ? Local.Max.X : Local.Min.X, (i & 2) ? Local.Max.Y : Local.Min.Y, (i & 4) ? Local.Max.Z : Local.Min.Z);
+			Corner = Transform.TransformPositionNoScale(Corner);
+			if (bMirror)
+			{
+				Corner.Y = -Corner.Y;
+			}
+			Box += Corner;
+		}
+		return Box;
+	}
+	for (const aerotelic::NamedMesh& M : GetPlacedMeshes(bMirror, DisplayTolerance()))
+	{
+		Box += AerotelicMeshing::BoundsOf(M.mesh);
+	}
+	return Box;
 }
 
 void AAerotelicEntityActor::ShowBoxFallback(const TopoDS_Shape& Shape)

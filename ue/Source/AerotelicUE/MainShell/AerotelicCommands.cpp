@@ -27,6 +27,10 @@ void FAerotelicCommands::RegisterCommands()
 	UI_COMMAND(Airfoils, "Airfoils...", "The airfoil library: the Selig database, NACA codes and .dat files, with a preview (assign one from a wing's Sections tab)", EUserInterfaceActionType::Button, FInputChord());
 	UI_COMMAND(BooleanOperation, "Boolean Operation...", "Fuse/Cut/Common two entities (or previously-created boolean results)", EUserInterfaceActionType::Button, FInputChord());
 
+	// Lattice
+	UI_COMMAND(GenerateLattice, "Generate Lattice...", "Fill the scene's bodies with a lattice (TPMS, strut-based or auxetic, after OpenLattice): pick the type and the parameters that control it", EUserInterfaceActionType::Button, FInputChord());
+	UI_COMMAND(RegenerateLattices, "Regenerate Lattices", "Rebuild every lattice over its bodies as they now stand (a lattice does not follow edits to its bodies by itself)", EUserInterfaceActionType::Button, FInputChord());
+
 	// View
 	UI_COMMAND(ViewIsometric, "Isometric", "Look at the scene from the isometric direction", EUserInterfaceActionType::Button, FInputChord());
 	UI_COMMAND(ViewTop, "Top", "Look straight down on the scene", EUserInterfaceActionType::Button, FInputChord());

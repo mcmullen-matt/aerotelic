@@ -114,6 +114,12 @@ public:
 	TopoDS_Shape BuildSolid(int n_stations, int n_pts, std::optional<double> station_tol) const;
 	TopoDS_Shape BuildSolid() const override { return BuildSolid(30, 80, std::nullopt); }
 
+	// The cowl as one closed triangle mesh without OCCT (mesh.hpp): outer
+	// skin -> trailing-edge rim -> inner skin -> lip rim, as a periodic
+	// chain of ruled strips. Empty when chevrons are set (they need a
+	// boolean cut; the caller tessellates BuildSolid() then).
+	std::vector<NamedMesh> BuildMeshes(double tolerance) const override;
+
 	static constexpr double kStationTol = 2e-3;
 	static constexpr int kMaxStations = 200;
 	static constexpr double kMinStationGap = 5e-5;
@@ -129,6 +135,9 @@ private:
 	GuideTable BuildGuideTable(int n_pts) const;
 	static std::vector<double> Bernstein(int n_ctrl, double t);
 	static Mat Blend(double x_frac, const GuideTable& tab);
+	// The Bernstein weight of each guide ring at x_frac (what Blend applies
+	// to the sampled rings; BuildMeshes applies it to the curves directly).
+	static std::vector<double> BlendWeights(double x_frac, const GuideTable& tab);
 	static Mat Offset(const Mat& ring, double distance);
 	std::pair<Mat, Mat> RingsYZImpl(double x_frac, const GuideTable& table) const;
 	static Mat Closed(const Mat& ring);

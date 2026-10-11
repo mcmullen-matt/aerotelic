@@ -448,6 +448,43 @@ std::vector<TopoDS_Shape> NacelleModel::ChevronCutters(double depth) const {
 	return cutters;
 }
 
+std::vector<NamedMesh> NacelleModel::BuildMeshes(double tolerance) const {
+	Validate();
+	if (chevron_count > 0) return {};
+
+	// u in [0, 2], periodic: the outer skin at side parameter s = u, then
+	// the inner skin back from the trailing edge at s = 2 - u. PinEnds()
+	// made both skins share the lip and TE points, so the chain closes.
+	const double L = length, y_lip = LipRadius();
+	LoftSource src;
+	src.u_min = 0.0;
+	src.u_max = 2.0;
+	src.periodic_u = true;
+	src.closed_curve = true;
+	src.u_seeds = {0.0, 1.0};
+	src.section = [&](double u, const std::vector<double>& v) {
+		const NurbsCurve& side = u <= 1.0 ? *upper_curve_ : *lower_curve_;
+		double s = u <= 1.0 ? u : 2.0 - u;
+		std::vector<double> sp = side.Evaluate(s);
+		double x = sp[0] * L;
+		double k = sp[1] / y_lip;
+		Mat hv = front_curve_->Evaluate(v);
+		Mat out(hv.rows(), 3);
+		for (int j = 0; j < hv.rows(); ++j) {
+			out(j, 0) = x;
+			out(j, 1) = -hv(j, 0) * k;
+			out(j, 2) = hv(j, 1) * k;
+		}
+		return out;
+	};
+	LoftOptions opt;
+	opt.tolerance = tolerance;
+	opt.min_v = 24;
+	opt.min_u = 8;
+	opt.apex_tolerance = 1e-5;
+	return {{"Main", TriangulateLoft(src, opt)}};
+}
+
 TopoDS_Shape NacelleModel::BuildSolid() const {
 	Validate();
 	TopoDS_Shape solid = CowlSolid();

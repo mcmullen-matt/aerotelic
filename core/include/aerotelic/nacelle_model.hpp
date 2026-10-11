@@ -90,6 +90,12 @@ public:
 	// shape that cannot be built.
 	void Validate() const;
 	TopoDS_Shape BuildSolid() const override;
+	// The cowl as one closed triangle mesh without OCCT (mesh.hpp): the two
+	// skins are scaled copies of the lip ring along the side curves, so
+	// outer skin -> inner skin is one periodic chain of ruled strips
+	// meeting at the lip and the trailing edge. Empty when chevrons are set
+	// (a boolean cut; the caller tessellates BuildSolid() then).
+	std::vector<NamedMesh> BuildMeshes(double tolerance) const override;
 
 	static constexpr double kCutOverhang = 0.05;
 	static constexpr int kCutSections = 8;

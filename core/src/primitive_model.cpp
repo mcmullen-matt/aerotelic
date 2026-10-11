@@ -154,6 +154,16 @@ void PrimitiveModel::Validate() const {
 	}
 }
 
+std::vector<NamedMesh> PrimitiveModel::BuildMeshes(double tolerance) const {
+	Validate();
+	if (shape == PrimitiveShape::Sphere) {
+		auto a = SemiAxes();
+		return {{"Main", EllipsoidMesh(a[0], a[1], a[2], tolerance)}};
+	}
+	if (shape == PrimitiveShape::Cylinder) return {{"Main", CylinderMesh(cyl_radius, cyl_length, tolerance)}};
+	return {{"Main", BoxMesh(size[0], size[1], size[2])}};
+}
+
 TopoDS_Shape PrimitiveModel::BuildSolid() const {
 	Validate();
 	if (shape == PrimitiveShape::Sphere) {

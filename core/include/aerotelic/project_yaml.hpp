@@ -29,6 +29,7 @@
 
 #include "aerotelic/feature_tree.hpp"
 #include "aerotelic/fuselage_model.hpp"
+#include "aerotelic/lattice.hpp"
 #include "aerotelic/lofted_nacelle_model.hpp"
 #include "aerotelic/nacelle_model.hpp"
 #include "aerotelic/primitive_model.hpp"
@@ -82,7 +83,9 @@ Placement DecodePlacement(const YAML::Node& node);
 // Boolean is the kind of a boolean operation's result: a scene item like
 // the others (listed, coloured, hidden, saved), but it is never an entry
 // under `entities:` -- it lives under `booleans:` (ProjectBoolean).
-enum class EntityType { Wing, Fuselage, Nacelle, LoftedNacelle, Propeller, Primitive, Boolean };
+// Lattice likewise: a lattice infill generated in other bodies, saved
+// under `lattices:` (ProjectLattice) and regenerated on load.
+enum class EntityType { Wing, Fuselage, Nacelle, LoftedNacelle, Propeller, Primitive, Boolean, Lattice };
 const char* EntityTypeName(EntityType t);
 EntityType ParseEntityType(const std::string& s);
 
@@ -132,10 +135,29 @@ struct ProjectBoolean {
 YAML::Node Encode(const ProjectBoolean& b);
 ProjectBoolean DecodeProjectBoolean(const YAML::Node& node);
 
+// A lattice infill (Lattice -> Generate Lattice...): the OpenLattice
+// parameters (lattice.hpp), the bodies it fills and the reserved volumes
+// it leaves alone, all by scene name like a boolean's operands.
+struct ProjectLattice {
+	std::string name;
+	LatticeSpec spec;
+	std::vector<BooleanOperand> targets;
+	std::vector<BooleanOperand> exclusions;
+	bool hidden = false;
+	std::optional<std::array<double, 3>> color;
+};
+
+YAML::Node Encode(const LatticeSpec& spec);
+LatticeSpec DecodeLatticeSpec(const YAML::Node& node);
+YAML::Node Encode(const ProjectLattice& l);
+ProjectLattice DecodeProjectLattice(const YAML::Node& node);
+
 struct ProjectFile {
 	std::vector<ProjectEntity> entities;
 	// In build order; every operand names something listed before it.
 	std::vector<ProjectBoolean> booleans;
+	// After the booleans; targets name entities or boolean results.
+	std::vector<ProjectLattice> lattices;
 };
 
 ProjectFile LoadProjectYaml(const std::string& path);

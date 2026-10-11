@@ -339,6 +339,15 @@ public:
 
 	void ExportStep(const std::string& filepath, int n_span = 200, double station_tol_override = kExportStationTol) const;
 
+	// The loft as a closed triangle mesh (mesh.hpp), built from the section
+	// curves without OCCT: ruled strips between the LoftStations() (refined
+	// further wherever a strip or a section polygon strays more than
+	// `tolerance` from the surface), capped at both ends. [s_min, s_max]
+	// restricts the span -- PropellerModel trims its blades at the hub this
+	// way instead of a boolean cut.
+	TriMesh BuildMesh(double tolerance, double s_min = 0.0, double s_max = 1.0) const;
+	std::vector<NamedMesh> BuildMeshes(double tolerance) const override;
+
 	// Sorted curve parameters to loft through: the user's sections, root,
 	// tip, chord-law breakpoints, crease brackets, and error-driven
 	// refinement up to n_span stations. Exposed (not just build_solid()'s

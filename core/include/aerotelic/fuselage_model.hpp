@@ -33,6 +33,10 @@ namespace aerotelic {
 Mat ConicCrossSection2D(double z_top, double z_bot, double y_half, double rho_upper, double rho_lower, int n_pts = 40);
 // (N, 3) array of (x, y, z) for a full cross-section at x_pos.
 Mat ConicCrossSection3D(double x_pos, double z_top, double z_bot, double y_half, double rho_upper, double rho_lower, int n_pts = 40);
+// The same closed conic section as a curve: (y, z) at v in [0, 1), running
+// top-centre -> right shoulder -> bottom-centre -> left shoulder -> back,
+// one quadrant arc per quarter of v (the polygon above samples this).
+std::array<double, 2> ConicCrossSectionPoint(double z_top, double z_bot, double y_half, double rho_upper, double rho_lower, double v);
 
 // The conic rho whose quadrant arc is an exact quarter-circle/ellipse
 // (middle weight cos 45 degrees); the default for both rho curves.
@@ -102,6 +106,11 @@ public:
 	TopoDS_Shape BuildSolid() const override { return BuildSolid(30, 40, std::nullopt); }
 
 	void ExportStep(const std::string& path, int n_stations = 30, int n_pts = 40, std::optional<double> station_tol = std::nullopt) const;
+
+	// The body as a closed triangle mesh built from the conic sections
+	// without OCCT (mesh.hpp): ruled between StationFracs(), refined to
+	// `tolerance`; a pointed nose/tail becomes a true apex.
+	std::vector<NamedMesh> BuildMeshes(double tolerance) const override;
 
 	static constexpr double kStationTol = 2e-3;
 	static constexpr int kMaxStations = 200;

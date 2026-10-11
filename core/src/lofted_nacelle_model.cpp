@@ -294,6 +294,15 @@ LoftedNacelleModel::GuideTable LoftedNacelleModel::BuildGuideTable(int n_pts) co
 	return tab;
 }
 
+std::vector<double> LoftedNacelleModel::BlendWeights(double x_frac, const GuideTable& tab) {
+	const auto& st = tab.stations;
+	std::vector<double> w(st.size(), 0.0);
+	if (st.size() == 1 || x_frac <= st[0]) { w[0] = 1.0; return w; }
+	if (x_frac >= st.back()) { w.back() = 1.0; return w; }
+	double t = LinInterp(x_frac, tab.x, tab.t);
+	return Bernstein(static_cast<int>(st.size()), t);
+}
+
 Mat LoftedNacelleModel::Blend(double x_frac, const GuideTable& tab) {
 	const auto& st = tab.stations;
 	if (st.size() == 1 || x_frac <= st[0]) return tab.rings[0];
@@ -674,6 +683,63 @@ std::vector<TopoDS_Shape> LoftedNacelleModel::ChevronCutters(double depth) const
 		}
 	}
 	return cutters;
+}
+
+std::vector<NamedMesh> LoftedNacelleModel::BuildMeshes(double tolerance) const {
+	Validate();
+	if (chevron_count > 0) return {};
+
+	// One periodic chain in u over [0, 4]: outer skin lip -> TE (x = u),
+	// TE rim (outer -> inner at x = 1), inner skin TE -> lip (x = 3 - u),
+	// lip rim (inner -> outer at x = 0). The rims are exact ruled annuli,
+	// so refinement adds nothing there; where a wall has no thickness the
+	// two rings coincide and the builder shares their vertices.
+	GuideTable table = BuildGuideTable(kRefineRingPts);
+	std::vector<double> fracs = StationFracs(30, tolerance);
+	LoftSource src;
+	src.u_min = 0.0;
+	src.u_max = 4.0;
+	src.periodic_u = true;
+	src.closed_curve = true;
+	src.u_seeds = {0.0, 1.0, 2.0, 3.0};
+	for (double x : fracs) {
+		src.u_seeds.push_back(x);
+		src.u_seeds.push_back(3.0 - x);
+	}
+	const double L = length;
+	src.section = [&](double u, const std::vector<double>& v) {
+		double x_frac, w_inner; // w_inner: 0 on the outer skin, 1 on the inner
+		if (u <= 1.0) { x_frac = u; w_inner = 0.0; }
+		else if (u <= 2.0) { x_frac = 1.0; w_inner = u - 1.0; }
+		else if (u <= 3.0) { x_frac = 3.0 - u; w_inner = 1.0; }
+		else { x_frac = 0.0; w_inner = 4.0 - u; }
+		std::vector<double> weights = BlendWeights(x_frac, table);
+		auto [outer, inner] = Skins(x_frac);
+		double distance = (1.0 - w_inner) * outer + w_inner * inner;
+		double cz = CentrelineZ(x_frac);
+		Mat out(static_cast<int>(v.size()), 3);
+		for (size_t j = 0; j < v.size(); ++j) {
+			double py = 0.0, pz = 0.0;
+			for (size_t i = 0; i < weights.size(); ++i) {
+				if (weights[i] == 0.0) continue;
+				std::vector<double> p = sections_[i].curve->Evaluate(v[j]);
+				py += weights[i] * p[0];
+				pz += weights[i] * p[1];
+			}
+			double r = std::hypot(py, pz);
+			if (!(r > 0.0)) throw std::invalid_argument("the guide curve passes through the centreline, so there is no radius to measure the skins from");
+			out(static_cast<int>(j), 0) = x_frac * L;
+			out(static_cast<int>(j), 1) = py + distance * py / r;
+			out(static_cast<int>(j), 2) = pz + distance * pz / r + cz;
+		}
+		return out;
+	};
+	LoftOptions opt;
+	opt.tolerance = tolerance;
+	opt.min_v = 24;
+	opt.min_u = 8;
+	opt.apex_tolerance = 1e-5;
+	return {{"Main", TriangulateLoft(src, opt)}};
 }
 
 TopoDS_Shape LoftedNacelleModel::BuildSolid(int n_stations, int n_pts, std::optional<double> station_tol) const {

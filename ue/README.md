@@ -287,6 +287,86 @@ The layout follows the Python/Qt version's main window (`aerotelic/ui/main_windo
   per entity with position, rotation axis and angle.
 * **Status bar**: last action on the left, project path on the right.
 
+## Meshing, distance fields and lattices (2026-10-11)
+
+* **OCCT-free triangulation** (`core/include/aerotelic/mesh.hpp`,
+  `src/mesh.cpp`): every lofted body is a chain of ruled surfaces between
+  its section curves, so `TriangulateLoft` discretises the section curves
+  at one shared, ordered set of along-curve parameters, connects point `j`
+  of consecutive stations by rulings, and splits each quadrilateral along
+  its shorter diagonal. Parameters are added wherever the chord between two
+  consecutive points strays more than the tolerance from the curve, checked
+  on *every* station (the error of a ruled surface lives on its end curves);
+  stations are added wherever the ruled strip strays from the surface
+  between them. Ends are capped by ear clipping; apexes (a fuselage nose, a
+  spinner tip) collapse to a vertex; a rim of zero wall thickness shares
+  its vertices. The result is a closed, outward-oriented manifold within
+  the tolerance of the surface. `ISolidModel::BuildMeshes(tolerance)` is
+  implemented by every model: wing (section curves placed through
+  `AirfoilCoordsToXyz`, stations from `LoftStations`), fuselage (the conic
+  section as a curve, `ConicCrossSectionPoint`), both nacelles (one
+  periodic chain: outer skin, trailing-edge rim, inner skin, lip rim),
+  propeller (spinner profile revolved as rings; blades from the hub station
+  outward, turned and placed as `BuildSolid` does) and the primitives.
+  The viewport, the mirror and STL export use these meshes; the OCCT solid
+  is only built on demand (booleans, STEP export) or for a model without a
+  mesh builder (a boolean result; a nacelle with chevrons, which needs the
+  boolean cut). `tests/mesh_check.cpp` compares every body's volume with
+  its definition (integrated section areas) and OCCT's tessellation.
+  Measured: the default wing meshes in 0.02 s; OCCT's own loft comes out a
+  few percent larger because `ThruSections` pairs the section curves by its
+  own reparametrisation, and `BRepGProp::VolumeProperties` is unreliable on
+  it (2.52 against 2.95-3.05 from every other measure).
+* **Signed distance field** (`sdf.hpp`, `src/sdf.cpp`): `MeshSdf` holds a
+  BVH (binary tree of boxes over the triangles, median split on the longest
+  axis, leaves of 4) and answers closest point and signed distance with a
+  nearest-box-first descent that never enters a box farther than the best
+  distance found; the sign is the angle-weighted pseudo-normal of the
+  feature the closest point lies on (Baerentzen & Aanaes). Measured: 2.3 us
+  per query on a 2,700-triangle wing, BVH equal to brute force on every
+  tested point, sign equal to ray parity on every tested point
+  (`tests/sdf_check.cpp`).
+* **Lattices** (`lattice.hpp`, `src/lattice.cpp`), after Gayir, Ozdilek,
+  Ozdemir, Simsek, Sendur and Kiziltas, *OpenLattice* (SSRN 6210543),
+  section 2: the 27 TPMS level-set functions of the paper's Table 3 in
+  network, sheet (matrix) and iso-surface (wall thickness) phases, with the
+  level-set parameter calibrated to the volume fraction by bisection on a
+  sampled unit cell; the strut-based and auxetic cells (BCC, FCC, G7, Grid,
+  Octet, Tesseract, Vintiles, X-lattice, Re-entrant) as the paper's
+  periodic strut distance field (nearest periodic copy by rounding,
+  distance to the segment, normalised by the strut radius, minimum over
+  struts), the radius calibrated the same way. `GenerateLattice` samples
+  the lattice field intersected with the body's distance field (and minus
+  the reserved volumes, plus an optional solid skin) on a grid of N voxels
+  per cell, skipping whole blocks far from the body surface (a 1-Lipschitz
+  field lets one evaluation classify a block), and extracts the surface
+  with marching tetrahedra (vertex-shared, outward, parallel by slabs).
+  `tests/lattice_check.cpp` calibrates every type, checks the marching
+  tetrahedra on a sphere, and generates in a box and in a sphere with a
+  reserved sphere and a skin.
+* **Lattice menu** -- *Generate Lattice...* opens the dialog: family (TPMS /
+  Strut-based / Auxetic), type, TPMS phase, unit cell size, volume fraction
+  (or wall thickness for the iso-surface phase), voxels per cell (the
+  paper's mesh density), solid skin thickness, the bodies to fill (every
+  non-primitive body, mirrored halves and boolean results included, chosen
+  by default), the reserved volumes (every primitive, chosen by default --
+  WingDesigner's primitives mark payload bays), a name, and a live estimate
+  of the sample grid. The result is a scene item of kind *lattice* (body
+  "Lattice"): shown, coloured, hidden, sectioned, exported to STL (not
+  STEP: it is a mesh) and saved under `lattices:` in the project file
+  (parameters and body names), regenerated on load. Edit (double-click or
+  the row menu) reopens the dialog and regenerates; *Regenerate Lattices*
+  rebuilds every lattice over its bodies as they now stand -- a lattice
+  does NOT follow edits to its bodies by itself (generation takes seconds,
+  which would make every keystroke in a wing panel wait). Deleting a filled
+  body deletes the lattice. Lattices carry no collision (click-select them
+  in the tree). Measured on p38: the default cell (a tenth of the largest
+  extent) generates in 0.2 s; a 0.4-unit cell (19.5 M samples) in well
+  under a minute.
+* **STL export** now writes the models' own meshes at the linear
+  deflection (OCCT's tessellation, with the angular deflection, only for
+  bodies that need it).
+
 ## How the standalone build is put together
 
 * `Source/AerotelicUE.Target.cs` -- the game target that becomes `AerotelicUE.exe`.
@@ -347,6 +427,15 @@ The layout follows the Python/Qt version's main window (`aerotelic/ui/main_windo
   yet; the tab is a placeholder note). A section plane cuts without
   capping (see above), and the engine cannot rasterise SVG reference
   images.
+* Lattices: the paper gives pictures, not node tables, for its strut
+  cells; G7 (BCC with a vertical pillar), Vintiles (the cuboctahedral
+  frame on the edge midpoints) and Re-entrant (vertical edges bowed a
+  quarter cell inward) are reconstructions in `lattice.cpp`'s tables and
+  are plain data to edit. A propeller blade's mesh is trimmed at the hub
+  by its span range rather than a box cut (exact without rake). A nacelle
+  with chevrons still goes through OCCT. The lattice dialog is modal and
+  generation runs on the game thread, so the window does not repaint until
+  it is done.
 * Legacy project files: WingDesigner's older format keys entities by `id`
   with a display `label` (`Projects/cessna_172.yaml`); the label becomes
   the name and the raw `features` graph is ignored (the mirror nodes it

@@ -6,6 +6,7 @@
 #include "Entity/AerotelicDocumentSubsystem.h"
 #include "Entity/AerotelicEntityActor.h"
 #include "Entity/AerotelicBooleanModel.h"
+#include "Entity/AerotelicLatticeModel.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogAerotelicDocumentTest, Log, All);
 
@@ -112,6 +113,58 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 		Check(Dup == nullptr && !Error.IsEmpty(), "a duplicate name is refused");
 	}
 
+	// A lattice generated inside the sphere (a small one: a 2-unit sphere at
+	// a 0.5 cell and 6 voxels per cell), saved under `lattices:` and
+	// regenerated on load.
+	UE_LOG(LogAerotelicDocumentTest, Display, TEXT("step: AddLattice"));
+	{
+		TArray<FAerotelicBooleanOperand> Targets;
+		FAerotelicBooleanOperand T;
+		T.Entity = Primitive;
+		Targets.Add(T);
+		aerotelic::LatticeSpec Spec;
+		Spec.family = aerotelic::LatticeFamily::Tpms;
+		Spec.type = "Gyroid";
+		Spec.phase = aerotelic::TpmsPhase::Network;
+		Spec.cell_size = 0.5;
+		Spec.volume_fraction = 0.35;
+		Spec.resolution = 6;
+		FString Error;
+		AAerotelicEntityActor* Lattice = Doc->AddLattice(TEXT("Lattice 1"), Spec, Targets, TArray<FAerotelicBooleanOperand>(), Error);
+		Check(Lattice != nullptr, FString::Printf(TEXT("gyroid lattice in the sphere generated: %s"), *Error));
+		Check(Doc->GetEntities().Num() == 5, "the lattice is a fifth scene item");
+		Check(Doc->NextLatticeName() == TEXT("Lattice 2"), "next default lattice name is Lattice 2");
+		if (Lattice != nullptr)
+		{
+			const FAerotelicLatticeModel* M = Lattice->GetModelAs<FAerotelicLatticeModel>();
+			Check(M->GetStats().Triangles > 0, "the lattice has triangles");
+			Check(FMath::Abs(M->GetStats().AchievedFraction - 0.35) < 0.1, FString::Printf(TEXT("the lattice's achieved volume fraction (%.3f) is near the 0.35 asked"), M->GetStats().AchievedFraction));
+			std::vector<aerotelic::NamedMesh> Meshes = Lattice->GetPlacedMeshes(false, 1e-3);
+			Check(Meshes.size() == 1 && Meshes[0].name == "Lattice" && Meshes[0].mesh.IsClosedManifold(), "the lattice mesh is one closed body named Lattice");
+			// Every mesh vertex lies inside the sphere (radius 1 at the origin).
+			double Worst = 0.0;
+			for (const aerotelic::Vec3& V : Meshes[0].mesh.vertices) Worst = FMath::Max(Worst, aerotelic::Length(V) - 1.0);
+			Check(Worst < 0.1, FString::Printf(TEXT("the lattice stays inside the sphere (worst overshoot %.4f)"), Worst));
+			bool bThrew = false;
+			try { Lattice->GetModel()->BuildSolid(); } catch (const std::exception&) { bThrew = true; }
+			Check(bThrew, "a lattice has no B-rep solid (BuildSolid throws)");
+		}
+		AAerotelicEntityActor* Bad = Doc->AddLattice(TEXT("Lattice 1"), Spec, Targets, TArray<FAerotelicBooleanOperand>(), Error);
+		Check(Bad == nullptr && !Error.IsEmpty(), "a duplicate lattice name is refused");
+	}
+
+	// The viewport's OCCT-free meshes: every entity's model builds its
+	// bodies straight from its curves, closed and outward.
+	UE_LOG(LogAerotelicDocumentTest, Display, TEXT("step: meshes"));
+	for (auto& WeakEntity : Doc->GetEntities())
+	{
+		if (!WeakEntity.IsValid() || WeakEntity->GetEntityType() == aerotelic::project_yaml::EntityType::Boolean) continue;
+		std::vector<aerotelic::NamedMesh> Meshes = WeakEntity->GetPlacedMeshes(false, 2e-3);
+		bool bOk = !Meshes.empty();
+		for (const aerotelic::NamedMesh& M : Meshes) bOk = bOk && M.mesh.IsClosedManifold() && M.mesh.SignedVolume() > 0.0;
+		Check(bOk, FString::Printf(TEXT("%s: placed meshes are closed, outward bodies (%d)"), *WeakEntity->EntityName, (int32)Meshes.size()));
+	}
+
 	UE_LOG(LogAerotelicDocumentTest, Display, TEXT("step: save"));
 	const FString TmpPath = FPaths::Combine(FPlatformProcess::UserTempDir(), TEXT("aerotelic_document_test.yaml"));
 	Check(Doc->SaveProjectToPath(TmpPath), "save succeeded");
@@ -135,10 +188,11 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 	// short-circuits without showing a dialog.
 	Check(Doc->OpenProjectPath(TmpPath), "reopen succeeded");
 	UE_LOG(LogAerotelicDocumentTest, Display, TEXT("step: reopen done"));
-	Check(Doc->GetEntities().Num() == 4, "reopened scene has 3 entities and the boolean result");
+	Check(Doc->GetEntities().Num() == 5, "reopened scene has 3 entities, the boolean result and the lattice");
 
-	bool bFoundWing = false, bFoundFuselage = false, bFoundPrimitive = false, bFoundBoolean = false;
+	bool bFoundWing = false, bFoundFuselage = false, bFoundPrimitive = false, bFoundBoolean = false, bFoundLattice = false;
 	AAerotelicEntityActor* ReopenedFuselage = nullptr;
+	AAerotelicEntityActor* ReopenedPrimitive = nullptr;
 	for (auto& WeakEntity : Doc->GetEntities())
 	{
 		if (!WeakEntity.IsValid())
@@ -158,6 +212,7 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 			break;
 		case aerotelic::project_yaml::EntityType::Primitive:
 			bFoundPrimitive = true;
+			ReopenedPrimitive = E;
 			break;
 		case aerotelic::project_yaml::EntityType::Boolean:
 		{
@@ -168,17 +223,35 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 			CheckBuildsSolid(E, TEXT("BoolOp 1"));
 			break;
 		}
+		case aerotelic::project_yaml::EntityType::Lattice:
+		{
+			bFoundLattice = true;
+			Check(E->EntityName == TEXT("Lattice 1"), "lattice kept its name");
+			const FAerotelicLatticeModel* M = static_cast<const FAerotelicLatticeModel*>(E->GetModel());
+			Check(M->Spec.type == "Gyroid" && M->Spec.resolution == 6 && FMath::IsNearlyEqual(M->Spec.cell_size, 0.5) && FMath::IsNearlyEqual(M->Spec.volume_fraction, 0.35),
+				"lattice parameters round-tripped");
+			Check(M->Targets.Num() == 1 && M->Targets[0].Entity.IsValid() && M->Targets[0].Entity->GetEntityType() == aerotelic::project_yaml::EntityType::Primitive,
+				"lattice target resolved to the reopened sphere");
+			Check(M->IsValid() && M->GetStats().Triangles > 0, "lattice regenerated on load");
+			break;
+		}
 		default:
 			break;
 		}
 	}
-	Check(bFoundWing && bFoundFuselage && bFoundPrimitive && bFoundBoolean, "all three entity types and the boolean survived the round trip");
+	Check(bFoundWing && bFoundFuselage && bFoundPrimitive && bFoundBoolean && bFoundLattice, "all three entity types, the boolean and the lattice survived the round trip");
 
 	// Deleting an operand cascades to the result built on it.
 	if (ReopenedFuselage != nullptr)
 	{
 		Doc->RemoveEntity(ReopenedFuselage);
-		Check(Doc->GetEntities().Num() == 2, "deleting an operand removed the boolean result with it");
+		Check(Doc->GetEntities().Num() == 3, "deleting an operand removed the boolean result with it (the lattice, on the sphere, stays)");
+	}
+	// ... and deleting a filled body cascades to the lattice.
+	if (ReopenedPrimitive != nullptr)
+	{
+		Doc->RemoveEntity(ReopenedPrimitive);
+		Check(Doc->GetEntities().Num() == 1, "deleting the filled body removed the lattice with it");
 	}
 
 	IFileManager::Get().Delete(*TmpPath);

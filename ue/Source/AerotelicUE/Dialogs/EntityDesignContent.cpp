@@ -26,6 +26,7 @@ FAerotelicDesignContent MakeEntityDesignContent(AAerotelicEntityActor* Entity)
 	case project_yaml::EntityType::Propeller: BuildPropellerDesignContent(Entity, Out); break;
 	case project_yaml::EntityType::Primitive: BuildPrimitiveDesignContent(Entity, Out); break;
 	case project_yaml::EntityType::Boolean: break; // nothing of its own to edit: its operands are
+	case project_yaml::EntityType::Lattice: break; // edited in its own dialog (LatticeDialog)
 	}
 	return Out;
 }

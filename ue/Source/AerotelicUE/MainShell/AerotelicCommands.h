@@ -29,6 +29,10 @@ public:
 	TSharedPtr<FUICommandInfo> Airfoils;
 	TSharedPtr<FUICommandInfo> BooleanOperation;
 
+	// Lattice
+	TSharedPtr<FUICommandInfo> GenerateLattice;
+	TSharedPtr<FUICommandInfo> RegenerateLattices;
+
 	// View
 	TSharedPtr<FUICommandInfo> ViewIsometric;
 	TSharedPtr<FUICommandInfo> ViewTop;

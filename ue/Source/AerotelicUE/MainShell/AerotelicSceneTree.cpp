@@ -17,6 +17,7 @@
 #include "Entity/AerotelicDocumentSubsystem.h"
 #include "Entity/AerotelicEntityActor.h"
 #include "Entity/AerotelicBooleanModel.h"
+#include "Dialogs/LatticeDialog.h"
 #include "Branding/AerotelicTheme.h"
 #include "Widgets/PromptDialogs.h"
 
@@ -37,6 +38,7 @@ namespace
 		case project_yaml::EntityType::Propeller: return LOCTEXT("TypePropeller", "propeller");
 		case project_yaml::EntityType::Primitive: return LOCTEXT("TypePrimitive", "primitive");
 		case project_yaml::EntityType::Boolean: return LOCTEXT("TypeBoolean", "boolean");
+		case project_yaml::EntityType::Lattice: return LOCTEXT("TypeLattice", "lattice");
 		}
 		return FText::GetEmpty();
 	}
@@ -132,8 +134,13 @@ void SAerotelicSceneTree::EditEntity(AAerotelicEntityActor* Entity)
 		Doc->SetSelectedEntity(Entity);
 	}
 	// A boolean result has no parameters of its own to edit: its operands
-	// do. Selecting it is all there is.
-	if (Entity->GetEntityType() != project_yaml::EntityType::Boolean)
+	// do. Selecting it is all there is. A lattice is edited in its own
+	// dialog (its parameters and the bodies it fills).
+	if (Entity->GetEntityType() == project_yaml::EntityType::Lattice)
+	{
+		ShowAerotelicLatticeDialog(Entity, [](const FText&) {});
+	}
+	else if (Entity->GetEntityType() != project_yaml::EntityType::Boolean)
 	{
 		ShowAerotelicDesignTab();
 	}
@@ -386,8 +393,10 @@ TSharedPtr<SWidget> SAerotelicSceneTree::MakeEntityMenu(FItem Item)
 	const bool bVisible = Entity->IsEntityVisible();
 	// A boolean result is shown, coloured, renamed and deleted like any
 	// row, but has no design panel, placement or mirror of its own
-	// (main_window.py's result-row menu).
+	// (main_window.py's result-row menu). A lattice likewise, except that
+	// Edit opens its parameter dialog.
 	const bool bBoolean = Entity->GetEntityType() == project_yaml::EntityType::Boolean;
+	const bool bDerived = bBoolean || Entity->GetEntityType() == project_yaml::EntityType::Lattice;
 
 	FMenuBuilder Menu(true, nullptr, nullptr, false, &FCoreStyle::Get(), /*bSearchable*/ false);
 
@@ -416,7 +425,7 @@ TSharedPtr<SWidget> SAerotelicSceneTree::MakeEntityMenu(FItem Item)
 	Menu.AddMenuEntry(LOCTEXT("Rename", "Rename"), LOCTEXT("RenameTip", "Give this entity a new, unique name"), FSlateIcon(),
 		FUIAction(FExecuteAction::CreateLambda([this, Entity]() { if (Entity.IsValid()) RenameEntity(Entity.Get()); })));
 
-	if (!bBoolean)
+	if (!bDerived)
 	{
 		Menu.AddMenuEntry(LOCTEXT("Transform", "Transform"), LOCTEXT("TransformTip", "Translate and rotate this entity"), FSlateIcon(),
 			FUIAction(FExecuteAction::CreateLambda([Entity]() { if (Entity.IsValid()) OpenAerotelicTransformDialog(Entity.Get()); })));
@@ -429,7 +438,7 @@ TSharedPtr<SWidget> SAerotelicSceneTree::MakeEntityMenu(FItem Item)
 		FUIAction(FExecuteAction::CreateLambda([Entity]() { if (Entity.IsValid()) Entity->SetColorOverride(TOptional<FLinearColor>()); }),
 			FCanExecuteAction::CreateLambda([Entity]() { return Entity.IsValid() && Entity->GetColorOverride().IsSet(); })));
 
-	if (!bBoolean)
+	if (!bDerived)
 	{
 		Menu.AddMenuSeparator();
 
@@ -566,19 +575,18 @@ void SAerotelicSceneTree::DeleteEntity(AAerotelicEntityActor* Entity)
 		return;
 	}
 	const FString Name = Entity->EntityName;
-	// Boolean results built on this go with it; say so.
+	// Boolean results and lattices built on this go with it; say so.
 	TArray<FString> Dependents;
 	for (const TWeakObjectPtr<AAerotelicEntityActor>& Other : Doc->GetEntities())
 	{
-		if (Other.IsValid() && Other.Get() != Entity && Other->GetEntityType() == project_yaml::EntityType::Boolean
-			&& static_cast<const FAerotelicBooleanModel*>(Other->GetModel())->DependsOn(Entity))
+		if (Other.IsValid() && Other.Get() != Entity && UAerotelicDocumentSubsystem::DependsOn(Other.Get(), Entity))
 		{
 			Dependents.Add(Other->EntityName);
 		}
 	}
 	const FText Question = Dependents.Num() == 0
 		? FText::Format(LOCTEXT("ConfirmDelete", "Delete {0}?"), FText::FromString(Name))
-		: FText::Format(LOCTEXT("ConfirmDeleteCascade", "Delete {0}?\nThe boolean operation(s) built on it go with it: {1}"), FText::FromString(Name), FText::FromString(FString::Join(Dependents, TEXT(", "))));
+		: FText::Format(LOCTEXT("ConfirmDeleteCascade", "Delete {0}?\nThe boolean operation(s) and lattice(s) built on it go with it: {1}"), FText::FromString(Name), FText::FromString(FString::Join(Dependents, TEXT(", "))));
 	const EAppReturnType::Type Answer = AerotelicMessageBox(EAppMsgType::YesNo, Question);
 	if (Answer != EAppReturnType::Yes)
 	{

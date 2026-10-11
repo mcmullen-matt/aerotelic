@@ -754,6 +754,49 @@ TopoDS_Shape WingModel::BuildSolid(int n_span, bool ruled, std::optional<double>
 	return loft.Shape();
 }
 
+TriMesh WingModel::BuildMesh(double tolerance, double s_min, double s_max) const {
+	if (user_sections_.empty()) throw std::invalid_argument("No airfoil sections provided to the wing loft");
+	if (!(s_max > s_min)) throw std::invalid_argument("the wing mesh's span range is empty");
+	s_min = std::clamp(s_min, 0.0, 1.0);
+	s_max = std::clamp(s_max, 0.0, 1.0);
+
+	// The same stations BuildSolid() lofts through (sections, chord-law
+	// breakpoints, crease brackets, fold-safe, refined on the probe points
+	// to `tolerance`); the mesh builder refines further on the full
+	// section polygon.
+	std::vector<double> stations = LoftStations(60, tolerance);
+	std::vector<double> seeds = {s_min, s_max};
+	for (double s : stations) {
+		if (s > s_min && s < s_max) seeds.push_back(s);
+	}
+
+	// One blended airfoil per station the builder asks for (AirfoilAt's
+	// re-fit between two user sections is the costly part).
+	std::map<double, std::shared_ptr<Airfoil>> airfoils;
+	LoftSource src;
+	src.u_min = s_min;
+	src.u_max = s_max;
+	src.u_seeds = seeds;
+	// An airfoil runs lower TE -> LE -> upper TE over t in [0, 1]; the two
+	// ends are joined by the straight trailing-edge segment (or coincide).
+	src.closed_curve = false;
+	src.section = [&](double s, const std::vector<double>& v) {
+		double key = RoundKey(s);
+		auto it = airfoils.find(key);
+		if (it == airfoils.end()) it = airfoils.emplace(key, AirfoilAt(s)).first;
+		Mat pts2 = it->second->nurbs_curve().Evaluate(v);
+		return planform_->AirfoilCoordsToXyz(s, pts2);
+	};
+	LoftOptions opt;
+	opt.tolerance = tolerance;
+	opt.min_v = 24;
+	return TriangulateLoft(src, opt);
+}
+
+std::vector<NamedMesh> WingModel::BuildMeshes(double tolerance) const {
+	return {{"Main", BuildMesh(tolerance)}};
+}
+
 // WingModel::ExportStep() is defined in step_export.cpp, deliberately its
 // own translation unit -- see that file's header comment for why.
 

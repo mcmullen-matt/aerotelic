@@ -173,6 +173,66 @@ void CheckPrimitiveRoundTrip() {
 	CheckClose(Volume(original.BuildSolid()), Volume(rebuilt.BuildSolid()), 1e-6, "primitive round trip: volume");
 }
 
+// A lattice under `lattices:` (OpenLattice parameters, targets, reserved
+// volumes) round-trips, and its references are validated like a boolean's.
+void CheckLatticeRoundTrip() {
+	ProjectFile pf;
+	ProjectEntity wing;
+	wing.name = "Wing";
+	wing.type = EntityType::Wing;
+	wing.mirror = true;
+	wing.model = WingModelSpec{};
+	ProjectEntity bay;
+	bay.name = "Bay";
+	bay.type = EntityType::Primitive;
+	bay.model = PrimitiveSpec{};
+	pf.entities.push_back(wing);
+	pf.entities.push_back(bay);
+
+	ProjectLattice l;
+	l.name = "Lattice 1";
+	l.spec.family = LatticeFamily::Strut;
+	l.spec.type = "Octet";
+	l.spec.cell_size = 0.25;
+	l.spec.volume_fraction = 0.22;
+	l.spec.resolution = 10;
+	l.spec.skin_thickness = 0.01;
+	l.spec.origin = Vec3{0.1, 0.2, 0.3};
+	l.targets = {{"Wing", false}, {"Wing", true}};
+	l.exclusions = {{"Bay", false}};
+	l.color = std::array<double, 3>{0.1, 0.2, 0.3};
+	pf.lattices.push_back(l);
+
+	const std::string path = AEROTELIC_TESTS_DIR "/project_yaml_check_tmp.yaml";
+	SaveProjectYaml(pf, path);
+	ProjectFile back = LoadProjectYaml(path);
+	Check(back.lattices.size() == 1, "lattice round trip: one lattice");
+	if (back.lattices.empty()) return;
+	const ProjectLattice& b = back.lattices[0];
+	Check(b.name == "Lattice 1" && b.spec.family == LatticeFamily::Strut && b.spec.type == "Octet", "lattice round trip: name, family, type");
+	CheckClose(b.spec.cell_size, 0.25, 1e-12, "lattice round trip: cell size");
+	CheckClose(b.spec.volume_fraction, 0.22, 1e-12, "lattice round trip: volume fraction");
+	Check(b.spec.resolution == 10, "lattice round trip: resolution");
+	CheckClose(b.spec.skin_thickness, 0.01, 1e-12, "lattice round trip: skin");
+	CheckClose(b.spec.origin.z, 0.3, 1e-12, "lattice round trip: origin");
+	Check(b.targets.size() == 2 && b.targets[1].mirror && b.targets[1].name == "Wing", "lattice round trip: targets (with the mirror)");
+	Check(b.exclusions.size() == 1 && b.exclusions[0].name == "Bay", "lattice round trip: exclusions");
+	Check(b.color && std::abs((*b.color)[2] - 0.3) < 1e-12, "lattice round trip: colour");
+
+	// A TPMS lattice keeps its phase; a bad reference is refused.
+	pf.lattices[0].spec.family = LatticeFamily::Tpms;
+	pf.lattices[0].spec.type = "Gyroid";
+	pf.lattices[0].spec.phase = TpmsPhase::Sheet;
+	pf.lattices[0].targets = {{"Nope", false}};
+	SaveProjectYaml(pf, path);
+	bool threw = false;
+	try { LoadProjectYaml(path); } catch (const std::invalid_argument&) { threw = true; }
+	Check(threw, "lattice round trip: a target that does not exist is refused");
+	pf.lattices[0].targets = {{"Wing", false}};
+	SaveProjectYaml(pf, path);
+	Check(LoadProjectYaml(path).lattices[0].spec.phase == TpmsPhase::Sheet, "lattice round trip: TPMS phase");
+}
+
 void CheckRealPythonProjectFile() {
 	// The Python app's repository (sibling of this one) ships the sample project.
 	const std::string path = "C:\\Users\\Matt\\devel_1\\WingDesigner\\projects\\p38.yaml";
@@ -233,6 +293,7 @@ int main() {
 		CheckLoftedNacelleRoundTrip();
 		CheckPropellerRoundTrip();
 		CheckPrimitiveRoundTrip();
+		CheckLatticeRoundTrip();
 		CheckRealPythonProjectFile();
 	} catch (const std::exception& e) {
 		std::cout << "UNEXPECTED EXCEPTION: " << e.what() << "\n";

@@ -70,6 +70,26 @@ Mat ConicCrossSection2D(double z_top, double z_bot, double y_half, double rho_up
 	return result;
 }
 
+std::array<double, 2> ConicCrossSectionPoint(double z_top, double z_bot, double y_half, double rho_upper, double rho_lower, double v) {
+	double z_shoulder = 0.5 * (z_top + z_bot);
+	v = v - std::floor(v);
+	int q = std::min(3, static_cast<int>(v * 4.0));
+	double t = v * 4.0 - q;
+	double rho = (q == 0 || q == 3) ? rho_upper : rho_lower;
+	double rho_c = std::clamp(rho, 0.005, 0.995);
+	double w = rho_c / (1.0 - rho_c);
+	double p0y, p0z, p1y, p1z, p2y, p2z;
+	switch (q) {
+		case 0: p0y = 0.0; p0z = z_top; p1y = y_half; p1z = z_top; p2y = y_half; p2z = z_shoulder; break;
+		case 1: p0y = y_half; p0z = z_shoulder; p1y = y_half; p1z = z_bot; p2y = 0.0; p2z = z_bot; break;
+		case 2: p0y = 0.0; p0z = z_bot; p1y = -y_half; p1z = z_bot; p2y = -y_half; p2z = z_shoulder; break;
+		default: p0y = -y_half; p0z = z_shoulder; p1y = -y_half; p1z = z_top; p2y = 0.0; p2z = z_top; break;
+	}
+	double denom = (1 - t) * (1 - t) + 2.0 * t * (1 - t) * w + t * t;
+	return {((1 - t) * (1 - t) * p0y + 2 * t * (1 - t) * w * p1y + t * t * p2y) / denom,
+		((1 - t) * (1 - t) * p0z + 2 * t * (1 - t) * w * p1z + t * t * p2z) / denom};
+}
+
 Mat ConicCrossSection3D(double x_pos, double z_top, double z_bot, double y_half, double rho_upper, double rho_lower, int n_pts) {
 	Mat yz = ConicCrossSection2D(z_top, z_bot, y_half, rho_upper, rho_lower, n_pts);
 	Mat out(yz.rows(), 3);
@@ -246,6 +266,33 @@ TopoDS_Shape FuselageModel::BuildSolid(int n_stations, int n_pts, std::optional<
 	loft.Build();
 	if (!loft.IsDone()) throw std::runtime_error("Fuselage lofting failed");
 	return loft.Shape();
+}
+
+std::vector<NamedMesh> FuselageModel::BuildMeshes(double tolerance) const {
+	LoftSource src;
+	src.u_seeds = StationFracs(30, tolerance);
+	src.v_seeds = {0.0, 0.25, 0.5, 0.75};
+	src.closed_curve = true;
+	src.section = [&](double x_frac, const std::vector<double>& v) {
+		auto [z_top, z_bot, y_half, rho_u, rho_l] = SectionParams(x_frac);
+		// SectionParams() floors y_half at 1e-6 so the loft never sees a zero
+		// width; the mesh wants the true apex instead.
+		if (std::abs(y_half_curve_->ZAtEta(x_frac)[1]) < 1e-9) y_half = 0.0;
+		double x = x_frac * length;
+		Mat out(static_cast<int>(v.size()), 3);
+		for (size_t j = 0; j < v.size(); ++j) {
+			auto yz = ConicCrossSectionPoint(z_top, z_bot, y_half, rho_u, rho_l, v[j]);
+			out(static_cast<int>(j), 0) = x;
+			out(static_cast<int>(j), 1) = yz[0];
+			out(static_cast<int>(j), 2) = yz[1];
+		}
+		return out;
+	};
+	LoftOptions opt;
+	opt.tolerance = tolerance;
+	opt.min_v = 16;
+	opt.apex_tolerance = 1e-5;
+	return {{"Main", TriangulateLoft(src, opt)}};
 }
 
 // FuselageModel::ExportStep() is defined in step_export.cpp, deliberately

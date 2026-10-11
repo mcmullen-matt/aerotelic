@@ -5,6 +5,7 @@
 #include <memory>
 
 #include "aerotelic/project_yaml.hpp"
+#include "aerotelic/lattice.hpp"
 #include "AerotelicEntityActor.h"
 
 #include "AerotelicDocumentSubsystem.generated.h"
@@ -84,8 +85,27 @@ public:
 	// A default "BoolOp n" (_unique_label).
 	FString NextBooleanName() const;
 
-	// Removes Entity and every boolean result that depends on it (the
-	// feature tree's cascading remove).
+	// Lattice -> Generate Lattice...: a new scene item, the lattice of Spec
+	// generated inside the placed bodies of Targets and kept out of
+	// Exclusions (see FAerotelicLatticeModel). Generated once up front so a
+	// failure adds nothing: null with OutError then.
+	AAerotelicEntityActor* AddLattice(const FString& Name, const aerotelic::LatticeSpec& Spec, const TArray<struct FAerotelicBooleanOperand>& Targets,
+		const TArray<struct FAerotelicBooleanOperand>& Exclusions, FString& OutError);
+	// Re-parameterises an existing lattice and regenerates it. False with
+	// OutError (and the lattice unchanged) if the new one cannot be built.
+	bool UpdateLattice(AAerotelicEntityActor* Lattice, const aerotelic::LatticeSpec& Spec, const TArray<struct FAerotelicBooleanOperand>& Targets,
+		const TArray<struct FAerotelicBooleanOperand>& Exclusions, FString& OutError);
+	// Lattice -> Regenerate Lattices: rebuilds every lattice over its
+	// targets as they now stand. Returns how many; OutErrors lists any that
+	// failed (left as they were).
+	int32 RegenerateLattices(TArray<FString>& OutErrors);
+	// A default "Lattice n".
+	FString NextLatticeName() const;
+	// True if Entity is a boolean result or lattice built on Other.
+	static bool DependsOn(const AAerotelicEntityActor* Entity, const AAerotelicEntityActor* Other);
+
+	// Removes Entity and every boolean result or lattice that depends on
+	// it (the feature tree's cascading remove).
 	void RemoveEntity(AAerotelicEntityActor* Entity);
 
 	// The application's own selection (the standalone app has no World

@@ -27,6 +27,7 @@
 
 // Last: OCCT's Handle() macro vs engine headers.
 #include "Entity/AerotelicEntityActor.h"
+#include "Entity/AerotelicMeshing.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogAerotelicExport, Log, All);
 
@@ -37,57 +38,32 @@ namespace AerotelicExport
 		// main_window.py _EXPORT_N_SPAN.
 		constexpr int kExportNSpan = 200;
 
-		struct FTriangle { FVector3f N, A, B, C; };
+		using FTriangle = FStlTriangle;
 
-		// The triangles a meshed shape carries, with the face orientation
-		// folded into the winding so the normals point outward.
-		void CollectTriangles(const TopoDS_Shape& Shape, TArray<FTriangle>& Out, int64& OutNodes)
+		void AppendMesh(const aerotelic::TriMesh& Mesh, FStlMesh& Out)
 		{
-			for (TopExp_Explorer FaceExp(Shape, TopAbs_FACE); FaceExp.More(); FaceExp.Next())
+			Out.Nodes += static_cast<int64>(Mesh.vertices.size());
+			Out.Triangles.Reserve(Out.Triangles.Num() + static_cast<int32>(Mesh.triangles.size()));
+			for (const auto& Tri : Mesh.triangles)
 			{
-				const TopoDS_Face& Face = TopoDS::Face(FaceExp.Current());
-				TopLoc_Location Loc;
-				Handle(Poly_Triangulation) Tri = BRep_Tool::Triangulation(Face, Loc);
-				if (Tri.IsNull())
-				{
-					continue;
-				}
-				OutNodes += Tri->NbNodes();
-				const gp_Trsf& Trsf = Loc.Transformation();
-				const bool bReversed = Face.Orientation() == TopAbs_REVERSED;
-				auto Node = [&](int32 i)
-				{
-					gp_Pnt P = Tri->Node(i);
-					P.Transform(Trsf);
-					return FVector3f((float)P.X(), (float)P.Y(), (float)P.Z());
-				};
-				for (int32 i = 1; i <= Tri->NbTriangles(); ++i)
-				{
-					int32 n1, n2, n3;
-					Tri->Triangle(i).Get(n1, n2, n3);
-					if (bReversed)
-					{
-						Swap(n2, n3);
-					}
-					FTriangle T;
-					T.A = Node(n1); T.B = Node(n2); T.C = Node(n3);
-					T.N = FVector3f::CrossProduct(T.B - T.A, T.C - T.A).GetSafeNormal();
-					Out.Add(T);
-				}
+				FTriangle T;
+				const aerotelic::Vec3& A = Mesh.vertices[Tri[0]];
+				const aerotelic::Vec3& B = Mesh.vertices[Tri[1]];
+				const aerotelic::Vec3& C = Mesh.vertices[Tri[2]];
+				T.A = FVector3f((float)A.x, (float)A.y, (float)A.z);
+				T.B = FVector3f((float)B.x, (float)B.y, (float)B.z);
+				T.C = FVector3f((float)C.x, (float)C.y, (float)C.z);
+				T.N = FVector3f::CrossProduct(T.B - T.A, T.C - T.A).GetSafeNormal();
+				Out.Triangles.Add(T);
 			}
 		}
 	}
 
-	TopoDS_Shape MeshForStl(const TArray<FAerotelicBooleanOperand>& Operands, const TArray<FString>& Labels,
-		double LinearDeflection, double AngularDeflectionDeg, int32& OutBodies, int64& OutNodes, int64& OutTriangles, TArray<FString>& OutFailures)
+	FStlMesh MeshForStl(const TArray<FAerotelicBooleanOperand>& Operands, const TArray<FString>& Labels,
+		double LinearDeflection, double AngularDeflectionDeg, TArray<FString>& OutFailures)
 	{
-		OutBodies = 0;
-		OutNodes = 0;
-		OutTriangles = 0;
+		FStlMesh Out;
 		OutFailures.Reset();
-		BRep_Builder Builder;
-		TopoDS_Compound Compound;
-		Builder.MakeCompound(Compound);
 		for (int32 i = 0; i < Operands.Num(); ++i)
 		{
 			const FString Label = Labels.IsValidIndex(i) ? Labels[i] : FString::Printf(TEXT("Body %d"), i + 1);
@@ -96,46 +72,44 @@ namespace AerotelicExport
 				OutFailures.Add(Label + TEXT(": no longer in the scene"));
 				continue;
 			}
-			// A deep copy: meshing rewrites a shape's triangulation in place
-			// and the entity's own result is what the viewport is showing.
-			TopoDS_Shape Placed = Operands[i].Entity->GetPlacedShape(Operands[i].bMirror);
-			if (Placed.IsNull())
+			std::vector<aerotelic::NamedMesh> Meshes;
+			try
 			{
-				OutFailures.Add(Label + TEXT(": produced no shape"));
+				// The model's own meshes at the linear deflection (the OCCT
+				// path inside uses the angular deflection too).
+				Meshes = Operands[i].Entity->GetPlacedMeshes(Operands[i].bMirror, LinearDeflection);
+				if (Meshes.empty())
+				{
+					Meshes = AerotelicMeshing::MeshesFromShape(Operands[i].Entity->GetPlacedShape(Operands[i].bMirror), LinearDeflection, AngularDeflectionDeg);
+				}
+			}
+			catch (const std::exception& e)
+			{
+				OutFailures.Add(FString::Printf(TEXT("%s: meshing failed: %s"), *Label, UTF8_TO_TCHAR(e.what())));
 				continue;
 			}
-			Builder.Add(Compound, BRepBuilderAPI_Copy(Placed).Shape());
-			++OutBodies;
-		}
-		if (OutBodies == 0)
-		{
-			return TopoDS_Shape();
-		}
-		try
-		{
-			BRepMesh_IncrementalMesh Mesher(Compound, LinearDeflection, false, FMath::DegreesToRadians(AngularDeflectionDeg), true);
-			if (!Mesher.IsDone())
+			bool bAny = false;
+			for (const aerotelic::NamedMesh& M : Meshes)
 			{
-				OutFailures.Add(TEXT("meshing did not complete"));
-				return TopoDS_Shape();
+				if (!M.mesh.IsEmpty())
+				{
+					AppendMesh(M.mesh, Out);
+					bAny = true;
+				}
 			}
+			if (!bAny)
+			{
+				OutFailures.Add(Label + TEXT(": produced no triangles"));
+				continue;
+			}
+			++Out.Bodies;
 		}
-		catch (const std::exception& e)
-		{
-			OutFailures.Add(FString::Printf(TEXT("meshing failed: %s"), UTF8_TO_TCHAR(e.what())));
-			return TopoDS_Shape();
-		}
-		TArray<FTriangle> Tris;
-		CollectTriangles(Compound, Tris, OutNodes);
-		OutTriangles = Tris.Num();
-		return Compound;
+		return Out;
 	}
 
-	bool WriteStl(const TopoDS_Shape& Meshed, const FString& Path, bool bAscii, FString& OutError)
+	bool WriteStl(const FStlMesh& Mesh, const FString& Path, bool bAscii, FString& OutError)
 	{
-		TArray<FTriangle> Tris;
-		int64 Nodes = 0;
-		CollectTriangles(Meshed, Tris, Nodes);
+		const TArray<FTriangle>& Tris = Mesh.Triangles;
 		if (Tris.Num() == 0)
 		{
 			OutError = TEXT("the bodies carry no triangulation");
@@ -197,6 +171,11 @@ namespace AerotelicExport
 			return TopoDS_Shape();
 		}
 		AAerotelicEntityActor* Entity = Operand.Entity.Get();
+		if (Entity->GetEntityType() == EntityType::Lattice)
+		{
+			OutError = TEXT("a lattice is a triangle mesh with no B-rep: export it as STL");
+			return TopoDS_Shape();
+		}
 		try
 		{
 			// As it stands, or a boolean result (always as it stands).

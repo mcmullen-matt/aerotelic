@@ -2,6 +2,7 @@
 #include "Widgets/MessageBox.h"
 #include "AerotelicEntityActor.h"
 #include "AerotelicBooleanModel.h"
+#include "AerotelicLatticeModel.h"
 
 #include "ReferenceImagePaths.h"
 
@@ -254,17 +255,15 @@ void UAerotelicDocumentSubsystem::RemoveEntity(AAerotelicEntityActor* Entity)
 	{
 		return;
 	}
-	// Cascade: a boolean result that used this as an operand goes too
-	// (and anything built on that), as FeatureTree.Remove does.
+	// Cascade: a boolean result that used this as an operand, or a lattice
+	// filling it, goes too (and anything built on that), as
+	// FeatureTree.Remove does.
 	TArray<AAerotelicEntityActor*> Dependents;
 	for (auto& Weak : Entities)
 	{
-		if (Weak.IsValid() && Weak.Get() != Entity && Weak->GetEntityType() == EntityType::Boolean)
+		if (Weak.IsValid() && Weak.Get() != Entity && DependsOn(Weak.Get(), Entity))
 		{
-			if (static_cast<const FAerotelicBooleanModel*>(Weak->GetModel())->DependsOn(Entity))
-			{
-				Dependents.Add(Weak.Get());
-			}
+			Dependents.Add(Weak.Get());
 		}
 	}
 	if (SelectedEntity.Get() == Entity)
@@ -315,6 +314,142 @@ FString UAerotelicDocumentSubsystem::NextBooleanName() const
 		Candidate = FString::Printf(TEXT("BoolOp %d"), n);
 	}
 	return Candidate;
+}
+
+bool UAerotelicDocumentSubsystem::DependsOn(const AAerotelicEntityActor* Entity, const AAerotelicEntityActor* Other)
+{
+	if (Entity == nullptr || Other == nullptr || Entity->GetModel() == nullptr)
+	{
+		return false;
+	}
+	if (Entity->GetEntityType() == EntityType::Boolean)
+	{
+		return static_cast<const FAerotelicBooleanModel*>(Entity->GetModel())->DependsOn(Other);
+	}
+	if (Entity->GetEntityType() == EntityType::Lattice)
+	{
+		return static_cast<const FAerotelicLatticeModel*>(Entity->GetModel())->DependsOn(Other);
+	}
+	return false;
+}
+
+FString UAerotelicDocumentSubsystem::NextLatticeName() const
+{
+	int32 Count = 0;
+	for (const auto& Weak : Entities)
+	{
+		if (Weak.IsValid() && Weak->GetEntityType() == EntityType::Lattice)
+		{
+			++Count;
+		}
+	}
+	int32 n = Count + 1;
+	FString Candidate = FString::Printf(TEXT("Lattice %d"), n);
+	while (IsNameTaken(Candidate))
+	{
+		++n;
+		Candidate = FString::Printf(TEXT("Lattice %d"), n);
+	}
+	return Candidate;
+}
+
+AAerotelicEntityActor* UAerotelicDocumentSubsystem::AddLattice(const FString& Name, const aerotelic::LatticeSpec& Spec,
+	const TArray<FAerotelicBooleanOperand>& Targets, const TArray<FAerotelicBooleanOperand>& Exclusions, FString& OutError)
+{
+	if (Targets.Num() == 0)
+	{
+		OutError = TEXT("Select at least one body to fill.");
+		return nullptr;
+	}
+	if (IsNameTaken(Name))
+	{
+		OutError = FString::Printf(TEXT("'%s' is already in use. Names must be unique in the scene."), *Name);
+		return nullptr;
+	}
+	for (const FAerotelicBooleanOperand& Op : Targets)
+	{
+		if (Op.Entity.IsValid() && Op.Entity->GetEntityType() == EntityType::Lattice)
+		{
+			OutError = TEXT("A lattice cannot be filled with another lattice.");
+			return nullptr;
+		}
+	}
+	auto Model = std::make_unique<FAerotelicLatticeModel>();
+	Model->Spec = Spec;
+	Model->Targets = Targets;
+	Model->Exclusions = Exclusions;
+	try
+	{
+		Model->BuildMeshes(0.0);
+	}
+	catch (const std::exception& e)
+	{
+		OutError = UTF8_TO_TCHAR(e.what());
+		return nullptr;
+	}
+	return SpawnEntity(EntityType::Lattice, std::move(Model), Name);
+}
+
+bool UAerotelicDocumentSubsystem::UpdateLattice(AAerotelicEntityActor* Lattice, const aerotelic::LatticeSpec& Spec,
+	const TArray<FAerotelicBooleanOperand>& Targets, const TArray<FAerotelicBooleanOperand>& Exclusions, FString& OutError)
+{
+	if (Lattice == nullptr || Lattice->GetEntityType() != EntityType::Lattice)
+	{
+		OutError = TEXT("Not a lattice.");
+		return false;
+	}
+	if (Targets.Num() == 0)
+	{
+		OutError = TEXT("Select at least one body to fill.");
+		return false;
+	}
+	FAerotelicLatticeModel* Model = Lattice->GetModelAs<FAerotelicLatticeModel>();
+	const aerotelic::LatticeSpec OldSpec = Model->Spec;
+	const TArray<FAerotelicBooleanOperand> OldTargets = Model->Targets, OldExclusions = Model->Exclusions;
+	Model->Spec = Spec;
+	Model->Targets = Targets;
+	Model->Exclusions = Exclusions;
+	Model->Invalidate();
+	try
+	{
+		Model->BuildMeshes(0.0);
+	}
+	catch (const std::exception& e)
+	{
+		OutError = UTF8_TO_TCHAR(e.what());
+		Model->Spec = OldSpec;
+		Model->Targets = OldTargets;
+		Model->Exclusions = OldExclusions;
+		Model->Invalidate();
+		return false;
+	}
+	Lattice->RefreshProxy();
+	return true;
+}
+
+int32 UAerotelicDocumentSubsystem::RegenerateLattices(TArray<FString>& OutErrors)
+{
+	int32 Count = 0;
+	for (auto& Weak : Entities)
+	{
+		if (!Weak.IsValid() || Weak->GetEntityType() != EntityType::Lattice)
+		{
+			continue;
+		}
+		FAerotelicLatticeModel* Model = Weak->GetModelAs<FAerotelicLatticeModel>();
+		Model->Invalidate();
+		try
+		{
+			Model->BuildMeshes(0.0);
+			Weak->RefreshProxy();
+			++Count;
+		}
+		catch (const std::exception& e)
+		{
+			OutErrors.Add(FString::Printf(TEXT("%s: %s"), *Weak->EntityName, UTF8_TO_TCHAR(e.what())));
+		}
+	}
+	return Count;
 }
 
 AAerotelicEntityActor* UAerotelicDocumentSubsystem::AddBoolean(const FString& Name, const TArray<FAerotelicBooleanOperand>& Operands,
@@ -676,10 +811,58 @@ bool UAerotelicDocumentSubsystem::OpenProjectPath(const FString& InPath, bool bA
 			Actor->SetEntityVisible(false);
 		}
 	}
+	// The lattices, regenerated over the entities and boolean results now
+	// in the scene.
+	for (const ProjectLattice& L : Project.lattices)
+	{
+		FString Error;
+		auto Resolve = [&](const std::vector<BooleanOperand>& Refs, TArray<FAerotelicBooleanOperand>& Out)
+		{
+			for (const BooleanOperand& Ref : Refs)
+			{
+				const FString RefName = UTF8_TO_TCHAR(Ref.name.c_str());
+				FAerotelicBooleanOperand Op;
+				for (auto& Weak : Entities)
+				{
+					if (Weak.IsValid() && Weak->EntityName == RefName)
+					{
+						Op.Entity = Weak;
+						break;
+					}
+				}
+				Op.bMirror = Ref.mirror;
+				if (!Op.Entity.IsValid())
+				{
+					Error = FString::Printf(TEXT("'%s' does not exist"), *RefName);
+					return;
+				}
+				Out.Add(Op);
+			}
+		};
+		TArray<FAerotelicBooleanOperand> Targets, Exclusions;
+		Resolve(L.targets, Targets);
+		if (Error.IsEmpty()) Resolve(L.exclusions, Exclusions);
+		const FString Name = UTF8_TO_TCHAR(L.name.c_str());
+		AAerotelicEntityActor* Actor = Error.IsEmpty() ? AddLattice(Name, L.spec, Targets, Exclusions, Error) : nullptr;
+		if (Actor == nullptr)
+		{
+			Failures.Add(FString::Printf(TEXT("%s: %s"), *Name, *Error));
+			continue;
+		}
+		Actor->RefreshProxy();
+		if (L.color)
+		{
+			Actor->SetColorOverride(FLinearColor((float)(*L.color)[0], (float)(*L.color)[1], (float)(*L.color)[2]));
+		}
+		if (L.hidden)
+		{
+			Actor->SetEntityVisible(false);
+		}
+	}
 	if (Failures.Num() > 0 && !IsRunningCommandlet() && !FApp::IsUnattended())
 	{
 		AerotelicMessageBox(EAppMsgType::Ok,
-			FText::FromString(TEXT("Some boolean operations could not be rebuilt and were left out:\n") + FString::Join(Failures, TEXT("\n"))));
+			FText::FromString(TEXT("Some boolean operations or lattices could not be rebuilt and were left out:\n") + FString::Join(Failures, TEXT("\n"))));
 	}
 	CurrentPath = bAdopt ? Path : FString();
 	OnEntityListChanged.Broadcast();
@@ -703,9 +886,9 @@ bool UAerotelicDocumentSubsystem::SaveProjectToPath(const FString& InPath)
 			continue;
 		}
 		AAerotelicEntityActor* Entity = WeakEntity.Get();
-		if (Entity->GetEntityType() == EntityType::Boolean)
+		if (Entity->GetEntityType() == EntityType::Boolean || Entity->GetEntityType() == EntityType::Lattice)
 		{
-			continue; // written under `booleans:` below
+			continue; // written under `booleans:` / `lattices:` below
 		}
 		ProjectEntity Pe;
 		Pe.name = TCHAR_TO_UTF8(*Entity->EntityName);
@@ -751,6 +934,7 @@ bool UAerotelicDocumentSubsystem::SaveProjectToPath(const FString& InPath)
 			break;
 		}
 		case EntityType::Boolean:
+		case EntityType::Lattice:
 			break; // skipped above
 		}
 		RelativiseReferenceImagePaths(Pe.model, FPaths::GetPath(Path));
@@ -803,6 +987,44 @@ bool UAerotelicDocumentSubsystem::SaveProjectToPath(const FString& InPath)
 			Pb.bodies.push_back(Bb);
 		}
 		Project.booleans.push_back(std::move(Pb));
+	}
+
+	// The lattices: parameters and the bodies they fill, by name.
+	for (auto& WeakEntity : Entities)
+	{
+		if (!WeakEntity.IsValid() || WeakEntity->GetEntityType() != EntityType::Lattice)
+		{
+			continue;
+		}
+		AAerotelicEntityActor* Entity = WeakEntity.Get();
+		const FAerotelicLatticeModel* M = static_cast<const FAerotelicLatticeModel*>(Entity->GetModel());
+		ProjectLattice Pl;
+		Pl.name = TCHAR_TO_UTF8(*Entity->EntityName);
+		Pl.spec = M->Spec;
+		auto Refs = [](const TArray<FAerotelicBooleanOperand>& Ops)
+		{
+			std::vector<BooleanOperand> Out;
+			for (const FAerotelicBooleanOperand& Op : Ops)
+			{
+				if (!Op.Entity.IsValid())
+				{
+					continue;
+				}
+				BooleanOperand Ref;
+				Ref.name = TCHAR_TO_UTF8(*Op.Entity->EntityName);
+				Ref.mirror = Op.bMirror;
+				Out.push_back(Ref);
+			}
+			return Out;
+		};
+		Pl.targets = Refs(M->Targets);
+		Pl.exclusions = Refs(M->Exclusions);
+		Pl.hidden = !Entity->IsEntityVisible();
+		if (const TOptional<FLinearColor> Color = Entity->GetColorOverride(); Color.IsSet())
+		{
+			Pl.color = std::array<double, 3>{ Color->R, Color->G, Color->B };
+		}
+		Project.lattices.push_back(std::move(Pl));
 	}
 
 	try

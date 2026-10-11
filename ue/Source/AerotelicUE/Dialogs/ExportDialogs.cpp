@@ -87,11 +87,10 @@ void ShowAerotelicExportStlDialog(TFunction<void(const FText&)> Status)
 	TSharedPtr<STextBlock> LblBodies, LblNodes, LblTris;
 	TSharedPtr<SCheckBox> AsciiCheck;
 	double Deflection = 0.01, AngleDeg = 20.0;
-	TopoDS_Shape Meshed;
+	AerotelicExport::FStlMesh Meshed;
 
-	// The compound is rebuilt when the body selection changes and re-meshed
-	// when a density changes; it carries whatever triangulation was last
-	// computed, which is exactly what Save writes out.
+	// The mesh is rebuilt when the body selection changes and re-meshed
+	// when a density changes; it is exactly what Save writes out.
 	auto Refresh = [&]()
 	{
 		TArray<FAerotelicBooleanOperand> Operands;
@@ -103,7 +102,7 @@ void ShowAerotelicExportStlDialog(TFunction<void(const FText&)> Status)
 		}
 		if (Operands.Num() == 0)
 		{
-			Meshed.Nullify();
+			Meshed = AerotelicExport::FStlMesh();
 			LblBodies->SetText(FText::FromString(TEXT("Ã¢â‚¬â€")));
 			LblNodes->SetText(FText::FromString(TEXT("Ã¢â‚¬â€")));
 			LblTris->SetText(FText::FromString(TEXT("Ã¢â‚¬â€")));
@@ -111,11 +110,11 @@ void ShowAerotelicExportStlDialog(TFunction<void(const FText&)> Status)
 			return;
 		}
 		Status(LOCTEXT("Meshing", "Meshing..."));
-		int32 Bodies = 0;
-		int64 Nodes = 0, Tris = 0;
 		TArray<FString> Failures;
-		Meshed = AerotelicExport::MeshForStl(Operands, Labels, Deflection, AngleDeg, Bodies, Nodes, Tris, Failures);
-		if (Meshed.IsNull())
+		Meshed = AerotelicExport::MeshForStl(Operands, Labels, Deflection, AngleDeg, Failures);
+		const int32 Bodies = Meshed.Bodies;
+		const int64 Nodes = Meshed.Nodes, Tris = Meshed.Triangles.Num();
+		if (Meshed.IsEmpty())
 		{
 			LblBodies->SetText(FText::FromString(TEXT("Ã¢â‚¬â€")));
 			LblNodes->SetText(FText::FromString(TEXT("Ã¢â‚¬â€")));
@@ -132,7 +131,7 @@ void ShowAerotelicExportStlDialog(TFunction<void(const FText&)> Status)
 
 	auto Save = [&]()
 	{
-		if (Meshed.IsNull())
+		if (Meshed.IsEmpty())
 		{
 			AerotelicMessageBox(EAppMsgType::Ok, LOCTEXT("SelectBodyWarn", "Select at least one body to export."), LOCTEXT("StlTitle", "Export STL"));
 			return;

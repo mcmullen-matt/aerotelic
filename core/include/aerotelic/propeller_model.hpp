@@ -96,6 +96,13 @@ public:
 	TopoDS_Shape BuildSolid(int n_span, std::optional<double> station_tol, bool fuse) const;
 	TopoDS_Shape BuildSolid() const override { return BuildSolid(40, std::nullopt, false); }
 
+	// "Spinner" (the profile revolved as a chain of rings) and "Blade k"
+	// (the blade's WingModel mesh from the hub station outward -- the span
+	// range standing in for BuildSolid()'s box trim, exact when the blade
+	// has no rake -- turned and placed like BuildSolid()'s blades), without
+	// OCCT. Never fused, as BuildSolid()'s default.
+	std::vector<NamedMesh> BuildMeshes(double tolerance) const override;
+
 	static constexpr int kMaxBlades = kPropellerMaxBlades;
 
 private:

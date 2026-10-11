@@ -11,6 +11,7 @@
 #include "Dialogs/AirfoilLibraryDialog.h"
 #include "Dialogs/BooleanOperationDialog.h"
 #include "Dialogs/ExportDialogs.h"
+#include "Dialogs/LatticeDialog.h"
 #include "Dialogs/ThemeDialog.h"
 #include "Branding/AerotelicTheme.h"
 
@@ -363,6 +364,25 @@ void SAerotelicMainShell::BindCommands()
 		if (!Result.IsEmpty()) StatusText = Result;
 	}));
 
+	// Lattice
+	Commands->MapAction(C.GenerateLattice, FExecuteAction::CreateLambda([this]()
+	{
+		ShowAerotelicLatticeDialog(nullptr, [this](const FText& T) { SetStatus(T); });
+	}));
+	Commands->MapAction(C.RegenerateLattices, FExecuteAction::CreateLambda([this]()
+	{
+		UAerotelicDocumentSubsystem* Doc = GetDocument();
+		if (Doc == nullptr) return;
+		TArray<FString> Errors;
+		const int32 Count = Doc->RegenerateLattices(Errors);
+		if (Errors.Num() > 0)
+		{
+			AerotelicMessageBox(EAppMsgType::Ok, FText::FromString(TEXT("Some lattices could not be regenerated:\n") + FString::Join(Errors, TEXT("\n"))), LOCTEXT("LatticeTitle", "Regenerate Lattices"));
+		}
+		SetStatus(Count == 0 && Errors.Num() == 0 ? LOCTEXT("NoLattices", "No lattices in the scene.")
+			: FText::Format(LOCTEXT("Regenerated", "Regenerated {0} lattice(s)."), FText::AsNumber(Count)));
+	}));
+
 	// View
 	Commands->MapAction(C.ViewIsometric, FExecuteAction::CreateSP(this, &SAerotelicMainShell::OnViewPreset, EAerotelicViewPreset::Isometric));
 	Commands->MapAction(C.ViewTop, FExecuteAction::CreateSP(this, &SAerotelicMainShell::OnViewPreset, EAerotelicViewPreset::Top));
@@ -448,6 +468,7 @@ TSharedRef<SWidget> SAerotelicMainShell::BuildMenuBar()
 	Bar.AddPullDownMenu(LOCTEXT("FileMenu", "File"), LOCTEXT("FileMenuTip", "Project files"), PullDown(&SAerotelicMainShell::FillFileMenu));
 	Bar.AddPullDownMenu(LOCTEXT("EditMenu", "Edit"), LOCTEXT("EditMenuTip", "Preferences"), PullDown(&SAerotelicMainShell::FillEditMenu));
 	Bar.AddPullDownMenu(LOCTEXT("GeometryMenu", "Geometry"), LOCTEXT("GeometryMenuTip", "Airfoils and boolean operations"), PullDown(&SAerotelicMainShell::FillGeometryMenu));
+	Bar.AddPullDownMenu(LOCTEXT("LatticeMenu", "Lattice"), LOCTEXT("LatticeMenuTip", "Lattice infill of the scene's bodies"), PullDown(&SAerotelicMainShell::FillLatticeMenu));
 	Bar.AddPullDownMenu(LOCTEXT("ViewMenu", "View"), LOCTEXT("ViewMenuTip", "3D view"), PullDown(&SAerotelicMainShell::FillViewMenu));
 	Bar.AddPullDownMenu(LOCTEXT("HelpMenu", "Help"), LOCTEXT("HelpMenuTip", "Help"), PullDown(&SAerotelicMainShell::FillHelpMenu));
 	return Bar.MakeWidget();
@@ -485,6 +506,13 @@ void SAerotelicMainShell::FillGeometryMenu(FMenuBuilder& Menu)
 	Menu.AddMenuEntry(C.Airfoils);
 	Menu.AddMenuSeparator();
 	Menu.AddMenuEntry(C.BooleanOperation);
+}
+
+void SAerotelicMainShell::FillLatticeMenu(FMenuBuilder& Menu)
+{
+	const FAerotelicCommands& C = FAerotelicCommands::Get();
+	Menu.AddMenuEntry(C.GenerateLattice);
+	Menu.AddMenuEntry(C.RegenerateLattices);
 }
 
 void SAerotelicMainShell::FillViewMenu(FMenuBuilder& Menu)

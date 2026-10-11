@@ -280,6 +280,56 @@ TopoDS_Shape PropellerModel::BladeSolid(int n_span, std::optional<double> statio
 	return BRepBuilderAPI_Transform(blade_shape, turn, true).Shape();
 }
 
+std::vector<NamedMesh> PropellerModel::BuildMeshes(double tolerance) const {
+	Validate();
+	const double R = radius, l = spinner_length * radius;
+	std::vector<NamedMesh> out;
+
+	// Spinner: the profile (x/l, r/R) revolved about X; both ends are on
+	// the axis, so the chain starts and ends at an apex.
+	{
+		LoftSource src;
+		src.closed_curve = true;
+		src.v_seeds = {0.0, 0.25, 0.5, 0.75};
+		src.section = [&](double s, const std::vector<double>& v) {
+			std::vector<double> p = spinner_curve_->Evaluate(s);
+			double x = p[0] * l, r = std::max(p[1], 0.0) * R;
+			Mat m(static_cast<int>(v.size()), 3);
+			for (size_t j = 0; j < v.size(); ++j) {
+				double phi = 2.0 * kPi * v[j];
+				m(static_cast<int>(j), 0) = x;
+				m(static_cast<int>(j), 1) = r * std::cos(phi);
+				m(static_cast<int>(j), 2) = r * std::sin(phi);
+			}
+			return m;
+		};
+		LoftOptions opt;
+		opt.tolerance = tolerance;
+		opt.min_v = 16;
+		opt.min_u = 6;
+		opt.apex_tolerance = 1e-5;
+		out.push_back({"Spinner", TriangulateLoft(src, opt)});
+	}
+
+	// Blades: the wing loft from the hub station, turned -90 degrees about
+	// Y, then each copy rotated about X and shifted along it.
+	TriMesh blade = blade_->BuildMesh(tolerance, hub_radius, 1.0);
+	const std::array<double, 9> turn = {0, 0, -1, 0, 1, 0, 1, 0, 0}; // R_y(-pi/2)
+	for (int k = 0; k < blade_count; ++k) {
+		double a = 2.0 * kPi * k / blade_count;
+		double c = std::cos(a), s = std::sin(a);
+		const std::array<double, 9> rx = {1, 0, 0, 0, c, -s, 0, s, c};
+		std::array<double, 9> m{};
+		for (int i = 0; i < 3; ++i)
+			for (int j = 0; j < 3; ++j)
+				for (int q = 0; q < 3; ++q) m[i * 3 + j] += rx[i * 3 + q] * turn[q * 3 + j];
+		TriMesh copy = blade;
+		copy.Transform(m, Vec3{blade_x * R, 0.0, 0.0});
+		out.push_back({"Blade " + std::to_string(k + 1), std::move(copy)});
+	}
+	return out;
+}
+
 TopoDS_Shape PropellerModel::BuildSolid(int n_span, std::optional<double> station_tol, bool fuse) const {
 	Validate();
 	double R = radius;

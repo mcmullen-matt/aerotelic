@@ -31,6 +31,8 @@ class SAerotelicBodyPicker : public SCompoundWidget
 public:
 	SLATE_BEGIN_ARGS(SAerotelicBodyPicker) : _AllowReorder(false), _ListHeight(220.0f) {}
 		SLATE_ARGUMENT(TArray<FAerotelicBodyChoicePtr>, Choices)
+		// Rows (of Choices) that start out chosen.
+		SLATE_ARGUMENT(TArray<FAerotelicBodyChoicePtr>, InitiallyChosen)
 		SLATE_ARGUMENT(bool, AllowReorder)
 		SLATE_ARGUMENT(float, ListHeight)
 		SLATE_EVENT(FSimpleDelegate, OnChanged)

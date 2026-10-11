@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.20)
+﻿cmake_minimum_required(VERSION 3.20)
 project(aerotelic_core CXX)
 
 set(CMAKE_CXX_STANDARD 17)
@@ -47,6 +47,9 @@ add_library(aerotelic_core STATIC
 	src/fuselage_model.cpp
 	src/project_yaml.cpp
 	src/step_export.cpp
+	src/mesh.cpp
+	src/sdf.cpp
+	src/lattice.cpp
 )
 target_include_directories(aerotelic_core PUBLIC include "${OCCT_ROOT}/include/opencascade" "${YAMLCPP_INCLUDE_DIR}")
 target_link_libraries(aerotelic_core PUBLIC ${OCCT_LINK_LIBS} "${YAMLCPP_LIB}")
@@ -102,3 +105,12 @@ target_link_libraries(wing_propeller_roundtrip_check PRIVATE aerotelic_core)
 
 add_executable(project_yaml_check tests/project_yaml_check.cpp)
 target_link_libraries(project_yaml_check PRIVATE aerotelic_core)
+
+add_executable(mesh_check tests/mesh_check.cpp)
+target_link_libraries(mesh_check PRIVATE aerotelic_core)
+
+add_executable(sdf_check tests/sdf_check.cpp)
+target_link_libraries(sdf_check PRIVATE aerotelic_core)
+
+add_executable(lattice_check tests/lattice_check.cpp)
+target_link_libraries(lattice_check PRIVATE aerotelic_core)

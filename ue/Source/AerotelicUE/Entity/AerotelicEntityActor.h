@@ -166,8 +166,19 @@ public:
 	// the actor's transform), or its reflection about Y = 0 -- what a
 	// boolean operation consumes (EntityShapeFeature / MirrorFeature).
 	// Uses the solid cached by the last RefreshProxy(), building it if
-	// there is none yet. Null if the model cannot be built.
+	// there is none yet (the viewport itself no longer needs the OCCT
+	// solid for a lofted body, so this is the first build for most). Null
+	// if the model cannot be built.
 	TopoDS_Shape GetPlacedShape(bool bMirror) const;
+
+	// This entity's bodies as placed (or mirrored) triangle meshes within
+	// Tolerance of the surface: the model's own OCCT-free meshes
+	// (ISolidModel::BuildMeshes, reusing the viewport's when they are fine
+	// enough), else the OCCT solid tessellated. What STL export and the
+	// lattice generator consume. Empty if nothing can be built.
+	std::vector<aerotelic::NamedMesh> GetPlacedMeshes(bool bMirror, double Tolerance) const;
+	// World bounds of the placed (or mirrored) bodies; invalid if none.
+	FBox GetPlacedBounds(bool bMirror) const;
 
 	// This actor's placement as the backend's feature tree wants it.
 	aerotelic::EntityTransform GetEntityTransform() const;
@@ -240,9 +251,18 @@ private:
 	TOptional<FLinearColor> ColorOverride;
 	FDelegateHandle TransformHandle;
 	FDelegateHandle GeometryHandle;
-	// The model's solid from the last RefreshProxy() (unplaced), so the
-	// mirror and any boolean result reuse it instead of lofting again.
+	// The model's solid from the last build that needed OCCT (unplaced):
+	// a boolean result, or a body whose model has no mesh builder. Null
+	// while the viewport shows the model's own meshes; GetPlacedShape()
+	// builds it on demand then.
 	TopoDS_Shape LastSolid;
+	// The model's own meshes from the last RefreshProxy() (unplaced), at
+	// LastMeshTolerance; the mirror, export and the lattice generator reuse
+	// them.
+	std::vector<aerotelic::NamedMesh> LastMeshes;
+	double LastMeshTolerance = 0.0;
+	// Local bounds of what was last shown, for the next build's tolerance.
+	FBox LastLocalBounds;
 
 	void OnOtherGeometryChanged(AAerotelicEntityActor* Other);
 
@@ -250,6 +270,9 @@ private:
 	void ApplyColors();
 	void ApplyMeshVisibility();
 	void ShowBoxFallback(const TopoDS_Shape& Shape);
+	// The chordal tolerance the viewport builds the model's meshes at:
+	// relative to the body's own size, as the OCCT deflection was.
+	double DisplayTolerance() const;
 	// Tessellates Shape into Target (surface material) and EdgeTarget
 	// (wireframe material), one section per top-level solid. Returns the
 	// role names of the sections written, empty if there was nothing to
@@ -257,6 +280,17 @@ private:
 	TArray<FString> RefreshTessellatedMesh(const TopoDS_Shape& Shape,
 		class UProceduralMeshComponent* Target, TArray<TObjectPtr<class UMaterialInstanceDynamic>>& Materials,
 		class UProceduralMeshComponent* EdgeTarget, TArray<TObjectPtr<class UMaterialInstanceDynamic>>& EdgeMaterialsOut);
+	// The same for the model's own meshes (one section per body, named
+	// as the meshes are).
+	TArray<FString> RefreshMeshFromTriangles(const std::vector<aerotelic::NamedMesh>& Meshes,
+		class UProceduralMeshComponent* Target, TArray<TObjectPtr<class UMaterialInstanceDynamic>>& Materials,
+		class UProceduralMeshComponent* EdgeTarget, TArray<TObjectPtr<class UMaterialInstanceDynamic>>& EdgeMaterialsOut);
+	// Writes one body's triangles as section Section of Target and
+	// EdgeTarget, reusing or creating its material instances.
+	void CreateBodySection(int32 Section, const TArray<FVector>& Vertices, const TArray<int32>& Triangles, const TArray<FVector>& Normals,
+		class UProceduralMeshComponent* Target, TArray<TObjectPtr<class UMaterialInstanceDynamic>>& Materials,
+		class UProceduralMeshComponent* EdgeTarget, TArray<TObjectPtr<class UMaterialInstanceDynamic>>& EdgeMaterialsOut,
+		TArray<TObjectPtr<class UMaterialInstanceDynamic>>& NewMaterials, TArray<TObjectPtr<class UMaterialInstanceDynamic>>& NewEdgeMaterials);
 	// Rebuilds MirrorMesh from the placed-then-reflected shape. Cheap no-op
 	// when the entity is not mirrored.
 	void RefreshMirror();
