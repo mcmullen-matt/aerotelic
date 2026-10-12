@@ -446,6 +446,51 @@ The layout follows the Python/Qt version's main window (`aerotelic/ui/main_windo
   body (spaces as underscores), so a lattice's shell and infill arrive as
   separate parts; binary STL has no parts and holds the union.
 
+### Tetrahedral mesh of the bodies (2026-10-12)
+
+`core/include/aerotelic/tet.hpp` is a tetrahedral mesher for the finite-
+element route: **Lattice -> Export Tetrahedral Mesh (VTK)...** meshes every
+body a lattice fills and writes one legacy VTK unstructured grid with cell
+data `material` = 1 for the skin (the lattice's skin thickness) and 2 for
+the core (the volume the lattice's orthotropic material card applies to).
+
+* **Exact conformity.** The outer faces of the mesh are the body's own
+  surface triangles (or sub-triangles of them: Steiner points lie on
+  surface edges only), no node lies outside the body, and the kept
+  tetrahedra's volume equals the surface's enclosed volume to rounding --
+  `core/tests/tet_check.cpp` asserts this on the P-38's bodies. It is a
+  constrained Delaunay tetrahedralization: incremental Bowyer-Watson on
+  Shewchuk's exact predicates (`core/third_party/predicates`, public
+  domain, the double version compiled as C with `/fp:strict`), segment
+  recovery by splitting at the reference point (Si / TetGen), face
+  recovery by cavity re-tetrahedralization (Si & Gartner), exterior
+  removal by crossing parity. Planar regions (end caps) are facets: their
+  interior edges are free and the mesh's own in-plane triangulation is
+  adopted. Two things the surface itself needed: planar caps are
+  re-triangulated to their in-plane Delaunay triangulation, and the loft
+  now samples each ring at its own density and adds stations wherever a
+  strip is much longer than its rings' point spacing (`LoftOptions::
+  max_aspect`), which also cuts triangle counts (the Boom from 17k to 7k).
+* **Skin / core.** The surface's inward offset nodes (the shell walk) and a
+  body-centred cubic lattice of core points (spacing = the lattice cell)
+  are in the point set; after meshing, every edge straddling the distance-
+  field iso-surface b = -t is split where it crosses (or an interior node
+  near the crossing is snapped onto it), so the skin/core interface is a
+  conforming surface on the iso-surface and skin + core = the body's
+  volume exactly.
+* **Degradation.** A surface can be locally degenerate (a zero-thickness
+  wedge whose sliver triangles fold onto each other: the nacelle lip, the
+  propeller blades' tips) where no splitting rule conforms; such segments
+  are abandoned under a Steiner budget, their triangles left unrecovered,
+  the interior classified by the distance field instead of parity, and the
+  export reports how many faces were abandoned. The P-38's wing, tails,
+  both fuselages and the spinner conform exactly; the nacelle and blades
+  degrade (volumes still match to 1e-9) -- see `tet_check`'s sweep.
+* **Not done yet:** quality. The Delaunay mesh of surface points has many
+  near-flat tetrahedra along the surface (the "surface slivers" of any
+  Delaunay mesh without interior refinement); a sliver-removal / quality-
+  refinement pass is the next step before the mesh is used for stress.
+
 ## How the standalone build is put together
 
 * `Source/AerotelicUE.Target.cs` -- the game target that becomes `AerotelicUE.exe`.

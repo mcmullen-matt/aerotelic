@@ -66,6 +66,12 @@ public:
 	// WriteShellVtk.
 	aerotelic::ShellResult MergedShell() const;
 
+	// The placed surface meshes of the lattice's targets (one per body,
+	// labelled), built at `Tolerance`; the names of targets that produced
+	// nothing go to OutMissing. What the tetrahedral mesher (tet.hpp)
+	// conforms to.
+	std::vector<aerotelic::NamedMesh> TargetBodies(double Tolerance, TArray<FString>& OutMissing) const;
+
 	// Drops the generated mesh so the next build regenerates.
 	void Invalidate() { bValid = false; }
 	bool IsValid() const { return bValid; }

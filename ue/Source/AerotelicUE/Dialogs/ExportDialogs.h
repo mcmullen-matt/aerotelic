@@ -15,6 +15,14 @@ void ShowAerotelicExportStlDialog(TFunction<void(const FText&)> Status);
 // for the file; reports through Status.
 void ShowAerotelicExportSkinVtkDialog(TFunction<void(const FText&)> Status);
 
+// Lattice -> Export Tetrahedral Mesh (VTK)...: every body filled by a
+// lattice, meshed with tetrahedra that conform exactly to its surface
+// (tet.hpp: constrained Delaunay) and split into the skin (the lattice's
+// skin thickness, material 1) and the core (material 2, the volume the
+// lattice's material card applies to), as one legacy VTK unstructured
+// grid. Asks for the file; reports through Status.
+void ShowAerotelicExportTetVtkDialog(TFunction<void(const FText&)> Status);
+
 // File -> Export STEP... (_export_step_dialog): the same body picker, the
 // loft station tolerance with "Rebuild bodies at this tolerance", and
 // "Write named parts (STEP assembly)". The file is written by the

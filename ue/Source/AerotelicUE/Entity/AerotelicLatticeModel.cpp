@@ -300,6 +300,16 @@ std::vector<aerotelic::NamedMesh> FAerotelicLatticeModel::BuildMeshes(double) co
 	return Cached;
 }
 
+std::vector<aerotelic::NamedMesh> FAerotelicLatticeModel::TargetBodies(double Tolerance, TArray<FString>& OutMissing) const
+{
+	std::vector<aerotelic::NamedMesh> Out;
+	for (FPlacedBody& B : PlacedMeshes(Targets, Tolerance, OutMissing))
+	{
+		Out.push_back({TCHAR_TO_UTF8(*B.Label), std::move(B.Mesh)});
+	}
+	return Out;
+}
+
 aerotelic::ShellResult FAerotelicLatticeModel::MergedShell() const
 {
 	aerotelic::ShellResult Out;
