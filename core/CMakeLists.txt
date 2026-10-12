@@ -1,5 +1,5 @@
 ﻿cmake_minimum_required(VERSION 3.20)
-project(aerotelic_core CXX)
+project(aerotelic_core C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -51,7 +51,14 @@ add_library(aerotelic_core STATIC
 	src/sdf.cpp
 	src/lattice.cpp
 	src/shell.cpp
+	src/tet.cpp
+	src/tet_skin.cpp
+	# Shewchuk's exact geometric predicates (public domain), compiled as C
+	# with strict IEEE rounding: the adaptive arithmetic is defeated by
+	# fast-math style reassociation.
+	third_party/predicates/predicates.c
 )
+set_source_files_properties(third_party/predicates/predicates.c PROPERTIES COMPILE_OPTIONS "/fp:strict")
 target_include_directories(aerotelic_core PUBLIC include "${OCCT_ROOT}/include/opencascade" "${YAMLCPP_INCLUDE_DIR}")
 target_link_libraries(aerotelic_core PUBLIC ${OCCT_LINK_LIBS} "${YAMLCPP_LIB}")
 target_compile_definitions(aerotelic_core PUBLIC YAML_CPP_STATIC_DEFINE)
@@ -118,3 +125,6 @@ target_link_libraries(shell_check PRIVATE aerotelic_core)
 
 add_executable(lattice_check tests/lattice_check.cpp)
 target_link_libraries(lattice_check PRIVATE aerotelic_core)
+
+add_executable(tet_check tests/tet_check.cpp)
+target_link_libraries(tet_check PRIVATE aerotelic_core)

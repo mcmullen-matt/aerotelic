@@ -8,21 +8,26 @@
 // triangulates such a chain directly from the section curves, without
 // building an OCCT solid first:
 //
-//   1. The section curves are discretised at a SHARED, ordered set of
-//      along-curve parameters v, so point j of station i corresponds to
-//      point j of station i+1 and the two can be connected by a ruling.
-//   2. Parameters are added to the shared set wherever the straight chord
-//      between two consecutive points deviates from the actual curve by
-//      more than the tolerance (the chordal sag), checked on EVERY station
-//      -- so the linear representation the triangles use is within
-//      tolerance of the curved surface along both end curves of every
-//      ruled strip, which is where a ruled surface's error lives.
+//   1. The section curves are discretised at ordered sets of along-curve
+//      parameters v. A shared set, refined against every station, drives
+//      the station refinement; each ring is then sampled at its OWN set,
+//      refined against its own curve alone, so a small ring (a tail, a
+//      blade tip) is not sampled as densely as the largest one.
+//   2. Parameters are added wherever the straight chord between two
+//      consecutive points deviates from the actual curve by more than the
+//      tolerance (the chordal sag) -- so the linear representation the
+//      triangles use is within tolerance of the curved surface along both
+//      end curves of every ruled strip, which is where a ruled surface's
+//      error lives.
 //   3. Stations are added between two consecutive ones wherever the ruled
 //      strip deviates from the surface (the section half way between them
-//      is not the average of the two) by more than the tolerance.
-//   4. Each quadrilateral (points j, j+1 on stations i, i+1) is split into
-//      two triangles along its shorter diagonal; a quadrilateral with a
-//      collapsed edge (a ring shrunk to an apex) becomes one triangle.
+//      is not the average of the two) by more than the tolerance, and
+//      wherever the strip is longer than LoftOptions::max_aspect times its
+//      rings' point spacing (needle triangles into an apex or knife edge).
+//   4. The strip between two rings is zig-zagged by parameter: equal
+//      parameters make a quadrilateral split along its shorter diagonal,
+//      otherwise the ring whose next parameter is smaller advances with a
+//      triangle; a collapsed edge (a ring shrunk to an apex) makes fans.
 //   5. The open ends are capped with planar polygons (ear clipping), so
 //      the result is a closed, consistently outward-oriented triangle
 //      mesh -- what the viewport, the STL writer and the signed-distance
@@ -127,6 +132,12 @@ struct LoftOptions {
 	// Hard caps on the shared sets (refinement stops when reached).
 	int max_v = 1200;
 	int max_u = 400;
+	// Stations are also added wherever a ruled strip is longer than this
+	// times the mean spacing of its rings' points: the fans into an apex
+	// and the sheets converging on a knife edge otherwise come out as
+	// needle triangles hundreds of times longer than wide, which a
+	// tetrahedral mesh cannot conform to (0 disables).
+	double max_aspect = 6.0;
 	// Below this, a section is treated as collapsed to an apex.
 	double apex_tolerance = 1e-9;
 };
@@ -146,6 +157,13 @@ TriMesh TriangulateLoft(const LoftSource& source, const LoftOptions& options, Lo
 // correspondence), without refinement: quads split along the shorter
 // diagonal. `closed` joins the last point back to the first.
 void AppendRuledStrip(TriMesh& mesh, const std::vector<int>& ring_a, const std::vector<int>& ring_b, bool closed);
+
+// The strip between two rings sampled at their own along-curve parameters
+// (ascending, both starting at v = 0): walking both by parameter, the ring
+// whose next parameter is smaller advances with a triangle, equal
+// parameters advance both with a quad (split as AppendRuledStrip does).
+// Rings of equal parameter lists give AppendRuledStrip's result.
+void AppendZigZagStrip(TriMesh& mesh, const std::vector<int>& ring_a, const std::vector<double>& va, const std::vector<int>& ring_b, const std::vector<double>& vb, bool closed);
 
 // Triangulates a closed, simple (non-self-intersecting), near-planar
 // polygon given by vertex indices into `mesh`, by ear clipping in its

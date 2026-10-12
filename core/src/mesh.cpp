@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <limits>
 #include <stdexcept>
 #include <unordered_map>
@@ -284,6 +285,59 @@ void AppendRuledStrip(TriMesh& mesh, const std::vector<int>& ring_a, const std::
 	}
 }
 
+void AppendZigZagStrip(TriMesh& mesh, const std::vector<int>& ring_a, const std::vector<double>& va, const std::vector<int>& ring_b, const std::vector<double>& vb, bool closed) {
+	const int na = static_cast<int>(ring_a.size()), nb = static_cast<int>(ring_b.size());
+	if (na == 0 || nb == 0) return;
+	if (static_cast<int>(va.size()) != na || static_cast<int>(vb.size()) != nb) throw std::invalid_argument("AppendZigZagStrip: parameter lists do not match the rings");
+	// Repeated-vertex counts, for the quad diagonal rule of AppendRuledStrip.
+	std::unordered_map<int, int> count;
+	for (int idx : ring_a) ++count[idx];
+	for (int idx : ring_b) ++count[idx];
+	auto repeated = [&](int idx) { return count[idx] > 1 ? 1 : 0; };
+	auto emit = [&](int x, int y, int z) {
+		if (x == y || y == z || z == x) return;
+		mesh.triangles.push_back({x, y, z});
+	};
+	auto quad = [&](int a0, int a1, int b1, int b0) {
+		int ids[4] = {a0, a1, b1, b0};
+		int distinct = 0, uniq[4];
+		for (int k = 0; k < 4; ++k) {
+			bool seen = false;
+			for (int m = 0; m < distinct; ++m) if (uniq[m] == ids[k]) { seen = true; break; }
+			if (!seen) uniq[distinct++] = ids[k];
+		}
+		if (distinct < 3) return;
+		if (distinct == 3) { mesh.triangles.push_back({uniq[0], uniq[1], uniq[2]}); return; }
+		int rep_a0b1 = repeated(a0) + repeated(b1), rep_a1b0 = repeated(a1) + repeated(b0);
+		bool use_a0b1 = rep_a0b1 != rep_a1b0 ? rep_a0b1 < rep_a1b0 : DistanceSq(mesh.vertices[a0], mesh.vertices[b1]) <= DistanceSq(mesh.vertices[a1], mesh.vertices[b0]);
+		if (use_a0b1) { emit(a0, a1, b1); emit(a0, b1, b0); }
+		else { emit(a0, a1, b0); emit(a1, b1, b0); }
+	};
+	// Walk both rings by parameter from v = 0; the ring whose next
+	// parameter is smaller advances (a triangle); equal parameters advance
+	// both (a quad split by the rules above). Closed rings wrap to their
+	// first node at v = 1.
+	const int steps_a = closed ? na : na - 1, steps_b = closed ? nb : nb - 1;
+	int i = 0, j = 0;
+	auto next_v = [&](const std::vector<double>& v, int k, int steps) { return k + 1 < static_cast<int>(v.size()) ? v[k + 1] : (closed ? v[0] + 1.0 : 2.0); };
+	auto node = [&](const std::vector<int>& ring, int k) { return ring[k % static_cast<int>(ring.size())]; };
+	int guard = 0;
+	while ((i < steps_a || j < steps_b) && guard++ < na + nb + 2) {
+		bool can_a = i < steps_a, can_b = j < steps_b;
+		double nva = can_a ? next_v(va, i, steps_a) : 2.0, nvb = can_b ? next_v(vb, j, steps_b) : 2.0;
+		if (can_a && can_b && std::fabs(nva - nvb) <= 1e-12) {
+			quad(node(ring_a, i), node(ring_a, i + 1), node(ring_b, j + 1), node(ring_b, j));
+			++i; ++j;
+		} else if (can_a && (!can_b || nva < nvb)) {
+			emit(node(ring_a, i), node(ring_a, i + 1), node(ring_b, j));
+			++i;
+		} else {
+			emit(node(ring_a, i), node(ring_b, j + 1), node(ring_b, j));
+			++j;
+		}
+	}
+}
+
 bool AppendPolygonCap(TriMesh& mesh, const std::vector<int>& ring_in) {
 	// Drop consecutive repeats (and a closing repeat of the first).
 	std::vector<int> ring;
@@ -485,19 +539,21 @@ TriMesh TriangulateLoft(const LoftSource& src, const LoftOptions& opt, LoftStats
 		return m;
 	};
 
-	// Along-curve refinement: every station is a curve; v is the parameter.
-	// A closed curve's wrap-around interval is represented by appending
-	// v_0 + 1 to the list being refined and removing it again afterwards.
-	auto refine_v = [&](bool* capped) {
-		std::vector<double> work = vs;
-		if (src.closed_curve) work.push_back(vs.front() + 1.0);
+	// Along-curve refinement of a parameter set against the curves at the
+	// given stations; v is the parameter. A closed curve's wrap-around
+	// interval is represented by appending v_0 + 1 to the list being refined
+	// and removing it again afterwards.
+	auto refine_v_at = [&](std::vector<double> start, const std::vector<double>& stations, bool* capped, int* rounds_out) {
+		std::vector<double> work = start;
+		if (src.closed_curve) work.push_back(start.front() + 1.0);
 		int rounds = RefineChordal(work, tol, opt.max_v + (src.closed_curve ? 1 : 0),
 			[&](const std::vector<double>& v) {
 				std::vector<Mat> out;
-				out.reserve(us.size());
-				for (double u : us) out.push_back(section_at(u, v));
+				out.reserve(stations.size());
+				for (double u : stations) out.push_back(section_at(u, v));
 				return out;
 			}, capped);
+		if (rounds_out) *rounds_out = rounds;
 		if (src.closed_curve) {
 			// Map everything back into [0, 1) and drop the duplicate closure.
 			std::vector<double> back;
@@ -505,11 +561,28 @@ TriMesh TriangulateLoft(const LoftSource& src, const LoftOptions& opt, LoftStats
 				double x = v >= 1.0 ? v - 1.0 : v;
 				if (x < 1.0 - 1e-12) back.push_back(x);
 			}
-			vs = SortedUnique(back);
-		} else {
-			vs = work;
+			return SortedUnique(back);
 		}
+		return work;
+	};
+	const std::vector<double> vs0 = vs; // the seeds every ring starts from
+	auto refine_v = [&](bool* capped) {
+		int rounds = 0;
+		vs = refine_v_at(vs, us, capped, &rounds);
 		return rounds;
+	};
+	// Each station's own ring parameters: refined against that station's
+	// curve alone, so a small ring (a fuselage tail, a blade tip) is not
+	// sampled as densely as the largest one -- which is what made rings of
+	// hundreds of points microns apart converge on an apex or a knife edge
+	// as needle triangles.
+	std::unordered_map<double, std::vector<double>> ring_vs_cache;
+	auto ring_vs_at = [&](double u) -> const std::vector<double>& {
+		auto it = ring_vs_cache.find(u);
+		if (it != ring_vs_cache.end()) return it->second;
+		bool capped = false;
+		std::vector<double> r = refine_v_at(vs0, {u}, &capped, nullptr);
+		return ring_vs_cache.emplace(u, std::move(r)).first->second;
 	};
 
 	// Station refinement: every v is a curve along u; u is the parameter.
@@ -555,37 +628,108 @@ TriMesh TriangulateLoft(const LoftSource& src, const LoftOptions& opt, LoftStats
 		st.u_capped = st.u_capped || uc;
 		if (vs.size() == nv0 && us.size() == nu0) break;
 	}
+
+	// ---- aspect refinement of the stations ----
+	// A strip much longer than the point spacing of its rings (each sampled
+	// on its own) is split in two -- repeatedly, a geometric progression of
+	// stations into an apex or a knife edge -- never below a few tolerances
+	// of length. An apex ring has no spacing of its own; the other ring's
+	// counts.
+	if (opt.max_aspect > 0.0) {
+		const double period = src.u_max - src.u_min;
+		for (int round = 0; round < 64; ++round) {
+			const int nu = static_cast<int>(us.size());
+			if (nu >= opt.max_u) { st.u_capped = true; break; }
+			std::vector<Mat> at(nu);
+			std::vector<double> spacing(nu, 0.0);
+			for (int i = 0; i < nu; ++i) {
+				at[i] = section_at(us[i], vs);
+				Mat own = section_at(us[i], ring_vs_at(us[i]));
+				int n = own.rows();
+				double sum = 0.0;
+				int cnt = 0;
+				for (int j = 0; j + 1 < n; ++j) { sum += Distance(RowVec(own, j), RowVec(own, j + 1)); ++cnt; }
+				if (src.closed_curve && n > 1) { sum += Distance(RowVec(own, n - 1), RowVec(own, 0)); ++cnt; }
+				spacing[i] = cnt ? sum / cnt : 0.0;
+			}
+			std::vector<double> add;
+			const int n_pairs = src.periodic_u ? nu : nu - 1;
+			for (int i = 0; i < n_pairs; ++i) {
+				int k = (i + 1) % nu;
+				double s;
+				if (spacing[i] <= opt.apex_tolerance) s = spacing[k];
+				else if (spacing[k] <= opt.apex_tolerance) s = spacing[i];
+				else s = std::min(spacing[i], spacing[k]);
+				if (s <= opt.apex_tolerance) continue;
+				double d = 0.0;
+				for (int j = 0; j < at[i].rows(); ++j) d = std::max(d, Distance(RowVec(at[i], j), RowVec(at[k], j)));
+				if (d > opt.max_aspect * s && d > 4.0 * tol) {
+					double u1 = k == 0 ? us[0] + period : us[k];
+					double mid = 0.5 * (us[i] + u1);
+					if (mid >= src.u_min + period) mid -= period;
+					add.push_back(mid);
+				}
+			}
+			if (add.empty()) break;
+			int room = opt.max_u - nu;
+			if (room < static_cast<int>(add.size())) { add.resize(std::max(room, 0)); st.u_capped = true; }
+			us.insert(us.end(), add.begin(), add.end());
+			us = SortedUnique(us);
+			++st.u_rounds;
+			if (add.empty()) break;
+		}
+	}
 	st.n_stations = static_cast<int>(us.size());
-	st.n_ring_points = static_cast<int>(vs.size());
-	if (stats) *stats = st;
 
 	// ---- the point grid, with shared vertices ----
+	// Every ring is sampled at its own parameters (ring_vs_at); the strips
+	// between rings of different counts are zig-zagged by parameter.
 	TriMesh mesh;
 	const int nu = static_cast<int>(us.size());
-	const int nv = static_cast<int>(vs.size());
 	std::vector<std::vector<int>> rings(nu);
+	std::vector<std::vector<double>> ring_v(nu);
 	std::vector<bool> is_apex(nu, false);
 	const double apex2 = opt.apex_tolerance * opt.apex_tolerance;
+	// Exact positions of the previous ring's (and the first ring's) nodes,
+	// so a point that coincides with one is shared rather than duplicated.
+	struct PosKey {
+		double x, y, z;
+		bool operator==(const PosKey& o) const { return x == o.x && y == o.y && z == o.z; }
+	};
+	struct PosHash {
+		size_t operator()(const PosKey& k) const {
+			auto h = [](double d) { uint64_t b; std::memcpy(&b, &d, sizeof b); return b * 0x9E3779B97F4A7C15ull; };
+			return static_cast<size_t>(h(k.x) ^ (h(k.y) >> 7) ^ (h(k.z) >> 13));
+		}
+	};
+	std::unordered_map<PosKey, int, PosHash> prev_pos, first_pos;
+	int max_ring = 0;
 	for (int i = 0; i < nu; ++i) {
-		Mat s = section_at(us[i], vs);
+		ring_v[i] = ring_vs_at(us[i]);
+		const int nv = static_cast<int>(ring_v[i].size());
+		max_ring = std::max(max_ring, nv);
+		Mat s = section_at(us[i], ring_v[i]);
 		Vec3 first = RowVec(s, 0);
 		bool apex = true;
 		for (int j = 1; j < nv && apex; ++j) apex = DistanceSq(RowVec(s, j), first) <= apex2;
 		is_apex[i] = apex;
 		std::vector<int>& ring = rings[i];
 		ring.resize(nv);
+		std::unordered_map<PosKey, int, PosHash> this_pos;
 		if (apex) {
 			int idx = static_cast<int>(mesh.vertices.size());
 			mesh.vertices.push_back(first);
 			std::fill(ring.begin(), ring.end(), idx);
+			this_pos[{first.x, first.y, first.z}] = idx;
+			prev_pos = std::move(this_pos);
+			if (i == 0) first_pos = prev_pos;
 			continue;
 		}
 		// The previous station (and, on a periodic chain, the first), so a
 		// point that coincides with its counterpart there is shared rather
 		// than duplicated -- two stations sitting on the same curve (a rim of
 		// zero wall thickness) then yield no sliver triangles at all.
-		const std::vector<int>* prev = i > 0 ? &rings[i - 1] : nullptr;
-		const std::vector<int>* first_ring = (src.periodic_u && i == nu - 1) ? &rings[0] : nullptr;
+		const bool use_first = src.periodic_u && i == nu - 1;
 		for (int j = 0; j < nv; ++j) {
 			Vec3 p = RowVec(s, j);
 			// Alias a point that coincides with ANY earlier point of this ring
@@ -608,28 +752,32 @@ TriMesh TriangulateLoft(const LoftSource& src, const LoftOptions& opt, LoftStats
 					continue;
 				}
 			}
-			if (prev && DistanceSq(p, mesh.vertices[(*prev)[j]]) <= apex2) {
-				ring[j] = (*prev)[j];
-				continue;
-			}
-			if (first_ring && DistanceSq(p, mesh.vertices[(*first_ring)[j]]) <= apex2) {
-				ring[j] = (*first_ring)[j];
-				continue;
+			PosKey key{p.x, p.y, p.z};
+			auto pit = prev_pos.find(key);
+			if (pit != prev_pos.end()) { ring[j] = pit->second; this_pos[key] = ring[j]; continue; }
+			if (use_first) {
+				auto fit = first_pos.find(key);
+				if (fit != first_pos.end()) { ring[j] = fit->second; this_pos[key] = ring[j]; continue; }
 			}
 			ring[j] = static_cast<int>(mesh.vertices.size());
 			mesh.vertices.push_back(p);
+			this_pos[key] = ring[j];
 		}
 		// An open curve whose two ends coincide is closed after all.
 		if (DistanceSq(mesh.vertices[ring[nv - 1]], mesh.vertices[ring[0]]) <= apex2 && ring[nv - 1] != ring[0]) {
 			if (ring[nv - 1] == static_cast<int>(mesh.vertices.size()) - 1) mesh.vertices.pop_back();
 			ring[nv - 1] = ring[0];
 		}
+		prev_pos = std::move(this_pos);
+		if (i == 0) first_pos = prev_pos;
 	}
+	st.n_ring_points = max_ring;
+	if (stats) *stats = st;
 
 	// ---- strips ----
-	for (int i = 0; i + 1 < nu; ++i) AppendRuledStrip(mesh, rings[i], rings[i + 1], true);
+	for (int i = 0; i + 1 < nu; ++i) AppendZigZagStrip(mesh, rings[i], ring_v[i], rings[i + 1], ring_v[i + 1], src.closed_curve);
 	if (src.periodic_u) {
-		AppendRuledStrip(mesh, rings[nu - 1], rings[0], true);
+		AppendZigZagStrip(mesh, rings[nu - 1], ring_v[nu - 1], rings[0], ring_v[0], src.closed_curve);
 	} else {
 		// ---- caps ----
 		// The start cap runs against the first ring's direction and the end
