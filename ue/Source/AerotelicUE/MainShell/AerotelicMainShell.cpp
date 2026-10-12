@@ -382,6 +382,7 @@ void SAerotelicMainShell::BindCommands()
 		SetStatus(Count == 0 && Errors.Num() == 0 ? LOCTEXT("NoLattices", "No lattices in the scene.")
 			: FText::Format(LOCTEXT("Regenerated", "Regenerated {0} lattice(s)."), FText::AsNumber(Count)));
 	}));
+	Commands->MapAction(C.ExportSkinVtk, FExecuteAction::CreateLambda([this]() { ShowAerotelicExportSkinVtkDialog([this](const FText& T) { SetStatus(T); }); }));
 
 	// View
 	Commands->MapAction(C.ViewIsometric, FExecuteAction::CreateSP(this, &SAerotelicMainShell::OnViewPreset, EAerotelicViewPreset::Isometric));
@@ -513,6 +514,8 @@ void SAerotelicMainShell::FillLatticeMenu(FMenuBuilder& Menu)
 	const FAerotelicCommands& C = FAerotelicCommands::Get();
 	Menu.AddMenuEntry(C.GenerateLattice);
 	Menu.AddMenuEntry(C.RegenerateLattices);
+	Menu.AddMenuSeparator();
+	Menu.AddMenuEntry(C.ExportSkinVtk);
 }
 
 void SAerotelicMainShell::FillViewMenu(FMenuBuilder& Menu)

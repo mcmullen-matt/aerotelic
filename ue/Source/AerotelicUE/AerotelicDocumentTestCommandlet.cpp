@@ -147,12 +147,19 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 		{
 			const FAerotelicLatticeModel* M = Lattice->GetModelAs<FAerotelicLatticeModel>();
 			Check(M->GetStats().Triangles > 0, "the lattice has triangles");
-			// The skin counts as solid: 0.35 of the inside plus the 0.05 shell
-			// of a unit sphere, 1 - 0.95^3 = 0.143 of it.
-			const double Expected = 0.35 + (1.0 - 0.35) * (1.0 - 0.95 * 0.95 * 0.95);
-			Check(FMath::Abs(M->GetStats().AchievedFraction - Expected) < 0.1, FString::Printf(TEXT("the lattice's achieved volume fraction (%.3f) is near the %.3f expected with the skin"), M->GetStats().AchievedFraction, Expected));
+			// The fraction is of the interior domain (inside the explicit skin).
+			Check(FMath::Abs(M->GetStats().AchievedFraction - 0.35) < 0.1, FString::Printf(TEXT("the lattice's achieved volume fraction (%.3f) is near the 0.35 asked"), M->GetStats().AchievedFraction));
+			Check(M->GetStats().SkinTets > 0 && M->GetShells().size() == 1 && M->MergedShell().tets.size() == (size_t)M->GetStats().SkinTets, "the skin's tetrahedra are kept for export");
 			std::vector<aerotelic::NamedMesh> Meshes = Lattice->GetPlacedMeshes(false, 1e-3);
 			Check(Meshes.size() == 2 && Meshes[0].name == "Skin" && Meshes[1].name == "Lattice", "the lattice is two bodies, Skin then Lattice");
+			// The skin solid's volume is the 0.05 shell of the unit sphere (a
+			// few percent under: the sphere is meshed coarsely at this voxel,
+			// and an inscribed polyhedron is smaller than its sphere).
+			if (Meshes.size() == 2)
+			{
+				const double Shell = 4.0 / 3.0 * PI * (1.0 - 0.95 * 0.95 * 0.95);
+				Check(FMath::Abs(Meshes[0].mesh.SignedVolume() - Shell) < 0.06 * Shell, FString::Printf(TEXT("the skin body encloses the shell's volume (%.4f vs %.4f)"), Meshes[0].mesh.SignedVolume(), Shell));
+			}
 			bool bClosed = Meshes.size() == 2;
 			for (const aerotelic::NamedMesh& NM : Meshes) bClosed = bClosed && NM.mesh.IsClosedManifold() && NM.mesh.SignedVolume() > 0.0;
 			Check(bClosed, "both the skin and the lattice are closed, outward bodies");

@@ -9,6 +9,12 @@
 // Status receives the status-bar line.
 void ShowAerotelicExportStlDialog(TFunction<void(const FText&)> Status);
 
+// Lattice -> Export Skin Tetrahedra (VTK)...: the skin of every lattice in
+// the scene (shell.hpp's prism tetrahedra, built by the last generation)
+// as one legacy VTK unstructured grid, for a finite-element model. Asks
+// for the file; reports through Status.
+void ShowAerotelicExportSkinVtkDialog(TFunction<void(const FText&)> Status);
+
 // File -> Export STEP... (_export_step_dialog): the same body picker, the
 // loft station tolerance with "Rebuild bodies at this tolerance", and
 // "Write named parts (STEP assembly)". The file is written by the

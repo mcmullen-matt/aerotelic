@@ -32,6 +32,7 @@ public:
 	// Lattice
 	TSharedPtr<FUICommandInfo> GenerateLattice;
 	TSharedPtr<FUICommandInfo> RegenerateLattices;
+	TSharedPtr<FUICommandInfo> ExportSkinVtk;
 
 	// View
 	TSharedPtr<FUICommandInfo> ViewIsometric;

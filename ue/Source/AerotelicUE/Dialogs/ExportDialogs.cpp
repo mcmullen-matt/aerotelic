@@ -19,6 +19,12 @@
 #include "Widgets/CurveTabControls.h"
 #include "Widgets/NumericEntry.h"
 #include "Export/AerotelicExport.h"
+#include "aerotelic/shell.hpp"
+
+// Last: OCCT's Handle() macro vs engine headers.
+#include "Entity/AerotelicDocumentSubsystem.h"
+#include "Entity/AerotelicLatticeModel.h"
+#include "Entity/AerotelicEntityActor.h"
 
 #define LOCTEXT_NAMESPACE "ExportDialogs"
 
@@ -69,6 +75,45 @@ namespace
 	{
 		return SNew(SWindow).Title(Title).ClientSize(Size).SupportsMaximize(false).SupportsMinimize(false);
 	}
+}
+
+// ------------------------------------------------------------ skin (VTK)
+
+void ShowAerotelicExportSkinVtkDialog(TFunction<void(const FText&)> Status)
+{
+	UAerotelicDocumentSubsystem* Doc = UAerotelicDocumentSubsystem::Get();
+	aerotelic::ShellResult Merged;
+	int32 Lattices = 0;
+	if (Doc != nullptr)
+	{
+		for (auto& Weak : Doc->GetEntities())
+		{
+			if (!Weak.IsValid() || Weak->GetEntityType() != aerotelic::project_yaml::EntityType::Lattice) continue;
+			aerotelic::ShellResult S = Weak->GetModelAs<FAerotelicLatticeModel>()->MergedShell();
+			const int Offset = static_cast<int>(Merged.nodes.size());
+			Merged.nodes.insert(Merged.nodes.end(), S.nodes.begin(), S.nodes.end());
+			for (const auto& T : S.tets) Merged.tets.push_back({T[0] + Offset, T[1] + Offset, T[2] + Offset, T[3] + Offset});
+			++Lattices;
+		}
+	}
+	if (Merged.tets.empty())
+	{
+		AerotelicMessageBox(EAppMsgType::Ok, LOCTEXT("NoSkin", "No lattice skin to export: generate a lattice first (its skin is built with it)."), LOCTEXT("SkinTitle", "Export Skin Tetrahedra"));
+		return;
+	}
+	TSharedPtr<SWindow> Active = FSlateApplication::Get().GetActiveTopLevelWindow();
+	TSharedRef<SWidget> Parent = Active.IsValid() ? StaticCastSharedRef<SWidget>(Active.ToSharedRef()) : SNullWidget::NullWidget;
+	FString Path;
+	if (!AskSavePath(Parent, TEXT("Export Skin Tetrahedra"), TEXT("VTK Files (*.vtk)|*.vtk"), TEXT(".vtk"), Path))
+	{
+		return;
+	}
+	if (!aerotelic::WriteShellVtk(Merged, TCHAR_TO_UTF8(*Path)))
+	{
+		AerotelicMessageBox(EAppMsgType::Ok, FText::FromString(FString::Printf(TEXT("Could not write %s"), *Path)), LOCTEXT("ExportError", "Export Error"));
+		return;
+	}
+	Status(FText::FromString(FString::Printf(TEXT("Exported %s skin tetrahedra of %d lattice(s) to %s"), *Thousands(static_cast<int64>(Merged.tets.size())), Lattices, *Path)));
 }
 
 // -------------------------------------------------------------------- STL

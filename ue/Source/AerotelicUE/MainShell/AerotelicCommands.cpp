@@ -30,6 +30,7 @@ void FAerotelicCommands::RegisterCommands()
 	// Lattice
 	UI_COMMAND(GenerateLattice, "Generate Lattice...", "Fill the scene's bodies with a lattice (TPMS, strut-based or auxetic, after OpenLattice): pick the type and the parameters that control it", EUserInterfaceActionType::Button, FInputChord());
 	UI_COMMAND(RegenerateLattices, "Regenerate Lattices", "Rebuild every lattice over its bodies as they now stand (a lattice does not follow edits to its bodies by itself)", EUserInterfaceActionType::Button, FInputChord());
+	UI_COMMAND(ExportSkinVtk, "Export Skin Tetrahedra (VTK)...", "Write the skin of every lattice in the scene as tetrahedra (legacy VTK unstructured grid, cell data 'material'), for a finite-element model", EUserInterfaceActionType::Button, FInputChord());
 
 	// View
 	UI_COMMAND(ViewIsometric, "Isometric", "Look at the scene from the isometric direction", EUserInterfaceActionType::Button, FInputChord());

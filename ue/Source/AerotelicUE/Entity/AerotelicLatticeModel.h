@@ -4,6 +4,7 @@
 #include <vector>
 
 #include "aerotelic/lattice.hpp"
+#include "aerotelic/shell.hpp"
 #include "aerotelic/solid_model.hpp"
 
 #include "AerotelicBooleanModel.h"
@@ -38,17 +39,32 @@ public:
 
 	// Generates the lattice (ignoring `tolerance`: the resolution is the
 	// spec's voxels per cell), or returns the last generated meshes until
-	// Invalidate(). Two bodies: "Skin", the solid shell between each body's
-	// surface and its inward offset by the spec's skin thickness, and
-	// "Lattice", the infill inside that offset -- separate so a downstream
-	// analysis can give the shell and the infill their own materials (the
-	// two meet on the offset surface vertex for vertex; their union is the
-	// part). Throws std::runtime_error with the reason when a target is
-	// gone, no target has geometry, a target or reserved volume is not a
-	// closed outward surface (the distance field's sign would be wrong
-	// around it), the skin thickness is not positive, or the grid is too
-	// large.
+	// Invalidate(). Two bodies: "Skin", the solid shell of each filled body
+	// built explicitly from its surface triangulation (shell.hpp: the
+	// surface offset inward by the spec's skin thickness as a layer of
+	// prism tetrahedra, exact at any thickness, thin regions solid), as a
+	// closed mesh of the outer surface and the reversed inner surface; and
+	// "Lattice", the infill sampled inside the shell's interior domain --
+	// separate so a downstream analysis can give the shell and the infill
+	// their own materials; their union is the part. The skin tetrahedra
+	// are kept (GetShells) for export to an analysis. Throws
+	// std::runtime_error with the reason when a target is gone, no target
+	// has geometry, a target or reserved volume is not a closed outward
+	// surface (the distance field's sign would be wrong around it), the
+	// skin thickness is not positive, or the grid is too large.
 	virtual std::vector<aerotelic::NamedMesh> BuildMeshes(double tolerance) const override;
+
+	// The skin of each filled body as tetrahedra (built by the last
+	// generation), with the body's scene label.
+	struct FSkinShell
+	{
+		FString Label;
+		aerotelic::ShellResult Shell;
+	};
+	const std::vector<FSkinShell>& GetShells() const { return Shells; }
+	// All the shells' tetrahedra as one mesh (nodes and tets only), for
+	// WriteShellVtk.
+	aerotelic::ShellResult MergedShell() const;
 
 	// Drops the generated mesh so the next build regenerates.
 	void Invalidate() { bValid = false; }
@@ -61,8 +77,9 @@ public:
 	// What the last generation produced.
 	struct FStats
 	{
-		double AchievedFraction = 0.0;
+		double AchievedFraction = 0.0; // of the interior domain (inside the skin)
 		int64 Triangles = 0;
+		int64 SkinTets = 0;
 		int64 GridNodes = 0;
 		int64 BodyEvaluations = 0;
 		double Seconds = 0.0;
@@ -77,5 +94,6 @@ public:
 private:
 	mutable bool bValid = false;
 	mutable std::vector<aerotelic::NamedMesh> Cached;
+	mutable std::vector<FSkinShell> Shells;
 	mutable FStats Stats;
 };
