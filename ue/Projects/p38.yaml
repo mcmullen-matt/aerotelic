@@ -102,19 +102,27 @@ entities:
         interior_knots:
           - 0.5
       rho_upper_curve:
-        degree: 1
+        degree: 2
         poles:
           -
             - 0
             - 0.5
           -
+            - 0.40065476190476201
+            - 0.5013609355742521
+          -
+            - 0.55535714285714288
+            - 0.89696061061199917
+          -
             - 1
-            - 0.5
+            - 0.40536983795479858
         weights:
           - 1
           - 1
+          - 1
+          - 1
         interior_knots:
-          []
+          - 0.5
       rho_lower_curve:
         degree: 1
         poles:
