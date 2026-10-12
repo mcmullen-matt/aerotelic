@@ -167,8 +167,8 @@ TriMesh FlipLongDiagonals(const TriMesh& in) {
 }
 
 void ReportConforming(const char* label, const ConformingStats& s) {
-	std::printf("%s: %d vertices, %d triangles, %d interior points; %d planar regions (%d flips, %d adopted, %d region points); segments missing %d -> %d edge Steiner, %d snaps, %d flips (%d refused), %d ABANDONED; faces missing %d -> %d cavity recoveries (%d enlargements), %d face Steiner, %d ABANDONED; %d surface faces; %d interior / %d exterior tets; volume %.9g vs surface %.9g; %.2f s (delaunay %.2f, segments %.2f, faces %.2f); walk fallbacks %d, cavity repairs %d\n",
-		label, s.n_surface_vertices, s.n_surface_triangles, s.n_interior_points, s.n_planar_regions, s.n_planar_flips, s.n_regions_adopted, s.n_region_steiner, s.n_segments_missing, s.n_edge_steiner, s.n_segment_snaps, s.n_segment_flips, s.n_flips_refused, s.n_segments_abandoned, s.n_faces_missing, s.n_cavity_recoveries, s.n_cavity_enlargements,
+	std::printf("%s: %d vertices, %d triangles, %d interior points; %d planar regions (%d flips, %d adopted, %d region points); segments missing %d -> %d edge Steiner (%d twins), %d snaps, %d flips (%d refused), %d ABANDONED; faces missing %d -> %d cavity recoveries (%d enlargements), %d face Steiner, %d ABANDONED; %d surface faces; %d interior / %d exterior tets; volume %.9g vs surface %.9g; %.2f s (delaunay %.2f, segments %.2f, faces %.2f); walk fallbacks %d, cavity repairs %d\n",
+		label, s.n_surface_vertices, s.n_surface_triangles, s.n_interior_points, s.n_planar_regions, s.n_planar_flips, s.n_regions_adopted, s.n_region_steiner, s.n_segments_missing, s.n_edge_steiner, s.n_twin_steiner, s.n_segment_snaps, s.n_segment_flips, s.n_flips_refused, s.n_segments_abandoned, s.n_faces_missing, s.n_cavity_recoveries, s.n_cavity_enlargements,
 		s.n_face_steiner, s.n_faces_abandoned, s.n_surface_faces, s.n_tets_interior, s.n_tets_exterior, s.mesh_volume, s.surface_volume, s.seconds_total, s.seconds_delaunay, s.seconds_segments, s.seconds_faces,
 		s.delaunay.n_walk_fallbacks, s.delaunay.n_cavity_repairs);
 }
@@ -253,6 +253,31 @@ int main() {
 			m.Quality(-1, &d, &r, &sl);
 			std::printf("sphere: min dihedral %.2f deg, min radius ratio %.3f, %d slivers under 5 deg of %zu\n", d, r, sl, m.tets.size());
 		}
+
+		// ---- refinement: sphere and the P-38's port wing at radius-edge 2 ----
+		Case("refined sphere", [] {
+			TriMesh sph = EllipsoidMesh(1.0, 1.0, 1.0, 1e-3);
+			ConformingOptions o;
+			o.refine_radius_edge = 2.0;
+			ConformingStats s;
+			TetMesh m = TetrahedralizeInterior(sph, o, &s);
+			ReportConforming("refined sphere", s);
+			std::printf("refined sphere: %d interior points, %d surface points, %d skipped; worst radius-edge %.2f -> %.2f; %.2f s\n", s.n_refine_points, s.n_refine_surface_points, s.n_refine_skipped, s.refine_radius_edge_before, s.refine_radius_edge_after, s.seconds_refine);
+			std::string why;
+			Check(m.IsValid(&why), "refined sphere: mesh valid " + why);
+			Check(std::fabs(s.mesh_volume - s.surface_volume) <= 1e-9 * s.surface_volume, Fmt("refined sphere: volume %.9g equals the surface's %.9g", s.mesh_volume, s.surface_volume));
+			Check(m.BoundaryFaces(-1).IsClosedManifold(), "refined sphere: boundary is a closed manifold");
+			MeshSdf sdf(sph);
+			double worst_out = -1e300;
+			for (const auto& p : m.nodes) worst_out = std::max(worst_out, sdf.Distance(p));
+			Check(worst_out <= 1e-9, Fmt("refined sphere: no node outside the body (max field %.3g)", worst_out));
+			// (The sphere is the worst case for radius-edge refinement: every
+			// surface vertex lies on one sphere, so the ratio is reported, not
+			// required.)
+			double d, r; int sl;
+			m.Quality(-1, &d, &r, &sl);
+			std::printf("refined sphere: min dihedral %.2f deg, min radius ratio %.3f, %d slivers under 5 deg of %zu\n", d, r, sl, m.tets.size());
+		});
 
 		// ---- conforming: box (coplanar faces, cospherical corners) ----
 		{
@@ -362,6 +387,22 @@ int main() {
 					m.Quality(-1, &d, &r, &sl);
 					std::printf("port wing: min dihedral %.3f deg, min radius ratio %.4f, %d slivers under 5 deg of %zu\n", d, r, sl, m.tets.size());
 				});
+				Case("port wing refined", [&] {
+					ConformingOptions o;
+					o.refine_radius_edge = 2.0;
+					ConformingStats s;
+					TetMesh m = TetrahedralizeInterior(m0, o, &s);
+					ReportConforming("port wing refined", s);
+					std::printf("port wing refined: %d interior points, %d surface points, %d cushions, %d skipped; radius-edge over 2: %d of %d tets before -> %d of %d after (worst non-sliver %.2f -> %.2f); %.2f s\n", s.n_refine_points, s.n_refine_surface_points, s.n_refine_cushion_points, s.n_refine_skipped, s.n_refine_bad_before, (int)m.tets.size(), s.n_refine_bad_after, s.n_tets_interior, s.refine_radius_edge_before, s.refine_radius_edge_after, s.seconds_refine);
+					ConformingChecks("port wing refined", m0, m, s);
+					// The remaining bad tetrahedra sit along the knife-edge trailing
+					// edge, where the bound can only be met by refining the surface
+					// below the loft's own size; reported, not required.
+					Check(s.n_refine_points > 0, "port wing refined: refinement inserted interior points");
+					double d, r; int sl;
+					m.Quality(-1, &d, &r, &sl);
+					std::printf("port wing refined: min dihedral %.3f deg, min radius ratio %.4f, %d slivers under 5 deg of %zu\n", d, r, sl, m.tets.size());
+				});
 				Case("port wing skin", [&] {
 					const double t = 0.01 * wing.planform().RootChord();
 					MeshSdf sdf(m0);
@@ -387,6 +428,17 @@ int main() {
 					TriMesh skin_boundary = m.BoundaryFaces(1);
 					Check(IsClosed(skin_boundary, &pinched), Fmt("port wing skin: the skin's boundary (surface + interface, %.0f faces) is closed (%.0f pinched edges)", (double)skin_boundary.triangles.size(), (double)pinched));
 					Check(std::fabs(skin_boundary.SignedVolume() - s.skin_volume) <= 1e-9 * s.skin_volume, Fmt("port wing skin: the skin's boundary encloses the skin volume (%.6f vs %.6f)", skin_boundary.SignedVolume(), s.skin_volume));
+					// ---- improvement (run inside BuildSkinCoreMesh): flips and smoothing, surface and interface fixed ----
+					// The checks above (valid, skin + core = volume, interface on the
+					// iso-surface and closed, skin boundary closed) all ran on the
+					// improved mesh; here the pass's own accounting.
+					{
+						const ImproveStats& is = s.improve;
+						std::printf("port wing improved: %d 2-3 flips, %d 3-2 flips, %d node moves; tets under %.0f deg %d -> %d of %zu; min dihedral %.3f -> %.3f deg; %.2f s\n",
+							is.n_flips_23, is.n_flips_32, is.n_smoothed, o.improve_options.target_dihedral_deg, is.n_bad_before, is.n_bad_after, m.tets.size(), is.min_dihedral_before, is.min_dihedral_after, is.seconds);
+						Check(is.n_bad_after < is.n_bad_before, Fmt("port wing improved: fewer tetrahedra under the target (%.0f -> %.0f)", (double)is.n_bad_before, (double)is.n_bad_after));
+						Check(is.n_flips_23 + is.n_flips_32 + is.n_smoothed > 0, "port wing improved: the pass did something");
+					}
 					WriteTetMeshVtk(m, "C:\\Users\\Matt\\devel_1\\aerotelic\\core\\build\\tet_p38_port_wing.vtk");
 					std::printf("port wing skin: wrote core\\build\\tet_p38_port_wing.vtk\n");
 				});

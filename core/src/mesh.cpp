@@ -62,6 +62,52 @@ void EnsureMinimum(std::vector<double>& params, int min_count, bool closed, doub
 	}
 }
 
+// The angle at `at` between the directions to x and y.
+double AngleAt(const Vec3& at, const Vec3& x, const Vec3& y) {
+	Vec3 u = x - at, v = y - at;
+	double lu = Length(u), lv = Length(v);
+	if (lu == 0.0 || lv == 0.0) return 0.0;
+	return std::acos(std::clamp(Dot(u, v) / (lu * lv), -1.0, 1.0));
+}
+
+// Is the quad p -> q -> r -> s convex (its four turns all the same way in
+// its own mean plane)? A strip quad between two rings is not when the
+// rings twist or lean a lot relative to the point spacing.
+bool QuadConvex(const Vec3& p, const Vec3& q, const Vec3& r, const Vec3& s) {
+	Vec3 n = Cross(r - p, s - q);
+	if (LengthSq(n) == 0.0) return false;
+	const Vec3* c[4] = {&p, &q, &r, &s};
+	int sign = 0;
+	for (int i = 0; i < 4; ++i) {
+		const Vec3& a = *c[i];
+		const Vec3& b = *c[(i + 1) % 4];
+		const Vec3& d = *c[(i + 2) % 4];
+		double turn = Dot(Cross(b - a, d - b), n);
+		int sg = turn > 0.0 ? 1 : (turn < 0.0 ? -1 : 0);
+		if (sg == 0) return false;
+		if (sign == 0) sign = sg;
+		else if (sg != sign) return false;
+	}
+	return true;
+}
+
+// For the convex quad p -> q -> r -> s: is the diagonal p-r the locally
+// Delaunay one? It is when the angles at the two corners it does not touch
+// (q and s) sum to at most 180 degrees -- the circumcircle of p, q, r then
+// excludes s and that of p, r, s excludes q. A cocircular quad (both
+// diagonals Delaunay, the ruled quads of a surface of revolution) takes the
+// shorter diagonal. On a non-planar quad this is the usual approximation,
+// and it is what makes the strip's own triangulation Delaunay within its
+// sheet, so that a tetrahedral mesh (tet.hpp) finds every strip edge in
+// the Delaunay tetrahedralization of the vertices instead of having to
+// split it: a diagonal that is not locally Delaunay has a vertex of its
+// own sheet inside its circumcircle, and no sphere through it can be empty.
+bool DiagonalDelaunay(const Vec3& p, const Vec3& q, const Vec3& r, const Vec3& s) {
+	double sum = AngleAt(q, p, r) + AngleAt(s, p, r);
+	if (std::fabs(sum - kPi) <= 1e-9) return DistanceSq(p, r) <= DistanceSq(q, s);
+	return sum < kPi;
+}
+
 // 2-D ear clipping helpers.
 double Cross2(double ax, double ay, double bx, double by) { return ax * by - ay * bx; }
 
@@ -298,6 +344,19 @@ void AppendZigZagStrip(TriMesh& mesh, const std::vector<int>& ring_a, const std:
 		if (x == y || y == z || z == x) return;
 		mesh.triangles.push_back({x, y, z});
 	};
+	// Which diagonal of the quad a0 -> a1 -> b1 -> b0: the one touching fewer
+	// repeated (knife-edge) vertices, else the locally Delaunay one when the
+	// quad is convex, else the shorter. True: a0-b1.
+	auto prefer_a0b1 = [&](int a0, int a1, int b1, int b0) {
+		int rep_a0b1 = repeated(a0) + repeated(b1), rep_a1b0 = repeated(a1) + repeated(b0);
+		if (rep_a0b1 != rep_a1b0) return rep_a0b1 < rep_a1b0;
+		const Vec3& A0 = mesh.vertices[a0];
+		const Vec3& A1 = mesh.vertices[a1];
+		const Vec3& B1 = mesh.vertices[b1];
+		const Vec3& B0 = mesh.vertices[b0];
+		if (QuadConvex(A0, A1, B1, B0)) return DiagonalDelaunay(A0, A1, B1, B0);
+		return DistanceSq(A0, B1) <= DistanceSq(A1, B0);
+	};
 	auto quad = [&](int a0, int a1, int b1, int b0) {
 		int ids[4] = {a0, a1, b1, b0};
 		int distinct = 0, uniq[4];
@@ -308,18 +367,26 @@ void AppendZigZagStrip(TriMesh& mesh, const std::vector<int>& ring_a, const std:
 		}
 		if (distinct < 3) return;
 		if (distinct == 3) { mesh.triangles.push_back({uniq[0], uniq[1], uniq[2]}); return; }
-		int rep_a0b1 = repeated(a0) + repeated(b1), rep_a1b0 = repeated(a1) + repeated(b0);
-		bool use_a0b1 = rep_a0b1 != rep_a1b0 ? rep_a0b1 < rep_a1b0 : DistanceSq(mesh.vertices[a0], mesh.vertices[b1]) <= DistanceSq(mesh.vertices[a1], mesh.vertices[b0]);
-		if (use_a0b1) { emit(a0, a1, b1); emit(a0, b1, b0); }
+		if (prefer_a0b1(a0, a1, b1, b0)) { emit(a0, a1, b1); emit(a0, b1, b0); }
 		else { emit(a0, a1, b0); emit(a1, b1, b0); }
 	};
-	// Walk both rings by parameter from v = 0; the ring whose next
-	// parameter is smaller advances (a triangle); equal parameters advance
-	// both (a quad split by the rules above). Closed rings wrap to their
-	// first node at v = 1.
+	// Walk both rings by parameter from v = 0. Equal next parameters advance
+	// both (a quad, split by the rules above). Otherwise one ring advances
+	// with a triangle: the one whose next parameter is smaller, which keeps
+	// the two rings in step and the triangles on the ruled surface the
+	// stations were refined for; but where the two candidate triangles are
+	// the halves of a convex quad whose parameters are within one local
+	// step of each other, the locally Delaunay one is laid instead -- the
+	// parametric rule alone makes fans of needles between a sparse ring and
+	// a dense one wherever the strip leans, and a needle has the dense
+	// ring's next vertex inside its circumcircle. (A free Delaunay merge of
+	// the two rings is NOT wanted: on a sheared strip it leaves the ruled
+	// surface and cuts the corners of the section.) Closed rings wrap to
+	// their first node at v = 1.
 	const int steps_a = closed ? na : na - 1, steps_b = closed ? nb : nb - 1;
 	int i = 0, j = 0;
 	auto next_v = [&](const std::vector<double>& v, int k, int steps) { return k + 1 < static_cast<int>(v.size()) ? v[k + 1] : (closed ? v[0] + 1.0 : 2.0); };
+	auto cur_v = [&](const std::vector<double>& v, int k) { return k < static_cast<int>(v.size()) ? v[k] : v[0] + 1.0; };
 	auto node = [&](const std::vector<int>& ring, int k) { return ring[k % static_cast<int>(ring.size())]; };
 	int guard = 0;
 	while ((i < steps_a || j < steps_b) && guard++ < na + nb + 2) {
@@ -328,7 +395,25 @@ void AppendZigZagStrip(TriMesh& mesh, const std::vector<int>& ring_a, const std:
 		if (can_a && can_b && std::fabs(nva - nvb) <= 1e-12) {
 			quad(node(ring_a, i), node(ring_a, i + 1), node(ring_b, j + 1), node(ring_b, j));
 			++i; ++j;
-		} else if (can_a && (!can_b || nva < nvb)) {
+			continue;
+		}
+		bool advance_a = can_a && (!can_b || nva < nvb);
+		if (can_a && can_b) {
+			double step = std::max(nva - cur_v(va, i), nvb - cur_v(vb, j));
+			if (std::fabs(nva - nvb) <= step) {
+				int a0 = node(ring_a, i), a1 = node(ring_a, i + 1), b1 = node(ring_b, j + 1), b0 = node(ring_b, j);
+				if (a0 != a1 && a1 != b1 && b1 != b0 && b0 != a0 && a0 != b1 && a1 != b0 && !repeated(a0) && !repeated(a1) && !repeated(b0) && !repeated(b1)) {
+					const Vec3& A0 = mesh.vertices[a0];
+					const Vec3& A1 = mesh.vertices[a1];
+					const Vec3& B1 = mesh.vertices[b1];
+					const Vec3& B0 = mesh.vertices[b0];
+					// Advancing a lays (a0, a1, b0), the diagonal a1-b0; advancing
+					// b lays (a0, b1, b0), the diagonal a0-b1.
+					if (QuadConvex(A0, A1, B1, B0)) advance_a = !DiagonalDelaunay(A0, A1, B1, B0);
+				}
+			}
+		}
+		if (advance_a) {
 			emit(node(ring_a, i), node(ring_a, i + 1), node(ring_b, j));
 			++i;
 		} else {
@@ -539,6 +624,19 @@ TriMesh TriangulateLoft(const LoftSource& src, const LoftOptions& opt, LoftStats
 		return m;
 	};
 
+	// Thin shells (LoftSource::mirror_u): the station across the wall from u.
+	const bool has_mirror_u = !std::isnan(src.mirror_u);
+	const double u_period = src.u_max - src.u_min;
+	auto mirror_u = [&](double u) {
+		double m = src.mirror_u - u;
+		if (src.periodic_u) {
+			m = src.u_min + std::fmod(m - src.u_min, u_period);
+			if (m < src.u_min) m += u_period;
+			if (m >= src.u_min + u_period - 1e-12) m -= u_period;
+		}
+		return m;
+	};
+
 	// Along-curve refinement of a parameter set against the curves at the
 	// given stations; v is the parameter. A closed curve's wrap-around
 	// interval is represented by appending v_0 + 1 to the list being refined
@@ -571,17 +669,88 @@ TriMesh TriangulateLoft(const LoftSource& src, const LoftOptions& opt, LoftStats
 		vs = refine_v_at(vs, us, capped, &rounds);
 		return rounds;
 	};
+	auto snap_station = [&](double u) {
+		auto it = std::lower_bound(us.begin(), us.end(), u - 1e-9);
+		if (it != us.end() && std::fabs(*it - u) <= 1e-9) return *it;
+		return u;
+	};
+	auto mirror_stations = [&]() {
+		if (!has_mirror_u) return;
+		std::vector<double> all = us;
+		for (double u : us) {
+			double m = mirror_u(u);
+			if (m >= src.u_min - 1e-12 && m <= src.u_max + 1e-12) all.push_back(std::clamp(m, src.u_min, src.u_max));
+		}
+		us = SortedUnique(all, 1e-9);
+		if (src.periodic_u) us.erase(std::remove_if(us.begin(), us.end(), [&](double u) { return u >= src.u_min + u_period - 1e-12; }), us.end());
+	};
+
 	// Each station's own ring parameters: refined against that station's
 	// curve alone, so a small ring (a fuselage tail, a blade tip) is not
 	// sampled as densely as the largest one -- which is what made rings of
 	// hundreds of points microns apart converge on an apex or a knife edge
-	// as needle triangles.
+	// as needle triangles. Thin shells: the two stations of a wall pair are
+	// refined together (from the canonical one of the pair, so both get the
+	// identical set), and a ring's set is closed under mirror_v, so the two
+	// sheets' vertex rows face each other across the wall.
 	std::unordered_map<double, std::vector<double>> ring_vs_cache;
 	auto ring_vs_at = [&](double u) -> const std::vector<double>& {
 		auto it = ring_vs_cache.find(u);
 		if (it != ring_vs_cache.end()) return it->second;
+		std::vector<double> stations{u};
+		if (has_mirror_u) {
+			double m = snap_station(mirror_u(u));
+			if (std::fabs(m - u) > 1e-12) {
+				double key = std::min(u, m);
+				stations = {key, snap_station(mirror_u(key))};
+			}
+		}
 		bool capped = false;
-		std::vector<double> r = refine_v_at(vs0, {u}, &capped, nullptr);
+		std::vector<double> r = refine_v_at(vs0, stations, &capped, nullptr);
+		if (src.mirror_v) {
+			// Close the set under the mirror. The refined set is only roughly
+			// symmetric, so a mirrored parameter usually lands a fraction of a
+			// gap from an existing one; a new point there would be a near-twin
+			// (a sliver triangle). The existing point is moved onto the mirror
+			// position instead when it is within half its gap and not a seed,
+			// so the two sides match exactly; a new point is added only where
+			// the other side has nothing nearby.
+			std::vector<double> work = r;
+			std::vector<char> pinned(work.size(), 0); // seeds and already-moved points stay
+			for (size_t k = 0; k < work.size(); ++k) {
+				for (double s : vs0) if (std::fabs(work[k] - s) <= 1e-12) pinned[k] = 1;
+			}
+			std::vector<double> added;
+			const size_t n0 = work.size();
+			for (size_t k = 0; k < n0; ++k) {
+				double m = src.mirror_v(u, r[k]);
+				if (!std::isfinite(m)) continue;
+				if (src.closed_curve) {
+					m = std::fmod(m, 1.0);
+					if (m < 0.0) m += 1.0;
+					if (m >= 1.0 - 1e-12) m -= 1.0;
+				} else {
+					m = std::clamp(m, 0.0, 1.0);
+				}
+				// Nearest existing point (of the original set) and its local gap.
+				auto it = std::lower_bound(r.begin(), r.end(), m);
+				size_t j = static_cast<size_t>(it - r.begin());
+				if (j == r.size() || (j > 0 && m - r[j - 1] < r[j] - m)) --j;
+				double gap = 1.0;
+				if (j > 0) gap = std::min(gap, r[j] - r[j - 1]);
+				if (j + 1 < r.size()) gap = std::min(gap, r[j + 1] - r[j]);
+				if (std::fabs(m - r[j]) <= 1e-9) continue;          // already matched
+				if (std::fabs(m - r[j]) <= 0.5 * gap) {
+					if (!pinned[j]) { work[j] = m; pinned[j] = 1; }     // snap onto the twin
+					continue;
+				}
+				bool crowded = false;
+				for (double a : added) if (std::fabs(a - m) <= 0.25 * gap) { crowded = true; break; }
+				if (!crowded) added.push_back(m);
+			}
+			work.insert(work.end(), added.begin(), added.end());
+			r = SortedUnique(work, 1e-9);
+		}
 		return ring_vs_cache.emplace(u, std::move(r)).first->second;
 	};
 
@@ -635,8 +804,9 @@ TriMesh TriangulateLoft(const LoftSource& src, const LoftOptions& opt, LoftStats
 	// stations into an apex or a knife edge -- never below a few tolerances
 	// of length. An apex ring has no spacing of its own; the other ring's
 	// counts.
-	if (opt.max_aspect > 0.0) {
-		const double period = src.u_max - src.u_min;
+	auto aspect_refine = [&]() {
+		if (opt.max_aspect <= 0.0) return;
+		const double period = u_period;
 		for (int round = 0; round < 64; ++round) {
 			const int nu = static_cast<int>(us.size());
 			if (nu >= opt.max_u) { st.u_capped = true; break; }
@@ -678,6 +848,17 @@ TriMesh TriangulateLoft(const LoftSource& src, const LoftOptions& opt, LoftStats
 			++st.u_rounds;
 			if (add.empty()) break;
 		}
+	};
+	aspect_refine();
+	if (has_mirror_u) {
+		// Both sides of the wall get each other's stations; the aspect rule
+		// then sees the finer set, and its additions are mirrored in turn.
+		// The ring sets are recomputed from the symmetric station set.
+		mirror_stations();
+		ring_vs_cache.clear();
+		aspect_refine();
+		mirror_stations();
+		ring_vs_cache.clear();
 	}
 	st.n_stations = static_cast<int>(us.size());
 

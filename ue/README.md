@@ -466,11 +466,22 @@ the core (the volume the lattice's orthotropic material card applies to).
   recovery by cavity re-tetrahedralization (Si & Gartner), exterior
   removal by crossing parity. Planar regions (end caps) are facets: their
   interior edges are free and the mesh's own in-plane triangulation is
-  adopted. Two things the surface itself needed: planar caps are
-  re-triangulated to their in-plane Delaunay triangulation, and the loft
-  now samples each ring at its own density and adds stations wherever a
+  adopted. Three things the surface itself needed: planar caps are
+  re-triangulated to their in-plane Delaunay triangulation; the loft
+  samples each ring at its own density and adds stations wherever a
   strip is much longer than its rings' point spacing (`LoftOptions::
-  max_aspect`), which also cuts triangle counts (the Boom from 17k to 7k).
+  max_aspect`), which also cuts triangle counts (the Boom from 17k to 7k);
+  and a thin body's two sheets are sampled at MATCHED rows
+  (`LoftSource::mirror_v` for an airfoil's upper and lower surfaces at the
+  same chordwise station, `mirror_u` for a cowl's outer and inner skins at
+  the same x). A vertex of one sheet under the middle of an edge of the
+  other, nearer than that edge's own sag, leaves the edge no empty
+  circumsphere, and the mesher splits it, and its pieces, down the wedge to
+  the length floor -- which is what degraded the nacelle (2026-10-12: it
+  now conforms exactly, with no Steiner point at all). The mesher keeps
+  rows matched as it adds points: an edge point planted on one sheet of a
+  thin region gets a twin straight across the thickness on the other
+  (a BVH ray cast, `MeshSdf::Raycast`).
 * **Skin / core.** The surface's inward offset nodes (the shell walk) and a
   body-centred cubic lattice of core points (spacing = the lattice cell)
   are in the point set; after meshing, every edge straddling the distance-
@@ -478,18 +489,39 @@ the core (the volume the lattice's orthotropic material card applies to).
   near the crossing is snapped onto it), so the skin/core interface is a
   conforming surface on the iso-surface and skin + core = the body's
   volume exactly.
-* **Degradation.** A surface can be locally degenerate (a zero-thickness
-  wedge whose sliver triangles fold onto each other: the nacelle lip, the
-  propeller blades' tips) where no splitting rule conforms; such segments
-  are abandoned under a Steiner budget, their triangles left unrecovered,
-  the interior classified by the distance field instead of parity, and the
-  export reports how many faces were abandoned. The P-38's wing, tails,
-  both fuselages and the spinner conform exactly; the nacelle and blades
-  degrade (volumes still match to 1e-9) -- see `tet_check`'s sweep.
-* **Not done yet:** quality. The Delaunay mesh of surface points has many
-  near-flat tetrahedra along the surface (the "surface slivers" of any
-  Delaunay mesh without interior refinement); a sliver-removal / quality-
-  refinement pass is the next step before the mesh is used for stress.
+* **Degradation.** Where no splitting rule conforms, segments are abandoned
+  under a Steiner budget, their triangles left unrecovered, the interior
+  classified by the distance field instead of parity, and the export
+  reports how many faces were abandoned. The P-38's wing, tails, both
+  fuselages, the nacelle and the spinner conform exactly; the propeller
+  blades still degrade (volumes match to 1e-7): a blade is thin, twisted
+  and tapered, so consecutive rings shear against each other and the strip
+  edges between matched parameters are not locally Delaunay within their
+  sheet while the opposite sheet is nearer than their sag. A flip pass over
+  the loft and a thickness-driven station refinement were both tried and
+  rejected (the first breaks the boom's mirror-symmetric knife edge, the
+  second triples the point counts without curing the blade); the open
+  direction is a surface graded to the local thickness along the span.
+* **Quality (2026-10-12).** Two passes, both keeping the surface, the
+  skin/core interface and the material volumes exactly as they are:
+  Delaunay refinement of the interior (`ConformingOptions::
+  refine_radius_edge`, 2 in the export): tetrahedra whose circumradius
+  exceeds twice their shortest edge are split at their circumcentre; one
+  whose circumcentre falls outside the body splits the surface face its
+  circumsphere escapes through instead (a point on the face -- still the
+  input's sub-triangles), after cushioning a near-flat tetrahedron on
+  either side of that face with a point half a face size away (exterior
+  cushions are dropped with the exterior). Then `ImproveTetMesh`: 2-3 and
+  3-2 flips that never cross a constrained or interface face, and
+  optimisation smoothing of the free nodes toward the centroid of their
+  neighbours, accepted only where the worst dihedral angle of their
+  tetrahedra improves. On the P-38's port wing (skin 0.029) the pass
+  removes about a quarter of the tetrahedra under 15 degrees and half the
+  slivers under 5. The minimum dihedral angle stays near zero: the skin is
+  one tetrahedron thick under surface triangles ten times wider than it,
+  and a sliver whose four nodes all lie on the surface or the interface
+  can neither be flipped nor moved. The way forward there is surface
+  sizing (triangles a few skin thicknesses wide), not more passes.
 
 ## How the standalone build is put together
 

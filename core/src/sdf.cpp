@@ -199,6 +199,77 @@ double MeshSdf::Distance(const Vec3& p) const {
 	return side < 0.0 ? -c.distance : c.distance;
 }
 
+MeshSdf::Hit MeshSdf::Raycast(const Vec3& o, const Vec3& d, double t_min, double t_max) const {
+	Hit best;
+	best.t = t_max;
+	const double inv[3] = {1.0 / d.x, 1.0 / d.y, 1.0 / d.z};
+	// Slab test: the ray's parameter interval inside the box, clipped to
+	// (t_min, best.t); false if empty.
+	auto hits_box = [&](const Box3& b, double& t_enter) {
+		double lo = t_min, hi = best.t;
+		for (int k = 0; k < 3; ++k) {
+			double t0 = (b.min[k] - o[k]) * inv[k], t1 = (b.max[k] - o[k]) * inv[k];
+			if (t0 > t1) std::swap(t0, t1);
+			if (std::isnan(t0) || std::isnan(t1)) { // ray parallel to the slab (0 * inf)
+				if (o[k] < b.min[k] || o[k] > b.max[k]) return false;
+				continue;
+			}
+			lo = std::max(lo, t0);
+			hi = std::min(hi, t1);
+			if (lo > hi) return false;
+		}
+		t_enter = lo;
+		return true;
+	};
+	struct Item { int node; double t; };
+	Item stack[128];
+	int sp = 0;
+	double t_root;
+	if (!hits_box(nodes_[0].box, t_root)) return best;
+	stack[sp++] = {0, t_root};
+	while (sp > 0) {
+		Item it = stack[--sp];
+		if (it.t >= best.t) continue;
+		const Node& node = nodes_[it.node];
+		if (node.IsLeaf()) {
+			for (int i = node.first; i < node.first + node.count; ++i) {
+				int t = order_[i];
+				// Moller-Trumbore, both sides.
+				const auto& tri = tris_[t];
+				const Vec3& a = verts_[tri[0]];
+				Vec3 e1 = verts_[tri[1]] - a, e2 = verts_[tri[2]] - a;
+				Vec3 pv = Cross(d, e2);
+				double det = Dot(e1, pv);
+				if (std::fabs(det) < 1e-300) continue;
+				double inv_det = 1.0 / det;
+				Vec3 tv = o - a;
+				double u = Dot(tv, pv) * inv_det;
+				if (u < -1e-12 || u > 1.0 + 1e-12) continue;
+				Vec3 qv = Cross(tv, e1);
+				double v = Dot(d, qv) * inv_det;
+				if (v < -1e-12 || u + v > 1.0 + 1e-12) continue;
+				double tt = Dot(e2, qv) * inv_det;
+				if (tt <= t_min || tt >= best.t) continue;
+				best.t = tt;
+				best.triangle = t;
+				best.barycentric = {1.0 - u - v, u, v};
+				best.point = a + e1 * u + e2 * v;
+			}
+			continue;
+		}
+		double tl, tr;
+		bool hl = hits_box(nodes_[node.left].box, tl), hr = hits_box(nodes_[node.right].box, tr);
+		// Nearer child last, so it is popped first.
+		if (hl && hr) {
+			if (tl < tr) { stack[sp++] = {node.right, tr}; stack[sp++] = {node.left, tl}; }
+			else { stack[sp++] = {node.left, tl}; stack[sp++] = {node.right, tr}; }
+		} else if (hl) stack[sp++] = {node.left, tl};
+		else if (hr) stack[sp++] = {node.right, tr};
+	}
+	if (best.triangle < 0) best.t = 0.0;
+	return best;
+}
+
 MeshSdf::Closest MeshSdf::ClosestPointBruteForce(const Vec3& p) const {
 	Closest best;
 	double best2 = std::numeric_limits<double>::infinity();

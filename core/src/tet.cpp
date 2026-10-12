@@ -99,6 +99,11 @@ public:
 	std::vector<Vec3> nodes;
 	std::vector<Tet> tets;
 	std::vector<int> vtet;   // a live tetrahedron holding the node, -1 if none
+	// Per tetrahedron, once the interior has been classified (refinement
+	// stage): 1 inside the body. A new tetrahedron takes the flag of the
+	// cavity tetrahedron whose boundary face it closes, so a fan insertion
+	// keeps the classification without re-flooding.
+	std::vector<char> inside;
 	std::array<int, 4> bbox{{-1, -1, -1, -1}};
 	// Faces that are constraints (the surface tracker's current triangles);
 	// a new tetrahedron face whose key is here gets its constrained bit.
@@ -197,13 +202,32 @@ public:
 
 	// Inserts node pi (already in `nodes`). Returns a tetrahedron holding
 	// it, -1 if it coincides with an existing node or lies outside the mesh.
-	int Insert(int pi, int start, const InsertOptions& opt) {
+	// `made_out`, if given, receives the new tetrahedra.
+	int Insert(int pi, int start, const InsertOptions& opt, std::vector<int>* made_out = nullptr) {
 		const Vec3& p = nodes[pi];
 		int t0 = Locate(p, start);
 		if (t0 < 0) return -1;
 		for (int k = 0; k < 4; ++k) {
 			const Vec3& q = nodes[tets[t0].v[k]];
 			if (q.x == p.x && q.y == p.y && q.z == p.z) return -1;
+		}
+		// A point declared to lie on a face (split_faces) seeds the cavity
+		// with the tetrahedra on BOTH sides of it, whatever the arithmetic
+		// says about a point a rounding error off the plane: the tetrahedron
+		// across a surface face is often a near-flat sliver whose
+		// circumsphere is all but the face's plane, so the point tests as
+		// marginally outside it, that side never joins, and the face would
+		// survive under a flat tetrahedron. (Found before NextStamp: Star()
+		// uses the marks.)
+		std::vector<int> face_seeds;
+		if (opt.split_faces) {
+			for (const auto& f : *opt.split_faces) {
+				int fi = -1;
+				int t = FindFace(f[0], f[1], f[2], &fi);
+				if (t < 0) continue;
+				face_seeds.push_back(t);
+				if (tets[t].nbr[fi] >= 0) face_seeds.push_back(tets[t].nbr[fi]);
+			}
 		}
 		NextStamp();
 		std::vector<int>& cavity = cavity_;
@@ -226,6 +250,12 @@ public:
 				seeds.push_back(n);
 				cavity.push_back(n);
 			}
+		}
+		for (int t : face_seeds) {
+			if (IsIn(t)) continue;
+			SetIn(t);
+			seeds.push_back(t);
+			cavity.push_back(t);
 		}
 		for (int t : seeds) queue.push_back(t);
 
@@ -378,6 +408,7 @@ public:
 		}
 		if (opt.split_edges) for (const auto& e : *opt.split_edges) extra.insert(FaceKey(pi, e[0], e[1]));
 		int made = ReplaceCavity(live, fresh, &extra);
+		if (made_out) *made_out = made_;
 		return made;
 	}
 
@@ -388,9 +419,13 @@ public:
 	int ReplaceCavity(const std::vector<int>& cavity, const std::vector<std::array<int, 4>>& fresh, const FaceSet* extra) {
 		NextStamp();
 		for (int t : cavity) SetIn(t);
-		// Boundary faces of the cavity -> the outer tetrahedron and its face.
+		// Boundary faces of the cavity -> the outer tetrahedron and its face,
+		// and the inside flag of the cavity tetrahedron that held the face.
 		std::unordered_map<FaceKey, std::pair<int, int>, FaceKeyHash>& outer = outer_;
 		outer.clear();
+		std::unordered_map<FaceKey, char, FaceKeyHash>& outer_inside = outer_inside_;
+		outer_inside.clear();
+		const bool track_inside = !inside.empty();
 		for (int t : cavity) {
 			const Tet& T = tets[t];
 			for (int i = 0; i < 4; ++i) {
@@ -398,7 +433,9 @@ public:
 				if (n >= 0 && IsIn(n)) continue;
 				int oj = -1;
 				if (n >= 0) for (int j = 0; j < 4; ++j) if (tets[n].nbr[j] == t) { oj = j; break; }
-				outer[FaceKey(T.v[TetMesh::kFace[i][0]], T.v[TetMesh::kFace[i][1]], T.v[TetMesh::kFace[i][2]])] = {n, oj};
+				FaceKey key(T.v[TetMesh::kFace[i][0]], T.v[TetMesh::kFace[i][1]], T.v[TetMesh::kFace[i][2]]);
+				outer[key] = {n, oj};
+				if (track_inside) outer_inside[key] = inside[t];
 			}
 		}
 		// Release the cavity.
@@ -423,6 +460,7 @@ public:
 			T.cons = 0;
 			for (int k = 0; k < 4; ++k) vtet[f[k]] = slot;
 			made.push_back(slot);
+			if (track_inside) { if (inside.size() < tets.size()) inside.resize(tets.size(), 0); inside[slot] = 0; }
 		}
 		// Link.
 		std::unordered_map<FaceKey, std::pair<int, int>, FaceKeyHash>& inner = inner_;
@@ -439,6 +477,7 @@ public:
 					T.nbr[i] = n;
 					if (n >= 0) tets[n].nbr[oj] = t;
 					if (n >= 0 && (tets[n].cons & (1u << oj))) T.cons |= static_cast<uint8_t>(1u << i);
+					if (track_inside) inside[t] = outer_inside[key];
 					++outer_used;
 				} else {
 					auto in = inner.find(key);
@@ -559,13 +598,23 @@ public:
 	void ClearIn(int t) { mark_in_[t] = 0u; }
 
 	// Exports the live tetrahedra for which keep[t] (or all when null),
-	// dropping the bounding nodes and renumbering.
+	// dropping the bounding nodes and any node no exported tetrahedron uses
+	// (an exterior cushion point of the refinement stage), renumbering in
+	// order so the surface vertices keep their indices.
 	TetMesh Export(const std::vector<char>* keep) const {
 		TetMesh m;
+		std::vector<char> used(nodes.size(), 0);
+		for (size_t t = 0; t < tets.size(); ++t) {
+			if (!Alive(static_cast<int>(t))) continue;
+			if (keep && !(*keep)[t]) continue;
+			const auto& v = tets[t].v;
+			if (IsBbox(v[0]) || IsBbox(v[1]) || IsBbox(v[2]) || IsBbox(v[3])) continue;
+			for (int k = 0; k < 4; ++k) used[v[k]] = 1;
+		}
 		std::vector<int> remap(nodes.size(), -1);
 		int n = 0;
 		for (size_t v = 0; v < nodes.size(); ++v) {
-			if (IsBbox(static_cast<int>(v))) continue;
+			if (IsBbox(static_cast<int>(v)) || !used[v]) continue;
 			remap[v] = n++;
 			m.nodes.push_back(nodes[v]);
 		}
@@ -602,6 +651,7 @@ private:
 	std::vector<std::array<int, 4>> fresh_;
 	FaceSet extra_cons_;
 	std::unordered_map<FaceKey, std::pair<int, int>, FaceKeyHash> outer_, inner_;
+	std::unordered_map<FaceKey, char, FaceKeyHash> outer_inside_;
 	std::unordered_map<int, int> orphan_count_;
 	std::unordered_set<uint64_t> boundary_edges_;
 };
@@ -662,6 +712,7 @@ public:
 	std::vector<int> origin;            // input triangle each piece came from
 	std::vector<int> region;            // planar region of the piece, -1 if none
 	std::unordered_map<uint64_t, std::vector<int>> edge_tris;
+	std::unordered_map<int, std::vector<int>> by_origin; // input triangle -> its live pieces
 	std::deque<std::string> recent_splits; // the last few segment splits, for failure reports
 	std::vector<std::string> first_splits;  // and the first few
 	FaceSet keys;
@@ -682,6 +733,7 @@ public:
 		region.push_back(reg);
 		for (int k = 0; k < 3; ++k) edge_tris[EdgeKey(t[k], t[(k + 1) % 3])].push_back(idx);
 		keys.insert(FaceKey(t[0], t[1], t[2]));
+		by_origin[from].push_back(idx);
 	}
 	// An edge inside a planar region (both its triangles in the same region)
 	// is no constraint: the region is a facet whose triangulation is free.
@@ -701,6 +753,8 @@ public:
 			if (lst.empty()) edge_tris.erase(EdgeKey(t[k], t[(k + 1) % 3]));
 		}
 		keys.erase(FaceKey(t[0], t[1], t[2]));
+		auto& pieces = by_origin[origin[idx]];
+		pieces.erase(std::remove(pieces.begin(), pieces.end(), idx), pieces.end());
 	}
 	// Splits edge a-b at node m in every triangle on it.
 	void SplitEdge(int a, int b, int m) {
@@ -1393,7 +1447,87 @@ bool SnapSegmentThrough(Engine& e, SurfaceTracker& surf, int a, int b, const Spl
 	return true;
 }
 
-int RecoverSegmentsPass(Engine& e, SurfaceTracker& surf, int n_input_vertices, int n_interior_points, double min_length, double snap, const std::function<bool()>& over_budget, ConformingStats& st, int* n_missing_initially) {
+// The outward normal along tracked edge a-b: the mean of its triangles'.
+Vec3 EdgeNormal(const Engine& e, const SurfaceTracker& surf, int a, int b) {
+	Vec3 n{0, 0, 0};
+	auto it = surf.edge_tris.find(EdgeKey(a, b));
+	if (it == surf.edge_tris.end()) return n;
+	for (int idx : it->second) {
+		const auto& t = surf.tris[idx];
+		n += Normalized(Cross(e.nodes[t[1]] - e.nodes[t[0]], e.nodes[t[2]] - e.nodes[t[0]]));
+	}
+	return Normalized(n);
+}
+
+// A Steiner point planted on one sheet of a thin region needs a twin on
+// the sheet facing it, directly across the thickness. Without one it sits
+// under the middle of that sheet's edges, nearer than their own sag, and
+// they lose their empty spheres; each of them is then split, and each of
+// those splits plants a node under an edge of the first sheet -- the two
+// sheets split each other down to the length floor. (The loft already
+// samples its two sheets at matched rows, mesh.hpp; this keeps the rows
+// matched as recovery adds points.) The twin is the first hit of the inward
+// ray from the point, when that is a facing sheet nearer than half the split
+// segment's length; it goes on that sheet's tracked piece as a face point,
+// or an edge point when within a tenth of an edge length of an edge, unless
+// a node of the piece already lies within a quarter of an edge length of
+// it -- that node is the twin then. Inserted plainly (the segment stage
+// keeps the mesh Delaunay); the piece is split in the tracker.
+void PlantTwin(Engine& e, SurfaceTracker& surf, const MeshSdf& sdf, int node, const Vec3& normal, double segment_length, ConformingStats& st) {
+	if (LengthSq(normal) == 0.0) return;
+	const Vec3 m = e.nodes[node];
+	MeshSdf::Hit hit = sdf.Raycast(m, normal * -1.0, 1e-6 * segment_length, 0.5 * segment_length);
+	if (hit.triangle < 0) return;
+	if (Dot(sdf.face_normal(hit.triangle), normal) > -0.3) return; // not a sheet facing this one
+	auto it = surf.by_origin.find(hit.triangle);
+	if (it == surf.by_origin.end()) return;
+	int piece = -1;
+	double w[3] = {0, 0, 0};
+	for (int idx : it->second) {
+		if (!surf.alive[idx]) continue;
+		const auto& t = surf.tris[idx];
+		const Vec3& A = e.nodes[t[0]];
+		const Vec3& B = e.nodes[t[1]];
+		const Vec3& C = e.nodes[t[2]];
+		Vec3 n = Cross(B - A, C - A);
+		double nn = LengthSq(n);
+		if (nn == 0.0) continue;
+		double w0 = Dot(Cross(B - hit.point, C - hit.point), n) / nn;
+		double w1 = Dot(Cross(C - hit.point, A - hit.point), n) / nn;
+		double w2 = 1.0 - w0 - w1;
+		if (w0 >= -1e-9 && w1 >= -1e-9 && w2 >= -1e-9) { piece = idx; w[0] = w0; w[1] = w1; w[2] = w2; break; }
+	}
+	if (piece < 0) return;
+	const std::array<int, 3> t = surf.tris[piece];
+	double edge_len[3], shortest = 1e300;
+	for (int k = 0; k < 3; ++k) { edge_len[k] = Distance(e.nodes[t[k]], e.nodes[t[(k + 1) % 3]]); shortest = std::min(shortest, edge_len[k]); }
+	for (int k = 0; k < 3; ++k) if (Distance(hit.point, e.nodes[t[k]]) < 0.25 * shortest) return; // matched already
+	// Distance to edge k (t[k], t[k+1]) is the barycentric weight of the
+	// opposite node times that node's height.
+	const double area2 = Length(Cross(e.nodes[t[1]] - e.nodes[t[0]], e.nodes[t[2]] - e.nodes[t[0]]));
+	int on_edge = -1;
+	Vec3 p = hit.point;
+	for (int k = 0; k < 3; ++k) {
+		int opp = (k + 2) % 3;
+		double dist = w[opp] * (area2 / edge_len[k]);
+		if (dist < 0.1 * edge_len[k]) {
+			const Vec3& X = e.nodes[t[k]];
+			const Vec3& Y = e.nodes[t[(k + 1) % 3]];
+			double s = std::clamp(Dot(hit.point - X, Y - X) / LengthSq(Y - X), 0.05, 0.95);
+			p = Lerp(X, Y, s);
+			on_edge = k;
+			break;
+		}
+	}
+	int ni = e.AddNode(p);
+	Engine::InsertOptions plain;
+	if (e.Insert(ni, e.vtet[t[0]], plain) < 0) { e.nodes.pop_back(); e.vtet.pop_back(); return; }
+	if (on_edge >= 0) surf.SplitEdge(t[on_edge], t[(on_edge + 1) % 3], ni);
+	else surf.SplitFace(piece, ni);
+	++st.n_twin_steiner;
+}
+
+int RecoverSegmentsPass(Engine& e, SurfaceTracker& surf, const MeshSdf* sdf, int n_input_vertices, int n_interior_points, double min_length, double snap, const std::function<bool()>& over_budget, ConformingStats& st, int* n_missing_initially) {
 	std::vector<uint64_t> edges;
 	edges.reserve(surf.edge_tris.size());
 	for (const auto& kv : surf.edge_tris) edges.push_back(kv.first);
@@ -1477,6 +1611,7 @@ int RecoverSegmentsPass(Engine& e, SurfaceTracker& surf, int n_input_vertices, i
 			surf.recent_splits.push_back(buf);
 			if (surf.recent_splits.size() > 30) surf.recent_splits.pop_front();
 		}
+		const Vec3 normal = sdf ? EdgeNormal(e, surf, a, b) : Vec3{0, 0, 0};
 		int mi = e.AddNode(m);
 		// A plain Delaunay insertion: this stage keeps the whole mesh Delaunay,
 		// which is what makes a short enough piece certain to appear.
@@ -1497,6 +1632,7 @@ int RecoverSegmentsPass(Engine& e, SurfaceTracker& surf, int n_input_vertices, i
 		surf.SplitEdge(a, b, mi);
 		++st.n_edge_steiner;
 		++splits;
+		if (sdf) PlantTwin(e, surf, *sdf, mi, normal, L, st);
 	}
 	return splits;
 }
@@ -1564,8 +1700,243 @@ std::vector<char> InteriorMask(Engine& e) {
 	return keep;
 }
 
-std::vector<char> InteriorMaskByField(Engine& e, const TriMesh& surface) {
-	MeshSdf sdf(surface);
+// Circumcentre and circumradius of (a, b, c, d); false when degenerate.
+bool Circumsphere(const Vec3& a, const Vec3& b, const Vec3& c, const Vec3& d, Vec3* centre, double* radius) {
+	Vec3 u = b - a, v = c - a, w = d - a;
+	double det = Dot(u, Cross(v, w));
+	if (det == 0.0) return false;
+	Vec3 o = (Cross(v, w) * LengthSq(u) + Cross(w, u) * LengthSq(v) + Cross(u, v) * LengthSq(w)) / (2.0 * det);
+	*centre = a + o;
+	*radius = Length(o);
+	return true;
+}
+
+// Circumradius over shortest edge of live tetrahedron t.
+double RadiusEdge(const Engine& e, int t) {
+	const auto& v = e.tets[t].v;
+	Vec3 c;
+	double R;
+	if (!Circumsphere(e.nodes[v[0]], e.nodes[v[1]], e.nodes[v[2]], e.nodes[v[3]], &c, &R)) return std::numeric_limits<double>::infinity();
+	static const int kEdges[6][2] = {{0, 1}, {0, 2}, {0, 3}, {1, 2}, {1, 3}, {2, 3}};
+	double shortest = std::numeric_limits<double>::infinity();
+	for (const auto& ed : kEdges) shortest = std::min(shortest, Distance(e.nodes[v[ed[0]]], e.nodes[v[ed[1]]]));
+	return shortest > 0.0 ? R / shortest : std::numeric_limits<double>::infinity();
+}
+
+// Step 3b: Delaunay refinement of the interior. Bad tetrahedra (radius-edge
+// ratio over the bound) are split at their circumcentre by a constrained
+// insertion, which cannot cross a surface face. A circumcentre that lies
+// outside the body, or in no tetrahedron, encroaches on the surface: the
+// surface face the ray from the tetrahedron's centroid to the circumcentre
+// leaves the body through is split at the crossing instead (a point on the
+// face, kept off its edges and nodes, inserted with the face passable so
+// its three pieces are the new constraints). The point budget, the length
+// floor and a cap on rounds guard against the ping-pong a knife edge's two
+// sheets can set up. The queue holds tetrahedra by index; dead or healed
+// ones are skipped when popped.
+void RefineInterior(Engine& e, SurfaceTracker& surf, const ConformingOptions& opt, double diagonal, int n_input_vertices, ConformingStats& st) {
+	const double bound = opt.refine_radius_edge;
+	const double floor = opt.refine_min_length_fraction * diagonal;
+	const int budget = static_cast<int>(opt.max_refine_factor * n_input_vertices) + 100;
+	std::vector<int> queue;
+	double worst = 0.0;
+	for (size_t t = 0; t < e.tets.size(); ++t) {
+		if (!e.Alive(static_cast<int>(t)) || !e.inside[t]) continue;
+		double q = RadiusEdge(e, static_cast<int>(t));
+		worst = std::max(worst, q);
+		if (q > bound) { queue.push_back(static_cast<int>(t)); ++st.n_refine_bad_before; }
+	}
+	st.refine_radius_edge_before = worst;
+	int inserted = 0;
+	size_t head = 0;
+	// Which face of t does the segment from t's centroid to p leave through?
+	auto exit_face = [&](int t, const Vec3& p) {
+		const auto& v = e.tets[t].v;
+		Vec3 c = (e.nodes[v[0]] + e.nodes[v[1]] + e.nodes[v[2]] + e.nodes[v[3]]) * 0.25;
+		for (int i = 0; i < 4; ++i) {
+			if (e.FaceOrient(t, i, p) <= 0.0) continue;
+			int x = v[TetMesh::kFace[i][0]], y = v[TetMesh::kFace[i][1]], z = v[TetMesh::kFace[i][2]];
+			const Vec3& X = e.nodes[x];
+			const Vec3& Y = e.nodes[y];
+			const Vec3& Z = e.nodes[z];
+			int s1 = Sign(Orient(c, p, X, Y)), s2 = Sign(Orient(c, p, Y, Z)), s3 = Sign(Orient(c, p, Z, X));
+			if ((s1 >= 0 && s2 >= 0 && s3 >= 0) || (s1 <= 0 && s2 <= 0 && s3 <= 0)) return i;
+		}
+		return -1;
+	};
+	const int surface_budget = n_input_vertices + 100;
+	int surface_inserted = 0;
+	// A sliver (four nearly coplanar nodes) has a circumcentre far away and
+	// ill-conditioned; it is not refined here (the improvement pass handles
+	// slivers by flips and smoothing), and neither is a tetrahedron whose
+	// shortest edge is already at the floor.
+	auto is_sliver = [&](int t) {
+		const auto& v = e.tets[t].v;
+		double vol6 = std::fabs(Volume6(e.nodes[v[0]], e.nodes[v[1]], e.nodes[v[2]], e.nodes[v[3]]));
+		static const int kEdges[6][2] = {{0, 1}, {0, 2}, {0, 3}, {1, 2}, {1, 3}, {2, 3}};
+		double longest = 0.0, shortest = std::numeric_limits<double>::infinity();
+		for (const auto& ed : kEdges) { double L = Distance(e.nodes[v[ed[0]]], e.nodes[v[ed[1]]]); longest = std::max(longest, L); shortest = std::min(shortest, L); }
+		return shortest <= 2.0 * floor || vol6 < 1e-6 * longest * longest * longest;
+	};
+	while (head < queue.size()) {
+		int t = queue[head++];
+		if (!e.Alive(t) || !e.inside[t]) continue;
+		if (RadiusEdge(e, t) <= bound) continue;
+		if (inserted >= budget || is_sliver(t)) { ++st.n_refine_skipped; continue; }
+		const auto& v = e.tets[t].v;
+		Vec3 centre;
+		double R;
+		if (!Circumsphere(e.nodes[v[0]], e.nodes[v[1]], e.nodes[v[2]], e.nodes[v[3]], &centre, &R)) { ++st.n_refine_skipped; continue; }
+		// Walk from t toward the circumcentre; stop at the tetrahedron holding
+		// it or at the first constrained face on the way.
+		int cur = t, face = -1;
+		for (int step = 0; step < 100000; ++step) {
+			if (e.Contains(cur, centre)) break;
+			int i = exit_face(cur, centre);
+			if (i < 0) { cur = -1; break; }
+			if (e.tets[cur].cons & (1u << i)) { face = i; break; }
+			int n = e.tets[cur].nbr[i];
+			if (n < 0) { cur = -1; break; }
+			cur = n;
+		}
+		if (cur >= 0 && face < 0 && e.inside[cur]) {
+			// Inside: insert the circumcentre, unless it crowds a node of the
+			// tetrahedron holding it or of its neighbours -- nearer than the
+			// floor, or than a third of the bad tetrahedron's own shortest
+			// edge, which would only trade one needle for a worse one.
+			static const int kEdges[6][2] = {{0, 1}, {0, 2}, {0, 3}, {1, 2}, {1, 3}, {2, 3}};
+			double shortest = std::numeric_limits<double>::infinity();
+			for (const auto& ed : kEdges) shortest = std::min(shortest, Distance(e.nodes[v[ed[0]]], e.nodes[v[ed[1]]]));
+			const double clearance = std::max(floor, shortest / 3.0);
+			bool crowded = false;
+			for (int which = -1; which < 4 && !crowded; ++which) {
+				int tt = which < 0 ? cur : e.tets[cur].nbr[which];
+				if (tt < 0) continue;
+				for (int k = 0; k < 4 && !crowded; ++k) crowded = Distance(centre, e.nodes[e.tets[tt].v[k]]) < clearance;
+			}
+			if (crowded) { ++st.n_refine_skipped; continue; }
+			int ni = e.AddNode(centre);
+			Engine::InsertOptions io;
+			io.constrained = true;
+			std::vector<int> made;
+			int r = e.Insert(ni, cur, io, &made);
+			if (r < 0) { e.nodes.pop_back(); e.vtet.pop_back(); ++st.n_refine_skipped; continue; }
+			++inserted;
+			++st.n_refine_points;
+			for (int m : made) if (RadiusEdge(e, m) > bound) queue.push_back(m);
+			continue;
+		}
+		if (cur < 0 || face < 0 || surface_inserted >= surface_budget) { ++st.n_refine_skipped; continue; }
+		// Encroached: split the constrained face where the ray crosses it.
+		const auto& cv = e.tets[cur].v;
+		int fx = cv[TetMesh::kFace[face][0]], fy = cv[TetMesh::kFace[face][1]], fz = cv[TetMesh::kFace[face][2]];
+		const Vec3& X = e.nodes[fx];
+		const Vec3& Y = e.nodes[fy];
+		const Vec3& Z = e.nodes[fz];
+		Vec3 c0 = (e.nodes[cv[0]] + e.nodes[cv[1]] + e.nodes[cv[2]] + e.nodes[cv[3]]) * 0.25;
+		Vec3 n = Cross(Y - X, Z - X);
+		double d0 = Dot(n, c0 - X), d1 = Dot(n, centre - X);
+		if (d0 == d1) { ++st.n_refine_skipped; continue; }
+		Vec3 p = Lerp(c0, centre, d0 / (d0 - d1));
+		// Keep the point well inside the face: pull it toward the face's
+		// centroid if it is within a tenth of the face's size of an edge or node.
+		Vec3 fc = (X + Y + Z) / 3.0;
+		double size = std::sqrt(0.5 * Length(n));
+		for (int tries = 0; tries < 4; ++tries) {
+			double w0 = Dot(Cross(Y - p, Z - p), n), w1 = Dot(Cross(Z - p, X - p), n), w2 = Dot(Cross(X - p, Y - p), n);
+			double nn = Dot(n, n);
+			if (w0 / nn > 0.1 && w1 / nn > 0.1 && w2 / nn > 0.1) break;
+			p = Lerp(p, fc, 0.5);
+		}
+		if (Distance(p, X) < floor || Distance(p, Y) < floor || Distance(p, Z) < floor || size < 2.0 * floor) { ++st.n_refine_skipped; continue; }
+		int idx = surf.Find(fx, fy, fz);
+		if (idx < 0) { ++st.n_refine_skipped; continue; }
+		const std::array<int, 3> F = surf.tris[idx];
+		// A tetrahedron on the face that is a near-flat sliver (the exterior
+		// is never refined, and the interior has the surface slivers of a
+		// Delaunay mesh) cannot be fanned from p: its other faces lie all but
+		// in the face's plane, and the fan would invert. A cushion point is
+		// put on that side first, half a face size off the face, so the
+		// tetrahedron on the face becomes a proper one (an exterior cushion
+		// is dropped with the exterior at the end; an interior one is a
+		// refinement point like any other). The split is skipped if p is
+		// still not visible from both sides.
+		{
+			Vec3 unit_n = n * (1.0 / Length(n)); // out of `cur` through the face (kFace is outward)
+			bool ok = true;
+			for (int side = 0; side < 2 && ok; ++side) {
+				int fi2 = -1;
+				int t2 = e.FindFace(fx, fy, fz, &fi2);
+				if (t2 < 0) { ok = false; break; }
+				int on_face[2] = {e.inside[t2] ? t2 : e.tets[t2].nbr[fi2], e.inside[t2] ? e.tets[t2].nbr[fi2] : t2}; // [inside, outside]
+				int tt = on_face[side];
+				if (tt < 0) continue;
+				int apex = -1;
+				for (int k = 0; k < 4; ++k) { int w = e.tets[tt].v[k]; if (w != fx && w != fy && w != fz) apex = w; }
+				if (apex < 0) { ok = false; break; }
+				double height = std::fabs(Dot(e.nodes[apex] - X, unit_n));
+				if (height >= 0.05 * size) continue;
+				Vec3 cushion = fc + unit_n * (side == 0 ? -0.5 * size : 0.5 * size);
+				int located = e.Locate(cushion, tt);
+				if (located < 0 || (side == 0) != static_cast<bool>(e.inside[located])) { ok = false; break; }
+				int ci = e.AddNode(cushion);
+				Engine::InsertOptions co;
+				co.constrained = true;
+				std::vector<int> made_c;
+				if (e.Insert(ci, located, co, &made_c) < 0) { e.nodes.pop_back(); e.vtet.pop_back(); ok = false; break; }
+				if (side == 0) { ++st.n_refine_points; ++inserted; for (int m : made_c) if (RadiusEdge(e, m) > bound) queue.push_back(m); }
+				else ++st.n_refine_cushion_points;
+			}
+			if (ok) {
+				int fi2 = -1;
+				int t2 = e.FindFace(fx, fy, fz, &fi2);
+				if (t2 < 0) ok = false;
+				else {
+					cur = e.inside[t2] ? t2 : e.tets[t2].nbr[fi2];
+					int across = e.inside[t2] ? e.tets[t2].nbr[fi2] : t2;
+					if (cur < 0 || !e.inside[cur]) ok = false;
+					// p must see every other face of both tetrahedra on the face.
+					for (int tt : {cur, across}) {
+						if (!ok || tt < 0) continue;
+						for (int j = 0; j < 4 && ok; ++j) {
+							if (e.FaceIndex(tt, fx, fy, fz) == j) continue;
+							if (e.FaceOrient(tt, j, p) >= 0.0) ok = false;
+						}
+					}
+				}
+			}
+			if (!ok) { ++st.n_refine_skipped; continue; }
+		}
+		int ni = e.AddNode(p);
+		std::vector<std::array<int, 3>> split_faces{F};
+		std::vector<std::array<int, 2>> split_edges{{{F[0], F[1]}}, {{F[1], F[2]}}, {{F[2], F[0]}}};
+		Engine::InsertOptions io;
+		io.constrained = true;
+		io.split_faces = &split_faces;
+		io.split_edges = &split_edges;
+		std::vector<int> made;
+		int r = e.Insert(ni, cur, io, &made);
+		if (r < 0) { e.nodes.pop_back(); e.vtet.pop_back(); ++st.n_refine_skipped; continue; }
+		surf.SplitFace(idx, ni);
+		++inserted;
+		++surface_inserted;
+		++st.n_refine_surface_points;
+		if (e.FindFace(fx, fy, fz) >= 0) throw std::logic_error("tet: a refinement point on a surface face left the face in place");
+		for (int m : made) if (e.inside[m] && RadiusEdge(e, m) > bound) queue.push_back(m);
+	}
+	// The worst ratio over the tetrahedra the stage is responsible for (not
+	// the slivers it leaves to the improvement pass).
+	worst = 0.0;
+	for (size_t t = 0; t < e.tets.size(); ++t) {
+		if (!e.Alive(static_cast<int>(t)) || !e.inside[t] || is_sliver(static_cast<int>(t))) continue;
+		double q = RadiusEdge(e, static_cast<int>(t));
+		worst = std::max(worst, q);
+		if (q > bound) ++st.n_refine_bad_after;
+	}
+	st.refine_radius_edge_after = worst;
+}
+
+std::vector<char> InteriorMaskByField(Engine& e, const MeshSdf& sdf) {
 	std::vector<char> keep(e.tets.size(), 0);
 	for (size_t t = 0; t < e.tets.size(); ++t) {
 		if (!e.Alive(static_cast<int>(t))) continue;
@@ -1752,6 +2123,9 @@ TetMesh TetrahedralizeInterior(const TriMesh& input, const ConformingOptions& op
 	std::vector<Vec3> pts = surface.vertices;
 	pts.insert(pts.end(), opt.interior_points.begin(), opt.interior_points.end());
 	Engine e(pts);
+	// The input's distance field: for the twins of edge points in thin
+	// regions, and for the interior classification when faces are abandoned.
+	const MeshSdf sdf(input);
 
 	SurfaceTracker surf;
 	for (size_t i = 0; i < surface.triangles.size(); ++i) surf.Add(surface.triangles[i], static_cast<int>(i), region_of[i]);
@@ -1785,7 +2159,7 @@ TetMesh TetrahedralizeInterior(const TriMesh& input, const ConformingOptions& op
 	{
 		auto ts = clock();
 		for (int pass = 0; pass < 256; ++pass) {
-			int splits = RecoverSegmentsPass(e, surf, n_input_vertices, n_interior_points, min_length, snap, over_budget, st, pass == 0 ? &st.n_segments_missing : nullptr);
+			int splits = RecoverSegmentsPass(e, surf, &sdf, n_input_vertices, n_interior_points, min_length, snap, over_budget, st, pass == 0 ? &st.n_segments_missing : nullptr);
 			if (trace) std::printf("  [tet] segment pass %d: %d splits, %d nodes, %d abandoned, %.1f s\n", pass, splits, (int)e.nodes.size(), st.n_segments_abandoned, elapsed());
 			if (splits == 0) break;
 			if (pass == 255) throw std::runtime_error("tet: segment recovery did not converge in 256 passes");
@@ -1868,7 +2242,22 @@ TetMesh TetrahedralizeInterior(const TriMesh& input, const ConformingOptions& op
 	// 4. Interior: by crossing parity when the surface is whole, by the
 	// surface's distance field where faces were abandoned (parity would
 	// leak through the holes).
-	std::vector<char> keep = st.n_faces_abandoned == 0 ? InteriorMask(e) : InteriorMaskByField(e, input);
+	std::vector<char> keep = st.n_faces_abandoned == 0 ? InteriorMask(e) : InteriorMaskByField(e, sdf);
+
+	// 3b. Refinement of the interior, with the classification carried
+	// through every insertion.
+	if (opt.refine_radius_edge > 0.0) {
+		auto ts = clock();
+		e.inside = keep;
+		e.inside.resize(e.tets.size(), 0);
+		RefineInterior(e, surf, opt, diagonal, n_input_vertices, st);
+		MarkTrackedFaces(e, surf);
+		keep = e.inside;
+		keep.resize(e.tets.size(), 0);
+		e.inside.clear();
+		st.seconds_refine = std::chrono::duration<double>(clock() - ts).count();
+		if (trace) std::printf("  [tet] refinement: %d interior points, %d surface points, %d skipped; worst radius-edge %.2f -> %.2f, %.1f s\n", st.n_refine_points, st.n_refine_surface_points, st.n_refine_skipped, st.refine_radius_edge_before, st.refine_radius_edge_after, st.seconds_refine);
+	}
 	TetMesh m = e.Export(&keep);
 	int n_live = e.LiveCount();
 	st.n_tets_interior = static_cast<int>(m.tets.size());

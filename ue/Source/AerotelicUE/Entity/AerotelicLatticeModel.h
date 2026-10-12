@@ -44,9 +44,12 @@ public:
 	// surface offset inward by the spec's skin thickness as a layer of
 	// prism tetrahedra, exact at any thickness, thin regions solid), as a
 	// closed mesh of the outer surface and the reversed inner surface; and
-	// "Lattice", the infill sampled inside the shell's interior domain --
-	// separate so a downstream analysis can give the shell and the infill
-	// their own materials; their union is the part. The skin tetrahedra
+	// "Lattice", the infill sampled where the body's own distance field is
+	// deeper than the skin thickness (never the inner surface's field: an
+	// offset copy folds where the surface is sharper than the skin, and a
+	// field built on it leaks lattice outside the body) -- separate so a
+	// downstream analysis can give the shell and the infill their own
+	// materials; their union is the part. The skin tetrahedra
 	// are kept (GetShells) for export to an analysis. Throws
 	// std::runtime_error with the reason when a target is gone, no target
 	// has geometry, a target or reserved volume is not a closed outward

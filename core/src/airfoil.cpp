@@ -194,6 +194,28 @@ Mat Airfoil::LowerXY(const std::vector<double>& t) const {
 	return curve_->Evaluate(ts);
 }
 
+double Airfoil::MirrorParameter(double t) const {
+	t = std::clamp(t, 0.0, 1.0);
+	const double x = curve_->Evaluate(t)[0];
+	// The other surface's parameter range, oriented so x increases with s.
+	// Lower surface: t in [0, t_le], x falls from the TE to the LE. Upper:
+	// t in [t_le, 1], x rises from the LE to the TE.
+	const bool on_upper = t >= t_le_;
+	double lo = on_upper ? 0.0 : t_le_, hi = on_upper ? t_le_ : 1.0;
+	double x_lo = curve_->Evaluate(lo)[0], x_hi = curve_->Evaluate(hi)[0];
+	if (x <= std::min(x_lo, x_hi)) return t_le_;
+	if (x >= std::max(x_lo, x_hi)) return on_upper ? 0.0 : 1.0;
+	// Bisection: f(s) = x(s) - x changes sign over [lo, hi].
+	bool increasing = x_hi > x_lo;
+	for (int it = 0; it < 60; ++it) {
+		double mid = 0.5 * (lo + hi);
+		double xm = curve_->Evaluate(mid)[0];
+		if ((xm < x) == increasing) lo = mid; else hi = mid;
+		if (hi - lo < 1e-13) break;
+	}
+	return 0.5 * (lo + hi);
+}
+
 std::pair<Mat, Mat> Airfoil::UniformSampleSurfaces(int n) const {
 	std::vector<double> t = Linspace(0.0, 1.0, n);
 	return {UpperXY(t), LowerXY(t)};

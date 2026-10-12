@@ -53,6 +53,7 @@ add_library(aerotelic_core STATIC
 	src/shell.cpp
 	src/tet.cpp
 	src/tet_skin.cpp
+	src/tet_improve.cpp
 	# Shewchuk's exact geometric predicates (public domain), compiled as C
 	# with strict IEEE rounding: the adaptive arithmetic is defeated by
 	# fast-math style reassociation.

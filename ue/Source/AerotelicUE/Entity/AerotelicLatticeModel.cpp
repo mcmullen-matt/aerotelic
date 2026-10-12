@@ -183,11 +183,18 @@ std::vector<aerotelic::NamedMesh> FAerotelicLatticeModel::BuildMeshes(double) co
 	}
 
 	// The skin of each body, built explicitly from its triangulation
-	// (shell.hpp), and the body's interior domain -- the shell's inner
-	// surface -- as the distance field the lattice is clipped to. The
-	// "Skin" body is the outer surface plus the inner surface reversed: a
-	// closed solid. A body thinner than two skins has no interior and is
-	// all skin.
+	// (shell.hpp): the "Skin" body is the outer surface plus the shell's
+	// inner surface reversed, a closed solid. The lattice is clipped by the
+	// BODY's own distance field shifted inward by the skin thickness --
+	// not by the inner surface's field. The inner surface is an offset copy
+	// of the surface triangulation, and where the surface curvature radius
+	// is below the skin thickness (an outboard leading edge, a fin, a
+	// tailplane tip) the copy must fold: some of its triangles face the
+	// wrong way, and a field built on it reports "inside" in front of them,
+	// which is lattice floating ahead of the leading edge. The body mesh is
+	// closed and outward everywhere (RequireClosedBody), so its sign is
+	// trustworthy, and b + t < 0 is exactly "deeper than the skin". A body
+	// thinner than two skins then has no interior and is all skin.
 	std::vector<FBodyField> DomainFields, ReservedFields;
 	aerotelic::TriMesh SkinMesh;
 	aerotelic::Box3 DomainBounds;
@@ -195,12 +202,14 @@ std::vector<aerotelic::NamedMesh> FAerotelicLatticeModel::BuildMeshes(double) co
 	Shells.clear();
 	for (const FPlacedBody& B : Bodies)
 	{
-		aerotelic::MeshSdf BodySdf(B.Mesh);
+		FBodyField F;
+		F.Sdf = std::make_unique<aerotelic::MeshSdf>(B.Mesh);
+		F.Box = B.Mesh.Bounds();
 		aerotelic::ShellOptions ShellOpt;
 		ShellOpt.thickness = Spec.skin_thickness;
 		FSkinShell S;
 		S.Label = B.Label;
-		S.Shell = aerotelic::BuildOffsetShell(B.Mesh, BodySdf, ShellOpt);
+		S.Shell = aerotelic::BuildOffsetShell(B.Mesh, *F.Sdf, ShellOpt);
 		aerotelic::TriMesh Interior = S.Shell.InnerSurface(true);
 		if (S.Shell.n_negative_tets > 0)
 		{
@@ -211,20 +220,17 @@ std::vector<aerotelic::NamedMesh> FAerotelicLatticeModel::BuildMeshes(double) co
 		{
 			if (!Interior.IsClosedManifold())
 			{
-				UE_LOG(LogTemp, Warning, TEXT("AerotelicLattice: the inner surface of '%s' is not closed (an asymmetric thin region?); its lattice clip may be unreliable there"), *B.Label);
+				UE_LOG(LogTemp, Warning, TEXT("AerotelicLattice: the inner surface of '%s' is not closed (an asymmetric thin region?); the Skin body is open there"), *B.Label);
 			}
 			aerotelic::TriMesh Reversed = Interior;
 			Reversed.FlipWinding();
 			Skin.Append(Reversed);
-			FBodyField F;
-			F.Sdf = std::make_unique<aerotelic::MeshSdf>(Interior);
-			F.Box = Interior.Bounds();
-			DomainBounds.Add(F.Box);
-			DomainFields.push_back(std::move(F));
 		}
 		SkinMesh.Append(Skin);
 		SkinTets += static_cast<int64>(S.Shell.tets.size());
 		Shells.push_back(std::move(S));
+		DomainBounds.Add(F.Box);
+		DomainFields.push_back(std::move(F));
 	}
 	for (const FPlacedBody& B : Reserved)
 	{
@@ -239,13 +245,18 @@ std::vector<aerotelic::NamedMesh> FAerotelicLatticeModel::BuildMeshes(double) co
 	{
 		aerotelic::LatticeDomain Domain;
 		Domain.bounds = DomainBounds;
-		// The union of the interior domains: the nearest surface wins.
-		Domain.body = [&DomainFields](const aerotelic::Vec3& P)
+		// The union of the bodies' interiors beyond the skin: the nearest
+		// body wins, and each body's field is shifted by the skin thickness
+		// (still a distance, so the generator's block skipping holds). A
+		// point is lattice only where some body's field is below -t, so a
+		// point outside every body (b >= 0) can never be.
+		const double Thickness = Spec.skin_thickness;
+		Domain.body = [&DomainFields, Thickness](const aerotelic::Vec3& P)
 		{
 			double Best = 1e300;
 			for (const FBodyField& F : DomainFields)
 			{
-				Best = FMath::Min(Best, F.Distance(P));
+				Best = FMath::Min(Best, F.Distance(P) + Thickness);
 			}
 			return Best;
 		};

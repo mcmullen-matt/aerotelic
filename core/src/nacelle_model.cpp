@@ -452,9 +452,15 @@ std::vector<NamedMesh> NacelleModel::BuildMeshes(double tolerance) const {
 	Validate();
 	if (chevron_count > 0) return {};
 
-	// u in [0, 2], periodic: the outer skin at side parameter s = u, then
-	// the inner skin back from the trailing edge at s = 2 - u. PinEnds()
-	// made both skins share the lip and TE points, so the chain closes.
+	// u in [0, 2], periodic: the outer skin at x fraction u, then the inner
+	// skin back from the trailing edge at x fraction 2 - u. PinEnds() made
+	// both skins share the lip and TE points, so the chain closes. The
+	// stations are by x fraction rather than by each curve's own parameter
+	// so that a station u on the outer skin and its twin 2 - u on the inner
+	// skin sit at the same x: the wall between them is then sampled with
+	// matched vertex rows (LoftSource::mirror_u), without which the thin
+	// wedge at the trailing edge cannot be given a conforming tetrahedral
+	// mesh.
 	const double L = length, y_lip = LipRadius();
 	LoftSource src;
 	src.u_min = 0.0;
@@ -462,11 +468,22 @@ std::vector<NamedMesh> NacelleModel::BuildMeshes(double tolerance) const {
 	src.periodic_u = true;
 	src.closed_curve = true;
 	src.u_seeds = {0.0, 1.0};
+	src.mirror_u = 2.0;
+	// The point of a side curve at a given x fraction, by bisection on the
+	// curve's x (monotone: the poles' x are), exact to ~1e-13 in parameter.
+	auto side_at_x = [](const NurbsCurve& side, double x_frac) {
+		double lo = 0.0, hi = 1.0;
+		for (int it = 0; it < 60 && hi - lo > 1e-13; ++it) {
+			double mid = 0.5 * (lo + hi);
+			if (side.Evaluate(mid)[0] < x_frac) lo = mid; else hi = mid;
+		}
+		return side.Evaluate(0.5 * (lo + hi));
+	};
 	src.section = [&](double u, const std::vector<double>& v) {
 		const NurbsCurve& side = u <= 1.0 ? *upper_curve_ : *lower_curve_;
-		double s = u <= 1.0 ? u : 2.0 - u;
-		std::vector<double> sp = side.Evaluate(s);
-		double x = sp[0] * L;
+		double x_frac = std::clamp(u <= 1.0 ? u : 2.0 - u, 0.0, 1.0);
+		std::vector<double> sp = side_at_x(side, x_frac);
+		double x = x_frac * L;
 		double k = sp[1] / y_lip;
 		Mat hv = front_curve_->Evaluate(v);
 		Mat out(hv.rows(), 3);

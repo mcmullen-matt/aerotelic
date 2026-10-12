@@ -191,6 +191,21 @@ struct ConformingOptions {
 	// Interior points to include in the point set (inserted before the
 	// surface vertices are recovered; must lie strictly inside the body).
 	std::vector<Vec3> interior_points;
+	// Delaunay refinement of the interior (step 3b): tetrahedra whose
+	// circumradius exceeds this multiple of their shortest edge are split
+	// at their circumcentre, with a constrained insertion that keeps every
+	// surface face; a circumcentre outside the body instead splits the
+	// surface face the tetrahedron's circumsphere escapes through (a point
+	// on that face, so the surface is still the input's sub-triangles). 0:
+	// no refinement. Shewchuk's bound of 2 guarantees termination away from
+	// small input angles; the length floor and the point budget guard the
+	// knife edges, where it would not.
+	double refine_radius_edge = 0.0;
+	// No refinement point is placed nearer an existing node than this
+	// fraction of the bounding-box diagonal.
+	double refine_min_length_fraction = 1e-5;
+	// Budget for refinement points, as a multiple of the surface vertices.
+	double max_refine_factor = 8.0;
 };
 
 struct ConformingStats {
@@ -203,6 +218,7 @@ struct ConformingStats {
 	int n_region_steiner = 0;        // points put inside planar regions
 	int n_segments_missing = 0;      // after the Delaunay tetrahedralization
 	int n_edge_steiner = 0;          // points put on surface edges
+	int n_twin_steiner = 0;          // points put on the opposite sheet of a thin region, across from an edge point
 	int n_segment_snaps = 0;         // segments bent through a node lying on them
 	int n_segment_flips = 0;         // sliver surface triangles flipped away from a segment
 	int n_flips_refused = 0;         // slivers that could not be flipped (the new edge exists)
@@ -213,11 +229,17 @@ struct ConformingStats {
 	int n_segments_abandoned = 0;    // segments given up on (split down to the floor); the surface is not exactly conformed there
 	int n_faces_abandoned = 0;       // surface triangles not recovered (on an abandoned segment, or a recovery that failed)
 	int n_surface_faces = 0;         // constraint faces in the result (sub-triangles)
+	int n_refine_points = 0;         // refinement points inside the body
+	int n_refine_surface_points = 0; // refinement points on the surface (encroached faces)
+	int n_refine_cushion_points = 0; // exterior points placed above encroached faces so they can be split (dropped with the exterior)
+	int n_refine_skipped = 0;        // bad tetrahedra left alone (length floor, budget, or no face to split)
+	double refine_radius_edge_before = 0.0, refine_radius_edge_after = 0.0; // worst over the interior (slivers excluded after)
+	int n_refine_bad_before = 0, n_refine_bad_after = 0; // interior tetrahedra over the bound (slivers excluded after)
 	int n_tets_interior = 0;
 	int n_tets_exterior = 0;
 	double surface_volume = 0.0;     // of the input surface
 	double mesh_volume = 0.0;        // of the interior tetrahedra
-	double seconds_delaunay = 0.0, seconds_segments = 0.0, seconds_faces = 0.0, seconds_total = 0.0;
+	double seconds_delaunay = 0.0, seconds_segments = 0.0, seconds_faces = 0.0, seconds_refine = 0.0, seconds_total = 0.0;
 	TetStats delaunay;
 };
 
@@ -228,6 +250,37 @@ struct ConformingStats {
 // interior points, then the Steiner points. Throws std::invalid_argument
 // on an open surface, std::runtime_error when recovery fails (with where).
 TetMesh TetrahedralizeInterior(const TriMesh& surface, const ConformingOptions& options = {}, ConformingStats* stats = nullptr);
+
+struct ImproveOptions {
+	// Tetrahedra with a dihedral angle below this (degrees) are worked on.
+	double target_dihedral_deg = 15.0;
+	// Rounds of flips and smoothing (each round visits every bad tetrahedron
+	// and every free node once).
+	int rounds = 6;
+	// Try 2-3 and 3-2 flips on the bad tetrahedra's faces and edges.
+	bool flips = true;
+	// Move free nodes (not on the surface, not on a material interface)
+	// toward the position that most improves their worst tetrahedron.
+	bool smoothing = true;
+};
+
+struct ImproveStats {
+	int n_flips_23 = 0, n_flips_32 = 0;
+	int n_smoothed = 0;
+	int n_bad_before = 0, n_bad_after = 0;       // tetrahedra under the target
+	double min_dihedral_before = 0.0, min_dihedral_after = 0.0;
+	double seconds = 0.0;
+};
+
+// Mesh improvement on a finished tetrahedral mesh (after the skin/core
+// split): sliver removal by 2-3 and 3-2 flips that keep every constrained
+// face and every face between two materials, and optimisation smoothing of
+// the free nodes. Node positions on the surface and on material interfaces
+// never change, so the boundary stays the input's sub-triangles and the
+// skin/core interface stays on the iso-surface; the material of a
+// tetrahedron made by a flip is that of the ones it replaces (a flip never
+// crosses an interface). The neighbour table is rebuilt at the end.
+void ImproveTetMesh(TetMesh& mesh, const ImproveOptions& options, ImproveStats* stats = nullptr);
 
 struct SkinCoreOptions {
 	// Skin thickness t, model units.
@@ -245,6 +298,10 @@ struct SkinCoreOptions {
 	// the point set.
 	bool offset_nodes = true;
 	ConformingOptions conforming;
+	// Finish with ImproveTetMesh (flips and smoothing with the surface and
+	// the interface fixed).
+	bool improve = true;
+	ImproveOptions improve_options;
 };
 
 struct SkinCoreStats {
@@ -258,6 +315,7 @@ struct SkinCoreStats {
 	double min_dihedral_skin = 0.0, min_dihedral_core = 0.0;
 	double min_radius_ratio_skin = 0.0, min_radius_ratio_core = 0.0;
 	int n_slivers_skin = 0, n_slivers_core = 0; // dihedral below 5 degrees
+	ImproveStats improve;
 	double seconds = 0.0;
 };
 

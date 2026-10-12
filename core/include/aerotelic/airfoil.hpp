@@ -51,6 +51,18 @@ public:
 	// Closed contour, lower TE -> LE -> upper TE.
 	Mat ContourPoints(int n = 200) const;
 
+	// The curve parameter of the point on the OTHER surface at the same
+	// chordwise station as the point at parameter t: the lower-surface twin
+	// of an upper-surface point and back (the leading edge and the trailing
+	// edge map to themselves). Found by bisection on x along the other
+	// surface, so it is exact to ~1e-12 in parameter. The loft (mesh.hpp,
+	// LoftSource::mirror_v) samples both surfaces at matched stations with
+	// it, which is what lets a tetrahedral mesh conform to the thin wedge
+	// at the trailing edge.
+	double MirrorParameter(double t) const;
+	// The leading edge's curve parameter (lower surface is t below it).
+	double LeadingEdgeParameter() const { return t_le_; }
+
 	std::vector<double> Camber(const std::vector<double>& x) const;
 	std::vector<double> Thickness(const std::vector<double>& x) const;
 	std::vector<double> Thickness() const; // default x = linspace(0.01, 0.99, 100)

@@ -843,13 +843,21 @@ TriMesh WingModel::BuildMesh(double tolerance, double s_min, double s_max) const
 	// An airfoil runs lower TE -> LE -> upper TE over t in [0, 1]; the two
 	// ends are joined by the straight trailing-edge segment (or coincide).
 	src.closed_curve = false;
-	src.section = [&](double s, const std::vector<double>& v) {
+	auto airfoil_at = [&](double s) -> const Airfoil& {
 		double key = RoundKey(s);
 		auto it = airfoils.find(key);
 		if (it == airfoils.end()) it = airfoils.emplace(key, AirfoilAt(s)).first;
-		Mat pts2 = it->second->nurbs_curve().Evaluate(v);
+		return *it->second;
+	};
+	src.section = [&](double s, const std::vector<double>& v) {
+		Mat pts2 = airfoil_at(s).nurbs_curve().Evaluate(v);
 		return planform_->AirfoilCoordsToXyz(s, pts2);
 	};
+	// The upper and lower surfaces are sampled at matched chordwise
+	// stations, so the two sheets' vertex rows face each other across the
+	// section and the thin wedge at the trailing edge can be given a
+	// conforming tetrahedral mesh (see LoftSource::mirror_v).
+	src.mirror_v = [&](double s, double v) { return airfoil_at(s).MirrorParameter(v); };
 	LoftOptions opt;
 	opt.tolerance = tolerance;
 	opt.min_v = 24;

@@ -21,6 +21,7 @@
 // Negative is inside.
 
 #include <cstddef>
+#include <limits>
 #include <vector>
 
 #include "aerotelic/mesh.hpp"
@@ -49,6 +50,18 @@ public:
 
 	// Every triangle, no BVH: the reference the BVH is checked against.
 	Closest ClosestPointBruteForce(const Vec3& p) const;
+
+	struct Hit {
+		double t = 0.0;         // ray parameter of the hit (origin + t * direction)
+		Vec3 point;             // the hit, on the triangle's plane
+		int triangle = -1;      // -1: no hit
+		Vec3 barycentric;       // weights of the triangle's three vertices at the hit
+	};
+	// The nearest intersection of the ray origin + t * direction, t in
+	// (t_min, t_max], with the mesh (either side of a triangle), via the BVH.
+	Hit Raycast(const Vec3& origin, const Vec3& direction, double t_min = 0.0, double t_max = std::numeric_limits<double>::infinity()) const;
+
+	const Vec3& face_normal(int t) const { return face_normals_[t]; }
 
 	const Box3& bounds() const { return bounds_; }
 	size_t n_triangles() const { return tris_.size(); }

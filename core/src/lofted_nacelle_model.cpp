@@ -706,6 +706,10 @@ std::vector<NamedMesh> LoftedNacelleModel::BuildMeshes(double tolerance) const {
 		src.u_seeds.push_back(x);
 		src.u_seeds.push_back(3.0 - x);
 	}
+	// Station u on the outer skin and 3 - u on the inner are the two sides
+	// of the wall at the same x (and the rims map onto themselves), so the
+	// wall is sampled with matched vertex rows.
+	src.mirror_u = 3.0;
 	const double L = length;
 	src.section = [&](double u, const std::vector<double>& v) {
 		double x_frac, w_inner; // w_inner: 0 on the outer skin, 1 on the inner

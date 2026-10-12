@@ -249,6 +249,9 @@ TetMesh BuildSkinCoreMesh(const TriMesh& surface, const MeshSdf& sdf, const Skin
 	sp.Classify();
 	st.n_edges_split = sp.n_split;
 	st.n_nodes_snapped = sp.n_snapped;
+	// Improvement: flips and smoothing that leave the surface, the
+	// interface and the material volumes exactly as they are.
+	if (opt.improve) ImproveTetMesh(m, opt.improve_options, &st.improve);
 	st.n_skin_tets = m.Count(1);
 	st.n_core_tets = m.Count(2);
 	st.skin_volume = m.Volume(1);

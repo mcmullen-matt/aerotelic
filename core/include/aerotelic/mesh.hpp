@@ -42,6 +42,7 @@
 #include <array>
 #include <cstdint>
 #include <functional>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -119,6 +120,27 @@ struct LoftSource {
 	// Whether to cap the two ends (ignored for periodic_u, and for an end
 	// whose section is an apex).
 	bool cap_start = true, cap_end = true;
+
+	// Thin shells. A body made of two sheets that meet at a knife edge --
+	// an airfoil's upper and lower surfaces at the trailing edge, a cowl's
+	// outer and inner skins at the lip and the trailing edge -- can only be
+	// given a tetrahedral mesh that conforms to it (tet.hpp) if the two
+	// sheets' vertex rows face each other exactly. A vertex of one sheet
+	// under the middle of an edge of the other, nearer than that edge's
+	// own sag, leaves the edge no empty circumsphere, and the mesher then
+	// splits it without end down the wedge. So the two sides are sampled at
+	// MATCHED parameters:
+	//   mirror_v(u, v): the parameter of the point across the section from
+	//     (u, v) -- for an airfoil, the lower-surface parameter at the same
+	//     chordwise station as upper-surface parameter v (and back). Every
+	//     ring's parameter set is closed under it. null: none.
+	//   mirror_u: the stations are mirrored about this value -- u and
+	//     mirror_u - u (wrapped into the period) are the two sides of the
+	//     wall, e.g. a cowl parametrised by x fraction out along the outer
+	//     skin and back along the inner -- and the two paired stations share
+	//     one ring parameter set. NaN: none.
+	std::function<double(double u, double v)> mirror_v;
+	double mirror_u = std::numeric_limits<double>::quiet_NaN();
 };
 
 struct LoftOptions {

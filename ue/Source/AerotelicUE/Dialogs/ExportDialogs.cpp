@@ -185,6 +185,10 @@ void ShowAerotelicExportTetVtkDialog(TFunction<void(const FText&)> Status)
 			aerotelic::SkinCoreOptions Opt;
 			Opt.thickness = J.Skin > 0.0 ? J.Skin : 0.01 * J.Surface.Bounds().Diagonal();
 			Opt.core_spacing = J.Cell;
+			// Delaunay refinement of the interior to a radius-edge ratio of 2,
+			// then flips and smoothing (tet.hpp): the mesh is for stress.
+			Opt.conforming.refine_radius_edge = 2.0;
+			Opt.improve = true;
 			aerotelic::SkinCoreStats St;
 			aerotelic::TetMesh M = aerotelic::BuildSkinCoreMesh(J.Surface, Sdf, Opt, &St);
 			const int Offset = static_cast<int>(Merged.nodes.size());
