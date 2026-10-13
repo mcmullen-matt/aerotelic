@@ -12,7 +12,9 @@
 #include "aerotelic/mesh.hpp"
 #include "aerotelic/mesh_boolean.hpp"
 #include "aerotelic/project_yaml.hpp"
+#include "aerotelic/sdf.hpp"
 #include "aerotelic/shell.hpp"
+#include "aerotelic/tet.hpp"
 #include "aerotelic/wing_model.hpp"
 
 using namespace aerotelic;
@@ -36,8 +38,28 @@ std::string Fmt(const char* fmt, double a, double b = 0.0, double c = 0.0) {
 }
 
 void Report(const char* label, const MeshBooleanStats& s, const TriMesh& r) {
-	std::printf("%s: %d coincident pairs, %d pairs tested, %d intersecting, %d segments, %d triangles cut into %d pieces, kept %d + %d; volumes %.6g op %.6g -> %.6g; result %zu vertices %zu triangles; %.3f s\n",
-		label, s.n_coincident_pairs, s.n_pairs_tested, s.n_pairs_intersecting, s.n_segments, s.n_triangles_cut, s.n_pieces, s.n_kept_a, s.n_kept_b, s.volume_a, s.volume_b, s.volume_result, r.vertices.size(), r.triangles.size(), s.seconds);
+	std::printf("%s: %d coincident pairs, %d pairs tested, %d intersecting, %d segments, %d triangles cut into %d pieces (%d refinement points, %d sub-edge splits, %d rounds), kept %d + %d; seam slivers %d -> %d (%d collapses, %d flips, %d refused, max move %.3g); volumes %.6g op %.6g -> %.6g; result %zu vertices %zu triangles; %.3f s\n",
+		label, s.n_coincident_pairs, s.n_pairs_tested, s.n_pairs_intersecting, s.n_segments, s.n_triangles_cut, s.n_pieces, s.n_refine_points, s.n_refine_splits, s.n_refine_rounds, s.n_kept_a, s.n_kept_b, s.n_seam_slivers, s.n_seam_slivers_left, s.n_seam_collapses, s.n_seam_flips, s.n_seam_refused, s.max_seam_move, s.volume_a, s.volume_b, s.volume_result, r.vertices.size(), r.triangles.size(), s.seconds);
+}
+
+// The smallest angle (degrees) over a mesh's triangles, and how many are under 1 degree.
+double MinAngle(const TriMesh& m, int* n_under_1) {
+	double worst = 180.0;
+	int n = 0;
+	for (const auto& tr : m.triangles) {
+		Vec3 p[3] = {m.vertices[tr[0]], m.vertices[tr[1]], m.vertices[tr[2]]};
+		double a = 180.0;
+		for (int k = 0; k < 3; ++k) {
+			Vec3 e1 = p[(k + 1) % 3] - p[k], e2 = p[(k + 2) % 3] - p[k];
+			double l1 = Length(e1), l2 = Length(e2);
+			if (l1 == 0.0 || l2 == 0.0) { a = 0.0; break; }
+			a = std::min(a, std::acos(std::max(-1.0, std::min(1.0, Dot(e1, e2) / (l1 * l2)))) * 180.0 / 3.14159265358979323846);
+		}
+		worst = std::min(worst, a);
+		if (a < 1.0) ++n;
+	}
+	if (n_under_1) *n_under_1 = n;
+	return worst;
 }
 
 // Rotation about an axis by an angle, as the row-major 3x3 TriMesh::Transform takes.
@@ -191,11 +213,32 @@ int main() {
 			result = std::move(next);
 		}
 		double dt = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
-		std::printf("p38 airframe: fused volume %.6g (sum of bodies %.6g, so %.4g in overlaps), %zu triangles, %.2f s\n", result.SignedVolume(), sum, sum - result.SignedVolume(), result.triangles.size(), dt);
+		int under_1 = 0;
+		double min_angle = MinAngle(result, &under_1);
+		std::printf("p38 airframe: fused volume %.6g (sum of bodies %.6g, so %.4g in overlaps), %zu triangles, min angle %.4g deg (%d under 1 deg), %.2f s\n", result.SignedVolume(), sum, sum - result.SignedVolume(), result.triangles.size(), min_angle, under_1, dt);
 		Check(result.IsClosedManifold(), "p38 airframe: the fused airframe is a closed manifold");
 		Check(result.SignedVolume() < sum && result.SignedVolume() > 0.5 * sum, "p38 airframe: fused volume is below the sum of the bodies and above half of it");
 		WriteStlAscii(result, "C:\\Users\\Matt\\devel_1\\aerotelic\\core\\build\\bool_p38_airframe.stl", "p38");
 		std::printf("p38 airframe: wrote core\\build\\bool_p38_airframe.stl\n");
+		// The union through the tetrahedral mesher. KNOWN OPEN: the seam
+		// pass removes the slivers, but the mesher still degrades on the
+		// union (the far corners of the coarse body's cut triangles fan to
+		// the dense seam, which no Delaunay tetrahedralization holds; see
+		// MeshBooleanOptions::refine_min_angle_deg). Reported, not required.
+		MeshSdf sdf(result);
+		SkinCoreOptions o;
+		o.thickness = 0.0294;
+		o.core_spacing = 0.0;
+		SkinCoreStats s;
+		auto t1 = std::chrono::steady_clock::now();
+		TetMesh tm = BuildSkinCoreMesh(result, sdf, o, &s);
+		double dt2 = std::chrono::duration<double>(std::chrono::steady_clock::now() - t1).count();
+		TriMesh iface = tm.InterfaceFaces(1, 2);
+		int outside = 0;
+		for (const auto& p : iface.vertices) if (sdf.Distance(p) > 1e-6) ++outside;
+		std::printf("p38 airframe tets: %d skin + %d core tets, %d segments abandoned, %d faces abandoned, %d edge Steiner, volume %.9g vs %.9g, %d interface nodes outside, %.2f s\n", s.n_skin_tets, s.n_core_tets, s.conforming.n_segments_abandoned, s.conforming.n_faces_abandoned, s.conforming.n_edge_steiner, s.conforming.mesh_volume, s.conforming.surface_volume, outside, dt2);
+		if (s.conforming.n_faces_abandoned > 0) std::printf("KNOWN OPEN: p38 airframe tets: the union does not conform exactly (%d faces abandoned)\n", s.conforming.n_faces_abandoned);
+		Check(std::fabs(s.conforming.mesh_volume - s.conforming.surface_volume) <= 1e-3 * s.conforming.surface_volume, Fmt("p38 airframe tets: tetrahedra volume %.9g is within 0.1%% of the union's %.9g", s.conforming.mesh_volume, s.conforming.surface_volume));
 	});
 
 	std::printf("RESULT: %d failure(s)\n", g_failures);

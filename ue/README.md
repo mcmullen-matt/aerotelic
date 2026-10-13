@@ -195,8 +195,23 @@ The layout follows the Python/Qt version's main window (`aerotelic/ui/main_windo
   plane, a vertex of one body exactly on a face of the other, an edge
   exactly in a face. (Mirror-image edges that cross each other exactly on
   the symmetry plane are the common case and are fine: they meet in one
-  shared vertex of the curve.) The whole P-38 airframe fuses in half a
-  second (`core/tests/mesh_boolean_check.cpp`). The result is drawn in
+  shared vertex of the curve.) Where the curve passes a hair from a vertex
+  or an edge of a triangle it cuts, the cut leaves sliver pieces (the
+  airframe had 495 under one degree); a seam pass (2026-10-13) removes
+  them worst first by collapsing the sliver's shortest edge -- an original
+  vertex onto a seam point, two seam points onto one, never a seam point
+  off the seam -- when that moves the surface by under 1e-4 of the
+  bounding diagonal, or by flipping its longest edge when the flip raises
+  the pair's smaller angle and moves the surface by less than that (3 of
+  the 495 remain, where neither is possible). Pieces are classified by
+  connected region rather than one by one, so a sliver hugging the seam
+  cannot be misjudged. The whole P-38 airframe fuses in half a second
+  (`core/tests/mesh_boolean_check.cpp`). KNOWN OPEN: the tetrahedral
+  mesher still degrades on the union (the coarse body's cut triangles fan
+  from a far corner to the dense seam, edges no Delaunay sphere can hold);
+  the experimental in-plane refinement behind
+  `MeshBooleanOptions::refine_min_angle_deg` (off) fixes some junctions
+  and worsens others -- see the header. The result is drawn in
   lilac as one body, shown, coloured, renamed and deleted like any row
   (no design panel, placement or mirror of its own), is a lattice target
   and a tetrahedral-mesh body like any other, and has no B-rep: it is not
