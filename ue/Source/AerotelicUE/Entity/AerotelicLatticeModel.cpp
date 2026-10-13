@@ -182,16 +182,15 @@ std::vector<aerotelic::NamedMesh> FAerotelicLatticeModel::BuildMeshes(double) co
 		RequireClosedBody(B, TEXT("a reserved volume"));
 	}
 
-	// The skin of each body, built explicitly from its triangulation
-	// (shell.hpp): the "Skin" body is the outer surface plus the shell's
-	// inner surface reversed, a closed solid. The lattice is clipped by the
-	// BODY's own distance field shifted inward by the skin thickness --
-	// not by the inner surface's field. The inner surface is an offset copy
-	// of the surface triangulation, and where the surface curvature radius
-	// is below the skin thickness (an outboard leading edge, a fin, a
-	// tailplane tip) the copy must fold: some of its triangles face the
-	// wrong way, and a field built on it reports "inside" in front of them,
-	// which is lattice floating ahead of the leading edge. The body mesh is
+	// The skin of each body, from the tetrahedral mesher (tet.hpp): the
+	// "Skin" body is the closed boundary of the skin tetrahedra -- the
+	// body's own surface triangles outside, the exact iso-surface of its
+	// distance field at the skin depth inside. (An offset COPY of the
+	// surface, the earlier shell, cannot do this: at a concave crease such
+	// as a tailplane meeting a boom its straight inner edges bridge the
+	// corner outside the body, and where the surface is sharper than the
+	// skin its triangles fold.) The lattice is clipped by the BODY's own
+	// distance field shifted inward by the skin thickness: the body mesh is
 	// closed and outward everywhere (RequireClosedBody), so its sign is
 	// trustworthy, and b + t < 0 is exactly "deeper than the skin". A body
 	// thinner than two skins then has no interior and is all skin.
@@ -199,36 +198,39 @@ std::vector<aerotelic::NamedMesh> FAerotelicLatticeModel::BuildMeshes(double) co
 	aerotelic::TriMesh SkinMesh;
 	aerotelic::Box3 DomainBounds;
 	int64 SkinTets = 0;
-	Shells.clear();
+	SkinMeshes.clear();
 	for (const FPlacedBody& B : Bodies)
 	{
 		FBodyField F;
 		F.Sdf = std::make_unique<aerotelic::MeshSdf>(B.Mesh);
 		F.Box = B.Mesh.Bounds();
-		aerotelic::ShellOptions ShellOpt;
-		ShellOpt.thickness = Spec.skin_thickness;
-		FSkinShell S;
+		aerotelic::SkinCoreOptions Opt;
+		Opt.thickness = Spec.skin_thickness;
+		Opt.core_spacing = 0.0;       // the core is only meshed to bound the skin; the lattice is sampled
+		Opt.improve = true;
+		aerotelic::SkinCoreStats St;
+		FSkinMesh S;
 		S.Label = B.Label;
-		S.Shell = aerotelic::BuildOffsetShell(B.Mesh, *F.Sdf, ShellOpt);
-		aerotelic::TriMesh Interior = S.Shell.InnerSurface(true);
-		if (S.Shell.n_negative_tets > 0)
+		try
 		{
-			UE_LOG(LogTemp, Warning, TEXT("AerotelicLattice: the skin of '%s' keeps %d folded tetrahedra after relaxation"), *B.Label, S.Shell.n_negative_tets);
+			S.Mesh = aerotelic::BuildSkinCoreMesh(B.Mesh, *F.Sdf, Opt, &St);
 		}
-		aerotelic::TriMesh Skin = B.Mesh;
-		if (!Interior.IsEmpty())
+		catch (const std::exception& E)
 		{
-			if (!Interior.IsClosedManifold())
-			{
-				UE_LOG(LogTemp, Warning, TEXT("AerotelicLattice: the inner surface of '%s' is not closed (an asymmetric thin region?); the Skin body is open there"), *B.Label);
-			}
-			aerotelic::TriMesh Reversed = Interior;
-			Reversed.FlipWinding();
-			Skin.Append(Reversed);
+			throw std::runtime_error(TCHAR_TO_UTF8(*FString::Printf(TEXT("The skin of '%s' could not be meshed: %s"), *B.Label, UTF8_TO_TCHAR(E.what()))));
+		}
+		if (St.conforming.n_faces_abandoned > 0)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("AerotelicLattice: the mesh of '%s' does not conform exactly (%d surface faces abandoned); its skin follows the tetrahedra there"), *B.Label, St.conforming.n_faces_abandoned);
+		}
+		aerotelic::TriMesh Skin = S.Mesh.BoundaryFaces(1);
+		if (!Skin.IsClosedManifold())
+		{
+			UE_LOG(LogTemp, Warning, TEXT("AerotelicLattice: the skin of '%s' is not a closed manifold (a pinched thin region?)"), *B.Label);
 		}
 		SkinMesh.Append(Skin);
-		SkinTets += static_cast<int64>(S.Shell.tets.size());
-		Shells.push_back(std::move(S));
+		SkinTets += static_cast<int64>(St.n_skin_tets);
+		SkinMeshes.push_back(std::move(S));
 		DomainBounds.Add(F.Box);
 		DomainFields.push_back(std::move(F));
 	}
@@ -321,17 +323,31 @@ std::vector<aerotelic::NamedMesh> FAerotelicLatticeModel::TargetBodies(double To
 	return Out;
 }
 
-aerotelic::ShellResult FAerotelicLatticeModel::MergedShell() const
+aerotelic::TetMesh FAerotelicLatticeModel::MergedSkinTets() const
 {
-	aerotelic::ShellResult Out;
-	for (const FSkinShell& S : Shells)
+	aerotelic::TetMesh Out;
+	for (const FSkinMesh& S : SkinMeshes)
 	{
-		const int Offset = static_cast<int>(Out.nodes.size());
-		Out.nodes.insert(Out.nodes.end(), S.Shell.nodes.begin(), S.Shell.nodes.end());
-		for (const auto& T : S.Shell.tets)
+		// Only the nodes the skin tetrahedra use.
+		std::vector<int> Remap(S.Mesh.nodes.size(), -1);
+		for (size_t K = 0; K < S.Mesh.tets.size(); ++K)
 		{
-			Out.tets.push_back({T[0] + Offset, T[1] + Offset, T[2] + Offset, T[3] + Offset});
+			if (S.Mesh.material[K] != 1) continue;
+			for (int I = 0; I < 4; ++I)
+			{
+				int& R = Remap[S.Mesh.tets[K][I]];
+				if (R < 0)
+				{
+					R = static_cast<int>(Out.nodes.size());
+					Out.nodes.push_back(S.Mesh.nodes[S.Mesh.tets[K][I]]);
+				}
+			}
+			const auto& T = S.Mesh.tets[K];
+			Out.tets.push_back({Remap[T[0]], Remap[T[1]], Remap[T[2]], Remap[T[3]]});
+			Out.constrained.push_back(S.Mesh.constrained[K]);
+			Out.material.push_back(1);
 		}
 	}
+	Out.neighbors.assign(Out.tets.size(), {{-1, -1, -1, -1}});
 	return Out;
 }

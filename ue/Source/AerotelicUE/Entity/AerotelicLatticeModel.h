@@ -4,8 +4,8 @@
 #include <vector>
 
 #include "aerotelic/lattice.hpp"
-#include "aerotelic/shell.hpp"
 #include "aerotelic/solid_model.hpp"
+#include "aerotelic/tet.hpp"
 
 #include "AerotelicBooleanModel.h"
 
@@ -40,34 +40,34 @@ public:
 	// Generates the lattice (ignoring `tolerance`: the resolution is the
 	// spec's voxels per cell), or returns the last generated meshes until
 	// Invalidate(). Two bodies: "Skin", the solid shell of each filled body
-	// built explicitly from its surface triangulation (shell.hpp: the
-	// surface offset inward by the spec's skin thickness as a layer of
-	// prism tetrahedra, exact at any thickness, thin regions solid), as a
-	// closed mesh of the outer surface and the reversed inner surface; and
+	// as the tetrahedral mesher makes it (tet.hpp BuildSkinCoreMesh: the
+	// body's surface triangles outside, the exact iso-surface of its
+	// distance field at the skin depth inside -- which rounds a concave
+	// crease such as a tailplane meeting a boom from the inside and cannot
+	// self-intersect, where an offset copy of the surface cuts through the
+	// corner), as the closed boundary of the skin tetrahedra; and
 	// "Lattice", the infill sampled where the body's own distance field is
-	// deeper than the skin thickness (never the inner surface's field: an
-	// offset copy folds where the surface is sharper than the skin, and a
-	// field built on it leaks lattice outside the body) -- separate so a
-	// downstream analysis can give the shell and the infill their own
-	// materials; their union is the part. The skin tetrahedra
-	// are kept (GetShells) for export to an analysis. Throws
-	// std::runtime_error with the reason when a target is gone, no target
-	// has geometry, a target or reserved volume is not a closed outward
-	// surface (the distance field's sign would be wrong around it), the
-	// skin thickness is not positive, or the grid is too large.
+	// deeper than the skin thickness -- separate so a downstream analysis
+	// can give the shell and the infill their own materials; their union is
+	// the part. The skin's tetrahedra are kept (GetSkinMeshes) for export
+	// to an analysis. Throws std::runtime_error with the reason when a
+	// target is gone, no target has geometry, a target or reserved volume
+	// is not a closed outward surface (the distance field's sign would be
+	// wrong around it), the skin thickness is not positive, the mesher
+	// cannot mesh a body, or the grid is too large.
 	virtual std::vector<aerotelic::NamedMesh> BuildMeshes(double tolerance) const override;
 
-	// The skin of each filled body as tetrahedra (built by the last
-	// generation), with the body's scene label.
-	struct FSkinShell
+	// The skin/core tetrahedral mesh of each filled body (built by the last
+	// generation; material 1 = skin, 2 = core), with the body's scene label.
+	struct FSkinMesh
 	{
 		FString Label;
-		aerotelic::ShellResult Shell;
+		aerotelic::TetMesh Mesh;
 	};
-	const std::vector<FSkinShell>& GetShells() const { return Shells; }
-	// All the shells' tetrahedra as one mesh (nodes and tets only), for
-	// WriteShellVtk.
-	aerotelic::ShellResult MergedShell() const;
+	const std::vector<FSkinMesh>& GetSkinMeshes() const { return SkinMeshes; }
+	// The skin tetrahedra of every body as one mesh (material 1 only), for
+	// WriteTetMeshVtk.
+	aerotelic::TetMesh MergedSkinTets() const;
 
 	// The placed surface meshes of the lattice's targets (one per body,
 	// labelled), built at `Tolerance`; the names of targets that produced
@@ -103,6 +103,6 @@ public:
 private:
 	mutable bool bValid = false;
 	mutable std::vector<aerotelic::NamedMesh> Cached;
-	mutable std::vector<FSkinShell> Shells;
+	mutable std::vector<FSkinMesh> SkinMeshes;
 	mutable FStats Stats;
 };

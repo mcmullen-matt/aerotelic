@@ -149,7 +149,7 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 			Check(M->GetStats().Triangles > 0, "the lattice has triangles");
 			// The fraction is of the interior domain (inside the explicit skin).
 			Check(FMath::Abs(M->GetStats().AchievedFraction - 0.35) < 0.1, FString::Printf(TEXT("the lattice's achieved volume fraction (%.3f) is near the 0.35 asked"), M->GetStats().AchievedFraction));
-			Check(M->GetStats().SkinTets > 0 && M->GetShells().size() == 1 && M->MergedShell().tets.size() == (size_t)M->GetStats().SkinTets, "the skin's tetrahedra are kept for export");
+			Check(M->GetStats().SkinTets > 0 && M->GetSkinMeshes().size() == 1 && M->MergedSkinTets().tets.size() == (size_t)M->GetStats().SkinTets, "the skin's tetrahedra are kept for export");
 			std::vector<aerotelic::NamedMesh> Meshes = Lattice->GetPlacedMeshes(false, 1e-3);
 			Check(Meshes.size() == 2 && Meshes[0].name == "Skin" && Meshes[1].name == "Lattice", "the lattice is two bodies, Skin then Lattice");
 			// The skin solid's volume is the 0.05 shell of the unit sphere (a

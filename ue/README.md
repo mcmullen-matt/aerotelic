@@ -428,21 +428,25 @@ The layout follows the Python/Qt version's main window (`aerotelic/ui/main_windo
   port wing (1% root-chord skin: 5,919 tets, no folds, every tet inside
   the body, skin volume within 1.1% of the field-integrated shell, the
   interior domain a closed manifold enclosing wing minus skin; writes
-  `build/p38_port_wing_skin.vtk` and the inner/outer STLs). In the
-  application the lattice generator now builds this shell for every body
-  it fills: the "Skin" body is the exact shell (outer surface plus the
-  reversed inner surface, a closed solid), the lattice is sampled inside
-  the shell's interior domain (the generator's own sampled skin, which
-  needed the voxel finer than half the thickness, is no longer used), the
-  achieved fraction reported is that of the interior, and *Lattice ->
-  Export Skin Tetrahedra (VTK)...* writes every lattice's skin tetrahedra
-  as one legacy VTK unstructured grid (cell data `material` = 1) for a
-  finite-element model. Known limits:
-  an asymmetric section's two sides do not share mid-surface nodes, so its
-  collapsed double sheet stays (flagged) and the layer is not
-  node-conformal across it; interpenetrating bodies need a union first;
-  the skin is thinner than asked where the relaxation had to act (nose,
-  tip cap). Also fixed on the way: `WingModel::AirfoilAt` now recognises
+  `build/p38_port_wing_skin.vtk` and the inner/outer STLs). SUPERSEDED in
+  the application (2026-10-12 night): the lattice's "Skin" body is now the
+  boundary of the skin tetrahedra the tetrahedral mesher builds
+  (`tet.hpp`, see "Tetrahedral mesh of the bodies"): the body's own
+  surface triangles outside, the exact iso-surface of its distance field
+  at the skin depth inside. The offset copy could not represent an inward
+  offset across a concave crease -- where the tailplane's leading edge
+  meets a boom on the fused airframe its straight inner edges bridged the
+  corner and came out through the leading edge by 10 to 13 mm (the wing's
+  trailing edge at the boom, 9 mm) -- nor at a leading edge sharper than
+  the skin, where it folded. The iso-surface rounds a concave corner from
+  the inside and cannot self-intersect. The lattice is sampled where the
+  body's field is deeper than the skin (the generator's own sampled skin,
+  which needed the voxel finer than half the thickness, is no longer
+  used), the achieved fraction reported is that of the interior, and
+  *Lattice -> Export Skin Tetrahedra (VTK)...* writes every lattice's skin
+  tetrahedra (material 1 of those meshes) as one legacy VTK unstructured
+  grid. `shell.hpp` remains the source of the mesher's offset nodes only.
+  Also fixed on the way: `WingModel::AirfoilAt` now recognises
   two sections holding the same curve (as a reloaded project has them) and
   no longer re-fits a blend whose different parameterisation made the
   loft bunch stations at the root and tip.

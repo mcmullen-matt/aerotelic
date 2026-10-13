@@ -84,17 +84,19 @@ namespace
 void ShowAerotelicExportSkinVtkDialog(TFunction<void(const FText&)> Status)
 {
 	UAerotelicDocumentSubsystem* Doc = UAerotelicDocumentSubsystem::Get();
-	aerotelic::ShellResult Merged;
+	aerotelic::TetMesh Merged;
 	int32 Lattices = 0;
 	if (Doc != nullptr)
 	{
 		for (auto& Weak : Doc->GetEntities())
 		{
 			if (!Weak.IsValid() || Weak->GetEntityType() != aerotelic::project_yaml::EntityType::Lattice) continue;
-			aerotelic::ShellResult S = Weak->GetModelAs<FAerotelicLatticeModel>()->MergedShell();
+			aerotelic::TetMesh S = Weak->GetModelAs<FAerotelicLatticeModel>()->MergedSkinTets();
 			const int Offset = static_cast<int>(Merged.nodes.size());
 			Merged.nodes.insert(Merged.nodes.end(), S.nodes.begin(), S.nodes.end());
 			for (const auto& T : S.tets) Merged.tets.push_back({T[0] + Offset, T[1] + Offset, T[2] + Offset, T[3] + Offset});
+			Merged.constrained.insert(Merged.constrained.end(), S.constrained.begin(), S.constrained.end());
+			Merged.material.insert(Merged.material.end(), S.material.begin(), S.material.end());
 			++Lattices;
 		}
 	}
@@ -110,7 +112,8 @@ void ShowAerotelicExportSkinVtkDialog(TFunction<void(const FText&)> Status)
 	{
 		return;
 	}
-	if (!aerotelic::WriteShellVtk(Merged, TCHAR_TO_UTF8(*Path)))
+	Merged.neighbors.assign(Merged.tets.size(), {{-1, -1, -1, -1}});
+	if (!aerotelic::WriteTetMeshVtk(Merged, TCHAR_TO_UTF8(*Path)))
 	{
 		AerotelicMessageBox(EAppMsgType::Ok, FText::FromString(FString::Printf(TEXT("Could not write %s"), *Path)), LOCTEXT("ExportError", "Export Error"));
 		return;
