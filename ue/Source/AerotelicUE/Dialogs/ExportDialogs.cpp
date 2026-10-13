@@ -381,10 +381,17 @@ void ShowAerotelicExportStlDialog(TFunction<void(const FText&)> Status)
 
 void ShowAerotelicExportStepDialog(TFunction<void(const FText&)> Status)
 {
+	// Solid bodies only: a boolean result and a lattice are triangle meshes
+	// with no B-rep (export a boolean's operands and combine them downstream).
 	TArray<FAerotelicBodyChoicePtr> Choices = SceneBodyChoices();
+	Choices.RemoveAll([](const FAerotelicBodyChoicePtr& C)
+	{
+		using aerotelic::project_yaml::EntityType;
+		return !C->Operand.Entity.IsValid() || C->Operand.Entity->GetEntityType() == EntityType::Boolean || C->Operand.Entity->GetEntityType() == EntityType::Lattice;
+	});
 	if (Choices.Num() == 0)
 	{
-		AerotelicMessageBox(EAppMsgType::Ok, LOCTEXT("NothingStep", "Nothing in the scene to export."), LOCTEXT("StepTitle", "Export STEP"));
+		AerotelicMessageBox(EAppMsgType::Ok, LOCTEXT("NothingStep", "Nothing in the scene to export as STEP (solid bodies only; boolean results and lattices are meshes)."), LOCTEXT("StepTitle", "Export STEP"));
 		return;
 	}
 	if (AerotelicExport::FindStepWriter().IsEmpty())

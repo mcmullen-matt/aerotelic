@@ -180,15 +180,31 @@ The layout follows the Python/Qt version's main window (`aerotelic/ui/main_windo
   mirrored one as its own row, every earlier boolean result), Add / Select
   All / Remove / Up / Down, the operation (Fuse, Cut = first minus the
   rest, Common) and a unique name ("BoolOp n" by default). The result is a
-  new scene item of kind boolean: the operands' placed shapes folded left
-  to right with the core's `BooleanOperation`, drawn in lilac with one
-  "Body n" row per solid, shown, coloured, renamed and deleted like any
-  row (no design panel, placement or mirror of its own). The operands stay
-  in the scene, so hide them to see the result alone. It follows its
-  operands: editing or moving one rebuilds it, deleting one deletes it
-  (with a warning). An operation OCCT cannot complete is reported and adds
-  nothing. A fuse of lofted bodies can take tens of seconds, as in the Qt
-  app. Saved under `booleans:` by name (`operands: [Wing, {mirror: Wing}]`,
+  new scene item of kind boolean: the operands' placed MESHES folded left
+  to right through the core's mesh boolean (`core/include/aerotelic/
+  mesh_boolean.hpp`, 2026-10-12, replacing the OpenCascade boolean):
+  triangle-triangle intersections on Shewchuk's exact predicates, the cut
+  triangles re-triangulated in their planes with the intersection curve
+  as constraints, pieces kept by the sign of the other body's distance
+  field, vertices on the curve shared to the bit. Two bodies sharing a
+  wall vertex for vertex (a wing and its mirror image on the symmetry
+  plane) are joined along the wall's rim; a wall only approximately
+  shared (the root of a wing with dihedral overshoots the plane by its
+  thickness times the dihedral's sine) is a genuine intersection and is
+  cut. Refused, with the place named: two triangles overlapping in one
+  plane, a vertex of one body exactly on a face of the other, an edge
+  exactly in a face. (Mirror-image edges that cross each other exactly on
+  the symmetry plane are the common case and are fine: they meet in one
+  shared vertex of the curve.) The whole P-38 airframe fuses in half a
+  second (`core/tests/mesh_boolean_check.cpp`). The result is drawn in
+  lilac as one body, shown, coloured, renamed and deleted like any row
+  (no design panel, placement or mirror of its own), is a lattice target
+  and a tetrahedral-mesh body like any other, and has no B-rep: it is not
+  exported to STEP (export the operands and combine them downstream). The
+  operands stay in the scene, so hide them to see the result alone. It
+  follows its operands: editing or moving one rebuilds it, deleting one
+  deletes it (with a warning). An operation that is refused is reported
+  and adds nothing. Saved under `booleans:` by name (`operands: [Wing, {mirror: Wing}]`,
   `operation`, `hidden`, `color`, per-body `bodies:`), validated on load
   as WingDesigner does; a boolean that cannot be rebuilt is left out with
   a message. No seam fillet (removed from WingDesigner's UI 2026-09-29).

@@ -249,7 +249,16 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 			Check(E->EntityName == TEXT("BoolOp 1"), "boolean result kept its name");
 			const FAerotelicBooleanModel* M = static_cast<const FAerotelicBooleanModel*>(E->GetModel());
 			Check(M->Operation == "fuse" && M->Operands.Num() == 2, "boolean operation and operands round-tripped");
-			CheckBuildsSolid(E, TEXT("BoolOp 1"));
+			// A boolean result is a mesh (the mesh boolean), not a solid.
+			try
+			{
+				std::vector<aerotelic::NamedMesh> Meshes = M->BuildMeshes(FAerotelicBooleanModel::kValidationTolerance);
+				Check(Meshes.size() == 1 && Meshes[0].mesh.IsClosedManifold() && Meshes[0].mesh.SignedVolume() > 0.0, "BoolOp 1: the fused mesh is one closed, outward body");
+			}
+			catch (const std::exception& Ex)
+			{
+				Check(false, FString::Printf(TEXT("BoolOp 1: BuildMeshes threw: %s"), UTF8_TO_TCHAR(Ex.what())));
+			}
 			break;
 		}
 		case aerotelic::project_yaml::EntityType::Lattice:

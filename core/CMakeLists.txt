@@ -54,6 +54,7 @@ add_library(aerotelic_core STATIC
 	src/tet.cpp
 	src/tet_skin.cpp
 	src/tet_improve.cpp
+	src/mesh_boolean.cpp
 	# Shewchuk's exact geometric predicates (public domain), compiled as C
 	# with strict IEEE rounding: the adaptive arithmetic is defeated by
 	# fast-math style reassociation.
@@ -129,3 +130,6 @@ target_link_libraries(lattice_check PRIVATE aerotelic_core)
 
 add_executable(tet_check tests/tet_check.cpp)
 target_link_libraries(tet_check PRIVATE aerotelic_core)
+
+add_executable(mesh_boolean_check tests/mesh_boolean_check.cpp)
+target_link_libraries(mesh_boolean_check PRIVATE aerotelic_core)

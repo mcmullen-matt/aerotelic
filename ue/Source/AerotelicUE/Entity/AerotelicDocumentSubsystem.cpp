@@ -491,12 +491,12 @@ AAerotelicEntityActor* UAerotelicDocumentSubsystem::AddBoolean(const FString& Na
 	auto Model = std::make_unique<FAerotelicBooleanModel>();
 	Model->Operation = TCHAR_TO_UTF8(*Operation);
 	Model->Operands = Operands;
-	// Build once up front so a failing operation (OCCT could not fuse/cut
-	// these) adds nothing, as fold_boolean cleans up after itself. The
-	// model keeps this result for the actor's first mesh build.
+	// Build once up front so a failing operation (a degenerate contact the
+	// mesh boolean refuses, an operand with no geometry) adds nothing, as
+	// fold_boolean cleaned up after itself.
 	try
 	{
-		Model->BuildSolid();
+		Model->BuildMeshes(FAerotelicBooleanModel::kValidationTolerance);
 	}
 	catch (const std::exception& e)
 	{

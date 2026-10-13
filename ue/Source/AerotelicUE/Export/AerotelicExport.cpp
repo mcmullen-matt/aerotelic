@@ -197,10 +197,15 @@ namespace AerotelicExport
 			OutError = TEXT("a lattice is a triangle mesh with no B-rep: export it as STL");
 			return TopoDS_Shape();
 		}
+		if (Entity->GetEntityType() == EntityType::Boolean)
+		{
+			OutError = TEXT("a boolean result is a triangle mesh with no B-rep: export its operands and combine them downstream, or export it as STL");
+			return TopoDS_Shape();
+		}
 		try
 		{
-			// As it stands, or a boolean result (always as it stands).
-			if (!StationTol.IsSet() || Entity->GetEntityType() == EntityType::Boolean)
+			// As it stands, or rebuilt at the export tolerance.
+			if (!StationTol.IsSet())
 			{
 				TopoDS_Shape S = Entity->GetPlacedShape(Operand.bMirror);
 				if (S.IsNull()) OutError = TEXT("produced no shape");
