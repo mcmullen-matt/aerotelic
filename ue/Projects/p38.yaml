@@ -5663,3 +5663,30 @@ entities:
                   - 0.99425250276046251
                   - 0.99666051580363746
                   - 0.99838573363481975
+  - name: Cylinder 8
+    type: primitive
+    mirror: true
+    placement:
+      translation:
+        - 4.4000000000000004
+        - 2.2999999999999998
+        - -0.10000000000000001
+      rotation_axis:
+        - 0
+        - -1
+        - 0
+      rotation_deg: 1.9999998807907104
+    model:
+      shape: cylinder
+      name: Cylinder 8
+      radius: 1
+      stretch:
+        - 1
+        - 1
+        - 1
+      size:
+        - 2
+        - 2
+        - 2
+      cyl_radius: 0.25
+      cyl_length: 4
