@@ -12,5 +12,5 @@ setlocal
 set UE_ROOT=C:\Program Files\Epic Games\UE_5.8
 set PROJECT_ARG=
 if not "%~1"=="" set PROJECT_ARG=-AerotelicProject="%~1"
-start "" "%UE_ROOT%\Engine\Binaries\Win64\UnrealEditor.exe" "%~dp0AerotelicUE.uproject" -game -windowed -ResX=1600 -ResY=900 %PROJECT_ARG%
+start "" "%UE_ROOT%\Engine\Binaries\Win64\UnrealEditor.exe" "%~dp0AerotelicUE.uproject" -game -windowed -ResX=2560 -ResY=1440 %PROJECT_ARG%
 endlocal

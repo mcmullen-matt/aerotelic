@@ -135,6 +135,9 @@ void AAerotelicGameMode::SpawnLighting()
 	// Underside fill, from below, so a model viewed from beneath is not a
 	// silhouette. (No sky light: with no sky atmosphere in the scene a
 	// real-time-capture sky light has nothing to capture and warns on screen.)
+	// (The shadow settings are applied to the rig at the end of this
+	// function: they live in the document subsystem, which outlives the
+	// world, so a rig spawned later must pick up the current ones.)
 	if (ADirectionalLight* Under = World->SpawnActor<ADirectionalLight>(FVector::ZeroVector, FRotator(35.0f, 100.0f, 0.0f), Params))
 	{
 		if (UDirectionalLightComponent* Light = Cast<UDirectionalLightComponent>(Under->GetLightComponent()))
@@ -146,6 +149,13 @@ void AAerotelicGameMode::SpawnLighting()
 			Light->SetAtmosphereSunLight(false);
 			Light->SetCastShadows(false);
 		}
+	}
+
+	// View -> Shadows... (FAerotelicShadowStyle): the cast toggle and the
+	// shadow-map biases as they presently stand.
+	if (UAerotelicDocumentSubsystem* Doc = UAerotelicDocumentSubsystem::Get())
+	{
+		Doc->ApplyShadowStyle();
 	}
 }
 

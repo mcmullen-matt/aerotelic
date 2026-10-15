@@ -44,6 +44,7 @@ public:
 	TSharedPtr<FUICommandInfo> NavigationCube;
 	TSharedPtr<FUICommandInfo> ShowIntermediateFeatures;
 	TSharedPtr<FUICommandInfo> SurfaceStyle;
+	TSharedPtr<FUICommandInfo> ShadowStyle;
 	TSharedPtr<FUICommandInfo> Rebuild;
 
 	// Left toolbar dropdowns

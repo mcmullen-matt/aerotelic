@@ -126,6 +126,15 @@ public:
 	const FAerotelicSurfaceStyle& GetSurfaceStyle() const { return SurfaceStyle; }
 	void SetSurfaceStyle(const FAerotelicSurfaceStyle& Style);
 
+	// The key light's shadow settings (View -> Shadows...), applied to the
+	// studio rig's shadow-casting directional light. Not saved either.
+	// ApplyShadowStyle() re-applies the current settings to the lights of
+	// the world as it now stands; the game mode calls it once the rig is
+	// spawned, since the settings outlive any one world.
+	const FAerotelicShadowStyle& GetShadowStyle() const { return ShadowStyle; }
+	void SetShadowStyle(const FAerotelicShadowStyle& Style);
+	void ApplyShadowStyle();
+
 	// The Style dropdown (occ_viewer.py set_render_style). Not saved either;
 	// every launch starts Shaded, as the Qt app does.
 	EAerotelicRenderStyle GetRenderStyle() const { return RenderStyle; }
@@ -172,6 +181,7 @@ private:
 
 	FString CurrentPath;
 	FAerotelicSurfaceStyle SurfaceStyle;
+	FAerotelicShadowStyle ShadowStyle;
 	EAerotelicRenderStyle RenderStyle = EAerotelicRenderStyle::Shaded;
 	FAerotelicSectionPlane SectionPlane;
 

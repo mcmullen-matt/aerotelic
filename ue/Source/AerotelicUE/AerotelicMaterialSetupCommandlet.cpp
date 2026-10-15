@@ -15,6 +15,7 @@
 #include "Materials/MaterialExpressionConstant.h"
 #include "Materials/MaterialExpressionIf.h"
 #include "Materials/MaterialExpressionTwoSidedSign.h"
+#include "Materials/MaterialExpressionFresnel.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "UObject/SavePackage.h"
 #include "Misc/PackageName.h"
@@ -97,6 +98,48 @@ namespace
 		Material->OpacityMaskClipValue = 0.5f;
 	}
 
+	// A Fresnel sheen added to the emissive output: the engine's Fresnel
+	// node gives the grazing-angle factor -- 0 where the surface faces the
+	// eye, rising to 1 at the silhouette -- and it is scaled, tinted and
+	// added on top of the lit shading. On an untextured monochrome body
+	// this is what makes form read: the silhouette and any tight curvature
+	// brighten, so a fuselage no longer fades into the backdrop and a
+	// leading edge separates from the skin behind it.
+	//
+	// Four parameters, FresnelIntensity and FresnelExponent driven live by
+	// View -> Surface... (FAerotelicSurfaceStyle):
+	//   FresnelIntensity   how bright the rim is; 0 switches the sheen off
+	//                      and leaves the plain lit shading.
+	//   FresnelExponent    the falloff; 1 washes the whole body, 8 is a
+	//                      thin edge line. The node's own Exponent default
+	//                      matches, for a material instance that does not
+	//                      set it.
+	//   FresnelBaseReflect lifts the sheen everywhere, not just at the rim
+	//                      (the node's base reflect fraction); 0 keeps the
+	//                      front faces exactly as they were.
+	//   FresnelColor       the rim's tint, a little cooler than white so it
+	//                      reads as sky light rather than a white halo.
+	// Emissive rather than a light: it needs no scene light to work, it
+	// cannot blow out the lit response, and the clip plane still discards
+	// the pixel, so a sectioned body does not glow along the cut.
+	void AddFresnelSheen(UMaterial* Material, int32 X, int32 Y)
+	{
+		auto* Fresnel = Node<UMaterialExpressionFresnel>(Material, X + 500, Y + 60);
+		Fresnel->Exponent = 3.0f;
+		Fresnel->BaseReflectFraction = 0.0f;
+		Link(ScalarParam(Material, TEXT("FresnelExponent"), 3.0f, X, Y), Fresnel, TEXT("ExponentIn"));
+		Link(ScalarParam(Material, TEXT("FresnelBaseReflect"), 0.0f, X, Y + 150), Fresnel, TEXT("BaseReflectFractionIn"));
+
+		auto* Scaled = Node<UMaterialExpressionMultiply>(Material, X + 750, Y + 80);
+		Link(Fresnel, Scaled, TEXT("A"));
+		Link(ScalarParam(Material, TEXT("FresnelIntensity"), 0.35f, X + 500, Y + 230), Scaled, TEXT("B"));
+
+		auto* Tinted = Node<UMaterialExpressionMultiply>(Material, X + 950, Y + 130);
+		Link(Scaled, Tinted, TEXT("A"));
+		Link(VectorParam(Material, TEXT("FresnelColor"), FLinearColor(0.90f, 0.95f, 1.0f, 1.0f), X + 500, Y + 350), Tinted, TEXT("B"));
+		UMaterialEditingLibrary::ConnectMaterialProperty(Tinted, TEXT(""), MP_EmissiveColor);
+	}
+
 	bool SaveMaterial(UMaterial* Material, UPackage* Package, const FString& PackageName)
 	{
 		UMaterialEditingLibrary::RecompileMaterial(Material);
@@ -127,10 +170,11 @@ namespace
 	}
 
 	// M_AerotelicSurface: the lit body surface. Color, Metallic, Specular
-	// and Roughness parameters (View -> Surface...), two sided, the section
-	// clip, and a darker tint on back faces so a cut body reads as a shell
-	// seen from inside (WingDesigner caps the cut instead; the engine has
-	// no capping, so the inside of the far wall is what shows).
+	// and Roughness parameters (View -> Surface...), a Fresnel sheen on the
+	// emissive output (AddFresnelSheen), two sided, the section clip, and a
+	// darker tint on back faces so a cut body reads as a shell seen from
+	// inside (WingDesigner caps the cut instead; the engine has no capping,
+	// so the inside of the far wall is what shows).
 	bool AuthorSurface()
 	{
 		const FString PackageName = AAerotelicEntityActor::SurfaceMaterialPackage();
@@ -167,6 +211,7 @@ namespace
 			UMaterialEditingLibrary::ConnectMaterialProperty(Param, TEXT(""), S.Property);
 		}
 
+		AddFresnelSheen(Material, -1700, -950);
 		AddClipPlane(Material, -1000, 500);
 		return SaveMaterial(Material, Package, PackageName);
 	}

@@ -22,7 +22,15 @@
 # Build/test/package logs written next to the .bat files
 /ue/*.txt
 
+# ---- python (the MeshLib / gmsh backends in ue/tools) ----
+__pycache__/
+*.pyc
+
 # ---- editors / OS ----
+# The solution sits at the repository root, so Visual Studio's state
+# folder does too (/ue/.vs/ above only covered the one it used to make
+# beside the .uproject).
+/.vs/
 .vscode/
 .idea/
 Thumbs.db

@@ -156,5 +156,23 @@ public class AerotelicUE : ModuleRules
 				RuntimeDependencies.Add(File, StagedFileType.NonUFS);
 			}
 		}
+
+		// Lattice -> Generate Lattice runs tools/lattice_meshlib.py (the
+		// hollowing and infill on MeshLib) with the WingDesigner micromamba
+		// environment's python.exe as a separate process
+		// (Entity/AerotelicMeshLib.cpp); the script is staged with the
+		// packaged build, the environment is the user's.
+		string LatticeScript = Path.GetFullPath(Path.Combine(ModuleDirectory, "..", "..", "tools", "lattice_meshlib.py"));
+		if (File.Exists(LatticeScript)) {
+			RuntimeDependencies.Add(LatticeScript, StagedFileType.NonUFS);
+		}
+
+		// Lattice -> Export Tetrahedral Mesh runs tools/tet_gmsh.py (the
+		// skin/core tetrahedral mesh on gmsh) the same way, in the same
+		// environment (Entity/AerotelicTetGmsh.cpp).
+		string TetScript = Path.GetFullPath(Path.Combine(ModuleDirectory, "..", "..", "tools", "tet_gmsh.py"));
+		if (File.Exists(TetScript)) {
+			RuntimeDependencies.Add(TetScript, StagedFileType.NonUFS);
+		}
 	}
 }

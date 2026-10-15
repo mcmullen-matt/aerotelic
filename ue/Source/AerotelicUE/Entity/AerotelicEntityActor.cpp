@@ -84,6 +84,8 @@ namespace
 			Mid->SetScalarParameterValue(TEXT("Metallic"), Style.Metallic);
 			Mid->SetScalarParameterValue(TEXT("Specular"), Style.Specular);
 			Mid->SetScalarParameterValue(TEXT("Roughness"), Style.Roughness);
+			Mid->SetScalarParameterValue(TEXT("FresnelIntensity"), Style.FresnelIntensity);
+			Mid->SetScalarParameterValue(TEXT("FresnelExponent"), Style.FresnelExponent);
 		}
 	}
 

@@ -34,7 +34,9 @@ namespace
 	}
 
 	// One labelled slider bound to a member of the style, applied live.
-	TSharedRef<SWidget> SliderRow(const FText& Label, const FText& Hint, float FAerotelicSurfaceStyle::* Member)
+	// SSlider works in 0..1, so a member with another range (the Fresnel
+	// exponent) is mapped onto it and shown in its own units.
+	TSharedRef<SWidget> SliderRow(const FText& Label, const FText& Hint, float FAerotelicSurfaceStyle::* Member, float Min = 0.0f, float Max = 1.0f)
 	{
 		return SNew(SVerticalBox)
 			+ SVerticalBox::Slot().AutoHeight().Padding(0, 6, 0, 0)
@@ -52,11 +54,11 @@ namespace
 			[
 				SNew(SSlider)
 				.MinValue(0.0f).MaxValue(1.0f)
-				.Value_Lambda([Member]() { return CurrentStyle().*Member; })
-				.OnValueChanged_Lambda([Member](float V)
+				.Value_Lambda([Member, Min, Max]() { return Max > Min ? (CurrentStyle().*Member - Min) / (Max - Min) : 0.0f; })
+				.OnValueChanged_Lambda([Member, Min, Max](float V)
 				{
 					FAerotelicSurfaceStyle S = CurrentStyle();
-					S.*Member = V;
+					S.*Member = Min + V * (Max - Min);
 					Apply(S);
 				})
 			]
@@ -70,6 +72,9 @@ namespace
 			];
 	}
 
+	// A preset sets the three physical parameters and leaves the Fresnel
+	// sheen alone: the sheen is a reading aid, not part of the finish, so a
+	// chosen rim survives a hop between Matte and Metal.
 	TSharedRef<SWidget> Preset(const FText& Label, float Metallic, float Specular, float Roughness)
 	{
 		return SNew(SButton)
@@ -77,7 +82,7 @@ namespace
 			.HAlign(HAlign_Center)
 			.OnClicked_Lambda([Metallic, Specular, Roughness]()
 			{
-				FAerotelicSurfaceStyle S;
+				FAerotelicSurfaceStyle S = CurrentStyle();
 				S.Metallic = Metallic;
 				S.Specular = Specular;
 				S.Roughness = Roughness;
@@ -96,7 +101,9 @@ void OpenAerotelicSurfaceDialog()
 		return;
 	}
 
-	const FVector2D Size(360, 360);
+	// Tall enough for the sheen rows with no dead space under them
+	// (measured on the running app at 1:1 UI scale).
+	const FVector2D Size(360, 480);
 	TSharedRef<SWindow> Window = SNew(SWindow)
 		.Title(LOCTEXT("Title", "Surface"))
 		.ClientSize(Size)
@@ -125,6 +132,17 @@ void OpenAerotelicSurfaceDialog()
 				[ SliderRow(LOCTEXT("Specular", "Glossiness (specular)"), LOCTEXT("SpecularHint", "How strong the highlights are."), &FAerotelicSurfaceStyle::Specular) ]
 				+ SVerticalBox::Slot().AutoHeight()
 				[ SliderRow(LOCTEXT("Roughness", "Blur (roughness)"), LOCTEXT("RoughnessHint", "How blurred the reflections and highlights are: 0 is a mirror polish, 1 is fully diffuse."), &FAerotelicSurfaceStyle::Roughness) ]
+				+ SVerticalBox::Slot().AutoHeight().Padding(0, 10, 0, 0)
+				[
+					SNew(STextBlock)
+					.AutoWrapText(true)
+					.Text(LOCTEXT("SheenIntro", "Fresnel sheen -- brightens the surface where it turns away from the eye, so a silhouette and a tight curvature stand out on an untextured body."))
+					.ColorAndOpacity(FSlateColor(FLinearColor(0.75f, 0.75f, 0.75f)))
+				]
+				+ SVerticalBox::Slot().AutoHeight()
+				[ SliderRow(LOCTEXT("Sheen", "Edge sheen"), LOCTEXT("SheenHint", "How bright the rim is. 0 switches the sheen off and leaves the plain lit shading."), &FAerotelicSurfaceStyle::FresnelIntensity) ]
+				+ SVerticalBox::Slot().AutoHeight()
+				[ SliderRow(LOCTEXT("Falloff", "Sheen falloff"), LOCTEXT("FalloffHint", "How tightly the rim hugs the silhouette: 1 washes the whole body, 8 is a thin edge line."), &FAerotelicSurfaceStyle::FresnelExponent, 1.0f, 8.0f) ]
 			]
 		];
 

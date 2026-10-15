@@ -6,6 +6,8 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <random>
 #include <string>
 #include <unordered_map>
@@ -14,7 +16,9 @@
 #include "aerotelic/fuselage_model.hpp"
 #include "aerotelic/lofted_nacelle_model.hpp"
 #include "aerotelic/mesh.hpp"
+#include "aerotelic/mesh_boolean.hpp"
 #include "aerotelic/nacelle_model.hpp"
+#include "aerotelic/primitive_model.hpp"
 #include "aerotelic/project_yaml.hpp"
 #include "aerotelic/propeller_model.hpp"
 #include "aerotelic/sdf.hpp"
@@ -186,10 +190,254 @@ void ConformingChecks(const char* label, const TriMesh& surface, const TetMesh& 
 	SurfaceConformity(label, surface, m);
 }
 
+// The application's .tri format (Entity/AerotelicMeshLib.cpp): "AEROTRI1",
+// uint32 counts, float64 xyz, int32 abc.
+bool ReadTri(const std::string& path, TriMesh& out) {
+	FILE* f = std::fopen(path.c_str(), "rb");
+	if (!f) return false;
+	char magic[8];
+	uint32_t nv = 0, nt = 0;
+	bool ok = std::fread(magic, 1, 8, f) == 8 && std::memcmp(magic, "AEROTRI1", 8) == 0 && std::fread(&nv, 4, 1, f) == 1 && std::fread(&nt, 4, 1, f) == 1;
+	if (ok) {
+		out.vertices.resize(nv);
+		out.triangles.resize(nt);
+		for (uint32_t i = 0; i < nv && ok; ++i) { double xyz[3]; ok = std::fread(xyz, 8, 3, f) == 3; out.vertices[i] = {xyz[0], xyz[1], xyz[2]}; }
+		for (uint32_t i = 0; i < nt && ok; ++i) { int32_t abc[3]; ok = std::fread(abc, 4, 3, f) == 3; out.triangles[i] = {{abc[0], abc[1], abc[2]}}; }
+	}
+	std::fclose(f);
+	return ok;
+}
+
+bool WriteTri(const std::string& path, const TriMesh& m) {
+	FILE* f = std::fopen(path.c_str(), "wb");
+	if (!f) return false;
+	uint32_t nv = static_cast<uint32_t>(m.vertices.size()), nt = static_cast<uint32_t>(m.triangles.size());
+	std::fwrite("AEROTRI1", 1, 8, f);
+	std::fwrite(&nv, 4, 1, f);
+	std::fwrite(&nt, 4, 1, f);
+	for (const auto& v : m.vertices) { double xyz[3] = {v.x, v.y, v.z}; std::fwrite(xyz, 8, 3, f); }
+	for (const auto& t : m.triangles) { int32_t abc[3] = {t[0], t[1], t[2]}; std::fwrite(abc, 4, 3, f); }
+	std::fclose(f);
+	return true;
+}
+
+// `tet_check write-wing <out.tri>`: the P-38's port wing as the "port
+// wing" case builds it, in double precision, for the MeshLib pipeline.
+// `tet_check write-ellipsoid a b c tol <out.tri>`: an ellipsoid.
+int WriteShape(int argc, char** argv) {
+	std::string mode = argv[1];
+	if (mode == "write-wing" && argc >= 3) {
+		ProjectFile project = LoadProjectYaml("C:\\Users\\Matt\\devel_1\\WingDesigner\\projects\\p38.yaml");
+		for (auto& e : project.entities) if (e.name == "Wing") {
+			WingModel wing(*std::get_if<WingModelSpec>(&e.model));
+			TriMesh m0 = wing.BuildMesh(2e-3);
+			m0.Translate({3.1, 0.0, 0.1});
+			m0.Mirror({0, 0, 0}, {0, 1, 0});
+			std::printf("port wing: %zu vertices, %zu triangles, volume %.9g -> %s\n", m0.vertices.size(), m0.triangles.size(), m0.SignedVolume(), argv[2]);
+			return WriteTri(argv[2], m0) ? 0 : 2;
+		}
+		return 2;
+	}
+	if (mode == "write-boolean" && argc >= 6) {
+		// `write-boolean <project.yaml> <boolean name> <tolerance> <out.tri>`:
+		// the named boolean of the project as the application builds it for a
+		// lattice -- every operand's bodies at `tolerance`, fused if an entity
+		// has several, placed by its placement, mirrored about y = 0 when the
+		// operand asks, folded left to right with the project's operation and
+		// the mesh boolean's default options (the application passes none).
+		ProjectFile project = LoadProjectYaml(argv[2]);
+		const ProjectBoolean* bop = nullptr;
+		for (const auto& b : project.booleans) if (b.name == argv[3]) bop = &b;
+		if (!bop) { std::printf("no boolean called '%s' in %s\n", argv[3], argv[2]); return 2; }
+		const double tol = std::atof(argv[4]);
+		auto placed_bodies = [&](const BooleanOperand& operand) {
+			std::vector<NamedMesh> bodies;
+			const ProjectEntity* ent = nullptr;
+			for (const auto& e : project.entities) if (e.name == operand.name) ent = &e;
+			if (!ent) { std::printf("  operand '%s': not an entity of the project\n", operand.name.c_str()); return bodies; }
+			if (auto* w = std::get_if<WingModelSpec>(&ent->model)) bodies = WingModel(*w).BuildMeshes(tol);
+			else if (auto* f = std::get_if<FuselageSpec>(&ent->model)) bodies = FuselageModel(*f).BuildMeshes(tol);
+			else if (auto* n = std::get_if<NacelleSpec>(&ent->model)) bodies = NacelleModel(*n).BuildMeshes(tol);
+			else if (auto* l = std::get_if<LoftedNacelleSpec>(&ent->model)) bodies = LoftedNacelleModel(*l).BuildMeshes(tol);
+			else if (auto* p = std::get_if<PropellerSpec>(&ent->model)) bodies = PropellerModel(*p).BuildMeshes(tol);
+			else if (auto* pr = std::get_if<PrimitiveSpec>(&ent->model)) {
+				// PrimitiveSpec mirrors PrimitiveModel's fields; it has no constructor from one.
+				PrimitiveModel pm;
+				pm.shape = pr->shape;
+				pm.name = pr->name;
+				pm.radius = pr->radius;
+				pm.stretch = pr->stretch;
+				pm.size = pr->size;
+				pm.cyl_radius = pr->cyl_radius;
+				pm.cyl_length = pr->cyl_length;
+				bodies = pm.BuildMeshes(tol);
+			}
+			// Placement: rotate about the axis by the angle, then translate.
+			const Placement& pl = ent->placement;
+			const double ang = pl.rotation_deg * kPi / 180.0;
+			Vec3 k{pl.rotation_axis[0], pl.rotation_axis[1], pl.rotation_axis[2]};
+			std::array<double, 9> R{{1, 0, 0, 0, 1, 0, 0, 0, 1}};
+			if (LengthSq(k) > 0.0 && ang != 0.0) {
+				k = Normalized(k);
+				const double c = std::cos(ang), s = std::sin(ang), t = 1.0 - c;
+				R = {{t * k.x * k.x + c, t * k.x * k.y - s * k.z, t * k.x * k.z + s * k.y,
+				      t * k.x * k.y + s * k.z, t * k.y * k.y + c, t * k.y * k.z - s * k.x,
+				      t * k.x * k.z - s * k.y, t * k.y * k.z + s * k.x, t * k.z * k.z + c}};
+			}
+			for (NamedMesh& m : bodies) {
+				m.mesh.Transform(R, Vec3{pl.translation[0], pl.translation[1], pl.translation[2]});
+				if (operand.mirror) m.mesh.Mirror({0, 0, 0}, {0, 1, 0});
+			}
+			return bodies;
+		};
+		const MeshBooleanOp op = ParseMeshBooleanOp(bop->operation);
+		TriMesh result;
+		for (const BooleanOperand& operand : bop->operands) {
+			std::vector<NamedMesh> bodies = placed_bodies(operand);
+			TriMesh body;
+			for (NamedMesh& m : bodies) {
+				if (m.mesh.IsEmpty()) continue;
+				if (body.IsEmpty()) { body = std::move(m.mesh); continue; }
+				body = MeshBoolean(body, m.mesh, MeshBooleanOp::Fuse);
+			}
+			if (body.IsEmpty()) continue;
+			std::printf("  %s%s: %zu triangles, volume %.9g, closed %d\n", operand.name.c_str(), operand.mirror ? " (mirror)" : "", body.triangles.size(), body.SignedVolume(), (int)body.IsClosedManifold());
+			if (result.IsEmpty()) { result = std::move(body); continue; }
+			MeshBooleanStats bs;
+			result = MeshBoolean(result, body, op, &bs);
+			std::printf("    %s -> %zu triangles, volume %.9g; %d seam slivers, %d collapses, %d flips, %d refused, %d left; max seam move %.3g; %.2f s\n",
+				MeshBooleanOpName(op), result.triangles.size(), result.SignedVolume(), bs.n_seam_slivers, bs.n_seam_collapses, bs.n_seam_flips, bs.n_seam_refused, bs.n_seam_slivers_left, bs.max_seam_move, bs.seconds);
+		}
+		if (result.IsEmpty()) { std::printf("the boolean came out empty\n"); return 2; }
+		Box3 bb = result.Bounds();
+		Vec3 ext = bb.Extent();
+		std::printf("%s: %zu vertices, %zu triangles, volume %.9g, area %.9g, closed manifold %d, extent %.4g x %.4g x %.4g -> %s\n",
+			argv[3], result.vertices.size(), result.triangles.size(), result.SignedVolume(), result.SurfaceArea(), (int)result.IsClosedManifold(), ext.x, ext.y, ext.z, argv[5]);
+		return WriteTri(argv[5], result) ? 0 : 2;
+	}
+	if (mode == "write-bodies" && argc >= 3) {
+		// Every P-38 body with a mesh builder, at the app's tolerance, as
+		// body_<entity>_<body>.tri under the directory given.
+		ProjectFile project = LoadProjectYaml("C:\\Users\\Matt\\devel_1\\WingDesigner\\projects\\p38.yaml");
+		int n = 0;
+		for (const auto& ent : project.entities) {
+			std::vector<NamedMesh> bodies;
+			const double tol = 2e-3;
+			if (auto* w = std::get_if<WingModelSpec>(&ent.model)) bodies = WingModel(*w).BuildMeshes(tol);
+			else if (auto* f = std::get_if<FuselageSpec>(&ent.model)) bodies = FuselageModel(*f).BuildMeshes(tol);
+			else if (auto* nc = std::get_if<NacelleSpec>(&ent.model)) bodies = NacelleModel(*nc).BuildMeshes(tol);
+			else if (auto* l = std::get_if<LoftedNacelleSpec>(&ent.model)) bodies = LoftedNacelleModel(*l).BuildMeshes(tol);
+			else if (auto* p = std::get_if<PropellerSpec>(&ent.model)) bodies = PropellerModel(*p).BuildMeshes(tol);
+			for (const auto& body : bodies) {
+				std::string name = ent.name + "_" + body.name;
+				for (char& c : name) if (c == ' ' || c == '/' || c == '\\') c = '_';
+				std::string path = std::string(argv[2]) + "\\body_" + name + ".tri";
+				if (!body.mesh.IsClosedManifold()) { std::printf("%s: not closed, skipped\n", name.c_str()); continue; }
+				WriteTri(path, body.mesh);
+				std::printf("%s: %zu vertices, %zu triangles, volume %.9g -> %s\n", name.c_str(), body.mesh.vertices.size(), body.mesh.triangles.size(), body.mesh.SignedVolume(), path.c_str());
+				++n;
+			}
+		}
+		return n > 0 ? 0 : 2;
+	}
+	if (mode == "write-ellipsoid" && argc >= 7) {
+		TriMesh m = EllipsoidMesh(std::atof(argv[2]), std::atof(argv[3]), std::atof(argv[4]), std::atof(argv[5]));
+		std::printf("ellipsoid: %zu vertices, %zu triangles, volume %.9g -> %s\n", m.vertices.size(), m.triangles.size(), m.SignedVolume(), argv[6]);
+		return WriteTri(argv[6], m) ? 0 : 2;
+	}
+	std::printf("usage: tet_check write-wing <out.tri> | write-ellipsoid a b c tol <out.tri> | nested <outer.tri> <inner.tri> [cell] [out.vtk|-] [radius-edge]\n");
+	return 2;
+}
+
+// The nested (outer + inner surface) skin/core mesh and what it must
+// satisfy: valid; skin + core = the outer's volume and core = the inner's
+// to rounding; the skin/core interface is exactly the inner surface
+// (same area, closed); the outer boundary is the outer surface (same
+// area, closed manifold); every node inside the body.
+void NestedChecks(const char* label, const TriMesh& outer, const TriMesh& inner, const TetMesh& m, const NestedStats& s) {
+	std::string L = label;
+	ReportConforming((L + " (conforming stage)").c_str(), s.conforming);
+	std::printf("%s: %d inner shells, %d core points; skin %d tets %.9g (outer - inner %.9g), core %d tets %.9g (inner %.9g); min dihedral skin %.3f core %.3f; slivers %d / %d; improve %d/%d flips %d moves; %.2f s\n",
+		label, s.n_inner_shells, s.n_core_points, s.n_skin_tets, s.skin_volume, s.outer_volume - s.inner_volume, s.n_core_tets, s.core_volume, s.inner_volume, s.min_dihedral_skin, s.min_dihedral_core,
+		s.n_slivers_skin, s.n_slivers_core, s.improve.n_flips_23, s.improve.n_flips_32, s.improve.n_smoothed, s.seconds);
+	std::string why;
+	const bool degraded = s.conforming.n_faces_abandoned > 0;
+	// Where recovery abandoned faces the mesh boundary follows the
+	// tetrahedra, not the surface: validity and the node-inside test are
+	// reported, not required (as the plain mesher's blades are).
+	if (degraded) std::printf("%s: DEGRADED (%d faces abandoned): valid %d (%s)\n", label, s.conforming.n_faces_abandoned, (int)m.IsValid(&why), why.c_str());
+	else Check(m.IsValid(&why), L + ": mesh valid " + why);
+	const double rel = degraded ? 1e-3 : ((s.conforming.n_segment_snaps + s.conforming.n_segment_flips) > 0 ? 1e-6 : 1e-9);
+	const double vo = outer.SignedVolume(), vi = inner.triangles.empty() ? 0.0 : inner.SignedVolume();
+	// The tetrahedra always fill the body (every one of them is kept or
+	// dropped, nothing overlaps). The split between skin and core is the
+	// inner surface's only while that surface was conformed to: where faces
+	// were abandoned the regions are classified by the distance fields
+	// instead, and the interface drifts from the surface by as much as the
+	// hole it leaks through -- so there it is reported, not required.
+	Check(std::fabs(s.skin_volume + s.core_volume - vo) <= rel * vo, L + Fmt(": skin + core %.9g = the outer surface's volume %.9g", s.skin_volume + s.core_volume, vo));
+	if (degraded) {
+		std::printf("%s: core %.9g vs the inner surface's %.9g (%.2f%% off), skin %.9g vs outer - inner %.9g: reported, the regions were classified by field\n",
+			label, s.core_volume, vi, vi > 0.0 ? 100.0 * std::fabs(s.core_volume - vi) / vi : 0.0, s.skin_volume, vo - vi);
+	} else {
+		Check(std::fabs(s.core_volume - vi) <= rel * std::max(vo, 1e-300), L + Fmt(": core %.9g = the inner surface's volume %.9g", s.core_volume, vi));
+		Check(std::fabs(s.skin_volume - (vo - vi)) <= rel * vo, L + Fmt(": skin %.9g = outer - inner %.9g", s.skin_volume, vo - vi));
+	}
+	if (!degraded) {
+		// (A snap bends a segment through a node within 1e-4 of the diagonal
+		// of it, so with snaps the areas match to 1e-6 rather than rounding.)
+		TriMesh iface = m.InterfaceFaces(1, 2);
+		double a_if = iface.SurfaceArea(), a_in = inner.SurfaceArea();
+		Check(std::fabs(a_if - a_in) <= rel * std::max(a_in, 1e-300), L + Fmt(": the skin/core interface (%.0f faces) has the inner surface's area (%.9g vs %.9g)", (double)iface.triangles.size(), a_if, a_in));
+		int pinched = 0;
+		Check(inner.triangles.empty() || IsClosed(iface, &pinched), L + Fmt(": the interface is closed (%.0f pinched edges)", (double)pinched));
+		TriMesh boundary = m.BoundaryFaces(-1);
+		double a_b = boundary.SurfaceArea(), a_o = outer.SurfaceArea();
+		Check(boundary.IsClosedManifold() && std::fabs(a_b - a_o) <= rel * a_o, L + Fmt(": the outer boundary is a closed manifold with the outer surface's area (%.9g vs %.9g)", a_b, a_o));
+		TriMesh skin_boundary = m.BoundaryFaces(1);
+		Check(IsClosed(skin_boundary, &pinched) && std::fabs(skin_boundary.SignedVolume() - s.skin_volume) <= rel * vo, L + Fmt(": the skin's boundary (surface + interface, %.0f faces) is closed and encloses the skin's volume", (double)skin_boundary.triangles.size()));
+	}
+	// The outer surface's vertices keep their indices; the inner's follow.
+	bool kept = m.nodes.size() >= outer.vertices.size() + inner.vertices.size();
+	for (size_t v = 0; kept && v < outer.vertices.size(); ++v) kept = m.nodes[v].x == outer.vertices[v].x && m.nodes[v].y == outer.vertices[v].y && m.nodes[v].z == outer.vertices[v].z;
+	for (size_t v = 0; kept && v < inner.vertices.size(); ++v) kept = m.nodes[outer.vertices.size() + v].x == inner.vertices[v].x && m.nodes[outer.vertices.size() + v].y == inner.vertices[v].y && m.nodes[outer.vertices.size() + v].z == inner.vertices[v].z;
+	Check(kept, L + ": the outer's then the inner's vertices keep their indices and positions");
+	MeshSdf sdf(outer);
+	double worst_out = -1e300;
+	for (const auto& p : m.nodes) worst_out = std::max(worst_out, sdf.Distance(p));
+	if (degraded) std::printf("%s: furthest node outside the body %.3g (reported: the boundary follows the tetrahedra around the abandoned faces)\n", label, worst_out);
+	else Check(worst_out <= 1e-9 * outer.Bounds().Diagonal(), L + Fmt(": no node outside the body (max field %.3g)", worst_out));
+}
+
+// `tet_check nested <outer.tri> <inner.tri> [cell] [out.vtk] [radius-edge]`:
+// the nested mesh of two application .tri files (the inner may be empty),
+// with core points at `cell` spacing (0: none), refined to the radius-edge
+// bound (default 2, 0: none), written as VTK if asked ("-" for none).
+int NestedFromFiles(int argc, char** argv) {
+	TriMesh outer, inner;
+	if (!ReadTri(argv[2], outer)) { std::printf("cannot read %s\n", argv[2]); return 2; }
+	if (!ReadTri(argv[3], inner)) { std::printf("cannot read %s\n", argv[3]); return 2; }
+	std::printf("outer: %zu vertices, %zu triangles, closed %d, volume %.9g; inner: %zu vertices, %zu triangles, closed %d, volume %.9g\n", outer.vertices.size(), outer.triangles.size(), (int)outer.IsClosedManifold(), outer.SignedVolume(),
+		inner.vertices.size(), inner.triangles.size(), (int)(inner.triangles.empty() || inner.IsClosedManifold()), inner.triangles.empty() ? 0.0 : inner.SignedVolume());
+	NestedOptions o;
+	o.core_spacing = argc > 4 ? std::atof(argv[4]) : 0.0;
+	o.conforming.refine_radius_edge = argc > 6 ? std::atof(argv[6]) : 2.0;
+	NestedStats s;
+	Case("nested files", [&] {
+		TetMesh m = BuildNestedSkinCoreMesh(outer, inner, o, &s);
+		NestedChecks("nested files", outer, inner, m, s);
+		if (argc > 5 && std::string(argv[5]) != "-") { WriteTetMeshVtk(m, argv[5]); std::printf("wrote %s\n", argv[5]); }
+	});
+	std::printf("RESULT: %d failure(s)\n", g_failures);
+	return g_failures == 0 ? 0 : 1;
+}
+
 } // namespace
 
-int main() {
+int main(int argc, char** argv) {
 	setvbuf(stdout, nullptr, _IONBF, 0);
+	if (argc >= 4 && std::string(argv[1]) == "nested") return NestedFromFiles(argc, argv);
+	if (argc >= 2 && std::string(argv[1]).rfind("write-", 0) == 0) return WriteShape(argc, argv);
 	try {
 		// ---- predicates ----
 		{
@@ -364,6 +612,93 @@ int main() {
 			Check(worst < 2e-3, Fmt("sphere skin: interface nodes on radius %.2f (worst deviation %.2e)", R - t, worst));
 			Check(m.BoundaryFaces(1).SignedVolume() > 0.0, "sphere skin: the skin's boundary faces enclose a positive volume");
 			WriteTetMeshVtk(m, "C:\\Users\\Matt\\devel_1\\aerotelic\\core\\build\\tet_sphere_skin.vtk");
+		});
+
+		// ---- nested surfaces: the skin's inner boundary as its own surface ----
+		Case("nested sphere", [] {
+			const double R = 1.0, t = 0.1;
+			TriMesh outer = EllipsoidMesh(R, R, R, 2e-3);
+			TriMesh inner = EllipsoidMesh(R - t, R - t, R - t, 2e-3);
+			NestedOptions o;
+			o.core_spacing = 0.25;
+			NestedStats s;
+			TetMesh m = BuildNestedSkinCoreMesh(outer, inner, o, &s);
+			NestedChecks("nested sphere", outer, inner, m, s);
+			Check(s.n_inner_shells == 1 && s.n_core_points > 0, "nested sphere: one inner shell, core points inside it");
+			WriteTetMeshVtk(m, "C:\\Users\\Matt\\devel_1\\aerotelic\\core\\build\\tet_nested_sphere.vtk");
+		});
+		Case("nested box", [] {
+			// Coplanar faces and cospherical corners on both surfaces.
+			TriMesh outer = BoxMesh(2.0, 1.0, 0.5);
+			TriMesh inner = BoxMesh(1.8, 0.8, 0.3);
+			NestedOptions o;
+			o.core_spacing = 0.2;
+			NestedStats s;
+			TetMesh m = BuildNestedSkinCoreMesh(outer, inner, o, &s);
+			NestedChecks("nested box", outer, inner, m, s);
+		});
+		Case("nested sphere, refined", [] {
+			// Refinement inside a nested mesh: the classification is re-derived
+			// from the crossing depths afterwards, so skin and core must still
+			// tile the body exactly.
+			const double R = 1.0, t = 0.15;
+			TriMesh outer = EllipsoidMesh(R, R, R, 3e-3);
+			TriMesh inner = EllipsoidMesh(R - t, R - t, R - t, 3e-3);
+			NestedOptions o;
+			o.core_spacing = 0.3;
+			o.conforming.refine_radius_edge = 2.0;
+			NestedStats s;
+			TetMesh m = BuildNestedSkinCoreMesh(outer, inner, o, &s);
+			NestedChecks("nested sphere refined", outer, inner, m, s);
+			Check(s.conforming.n_refine_points > 0, "nested sphere refined: refinement inserted interior points");
+		});
+		Case("nested, an inner surface far coarser than the outer (out of scope)", [] {
+			// A 12-triangle box inside a finely triangulated ellipsoid: the
+			// outer's vertices crowd the inner's huge planar faces, and
+			// segment recovery splits them down to the length floor. Out of
+			// scope -- the application's inner surface is remeshed to about
+			// the skin thickness, so the two are of comparable density -- but
+			// it must still degrade rather than hang or lie about its volumes.
+			TriMesh outer = EllipsoidMesh(1.0, 0.7, 0.5, 2e-3);
+			TriMesh inner = BoxMesh(1.1, 0.7, 0.4);
+			NestedOptions o;
+			o.core_spacing = 0.2;
+			NestedStats s;
+			TetMesh m = BuildNestedSkinCoreMesh(outer, inner, o, &s);
+			NestedChecks("nested coarse box", outer, inner, m, s);
+			Check(s.conforming.n_faces_abandoned > 0, "nested coarse box: this configuration is expected to degrade (and did)");
+		});
+		Case("nested, two pockets", [] {
+			// An inner surface of two shells (a thin region split the offset).
+			TriMesh outer = BoxMesh(3.0, 1.0, 1.0);
+			TriMesh a = EllipsoidMesh(0.5, 0.3, 0.3, 2e-3);
+			TriMesh b = a;
+			a.Translate({-0.9, 0.0, 0.0});
+			b.Translate({0.9, 0.0, 0.0});
+			TriMesh inner = a;
+			inner.Append(b);
+			NestedOptions o;
+			o.core_spacing = 0.15;
+			NestedStats s;
+			TetMesh m = BuildNestedSkinCoreMesh(outer, inner, o, &s);
+			NestedChecks("nested pockets", outer, inner, m, s);
+			Check(s.n_inner_shells == 2, "nested pockets: two inner shells");
+		});
+		Case("nested, all skin", [] {
+			TriMesh outer = EllipsoidMesh(1.0, 0.7, 0.5, 3e-3);
+			NestedOptions o;
+			NestedStats s;
+			TetMesh m = BuildNestedSkinCoreMesh(outer, TriMesh(), o, &s);
+			NestedChecks("all skin", outer, TriMesh(), m, s);
+			Check(s.n_core_tets == 0 && s.n_skin_tets == (int)m.tets.size(), "all skin: every tetrahedron is skin");
+		});
+		Case("nested, inner not inside", [] {
+			TriMesh outer = EllipsoidMesh(1.0, 1.0, 1.0, 3e-3);
+			TriMesh inner = EllipsoidMesh(0.9, 0.9, 0.9, 3e-3);
+			inner.Translate({0.5, 0.0, 0.0});
+			bool threw = false;
+			try { BuildNestedSkinCoreMesh(outer, inner, {}, nullptr); } catch (const std::invalid_argument&) { threw = true; }
+			Check(threw, "nested: an inner surface poking out of the outer is refused");
 		});
 
 		// ---- the P-38's port wing ----

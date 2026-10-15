@@ -601,7 +601,9 @@ public:
 	// dropping the bounding nodes and any node no exported tetrahedron uses
 	// (an exterior cushion point of the refinement stage), renumbering in
 	// order so the surface vertices keep their indices.
-	TetMesh Export(const std::vector<char>* keep) const {
+	// `material`, if given, is per engine tetrahedron and copied to the
+	// exported ones (0 otherwise).
+	TetMesh Export(const std::vector<char>* keep, const std::vector<int>* material = nullptr) const {
 		TetMesh m;
 		std::vector<char> used(nodes.size(), 0);
 		for (size_t t = 0; t < tets.size(); ++t) {
@@ -627,9 +629,9 @@ public:
 			tmap[t] = static_cast<int>(m.tets.size());
 			m.tets.push_back({{remap[v[0]], remap[v[1]], remap[v[2]], remap[v[3]]}});
 			m.constrained.push_back(tets[t].cons);
+			m.material.push_back(material && t < material->size() ? (*material)[t] : 0);
 		}
 		m.neighbors.resize(m.tets.size());
-		m.material.assign(m.tets.size(), 0);
 		for (size_t t = 0; t < tets.size(); ++t) {
 			if (tmap[t] < 0) continue;
 			auto& nb = m.neighbors[tmap[t]];
@@ -1671,9 +1673,10 @@ int CountRecoverableMissing(Engine& e, const SurfaceTracker& surf) {
 	return n;
 }
 
-// Interior / exterior by the parity of surface crossings from the
-// bounding tetrahedron outward.
-std::vector<char> InteriorMask(Engine& e) {
+// The crossing depth of every tetrahedron: the fewest constrained faces a
+// path from the bounding tetrahedron must cross to reach it (0 outside
+// the outermost surface; -1 dead). A 0-1 BFS.
+std::vector<int> CrossingDepth(Engine& e) {
 	std::vector<int> depth(e.tets.size(), -1);
 	std::deque<int> dq;
 	for (size_t t = 0; t < e.tets.size(); ++t) {
@@ -1681,7 +1684,6 @@ std::vector<char> InteriorMask(Engine& e) {
 		const auto& v = e.tets[t].v;
 		if (e.IsBbox(v[0]) || e.IsBbox(v[1]) || e.IsBbox(v[2]) || e.IsBbox(v[3])) { depth[t] = 0; dq.push_back(static_cast<int>(t)); }
 	}
-	// 0-1 BFS: crossing a constrained face costs one.
 	while (!dq.empty()) {
 		int t = dq.front(); dq.pop_front();
 		for (int i = 0; i < 4; ++i) {
@@ -1695,9 +1697,53 @@ std::vector<char> InteriorMask(Engine& e) {
 			}
 		}
 	}
-	std::vector<char> keep(e.tets.size(), 0);
-	for (size_t t = 0; t < e.tets.size(); ++t) if (e.Alive(static_cast<int>(t)) && depth[t] > 0 && (depth[t] & 1)) keep[t] = 1;
-	return keep;
+	return depth;
+}
+
+// Which surfaces the tetrahedralization conforms to, and how the kept
+// tetrahedra are classified afterwards.
+struct RegionSpec {
+	// The body's own distance field: twins of edge points across a thin
+	// region are cast on it (null: no twins).
+	const MeshSdf* twin_sdf = nullptr;
+	// Nested mode: the input is the outer surface plus the (inverted) inner
+	// surface; every tetrahedron at crossing depth >= 1 is kept, with
+	// material 1 at depth one (the skin) and 2 deeper (the core). Plain
+	// mode keeps odd depth only, material 0.
+	bool nested = false;
+	// For the classification by field when faces were abandoned (parity
+	// would leak through the holes): inside the body / inside the inner
+	// surface.
+	const MeshSdf* outer_sdf = nullptr;
+	const MeshSdf* inner_sdf = nullptr;
+	// Reported as the stats' surface_volume (nested: the outer's; the
+	// combined input's volume is the skin's alone).
+	double surface_volume = 0.0;
+};
+
+// keep / material per engine tetrahedron under `rs`, by crossing depth
+// when the surface is whole, by the distance fields otherwise.
+void Classify(Engine& e, const RegionSpec& rs, bool surface_whole, std::vector<char>& keep, std::vector<int>& material) {
+	keep.assign(e.tets.size(), 0);
+	material.assign(e.tets.size(), 0);
+	if (surface_whole) {
+		std::vector<int> depth = CrossingDepth(e);
+		for (size_t t = 0; t < e.tets.size(); ++t) {
+			if (!e.Alive(static_cast<int>(t)) || depth[t] <= 0) continue;
+			if (rs.nested) { keep[t] = 1; material[t] = depth[t] == 1 ? 1 : 2; }
+			else if (depth[t] & 1) keep[t] = 1;
+		}
+		return;
+	}
+	for (size_t t = 0; t < e.tets.size(); ++t) {
+		if (!e.Alive(static_cast<int>(t))) continue;
+		const auto& v = e.tets[t].v;
+		if (e.IsBbox(v[0]) || e.IsBbox(v[1]) || e.IsBbox(v[2]) || e.IsBbox(v[3])) continue;
+		Vec3 c = (e.nodes[v[0]] + e.nodes[v[1]] + e.nodes[v[2]] + e.nodes[v[3]]) * 0.25;
+		if (!(rs.outer_sdf->Distance(c) < 0.0)) continue;
+		keep[t] = 1;
+		if (rs.nested) material[t] = (rs.inner_sdf && rs.inner_sdf->Distance(c) < 0.0) ? 2 : 1;
+	}
 }
 
 // Circumcentre and circumradius of (a, b, c, d); false when degenerate.
@@ -1936,16 +1982,211 @@ void RefineInterior(Engine& e, SurfaceTracker& surf, const ConformingOptions& op
 	st.refine_radius_edge_after = worst;
 }
 
-std::vector<char> InteriorMaskByField(Engine& e, const MeshSdf& sdf) {
-	std::vector<char> keep(e.tets.size(), 0);
-	for (size_t t = 0; t < e.tets.size(); ++t) {
-		if (!e.Alive(static_cast<int>(t))) continue;
-		const auto& v = e.tets[t].v;
-		if (e.IsBbox(v[0]) || e.IsBbox(v[1]) || e.IsBbox(v[2]) || e.IsBbox(v[3])) continue;
-		Vec3 c = (e.nodes[v[0]] + e.nodes[v[1]] + e.nodes[v[2]] + e.nodes[v[3]]) * 0.25;
-		if (sdf.Distance(c) < 0.0) keep[t] = 1;
+// Steps 1-4 (and 3b) over `input`, a closed surface of one or more
+// shells, classified under `rs`.
+TetMesh TetrahedralizeImpl(const TriMesh& input, const ConformingOptions& opt, ConformingStats* stats_out, const RegionSpec& rs) {
+	ConformingStats st;
+	auto clock = std::chrono::steady_clock::now;
+	auto t_start = clock();
+	if (input.triangles.empty()) throw std::invalid_argument("TetrahedralizeInterior: empty surface");
+	if (!input.IsClosedManifold()) throw std::invalid_argument("TetrahedralizeInterior: the surface is not a closed manifold");
+	TriMesh surface = input;
+	std::vector<int> region_of;
+	st.n_planar_flips = RetriangulatePlanarRegions(surface, opt.planar_tolerance, &st.n_planar_regions, &region_of);
+	st.n_surface_vertices = static_cast<int>(surface.vertices.size());
+	st.n_surface_triangles = static_cast<int>(surface.triangles.size());
+	st.n_interior_points = static_cast<int>(opt.interior_points.size());
+	const double input_volume = surface.SignedVolume();
+	if (input_volume <= 0.0) throw std::invalid_argument(rs.nested ? "TetrahedralizeNested: the inner surface is not inside the outer (the skin's volume is not positive)" : "TetrahedralizeInterior: the surface is inside out (negative volume)");
+	st.surface_volume = rs.nested ? rs.surface_volume : input_volume;
+
+	// Points: surface vertices, then interior points.
+	std::vector<Vec3> pts = surface.vertices;
+	pts.insert(pts.end(), opt.interior_points.begin(), opt.interior_points.end());
+	Engine e(pts);
+
+	SurfaceTracker surf;
+	for (size_t i = 0; i < surface.triangles.size(); ++i) surf.Add(surface.triangles[i], static_cast<int>(i), region_of[i]);
+	e.tracked = &surf.keys;
+	e.is_segment = [&surf](uint64_t key) { return surf.IsSegment(key); };
+	const int n_input_vertices = static_cast<int>(surface.vertices.size());
+	const int n_interior_points = static_cast<int>(opt.interior_points.size());
+	const double diagonal = surface.Bounds().Diagonal();
+	const double min_length = opt.min_segment_fraction * diagonal;
+	const double snap = opt.segment_snap_fraction * diagonal;
+	const int steiner_budget = static_cast<int>(opt.max_steiner_factor * n_input_vertices) + 100;
+	auto elapsed = [&]() { return std::chrono::duration<double>(clock() - t_start).count(); };
+	// Steiner points, snaps and flips all count against the budget (snaps
+	// and flips add no node but can go on for ever on a degenerate surface).
+	std::function<bool()> over_budget = [&]() {
+		int work = static_cast<int>(e.nodes.size()) - n_input_vertices - n_interior_points - 4 + st.n_segment_snaps + st.n_segment_flips;
+		return work > steiner_budget || (opt.max_seconds > 0.0 && elapsed() > opt.max_seconds);
+	};
+	const bool trace = std::getenv("AEROTELIC_TET_TRACE") != nullptr;
+
+	// 1. Delaunay.
+	{
+		auto t0 = clock();
+		Engine::InsertOptions plain;
+		InsertAll(e, 0, static_cast<int>(pts.size()), plain);
+		MarkTrackedFaces(e, surf);
+		st.seconds_delaunay = std::chrono::duration<double>(clock() - t0).count();
 	}
-	return keep;
+
+	// 2. Segments, on a Delaunay mesh throughout.
+	auto recover_segments = [&](bool first) {
+		for (int pass = 0; pass < 256; ++pass) {
+			int splits = RecoverSegmentsPass(e, surf, rs.twin_sdf, n_input_vertices, n_interior_points, min_length, snap, over_budget, st, (first && pass == 0) ? &st.n_segments_missing : nullptr);
+			if (trace) std::printf("  [tet] segment pass %d: %d splits, %d nodes, %d abandoned, %.1f s\n", pass, splits, (int)e.nodes.size(), st.n_segments_abandoned, elapsed());
+			if (splits == 0) break;
+			if (pass == 255) throw std::runtime_error("tet: segment recovery did not converge in 256 passes");
+		}
+	};
+	{
+		auto ts = clock();
+		recover_segments(true);
+		st.seconds_segments = std::chrono::duration<double>(clock() - ts).count();
+		MarkTrackedFaces(e, surf);
+		st.n_faces_missing = CountMissingFaces(e, surf);
+	}
+
+	// 3. Faces. Every insertion from here on is constrained and keeps the
+	// segments and the faces already present.
+	{
+		auto ts = clock();
+		Recovery rec(e, surf, opt, st);
+		rec.snap = snap;
+		rec.n_input_vertices = n_input_vertices;
+		rec.n_interior_points = n_interior_points;
+		bool done = false;
+		int n_relapses = 0; // rounds that found a segment gone and recovered it again
+		for (int round = 0; round < 64 && !done; ++round) {
+			int handled = 0;
+			// A segment can go missing again during face recovery (a cavity
+			// re-tetrahedralization or a planar-region point is not bound to
+			// keep every edge of the surface's current pieces): recover the
+			// segments once more before this round rather than fail.
+			{
+				bool lost = false;
+				for (size_t idx = 0; idx < surf.tris.size() && !lost; ++idx) {
+					if (!surf.alive[idx] || surf.HasAbandonedEdge(static_cast<int>(idx))) continue;
+					const auto& t = surf.tris[idx];
+					lost = !e.HasEdge(t[0], t[1]) || !e.HasEdge(t[1], t[2]) || !e.HasEdge(t[2], t[0]);
+				}
+				if (lost) {
+					if (++n_relapses > 16) throw std::runtime_error("tet: surface edges kept being lost during face recovery");
+					if (trace) std::printf("  [tet] face round %d: a surface edge was lost; recovering the segments again\n", round);
+					recover_segments(false);
+					MarkTrackedFaces(e, surf);
+				}
+			}
+			// Planar regions first, as facets.
+			{
+				std::unordered_map<int, std::vector<int>> by_region;
+				for (size_t idx = 0; idx < surf.tris.size(); ++idx) if (surf.alive[idx] && surf.region[idx] >= 0 && !surf.HasAbandonedEdge(static_cast<int>(idx))) by_region[surf.region[idx]].push_back(static_cast<int>(idx));
+				for (const auto& kv : by_region) {
+					if (over_budget()) break;
+					try {
+						if (!rec.RecoverRegion(kv.first, kv.second)) ++handled;
+					} catch (const std::runtime_error&) {
+						for (int idx : kv.second) {
+							if (!surf.alive[idx]) continue;
+							const auto& t = surf.tris[idx];
+							for (int k = 0; k < 3; ++k) surf.abandoned.insert(EdgeKey(t[k], t[(k + 1) % 3]));
+						}
+					}
+				}
+				MarkTrackedFaces(e, surf);
+			}
+			size_t n_tracked = surf.tris.size(); // pieces added during the round are checked next round
+			for (size_t idx = 0; idx < n_tracked; ++idx) {
+				if (!surf.alive[idx] || surf.region[idx] >= 0 || surf.HasAbandonedEdge(static_cast<int>(idx))) continue;
+				const auto& t = surf.tris[idx];
+				if (e.FindFace(t[0], t[1], t[2]) >= 0) continue;
+				if (over_budget()) {
+					// The budget is spent: abandon what is left.
+					for (int k = 0; k < 3; ++k) surf.abandoned.insert(EdgeKey(t[k], t[(k + 1) % 3]));
+					continue;
+				}
+				if (!e.HasEdge(t[0], t[1]) || !e.HasEdge(t[1], t[2]) || !e.HasEdge(t[2], t[0])) {
+					// Lost during this round: the next round recovers it first.
+					++handled;
+					continue;
+				}
+				try {
+					rec.RecoverFace(static_cast<int>(idx));
+				} catch (const std::runtime_error& ex) {
+					// Give up on this triangle: mark its edges abandoned so its
+					// pieces are not retried.
+					for (int k = 0; k < 3; ++k) surf.abandoned.insert(EdgeKey(t[k], t[(k + 1) % 3]));
+					(void)ex;
+				}
+				++handled;
+			}
+			MarkTrackedFaces(e, surf);
+			if (trace) std::printf("  [tet] face round %d: %d handled, %d missing, %d nodes, %.1f s\n", round, handled, CountMissingFaces(e, surf), (int)e.nodes.size(), elapsed());
+			if (handled == 0 || CountRecoverableMissing(e, surf) == 0) done = true;
+			if (over_budget()) {
+				for (size_t idx = 0; idx < surf.tris.size(); ++idx) {
+					if (!surf.alive[idx]) continue;
+					const auto& t = surf.tris[idx];
+					if (e.FindFace(t[0], t[1], t[2]) >= 0) continue;
+					for (int k = 0; k < 3; ++k) surf.abandoned.insert(EdgeKey(t[k], t[(k + 1) % 3]));
+				}
+				done = true;
+			}
+		}
+		if (!done) throw std::runtime_error("tet: face recovery did not converge in 64 rounds (" + std::to_string(CountMissingFaces(e, surf)) + " faces still missing; " + std::to_string(st.n_cavity_recoveries) +
+			" cavity recoveries, " + std::to_string(st.n_face_steiner) + " face Steiner, " + std::to_string(st.n_region_steiner) + " region points, " + std::to_string(st.n_regions_adopted) + " regions adopted)");
+		st.seconds_faces = std::chrono::duration<double>(clock() - ts).count();
+		st.n_faces_abandoned = CountMissingFaces(e, surf);
+	}
+
+	// 4. Interior: by crossing depth when the surface is whole, by the
+	// distance fields where faces were abandoned (parity would leak
+	// through the holes).
+	const bool whole = st.n_faces_abandoned == 0;
+	std::vector<char> keep;
+	std::vector<int> material;
+	Classify(e, rs, whole, keep, material);
+
+	// 3b. Refinement of the interior, with the inside flag carried through
+	// every insertion; the materials are re-derived afterwards (every
+	// insertion is constrained, so the surfaces are intact and the depths
+	// still tell the regions apart).
+	if (opt.refine_radius_edge > 0.0) {
+		auto ts = clock();
+		e.inside = keep;
+		e.inside.resize(e.tets.size(), 0);
+		RefineInterior(e, surf, opt, diagonal, n_input_vertices, st);
+		MarkTrackedFaces(e, surf);
+		keep = e.inside;
+		keep.resize(e.tets.size(), 0);
+		e.inside.clear();
+		if (rs.nested) {
+			std::vector<char> keep2;
+			Classify(e, rs, whole, keep2, material);
+			if (whole) keep = keep2;
+			else {
+				// The fields decided the regions; the refinement's own flag
+				// decides what is kept.
+				for (size_t t = 0; t < keep.size(); ++t) if (keep[t] && material[t] == 0) material[t] = 1;
+			}
+		}
+		st.seconds_refine = std::chrono::duration<double>(clock() - ts).count();
+		if (trace) std::printf("  [tet] refinement: %d interior points, %d surface points, %d skipped; worst radius-edge %.2f -> %.2f, %.1f s\n", st.n_refine_points, st.n_refine_surface_points, st.n_refine_skipped, st.refine_radius_edge_before, st.refine_radius_edge_after, st.seconds_refine);
+	}
+	TetMesh m = e.Export(&keep, rs.nested ? &material : nullptr);
+	int n_live = e.LiveCount();
+	st.n_tets_interior = static_cast<int>(m.tets.size());
+	st.n_tets_exterior = n_live - st.n_tets_interior;
+	st.n_surface_faces = 0;
+	for (size_t idx = 0; idx < surf.tris.size(); ++idx) if (surf.alive[idx]) ++st.n_surface_faces;
+	st.mesh_volume = m.Volume();
+	st.delaunay = e.stats;
+	st.seconds_total = std::chrono::duration<double>(clock() - t_start).count();
+	if (stats_out) *stats_out = st;
+	return m;
 }
 
 } // namespace
@@ -2105,170 +2346,63 @@ int RetriangulatePlanarRegions(TriMesh& m, double plane_tol_fraction, int* n_reg
 // ---------------------------------------------------------------------------
 
 TetMesh TetrahedralizeInterior(const TriMesh& input, const ConformingOptions& opt, ConformingStats* stats_out) {
-	ConformingStats st;
-	auto clock = std::chrono::steady_clock::now;
-	auto t_start = clock();
 	if (input.triangles.empty()) throw std::invalid_argument("TetrahedralizeInterior: empty surface");
 	if (!input.IsClosedManifold()) throw std::invalid_argument("TetrahedralizeInterior: the surface is not a closed manifold");
-	TriMesh surface = input;
-	std::vector<int> region_of;
-	st.n_planar_flips = RetriangulatePlanarRegions(surface, opt.planar_tolerance, &st.n_planar_regions, &region_of);
-	st.n_surface_vertices = static_cast<int>(surface.vertices.size());
-	st.n_surface_triangles = static_cast<int>(surface.triangles.size());
-	st.n_interior_points = static_cast<int>(opt.interior_points.size());
-	st.surface_volume = surface.SignedVolume();
-	if (st.surface_volume <= 0.0) throw std::invalid_argument("TetrahedralizeInterior: the surface is inside out (negative volume)");
-
-	// Points: surface vertices, then interior points.
-	std::vector<Vec3> pts = surface.vertices;
-	pts.insert(pts.end(), opt.interior_points.begin(), opt.interior_points.end());
-	Engine e(pts);
 	// The input's distance field: for the twins of edge points in thin
 	// regions, and for the interior classification when faces are abandoned.
 	const MeshSdf sdf(input);
+	RegionSpec rs;
+	rs.twin_sdf = &sdf;
+	rs.outer_sdf = &sdf;
+	return TetrahedralizeImpl(input, opt, stats_out, rs);
+}
 
-	SurfaceTracker surf;
-	for (size_t i = 0; i < surface.triangles.size(); ++i) surf.Add(surface.triangles[i], static_cast<int>(i), region_of[i]);
-	e.tracked = &surf.keys;
-	e.is_segment = [&surf](uint64_t key) { return surf.IsSegment(key); };
-	const int n_input_vertices = static_cast<int>(surface.vertices.size());
-	const int n_interior_points = static_cast<int>(opt.interior_points.size());
-	const double diagonal = surface.Bounds().Diagonal();
-	const double min_length = opt.min_segment_fraction * diagonal;
-	const double snap = opt.segment_snap_fraction * diagonal;
-	const int steiner_budget = static_cast<int>(opt.max_steiner_factor * n_input_vertices) + 100;
-	auto elapsed = [&]() { return std::chrono::duration<double>(clock() - t_start).count(); };
-	// Steiner points, snaps and flips all count against the budget (snaps
-	// and flips add no node but can go on for ever on a degenerate surface).
-	std::function<bool()> over_budget = [&]() {
-		int work = static_cast<int>(e.nodes.size()) - n_input_vertices - n_interior_points - 4 + st.n_segment_snaps + st.n_segment_flips;
-		return work > steiner_budget || (opt.max_seconds > 0.0 && elapsed() > opt.max_seconds);
-	};
-	const bool trace = std::getenv("AEROTELIC_TET_TRACE") != nullptr;
-
-	// 1. Delaunay.
-	{
-		auto t0 = clock();
-		Engine::InsertOptions plain;
-		InsertAll(e, 0, static_cast<int>(pts.size()), plain);
-		MarkTrackedFaces(e, surf);
-		st.seconds_delaunay = std::chrono::duration<double>(clock() - t0).count();
+TetMesh TetrahedralizeNested(const TriMesh& outer, const TriMesh& inner, const ConformingOptions& opt, ConformingStats* stats_out) {
+	if (outer.triangles.empty()) throw std::invalid_argument("TetrahedralizeNested: empty outer surface");
+	if (!outer.IsClosedManifold()) throw std::invalid_argument("TetrahedralizeNested: the outer surface is not a closed manifold");
+	const double outer_volume = outer.SignedVolume();
+	if (outer_volume <= 0.0) throw std::invalid_argument("TetrahedralizeNested: the outer surface is inside out (negative volume)");
+	if (inner.triangles.empty()) {
+		// All skin.
+		const MeshSdf sdf(outer);
+		RegionSpec rs;
+		rs.twin_sdf = &sdf;
+		rs.outer_sdf = &sdf;
+		TetMesh m = TetrahedralizeImpl(outer, opt, stats_out, rs);
+		m.material.assign(m.tets.size(), 1);
+		return m;
 	}
-
-	// 2. Segments, on a Delaunay mesh throughout.
-	{
-		auto ts = clock();
-		for (int pass = 0; pass < 256; ++pass) {
-			int splits = RecoverSegmentsPass(e, surf, &sdf, n_input_vertices, n_interior_points, min_length, snap, over_budget, st, pass == 0 ? &st.n_segments_missing : nullptr);
-			if (trace) std::printf("  [tet] segment pass %d: %d splits, %d nodes, %d abandoned, %.1f s\n", pass, splits, (int)e.nodes.size(), st.n_segments_abandoned, elapsed());
-			if (splits == 0) break;
-			if (pass == 255) throw std::runtime_error("tet: segment recovery did not converge in 256 passes");
-		}
-		st.seconds_segments = std::chrono::duration<double>(clock() - ts).count();
-		MarkTrackedFaces(e, surf);
-		st.n_faces_missing = CountMissingFaces(e, surf);
+	if (!inner.IsClosedManifold()) throw std::invalid_argument("TetrahedralizeNested: the inner surface is not a closed manifold");
+	if (inner.SignedVolume() <= 0.0) throw std::invalid_argument("TetrahedralizeNested: the inner surface is inside out (negative volume)");
+	const MeshSdf outer_sdf(outer);
+	const MeshSdf inner_sdf(inner);
+	// Every inner vertex strictly inside the body: a vertex on or outside
+	// it would make the two constraint sets cross, which no recovery can
+	// conform to.
+	double worst = -1e300;
+	for (const Vec3& p : inner.vertices) worst = std::max(worst, outer_sdf.Distance(p));
+	if (!(worst < 0.0)) {
+		char buf[200];
+		std::snprintf(buf, sizeof buf, "TetrahedralizeNested: the inner surface is not strictly inside the outer (a vertex is %.3g outside it)", worst);
+		throw std::invalid_argument(buf);
 	}
-
-	// 3. Faces. Every insertion from here on is constrained and keeps the
-	// segments and the faces already present.
-	{
-		auto ts = clock();
-		Recovery rec(e, surf, opt, st);
-		rec.snap = snap;
-		rec.n_input_vertices = n_input_vertices;
-		rec.n_interior_points = n_interior_points;
-		bool done = false;
-		for (int round = 0; round < 64 && !done; ++round) {
-			int handled = 0;
-			// Planar regions first, as facets.
-			{
-				std::unordered_map<int, std::vector<int>> by_region;
-				for (size_t idx = 0; idx < surf.tris.size(); ++idx) if (surf.alive[idx] && surf.region[idx] >= 0 && !surf.HasAbandonedEdge(static_cast<int>(idx))) by_region[surf.region[idx]].push_back(static_cast<int>(idx));
-				for (const auto& kv : by_region) {
-					if (over_budget()) break;
-					try {
-						if (!rec.RecoverRegion(kv.first, kv.second)) ++handled;
-					} catch (const std::runtime_error&) {
-						for (int idx : kv.second) {
-							if (!surf.alive[idx]) continue;
-							const auto& t = surf.tris[idx];
-							for (int k = 0; k < 3; ++k) surf.abandoned.insert(EdgeKey(t[k], t[(k + 1) % 3]));
-						}
-					}
-				}
-				MarkTrackedFaces(e, surf);
-			}
-			size_t n_tracked = surf.tris.size(); // pieces added during the round are checked next round
-			for (size_t idx = 0; idx < n_tracked; ++idx) {
-				if (!surf.alive[idx] || surf.region[idx] >= 0 || surf.HasAbandonedEdge(static_cast<int>(idx))) continue;
-				const auto& t = surf.tris[idx];
-				if (e.FindFace(t[0], t[1], t[2]) >= 0) continue;
-				if (over_budget()) {
-					// The budget is spent: abandon what is left.
-					for (int k = 0; k < 3; ++k) surf.abandoned.insert(EdgeKey(t[k], t[(k + 1) % 3]));
-					continue;
-				}
-				if (!e.HasEdge(t[0], t[1]) || !e.HasEdge(t[1], t[2]) || !e.HasEdge(t[2], t[0]))
-					throw std::runtime_error("tet: a surface edge was lost during face recovery (triangle " + std::to_string(idx) + ")");
-				try {
-					rec.RecoverFace(static_cast<int>(idx));
-				} catch (const std::runtime_error& ex) {
-					// Give up on this triangle: mark its edges abandoned so its
-					// pieces are not retried.
-					for (int k = 0; k < 3; ++k) surf.abandoned.insert(EdgeKey(t[k], t[(k + 1) % 3]));
-					(void)ex;
-				}
-				++handled;
-			}
-			MarkTrackedFaces(e, surf);
-			if (trace) std::printf("  [tet] face round %d: %d handled, %d missing, %d nodes, %.1f s\n", round, handled, CountMissingFaces(e, surf), (int)e.nodes.size(), elapsed());
-			if (handled == 0 || CountRecoverableMissing(e, surf) == 0) done = true;
-			if (over_budget()) {
-				for (size_t idx = 0; idx < surf.tris.size(); ++idx) {
-					if (!surf.alive[idx]) continue;
-					const auto& t = surf.tris[idx];
-					if (e.FindFace(t[0], t[1], t[2]) >= 0) continue;
-					for (int k = 0; k < 3; ++k) surf.abandoned.insert(EdgeKey(t[k], t[(k + 1) % 3]));
-				}
-				done = true;
-			}
-		}
-		if (!done) throw std::runtime_error("tet: face recovery did not converge in 64 rounds (" + std::to_string(CountMissingFaces(e, surf)) + " faces still missing; " + std::to_string(st.n_cavity_recoveries) +
-			" cavity recoveries, " + std::to_string(st.n_face_steiner) + " face Steiner, " + std::to_string(st.n_region_steiner) + " region points, " + std::to_string(st.n_regions_adopted) + " regions adopted)");
-		st.seconds_faces = std::chrono::duration<double>(clock() - ts).count();
-		st.n_faces_abandoned = CountMissingFaces(e, surf);
-	}
-
-	// 4. Interior: by crossing parity when the surface is whole, by the
-	// surface's distance field where faces were abandoned (parity would
-	// leak through the holes).
-	std::vector<char> keep = st.n_faces_abandoned == 0 ? InteriorMask(e) : InteriorMaskByField(e, sdf);
-
-	// 3b. Refinement of the interior, with the classification carried
-	// through every insertion.
-	if (opt.refine_radius_edge > 0.0) {
-		auto ts = clock();
-		e.inside = keep;
-		e.inside.resize(e.tets.size(), 0);
-		RefineInterior(e, surf, opt, diagonal, n_input_vertices, st);
-		MarkTrackedFaces(e, surf);
-		keep = e.inside;
-		keep.resize(e.tets.size(), 0);
-		e.inside.clear();
-		st.seconds_refine = std::chrono::duration<double>(clock() - ts).count();
-		if (trace) std::printf("  [tet] refinement: %d interior points, %d surface points, %d skipped; worst radius-edge %.2f -> %.2f, %.1f s\n", st.n_refine_points, st.n_refine_surface_points, st.n_refine_skipped, st.refine_radius_edge_before, st.refine_radius_edge_after, st.seconds_refine);
-	}
-	TetMesh m = e.Export(&keep);
-	int n_live = e.LiveCount();
-	st.n_tets_interior = static_cast<int>(m.tets.size());
-	st.n_tets_exterior = n_live - st.n_tets_interior;
-	st.n_surface_faces = 0;
-	for (size_t idx = 0; idx < surf.tris.size(); ++idx) if (surf.alive[idx]) ++st.n_surface_faces;
-	st.mesh_volume = m.Volume();
-	st.delaunay = e.stats;
-	st.seconds_total = std::chrono::duration<double>(clock() - t_start).count();
-	if (stats_out) *stats_out = st;
-	return m;
+	// One constraint set: the outer surface and the inner one inverted (so
+	// the combined surface is a closed, outward hollow body, whose volume
+	// is the skin's).
+	TriMesh combined = outer;
+	TriMesh inverted = inner;
+	inverted.FlipWinding();
+	combined.Append(inverted);
+	// Twins are cast on the body's own field (as in plain mode): casting
+	// them on the combined surface was tried and made the Boom's recovery
+	// cascade where it had conformed exactly.
+	RegionSpec rs;
+	rs.twin_sdf = &outer_sdf;
+	rs.nested = true;
+	rs.outer_sdf = &outer_sdf;
+	rs.inner_sdf = &inner_sdf;
+	rs.surface_volume = outer_volume;
+	return TetrahedralizeImpl(combined, opt, stats_out, rs);
 }
 
 // ---------------------------------------------------------------------------

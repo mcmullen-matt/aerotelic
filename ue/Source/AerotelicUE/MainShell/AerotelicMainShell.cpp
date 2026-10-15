@@ -4,6 +4,7 @@
 #include "AerotelicSceneTree.h"
 #include "AerotelicDesignDock.h"
 #include "AerotelicSurfaceDialog.h"
+#include "AerotelicShadowDialog.h"
 #include "AerotelicWelcomeScreen.h"
 #include "AerotelicTutorialDialog.h"
 #include "AerotelicTitleBar.h"
@@ -400,6 +401,7 @@ void SAerotelicMainShell::BindCommands()
 		FIsActionChecked::CreateLambda([this]() { return bNavCubeVisible; }));
 	Commands->MapAction(C.ShowIntermediateFeatures, FExecuteAction(), Never(), FIsActionChecked::CreateLambda([]() { return false; }));
 	Commands->MapAction(C.SurfaceStyle, FExecuteAction::CreateLambda([]() { OpenAerotelicSurfaceDialog(); }));
+	Commands->MapAction(C.ShadowStyle, FExecuteAction::CreateLambda([]() { OpenAerotelicShadowDialog(); }));
 	Commands->MapAction(C.Rebuild, FExecuteAction::CreateSP(this, &SAerotelicMainShell::OnRebuild));
 
 	// Style / Section dropdowns (occ_viewer.py set_render_style /
@@ -534,6 +536,7 @@ void SAerotelicMainShell::FillViewMenu(FMenuBuilder& Menu)
 	Menu.AddMenuEntry(C.ShowIntermediateFeatures);
 	Menu.AddMenuSeparator();
 	Menu.AddMenuEntry(C.SurfaceStyle);
+	Menu.AddMenuEntry(C.ShadowStyle);
 	Menu.AddMenuSeparator();
 	Menu.AddMenuEntry(C.Rebuild);
 }

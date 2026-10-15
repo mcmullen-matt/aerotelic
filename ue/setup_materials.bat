@@ -1,7 +1,8 @@
 @echo off
 rem Creates Content\Materials\M_AerotelicSurface.uasset, the surface material
-rem the bodies are drawn with (Color + Metallic / Specular / Roughness
-rem parameters, driven by View -> Surface...). Needs build_editor.bat first.
+rem the bodies are drawn with (Color + Metallic / Specular / Roughness and the
+rem Fresnel sheen parameters, driven by View -> Surface...). Needs
+rem build_editor.bat first.
 rem Run once after cloning (the asset is committed, so normally not needed)
 rem and again whenever AerotelicMaterialSetupCommandlet changes.
 setlocal

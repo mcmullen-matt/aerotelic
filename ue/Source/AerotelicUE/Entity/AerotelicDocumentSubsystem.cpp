@@ -8,6 +8,9 @@
 
 #include "Engine/Engine.h"
 #include "Engine/World.h"
+#include "Engine/DirectionalLight.h"
+#include "Components/DirectionalLightComponent.h"
+#include "EngineUtils.h"
 #include "Misc/MessageDialog.h"
 #include "Misc/Paths.h"
 #include "DesktopPlatformModule.h"
@@ -65,6 +68,41 @@ void UAerotelicDocumentSubsystem::SetSurfaceStyle(const FAerotelicSurfaceStyle& 
 		if (WeakEntity.IsValid())
 		{
 			WeakEntity->ApplySurfaceStyle(Style);
+		}
+	}
+}
+
+void UAerotelicDocumentSubsystem::SetShadowStyle(const FAerotelicShadowStyle& Style)
+{
+	ShadowStyle = Style;
+	ApplyShadowStyle();
+}
+
+void UAerotelicDocumentSubsystem::ApplyShadowStyle()
+{
+	UWorld* World = GetTargetWorld();
+	if (World == nullptr)
+	{
+		return;
+	}
+	// The studio rig's key light is the one with ForwardShadingPriority set
+	// (SpawnLighting), which is also the only one that casts shadows. The
+	// biases go to every directional light so a rig that gains another
+	// caster stays consistent, but the cast toggle is the key light's
+	// alone: switching it on for the fill lights would put three competing
+	// shadows on the model.
+	for (TActorIterator<ADirectionalLight> It(World); It; ++It)
+	{
+		UDirectionalLightComponent* Light = Cast<UDirectionalLightComponent>(It->GetLightComponent());
+		if (Light == nullptr)
+		{
+			continue;
+		}
+		Light->SetShadowBias(ShadowStyle.DepthBias);
+		Light->SetShadowSlopeBias(ShadowStyle.SlopeBias);
+		if (Light->ForwardShadingPriority > 0)
+		{
+			Light->SetCastShadows(ShadowStyle.bCastShadows);
 		}
 	}
 }

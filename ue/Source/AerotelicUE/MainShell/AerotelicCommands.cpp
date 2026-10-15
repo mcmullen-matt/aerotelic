@@ -30,8 +30,8 @@ void FAerotelicCommands::RegisterCommands()
 	// Lattice
 	UI_COMMAND(GenerateLattice, "Generate Lattice...", "Fill the scene's bodies with a lattice (TPMS, strut-based or auxetic, after OpenLattice): pick the type and the parameters that control it", EUserInterfaceActionType::Button, FInputChord());
 	UI_COMMAND(RegenerateLattices, "Regenerate Lattices", "Rebuild every lattice over its bodies as they now stand (a lattice does not follow edits to its bodies by itself)", EUserInterfaceActionType::Button, FInputChord());
-	UI_COMMAND(ExportSkinVtk, "Export Skin Tetrahedra (VTK)...", "Write the skin of every lattice in the scene as tetrahedra (legacy VTK unstructured grid, cell data 'material'), for a finite-element model", EUserInterfaceActionType::Button, FInputChord());
-	UI_COMMAND(ExportTetVtk, "Export Tetrahedral Mesh (VTK)...", "Mesh every body a lattice fills with tetrahedra conforming exactly to its surface, split into skin (material 1) and core (material 2), as a legacy VTK unstructured grid for a finite-element model", EUserInterfaceActionType::Button, FInputChord());
+	UI_COMMAND(ExportSkinVtk, "Export Skin Tetrahedra (VTK)...", "Write the skin of every body a lattice fills as tetrahedra conforming exactly to the body's surface outside and to its offset at the skin depth inside (legacy VTK unstructured grid, cell data 'material' = 1), for a finite-element model", EUserInterfaceActionType::Button, FInputChord());
+	UI_COMMAND(ExportTetVtk, "Export Tetrahedral Mesh (VTK)...", "Write every body a lattice fills as tetrahedra conforming exactly to its surface, split at its offset into skin (material 1) and core (material 2) that together fill the body's volume exactly, as a legacy VTK unstructured grid for a finite-element model", EUserInterfaceActionType::Button, FInputChord());
 
 	// View
 	UI_COMMAND(ViewIsometric, "Isometric", "Look at the scene from the isometric direction", EUserInterfaceActionType::Button, FInputChord());
@@ -41,7 +41,8 @@ void FAerotelicCommands::RegisterCommands()
 	UI_COMMAND(GroundGrid, "Ground Grid", "Show or hide the ground lattice, sized to the model", EUserInterfaceActionType::ToggleButton, FInputChord(EModifierKey::Control, EKeys::G));
 	UI_COMMAND(NavigationCube, "Navigation Cube", "Orientation widget in the top-right corner of the view: click a face, edge or corner to look from there", EUserInterfaceActionType::ToggleButton, FInputChord());
 	UI_COMMAND(ShowIntermediateFeatures, "Show Intermediate Features", "List the individual steps that make up each authored operation. Not available yet in this version.", EUserInterfaceActionType::ToggleButton, FInputChord());
-	UI_COMMAND(SurfaceStyle, "Surface...", "Metallic, glossiness and blur of every rendered surface", EUserInterfaceActionType::Button, FInputChord());
+	UI_COMMAND(SurfaceStyle, "Surface...", "Metallic, glossiness, blur and Fresnel edge sheen of every rendered surface", EUserInterfaceActionType::Button, FInputChord());
+	UI_COMMAND(ShadowStyle, "Shadows...", "Whether the key light casts shadows, and the depth and slope (normal) bias its shadow map is read with", EUserInterfaceActionType::Button, FInputChord());
 	UI_COMMAND(Rebuild, "Rebuild Wing", "Rebuild the selected entity's geometry", EUserInterfaceActionType::Button, FInputChord(EKeys::F5));
 
 	// Left toolbar dropdowns (_setup_panel_toolbar)

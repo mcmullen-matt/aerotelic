@@ -14,6 +14,47 @@ struct FAerotelicSurfaceStyle
 	float Metallic = 0.0f;
 	float Specular = 0.5f;
 	float Roughness = 0.5f;
+	// The Fresnel sheen the surface material adds on top of the lit
+	// shading (M_AerotelicSurface's FresnelIntensity / FresnelExponent):
+	// grazing-angle pixels are brightened, so a silhouette and a tight
+	// curvature read as a bright rim rather than fading into the
+	// background. Intensity 0..1 scales it and 0 switches it off;
+	// Exponent 1..8 is the falloff, 1 a broad wash over the whole body
+	// and 8 a thin edge line. Unlike the three physical parameters above
+	// this is not a material property of the part: it is a reading aid,
+	// the shading trick a CAD viewport uses to show form on an untextured
+	// monochrome surface.
+	float FresnelIntensity = 0.35f;
+	float FresnelExponent = 3.0f;
+};
+
+// The key light's shadow settings -- View -> Shadows... sets them for the
+// scene. The studio rig (AerotelicGameMode::SpawnLighting) has one
+// shadow-casting directional light, movable, so its shadows are cascaded
+// shadow maps: a depth map rendered from the light, compared against each
+// pixel's depth. The comparison needs a bias, or a surface shadows itself
+// in stripes ("shadow acne") where it is nearly parallel to the light;
+// too much bias and the shadow slides away from its caster
+// ("peter-panning"), which on a thin wing looks like a detached shadow.
+//
+//   DepthBias  a constant offset (ULightComponent::ShadowBias), the same
+//              everywhere.
+//   SlopeBias  scales the offset with how steeply the surface is inclined
+//              to the light (ULightComponent::ShadowSlopeBias). This is
+//              the normal-facing bias: a face edge-on to the light needs
+//              far more offset than one facing it, and this is the term
+//              that gives it, so it is the one to reach for against acne
+//              on a fuselage's flank.
+//
+// The project renders conventional shadow maps: virtual shadow maps are
+// off (`r.Shadow.Virtual.Enable` defaults to 0 and Config/DefaultEngine.ini
+// does not set it), so the engine's `r.Shadow.Virtual.NormalBias` is NOT
+// the knob here and would do nothing until VSMs are turned on.
+struct FAerotelicShadowStyle
+{
+	bool bCastShadows = true;
+	float DepthBias = 0.5f;
+	float SlopeBias = 0.5f;
 };
 
 // The Style dropdown (occ_viewer.py RENDER_STYLES). WingDesigner keeps the

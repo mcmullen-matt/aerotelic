@@ -263,6 +263,44 @@ TetMesh BuildSkinCoreMesh(const TriMesh& surface, const MeshSdf& sdf, const Skin
 	return m;
 }
 
+TetMesh BuildNestedSkinCoreMesh(const TriMesh& outer, const TriMesh& inner, const NestedOptions& opt, NestedStats* stats_out) {
+	auto t_start = std::chrono::steady_clock::now();
+	NestedStats st;
+	st.outer_volume = outer.SignedVolume();
+	st.inner_volume = inner.triangles.empty() ? 0.0 : inner.SignedVolume();
+	ConformingOptions conf = opt.conforming;
+	conf.interior_points.clear();
+	if (!inner.triangles.empty()) {
+		// Shells of the inner surface: connected components over shared vertices.
+		std::vector<int> parent(inner.vertices.size());
+		for (size_t v = 0; v < parent.size(); ++v) parent[v] = static_cast<int>(v);
+		std::function<int(int)> find = [&](int v) { while (parent[v] != v) { parent[v] = parent[parent[v]]; v = parent[v]; } return v; };
+		for (const auto& t : inner.triangles) { parent[find(t[0])] = find(t[1]); parent[find(t[1])] = find(t[2]); }
+		std::unordered_set<int> roots;
+		for (const auto& t : inner.triangles) roots.insert(find(t[0]));
+		st.n_inner_shells = static_cast<int>(roots.size());
+		// Core points: body-centred cubic inside the inner surface, clear of it.
+		if (opt.core_spacing > 0.0) {
+			const MeshSdf inner_sdf(inner);
+			const double h = opt.core_spacing;
+			std::vector<Vec3> core = BccPoints(inner.Bounds(), h, [&](const Vec3& p) { return inner_sdf.Distance(p) < -0.5 * h; });
+			st.n_core_points = static_cast<int>(core.size());
+			conf.interior_points = std::move(core);
+		}
+	}
+	TetMesh m = TetrahedralizeNested(outer, inner, conf, &st.conforming);
+	if (opt.improve) ImproveTetMesh(m, opt.improve_options, &st.improve);
+	st.n_skin_tets = m.Count(1);
+	st.n_core_tets = m.Count(2);
+	st.skin_volume = m.Volume(1);
+	st.core_volume = m.Volume(2);
+	m.Quality(1, &st.min_dihedral_skin, &st.min_radius_ratio_skin, &st.n_slivers_skin);
+	m.Quality(2, &st.min_dihedral_core, &st.min_radius_ratio_core, &st.n_slivers_core);
+	st.seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t_start).count();
+	if (stats_out) *stats_out = st;
+	return m;
+}
+
 bool WriteTetMeshVtk(const TetMesh& m, const std::string& path) {
 	FILE* f = std::fopen(path.c_str(), "w");
 	if (!f) return false;

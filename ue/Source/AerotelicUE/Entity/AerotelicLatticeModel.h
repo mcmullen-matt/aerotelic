@@ -8,6 +8,7 @@
 #include "aerotelic/tet.hpp"
 
 #include "AerotelicBooleanModel.h"
+#include "AerotelicTetGmsh.h"
 
 class AAerotelicEntityActor;
 
@@ -16,10 +17,21 @@ class AAerotelicEntityActor;
 // bodies of `Targets` (an entity, its mirrored half, or a boolean result
 // -- the same operands a boolean takes) and kept out of the placed
 // `Exclusions` (the primitives marking payload bays and other reserved
-// volumes). The bodies enter as the signed distance fields of their
-// triangle meshes (sdf.hpp), so any body the viewport can show can be
-// filled. A normal scene item once built: body, colour, visibility,
+// volumes). A normal scene item once built: body, colour, visibility,
 // section, styles, STL export.
+//
+// The hollowing and the infill are MeshLib's (AerotelicMeshLib.h,
+// tools/lattice_meshlib.py, run as a separate process): each body is
+// offset inward by the skin thickness on a voxel distance field, the
+// "Skin" body being the body's own surface outside and the offset surface
+// inside; the lattice field (sampled here, from the core's LatticeField)
+// is extracted by marching cubes and cut to the union of the offset
+// interiors minus the reserved volumes by an exact mesh boolean, giving
+// the "Lattice" body. The two are kept apart so a downstream analysis can
+// give the shell and the infill different materials; their union is the
+// part. The same offset surface is the skin's inner boundary in the
+// tetrahedral mesh (GetTetMeshes below), so the finite-element skin is
+// the viewport's.
 //
 // Unlike a boolean result it does NOT regenerate itself when a target is
 // edited: generation takes seconds, which would make every keystroke in a
@@ -39,44 +51,57 @@ public:
 
 	// Generates the lattice (ignoring `tolerance`: the resolution is the
 	// spec's voxels per cell), or returns the last generated meshes until
-	// Invalidate(). Two bodies: "Skin", the solid shell of each filled body
-	// as the tetrahedral mesher makes it (tet.hpp BuildSkinCoreMesh: the
-	// body's surface triangles outside, the exact iso-surface of its
-	// distance field at the skin depth inside -- which rounds a concave
-	// crease such as a tailplane meeting a boom from the inside and cannot
-	// self-intersect, where an offset copy of the surface cuts through the
-	// corner), as the closed boundary of the skin tetrahedra; and
-	// "Lattice", the infill sampled where the body's own distance field is
-	// deeper than the skin thickness -- separate so a downstream analysis
-	// can give the shell and the infill their own materials; their union is
-	// the part. The skin's tetrahedra are kept (GetSkinMeshes) for export
-	// to an analysis. Throws std::runtime_error with the reason when a
-	// target is gone, no target has geometry, a target or reserved volume
-	// is not a closed outward surface (the distance field's sign would be
-	// wrong around it), the skin thickness is not positive, the mesher
-	// cannot mesh a body, or the grid is too large.
+	// Invalidate(). Two bodies: "Skin" (the hollowed shell of each filled
+	// body) and "Lattice" (the infill inside it). Throws std::runtime_error
+	// with the reason when a target is gone, no target has geometry, a
+	// target or reserved volume is not a closed outward surface, the skin
+	// thickness is not positive, the grid is too large, MeshLib is not
+	// installed, or one of its operations fails.
 	virtual std::vector<aerotelic::NamedMesh> BuildMeshes(double tolerance) const override;
 
-	// The skin/core tetrahedral mesh of each filled body (built by the last
-	// generation; material 1 = skin, 2 = core), with the body's scene label.
-	struct FSkinMesh
+	// A filled body as the tetrahedral mesher sees it, kept from the last
+	// generation: its placed surface triangulation (the OML, exactly what
+	// MeshLib hollowed) and MeshLib's inward offset of it at the skin depth
+	// (the skin's inner boundary; empty where the body is all skin). The
+	// offset is usable as the mesher's inner constraint when it is closed,
+	// outward and clear of the body's surface; InnerNote says why not.
+	struct FTetBody
 	{
 		FString Label;
-		aerotelic::TetMesh Mesh;
+		aerotelic::TriMesh Outer;
+		aerotelic::TriMesh Inner;
+		bool bInnerUsable = false;
+		FString InnerNote;
+		// The volume below which a pocket of the offset is a sliver, as the
+		// generation computed it from the offset's voxel. Carried here
+		// because the tetrahedral mesh is built later, on request.
+		double MinPocketVolume = 0.0;
 	};
-	const std::vector<FSkinMesh>& GetSkinMeshes() const { return SkinMeshes; }
-	// The skin tetrahedra of every body as one mesh (material 1 only), for
-	// WriteTetMeshVtk.
-	aerotelic::TetMesh MergedSkinTets() const;
+	const std::vector<FTetBody>& GetTetBodies() const { return TetBodies; }
 
-	// The placed surface meshes of the lattice's targets (one per body,
-	// labelled), built at `Tolerance`; the names of targets that produced
-	// nothing go to OutMissing. What the tetrahedral mesher (tet.hpp)
-	// conforms to.
-	std::vector<aerotelic::NamedMesh> TargetBodies(double Tolerance, TArray<FString>& OutMissing) const;
+	// The skin/core tetrahedral mesh of each filled body (gmsh, through
+	// AerotelicTetGmsh: material 1 = skin, between the body's surface and
+	// the offset; 2 = core, inside the offset), with the body's scene
+	// label, for Lattice -> Export Skin Tetrahedra / Export Tetrahedral
+	// Mesh. gmsh takes both surfaces as discrete entities and adds
+	// interior nodes only, so the skin tetrahedra's outer faces ARE the
+	// body's own triangles and skin + core = the body's volume to
+	// rounding. Built on first request (not with the lattice) and kept
+	// until Invalidate(); a body whose offset is unusable or that gmsh
+	// refuses is left out, with the reason in GetTetNotes().
+	struct FTetMesh
+	{
+		FString Label;
+		AerotelicTetGmsh::FResult Result;
+	};
+	const std::vector<FTetMesh>& GetTetMeshes() const;
+	const TArray<FString>& GetTetNotes() const { GetTetMeshes(); return TetNotes; }
+	// The tetrahedra of every body of one material (1 skin, 2 core, -1 all)
+	// as one mesh holding only the nodes they use, for WriteTetMeshVtk.
+	aerotelic::TetMesh MergedTets(int Material) const;
 
 	// Drops the generated mesh so the next build regenerates.
-	void Invalidate() { bValid = false; }
+	void Invalidate() { bValid = false; TetMeshes.clear(); bTetMeshesBuilt = false; TetNotes.Reset(); }
 	bool IsValid() const { return bValid; }
 
 	// True if this lattice fills or excludes Entity (directly, or a boolean
@@ -86,13 +111,17 @@ public:
 	// What the last generation produced.
 	struct FStats
 	{
-		double AchievedFraction = 0.0; // of the interior domain (inside the skin)
-		int64 Triangles = 0;
-		int64 SkinTets = 0;
-		int64 GridNodes = 0;
-		int64 BodyEvaluations = 0;
+		double AchievedFraction = 0.0; // lattice volume over the infill domain's
+		int64 Triangles = 0;           // skin + lattice
+		int64 SkinTriangles = 0;
+		int64 LatticeTriangles = 0;
+		int64 GridNodes = 0;           // lattice field samples
+		double SkinVolume = 0.0;
+		double DomainVolume = 0.0;
+		double LatticeVolume = 0.0;
 		double Seconds = 0.0;
 		int32 GridX = 0, GridY = 0, GridZ = 0;
+		TArray<FString> Warnings;      // MeshLib's notes (pockets filled solid, a body all skin, ...)
 	};
 	const FStats& GetStats() const { return Stats; }
 
@@ -100,9 +129,16 @@ public:
 	// invalid if none can be built. For the dialog's cost estimate.
 	FBox TargetBounds() const;
 
+	// The surface tolerance the bodies are meshed at for a spec: a quarter
+	// of the lattice voxel or of the skin, whichever is finer.
+	static double BodyTolerance(const aerotelic::LatticeSpec& Spec);
+
 private:
 	mutable bool bValid = false;
 	mutable std::vector<aerotelic::NamedMesh> Cached;
-	mutable std::vector<FSkinMesh> SkinMeshes;
+	mutable std::vector<FTetBody> TetBodies;
+	mutable bool bTetMeshesBuilt = false;
+	mutable std::vector<FTetMesh> TetMeshes;
+	mutable TArray<FString> TetNotes;
 	mutable FStats Stats;
 };

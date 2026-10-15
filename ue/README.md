@@ -119,10 +119,12 @@ The layout follows the Python/Qt version's main window (`aerotelic/ui/main_windo
   (`color: [r, g, b]`, 0..1), as the Qt app does; `hidden: true` is
   saved too.
 * **Surface** (View -> Surface...): a modeless window with Metallic,
-  Glossiness (specular) and Blur (roughness) sliders and Matte / Satin /
-  Glossy / Metal presets, setting the finish of every body in the scene at
-  once. The bodies are drawn with `Content/Materials/M_AerotelicSurface`
-  (Color, Metallic, Specular and Roughness parameters, the section clip,
+  Glossiness (specular) and Blur (roughness) sliders, Matte / Satin /
+  Glossy / Metal presets, and two sliders for the Fresnel sheen below
+  them, setting the finish of every body in the scene at once. The bodies
+  are drawn with `Content/Materials/M_AerotelicSurface`
+  (Color, Metallic, Specular and Roughness parameters, the Fresnel sheen,
+  the section clip,
   darker back faces), an asset authored by `setup_materials.bat` (the
   `AerotelicMaterialSetup` commandlet, Editor binaries) because shaders
   cannot be compiled inside a packaged game; the same commandlet authors
@@ -132,6 +134,46 @@ The layout follows the Python/Qt version's main window (`aerotelic/ui/main_windo
   back to BasicShapeMaterial and the dialog has no effect; without the
   wire asset the edge styles draw no edges. View -> Ground Grid (Ctrl+G)
   shows or hides the ground.
+* **Shadows** (View -> Shadows..., 2026-10-15): a modeless window over the
+  key light's shadow settings (`FAerotelicShadowStyle`, applied live by
+  `UAerotelicDocumentSubsystem::ApplyShadowStyle` to the studio rig's
+  directional lights): a Cast shadows checkbox, Default / No acne / Tight
+  contact presets, and sliders for the slope (normal) bias and the depth
+  bias in the light's own 0..2 units. The rig has one shadow-casting
+  movable directional light, so its shadows are cascaded shadow maps, read
+  from a depth map that needs a bias: too little and a surface shadows
+  itself in stripes where it is nearly parallel to the light, too much and
+  the shadow slides off its caster, which on a thin wing reads as a
+  detached shadow. The slope bias is the normal-facing term, scaling the
+  offset with the surface's inclination to the light, so it is the one to
+  raise against stripes on a fuselage flank; the depth bias is a constant
+  offset. Both go to every directional light, while the cast toggle is the
+  key light's alone (`ForwardShadingPriority > 0`), since switching the
+  two fill lights on would put three competing shadows on the model. The
+  game mode re-applies the settings after it spawns the rig, because the
+  style lives in the engine subsystem and outlives any one world. Virtual
+  shadow maps are off in this project (`r.Shadow.Virtual.Enable` defaults
+  to 0 and `Config/DefaultEngine.ini` does not set it), so the engine's
+  `r.Shadow.Virtual.NormalBias` is not the knob here and the dialog says
+  so.
+* **Fresnel sheen** (2026-10-15): the surface material adds the engine's
+  `Fresnel` node to its emissive output, scaled by `FresnelIntensity`,
+  sharpened by `FresnelExponent`, lifted by `FresnelBaseReflect` and
+  tinted by `FresnelColor` (a little cooler than white, so it reads as sky
+  light rather than a halo). The factor is zero where the surface faces
+  the eye and rises to one at the silhouette, so an untextured monochrome
+  body shows its form: a fuselage stops fading into the backdrop and a
+  leading edge separates from the skin behind it. Emissive rather than a
+  scene light, so it needs no lighting rig, cannot blow out the lit
+  response, and is still discarded by the section clip -- a cut body does
+  not glow along the cut. The intensity and the exponent are the two
+  bottom sliders of View -> Surface... (`FAerotelicSurfaceStyle::
+  FresnelIntensity` and `FresnelExponent`, defaults 0.35 and 3, intensity
+  0 switching it off); the presets leave them alone, since the sheen is a
+  reading aid and not part of the part's finish. The sheen needs the
+  material asset re-authored (`setup_materials.bat`); with an older asset
+  the two parameters simply do not exist and setting them is a no-op, so
+  the viewport keeps the plain lit shading.
 * **Reference images** (WingDesigner's REQ-IO-011 / REQ-FUTURE-020, -024,
   -025, -027): every side/top/plan/front-view curve editor has a
   "Reference image" group with Import..., Remove, Fit, Flip H/V and
@@ -416,6 +458,44 @@ The layout follows the Python/Qt version's main window (`aerotelic/ui/main_windo
   carry no collision (click-select them in the tree). Measured on p38: the
   default cell (a tenth of the largest extent) generates in 0.2 s; a
   0.4-unit cell (19.5 M samples) in well under a minute.
+* **Hollowing and infill on MeshLib** (2026-10-14; `Entity/AerotelicMeshLib.h`,
+  `tools/lattice_meshlib.py`, `tools/lattice_meshlib_check.py`). The
+  sampled skin and the tetrahedra-bounded skin both showed visible faults
+  (uneven skin thickness, stair-step artefacts where the infill met the
+  offset surface, a ragged interior volume), so the lattice's two bodies
+  are now made by MeshLib (pip `meshlib` in the WingDesigner micromamba
+  environment), run as a separate process the way the STEP writer is:
+  the application writes the placed bodies as `.tri` files (its own
+  indexed format, so the loft's shared vertices survive) and the lattice
+  field -- still the core's `LatticeField`, all 36 OpenLattice types,
+  calibrated as before -- as raw float32 on the generator's grid, and
+  reads the two bodies back. *Hollowing*: each body is offset inward by
+  the skin thickness on MeshLib's OpenVDB distance field (voxel a quarter
+  of the skin, no coarser than the lattice voxel, capped by a voxel
+  budget), which cannot self-intersect and rounds a concave crease from
+  the inside; the offset surface is decimated within a fifth of its voxel
+  and pockets smaller than four voxels cubed (slivers along a trailing
+  edge barely thicker than two skins) are filled solid; "Skin" is the
+  body's own surface outside and the inverted offset inside, so its
+  outer surface is exact. *Infill domain*: the union of the offset
+  interiors (a mesh boolean where they overlap) minus the reserved
+  volumes (mesh boolean difference). *Infill*: the field goes through
+  MeshLib's marching cubes, padded so the surface closes, and is cut to
+  the domain by an exact mesh boolean, so "Lattice" meets the offset
+  surface along a true intersection curve rather than a resampled one.
+  The achieved fraction reported is lattice volume over domain volume.
+  The interpreter is `AEROTELIC_MESHLIB_PYTHON` if set, else the
+  WingDesigner environment's `python.exe` (the script puts the
+  environment's `Library\bin` on its own DLL path: numpy's BLAS lives
+  there); without MeshLib, generation is refused with a message saying
+  so. The script's self-check (`python tools\lattice_meshlib_check.py
+  [body.stl] [--keep DIR]`) runs the pipeline on a unit sphere or an STL
+  and checks both bodies are closed and outward, the skin's volume is
+  body minus interior, the infill stays inside the skin and the fraction
+  is near the one asked: the sphere in 0.35 s, the P-38 port wing in
+  0.19 s. *Export Skin Tetrahedra* still writes the skin as the
+  tetrahedral mesher's skin tetrahedra, built on request rather than with
+  the lattice.
 * **Explicit skin layer** (`shell.hpp`, `src/shell.cpp`, 2026-10-11
   afternoon; the first step of the tetrahedral route Matt chose): the
   body's surface triangulation offset inward by the skin thickness as a
@@ -461,6 +541,9 @@ The layout follows the Python/Qt version's main window (`aerotelic/ui/main_windo
   *Lattice -> Export Skin Tetrahedra (VTK)...* writes every lattice's skin
   tetrahedra (material 1 of those meshes) as one legacy VTK unstructured
   grid. `shell.hpp` remains the source of the mesher's offset nodes only.
+  SUPERSEDED AGAIN (2026-10-14): the viewport's "Skin" and "Lattice" are
+  MeshLib's (see "Hollowing and infill on MeshLib" above); the skin
+  tetrahedra are built only for *Export Skin Tetrahedra*.
   Also fixed on the way: `WingModel::AirfoilAt` now recognises
   two sections holding the same curve (as a reloaded project has them) and
   no longer re-fits a blend whose different parameterisation made the
@@ -557,6 +640,90 @@ the core (the volume the lattice's orthotropic material card applies to).
   and a sliver whose four nodes all lie on the surface or the interface
   can neither be flipped nor moved. The way forward there is surface
   sizing (triangles a few skin thicknesses wide), not more passes.
+* **The tetrahedral mesher is gmsh (2026-10-15).** The application no
+  longer tetrahedralizes with `core/src/tet.cpp`. *Export Skin Tetrahedra*
+  and *Export Tetrahedral Mesh* now go through `tools/tet_gmsh.py`
+  (`Entity/AerotelicTetGmsh.cpp`, a separate process in the WingDesigner
+  environment where gmsh is pip-installed, the same bridge pattern as the
+  MeshLib lattice backend). The body's surface and MeshLib's offset go in
+  as gmsh DISCRETE entities, one per closed shell, and the two volumes are
+  bounded by them: the skin is the body's loop with every pocket as a
+  hole, each pocket is a core volume. gmsh therefore adds interior nodes
+  ONLY and never re-triangulates a boundary, which is what the old mesher
+  could not guarantee. The outer faces of the skin tetrahedra are the
+  body's own triangles, with no Steiner points on them at all; the
+  skin/core interface is the offset's own triangles; and skin + core =
+  the body's enclosed volume to rounding. Measured on the case that
+  defeated the old mesher, p38a's 13-operand airframe fuse: exact to
+  3.5e-15 in 15 s, 609k tetrahedra, no inverted or flat elements, where
+  the old mesher abandoned 295,157 of about 414,580 constraint faces and
+  was still cascading after 11 minutes. The sphere of the document test
+  meshes in 0.16 s, exact to 2e-16, worst element quality 0.284.
+  Settings that came out of measuring, not guessing: gmsh's Delaunay
+  algorithm beat HXT on both time and quality on every body tried; the
+  core's target edge length is the lattice cell, since the core carries
+  the lattice's material card rather than its geometry; and the MeshLib
+  offset is remeshed at TWO skin thicknesses, because the raw
+  marching-cubes offset and a three-skin remesh both touch the body or
+  cross themselves and are refused ("a segment and a facet intersect"),
+  while one skin costs 350 s against 15 s for the same exact answer. The
+  lattice job's usability check now also tests the offset for
+  self-intersection, so a surface gmsh would refuse is reported by name
+  first. Two workarounds that existed only for the old mesher are gone:
+  the hollow is no longer opened by a skin thickness (that cost up to 94%
+  of the hollow on a thick-skinned wing), and the mesh is no longer
+  refined to a radius-edge bound. `core/src/tet.cpp` and its tests stay as
+  they are, no longer on the application's path.
+* **Nested surfaces: the skin's inner boundary is MeshLib's offset
+  (2026-10-14, SUPERSEDED the next day by the gmsh route above).**
+  `TetrahedralizeNested(outer, inner)` /
+  `BuildNestedSkinCoreMesh` take the body's own triangulation and a closed
+  surface strictly inside it as ONE constraint set (the inner inverted, so
+  the pair is a hollow body for steps 1-3), conform to both exactly, and
+  classify by crossing depth instead of parity: depth one is the skin
+  (material 1), depth two the core (material 2). The skin/core interface
+  is therefore the inner surface's own (sub-)triangles, and skin + core
+  tile the body: skin + core = the outer's volume, core = the inner's, to
+  rounding (`tet_check`: a sphere in a sphere, a box in a box, two pockets
+  in a box, an all-skin body, an inner poking out refused). The inner
+  surface the application uses is the lattice job's inward offset
+  (`tools/lattice_meshlib.py` steps 1 and 4), which at the time was
+  opened by a skin thickness and remeshed at one skin (both settings
+  changed when gmsh took over; `inner_opening` is now zero and
+  `inner_remesh_edge` two skins). It is remeshed by MeshLib to
+  isotropic triangles (`inner_remesh_edge`),
+  checked closed, outward and clear of the body (MeshLib's triangle
+  collision test) and returned as `inner_<i>.tri`;
+  `FAerotelicLatticeModel` keeps each body's surface and offset from the
+  generation (`GetTetBodies`) and meshes them on first request
+  (`GetTetMeshes`: core points at the lattice cell, radius-edge
+  refinement 2, improvement; a mesh that comes out invalid is left out
+  with a note). Both *Export Skin Tetrahedra (VTK)* and
+  *Export Tetrahedral Mesh (VTK)* now write that one mesh (material 1 only,
+  or both), and the status line prints skin + core against the bodies'
+  volume with the worst relative mismatch, so the conformity can be read
+  off; a message lists bodies left out (an offset that touches its body)
+  or faces not conformed exactly. `tet_check nested <outer.tri>
+  <inner.tri> [cell] [out.vtk] [radius-edge]` runs the nested mesher on
+  two application .tri files; `write-wing` / `write-bodies` write the
+  P-38's bodies as double-precision .tri fixtures.
+  Two pitfalls found on the way, both in the mesher's segment recovery,
+  not in the nesting: (1) any surface that went through float32 (an STL,
+  or MeshLib's own output) loses the planar-cap detection (1e-9 of the
+  diagonal), so a loft's ear-clipped caps become needle constraints and
+  recovery splits them to the length floor -- the outer surface must be
+  the app's double-precision loft (it is), only the inner may come from
+  MeshLib; (2) an inner surface whose two sheets are closer than about
+  twice its triangles (the offset of a wing near the trailing edge, a thin
+  cowl wall) or that has pole fans splits without end too -- hence the
+  opening (the P-38 nacelle conformed exactly opened by one skin and
+  cascaded at half a skin) and the isotropic remesh -- and a segment lost
+  during face recovery is now recovered again rather than aborting the
+  mesh. Restricting the snap rule to adjacent nodes and casting twins on
+  the combined surface were both tried and rejected: they cured nothing
+  and made the Boom cascade. With the final settings every P-38 body a
+  lattice fills conforms exactly in nested mode except the propeller
+  blades, which degrade as they do in plain mode.
 
 ## How the standalone build is put together
 

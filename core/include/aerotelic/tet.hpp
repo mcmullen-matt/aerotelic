@@ -6,6 +6,18 @@
 // model wants (the skin as its own material, the core as the volume the
 // lattice's orthotropic material card applies to).
 //
+// NOT THE APPLICATION'S MESHER since 2026-10-15. Lattice -> Export Skin
+// Tetrahedra / Export Tetrahedral Mesh go through gmsh instead
+// (ue/tools/tet_gmsh.py, ue/.../Entity/AerotelicTetGmsh.cpp), which takes
+// the body's surface and MeshLib's offset as discrete entities and adds
+// interior nodes only. The recovery below conforms by inserting the
+// surfaces INTO a Delaunay tetrahedralization of their vertices, and that
+// cascades wherever two surfaces are closer to each other than their own
+// triangles are wide -- a hollowed airframe, where it abandoned 295,157
+// of about 414,580 constraint faces. What is here still builds, is still
+// tested by tests/tet_check.cpp, and still owns the TetMesh type and the
+// VTK writer the application uses; only the meshing is gmsh's now.
+//
 // The machinery, in the order the pipeline runs it:
 //
 //   1. Delaunay tetrahedralization (DelaunayTetrahedralize). Incremental
@@ -95,6 +107,21 @@
 //      faces between the two classes form a conforming interface on the
 //      iso-surface. Surface nodes never move; the skin's outer faces are
 //      the surface itself.
+//
+//   5'. Nested surfaces (TetrahedralizeNested, BuildNestedSkinCoreMesh).
+//      The skin's inner boundary can instead be given as a closed surface
+//      of its own, lying strictly inside the body (MeshLib's inward offset
+//      of the body at the skin depth, as the application's lattices use).
+//      The outer and the inner surfaces go through steps 1-3 together as
+//      one constraint set, so both are conformed to exactly (Steiner points
+//      on their edges and faces only), and step 4 keeps every tetrahedron
+//      at crossing depth one or more and labels it by depth: depth one is
+//      the skin (between the two surfaces), depth two the core (inside the
+//      inner surface). The faces between the two classes are then the inner
+//      surface's own (sub-)triangles -- a conforming interface by
+//      construction -- and skin + core tile the body exactly, so their
+//      volumes sum to the outer surface's enclosed volume and the core's
+//      equals the inner surface's.
 //
 // Conventions. Tetrahedron (a, b, c, d) is stored with Dot(b-a, Cross(c-a,
 // d-a)) > 0 (positive volume, as shell.hpp). Face i is the face opposite
@@ -251,6 +278,17 @@ struct ConformingStats {
 // on an open surface, std::runtime_error when recovery fails (with where).
 TetMesh TetrahedralizeInterior(const TriMesh& surface, const ConformingOptions& options = {}, ConformingStats* stats = nullptr);
 
+// Step 5': the constrained Delaunay tetrahedralization of the interior of
+// `outer` conforming to both `outer` and `inner`, a closed outward surface
+// (possibly several shells, possibly empty) lying strictly inside it, with
+// material 1 on the tetrahedra between the two and 2 on those inside
+// `inner`. Nodes 0 .. n-1 are outer's vertices, then inner's, then the
+// interior points, then the Steiner points. The stats' surface_volume is
+// outer's; mesh_volume is skin + core. Throws as TetrahedralizeInterior,
+// and std::invalid_argument if inner is open, inside out, or not inside
+// outer (its vertices are checked against outer's distance field).
+TetMesh TetrahedralizeNested(const TriMesh& outer, const TriMesh& inner, const ConformingOptions& options = {}, ConformingStats* stats = nullptr);
+
 struct ImproveOptions {
 	// Tetrahedra with a dihedral angle below this (degrees) are worked on.
 	double target_dihedral_deg = 15.0;
@@ -323,6 +361,40 @@ struct SkinCoreStats {
 // distance field (MeshSdf of the same surface). material 1 = skin, 2 =
 // core. Throws as TetrahedralizeInterior.
 TetMesh BuildSkinCoreMesh(const TriMesh& surface, const MeshSdf& sdf, const SkinCoreOptions& options, SkinCoreStats* stats = nullptr);
+
+struct NestedOptions {
+	// Spacing of the body-centred cubic core points put inside the inner
+	// surface (0: none; the core is then meshed from the two surfaces'
+	// vertices alone, which makes long tetrahedra across it).
+	double core_spacing = 0.0;
+	ConformingOptions conforming;
+	// Finish with ImproveTetMesh (flips and smoothing with both surfaces
+	// fixed; the skin/core interface is the inner surface, so it is fixed too).
+	bool improve = true;
+	ImproveOptions improve_options;
+};
+
+struct NestedStats {
+	ConformingStats conforming;
+	int n_inner_shells = 0;      // closed components of the inner surface
+	int n_core_points = 0;
+	int n_skin_tets = 0, n_core_tets = 0;
+	double outer_volume = 0.0;   // enclosed by the outer surface
+	double inner_volume = 0.0;   // enclosed by the inner surface
+	double skin_volume = 0.0, core_volume = 0.0;
+	double min_dihedral_skin = 0.0, min_dihedral_core = 0.0;
+	double min_radius_ratio_skin = 0.0, min_radius_ratio_core = 0.0;
+	int n_slivers_skin = 0, n_slivers_core = 0; // dihedral below 5 degrees
+	ImproveStats improve;
+	double seconds = 0.0;
+};
+
+// Step 5' with core points and improvement: the skin/core tetrahedral mesh
+// of a body whose skin's inner boundary is the given closed surface
+// (material 1 = skin, between outer and inner; 2 = core, inside inner). An
+// empty inner surface makes the whole body skin. Throws as
+// TetrahedralizeNested.
+TetMesh BuildNestedSkinCoreMesh(const TriMesh& outer, const TriMesh& inner, const NestedOptions& options, NestedStats* stats = nullptr);
 
 // Step 1b on its own: flips the edges inside each planar region of a
 // closed surface mesh to the region's constrained Delaunay triangulation

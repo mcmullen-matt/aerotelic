@@ -149,7 +149,27 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 			Check(M->GetStats().Triangles > 0, "the lattice has triangles");
 			// The fraction is of the interior domain (inside the explicit skin).
 			Check(FMath::Abs(M->GetStats().AchievedFraction - 0.35) < 0.1, FString::Printf(TEXT("the lattice's achieved volume fraction (%.3f) is near the 0.35 asked"), M->GetStats().AchievedFraction));
-			Check(M->GetStats().SkinTets > 0 && M->GetSkinMeshes().size() == 1 && M->MergedSkinTets().tets.size() == (size_t)M->GetStats().SkinTets, "the skin's tetrahedra are kept for export");
+			Check(M->GetStats().SkinTriangles > 0 && M->GetStats().LatticeTriangles > 0, "the skin and the lattice both have triangles");
+			// The tetrahedra (Export Skin Tetrahedra / Export Tetrahedral Mesh)
+			// are built on request over the body and its MeshLib offset: skin
+			// + core fill the sphere's mesh exactly, the core fills the offset.
+			Check(M->GetTetBodies().size() == 1 && M->GetTetBodies()[0].bInnerUsable && !M->GetTetBodies()[0].Inner.IsEmpty(), "the generation kept the body and a usable offset surface for the tetrahedral mesher");
+			const std::vector<FAerotelicLatticeModel::FTetMesh>& Tets = M->GetTetMeshes();
+			Check(Tets.size() == 1 && M->MergedTets(1).tets.size() > 0 && M->MergedTets(-1).tets.size() > M->MergedTets(1).tets.size(), FString::Printf(TEXT("the skin and core tetrahedra can be built for export (%s)"), *FString::Join(M->GetTetNotes(), TEXT("; "))));
+			if (Tets.size() == 1)
+			{
+				const AerotelicTetGmsh::FResult& S = Tets[0].Result;
+				const double Body = M->GetTetBodies()[0].Outer.SignedVolume();
+				const double Inner = M->GetTetBodies()[0].Inner.SignedVolume();
+				Check(S.VolumeError <= 1e-9, FString::Printf(TEXT("skin + core tetrahedra (%.9g) fill the body's volume (%.9g): relative %.2e"), S.SkinVolume + S.CoreVolume, Body, S.VolumeError));
+				Check(FMath::Abs(S.CoreVolume - Inner) <= 1e-9 * Body, FString::Printf(TEXT("the core tetrahedra (%.9g) fill the offset's volume (%.9g) exactly"), S.CoreVolume, Inner));
+				Check(S.Degenerate == 0 && S.MinQuality > 0.0, FString::Printf(TEXT("no tetrahedron is flat or inverted (%d degenerate, worst quality %.4f)"), S.Degenerate, S.MinQuality));
+				// gmsh adds interior nodes only, so the surfaces survive
+				// node for node and the boundary is the sphere's own mesh.
+				Check(S.Nodes > M->GetTetBodies()[0].Outer.vertices.size() + M->GetTetBodies()[0].Inner.vertices.size(),
+					FString::Printf(TEXT("the mesh keeps both surfaces' nodes and adds interior ones (%d nodes over %d on the surfaces)"), S.Nodes,
+						(int32)(M->GetTetBodies()[0].Outer.vertices.size() + M->GetTetBodies()[0].Inner.vertices.size())));
+			}
 			std::vector<aerotelic::NamedMesh> Meshes = Lattice->GetPlacedMeshes(false, 1e-3);
 			Check(Meshes.size() == 2 && Meshes[0].name == "Skin" && Meshes[1].name == "Lattice", "the lattice is two bodies, Skin then Lattice");
 			// The skin solid's volume is the 0.05 shell of the unit sphere (a

@@ -61,6 +61,13 @@ add_library(aerotelic_core STATIC
 	third_party/predicates/predicates.c
 )
 set_source_files_properties(third_party/predicates/predicates.c PROPERTIES COMPILE_OPTIONS "/fp:strict")
+# predicates.c has a routine called compress() (it compresses an expansion),
+# which is also zlib's entry point: linking the standalone application, whose
+# engine modules pull in zlibstatic, failed with LNK2005 "compress already
+# defined". It is internal to that translation unit (predicates.h does not
+# declare it), so it is renamed at compile time rather than patching the
+# vendored source.
+set_source_files_properties(third_party/predicates/predicates.c PROPERTIES COMPILE_DEFINITIONS "compress=aerotelic_predicates_compress")
 target_include_directories(aerotelic_core PUBLIC include "${OCCT_ROOT}/include/opencascade" "${YAMLCPP_INCLUDE_DIR}")
 target_link_libraries(aerotelic_core PUBLIC ${OCCT_LINK_LIBS} "${YAMLCPP_LIB}")
 target_compile_definitions(aerotelic_core PUBLIC YAML_CPP_STATIC_DEFINE)

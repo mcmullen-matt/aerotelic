@@ -9,18 +9,22 @@
 // Status receives the status-bar line.
 void ShowAerotelicExportStlDialog(TFunction<void(const FText&)> Status);
 
-// Lattice -> Export Skin Tetrahedra (VTK)...: the skin of every lattice in
-// the scene (shell.hpp's prism tetrahedra, built by the last generation)
-// as one legacy VTK unstructured grid, for a finite-element model. Asks
-// for the file; reports through Status.
+// Lattice -> Export Skin Tetrahedra (VTK)...: the skin tetrahedra (material
+// 1) of every body filled by a lattice -- the tetrahedral mesh each lattice
+// model builds on request over the body's surface and MeshLib's inward
+// offset at the skin depth (tet.hpp TetrahedralizeNested: a constrained
+// Delaunay mesh conforming to both exactly, so the skin's outer faces tile
+// the body's own triangulation and its inner faces the offset) -- as one
+// legacy VTK unstructured grid, for a finite-element model. Asks for the
+// file; the status line reports the volumes (skin + core against the
+// bodies') so the conformity can be checked; a message lists bodies left
+// out or not conformed exactly.
 void ShowAerotelicExportSkinVtkDialog(TFunction<void(const FText&)> Status);
 
-// Lattice -> Export Tetrahedral Mesh (VTK)...: every body filled by a
-// lattice, meshed with tetrahedra that conform exactly to its surface
-// (tet.hpp: constrained Delaunay) and split into the skin (the lattice's
-// skin thickness, material 1) and the core (material 2, the volume the
-// lattice's material card applies to), as one legacy VTK unstructured
-// grid. Asks for the file; reports through Status.
+// Lattice -> Export Tetrahedral Mesh (VTK)...: the same meshes with both
+// the skin (material 1) and the core (material 2, inside the offset: the
+// volume the lattice's material card applies to), as one legacy VTK
+// unstructured grid. Skin + core tile each body exactly.
 void ShowAerotelicExportTetVtkDialog(TFunction<void(const FText&)> Status);
 
 // File -> Export STEP... (_export_step_dialog): the same body picker, the
