@@ -69,6 +69,7 @@ private:
 	void FillEditMenu(FMenuBuilder& Menu);
 	void FillGeometryMenu(FMenuBuilder& Menu);
 	void FillLatticeMenu(FMenuBuilder& Menu);
+	void FillAnalysisMenu(FMenuBuilder& Menu);
 	void FillViewMenu(FMenuBuilder& Menu);
 	void FillHelpMenu(FMenuBuilder& Menu);
 	TSharedRef<SWidget> BuildEntityToolbar();

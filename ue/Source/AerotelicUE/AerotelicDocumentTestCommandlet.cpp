@@ -7,6 +7,8 @@
 #include "Entity/AerotelicEntityActor.h"
 #include "Entity/AerotelicBooleanModel.h"
 #include "Entity/AerotelicLatticeModel.h"
+#include "Entity/AerotelicMeshLib.h"
+#include "Entity/AerotelicPotentialFlow.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogAerotelicDocumentTest, Log, All);
 
@@ -212,6 +214,62 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 		bool bOk = !Meshes.empty();
 		for (const aerotelic::NamedMesh& M : Meshes) bOk = bOk && M.mesh.IsClosedManifold() && M.mesh.SignedVolume() > 0.0;
 		Check(bOk, FString::Printf(TEXT("%s: placed meshes are closed, outward bodies (%d)"), *WeakEntity->EntityName, (int32)Meshes.size()));
+	}
+
+	// Potential flow (Analysis -> Potential Flow (Kratos)...) over the
+	// sphere primitive, where the answer is known: the air around it is
+	// meshed by the bodies' own triangles and the flow solved on Kratos.
+	// The exact pressures are checked against the closed-form sphere
+	// solution by tools/potential_flow_check.py, outside the application
+	// and at resolutions worth the time; what is asserted here is that the
+	// application's own path produces that solution at all, and the
+	// invariants that hold at any resolution.
+	UE_LOG(LogAerotelicDocumentTest, Display, TEXT("step: potential flow"));
+	if (AerotelicPotentialFlow::FindScript().IsEmpty() || AerotelicMeshLib::FindPython().IsEmpty())
+	{
+		UE_LOG(LogAerotelicDocumentTest, Display, TEXT("skipped: tools\\potential_flow.py or the WingDesigner environment is not here"));
+	}
+	else if (Primitive != nullptr)
+	{
+		std::vector<aerotelic::NamedMesh> Sphere = Primitive->GetPlacedMeshes(false, 1e-2);
+		AerotelicPotentialFlow::FRequest Request;
+		if (!Sphere.empty())
+		{
+			Request.Bodies.Add({ Primitive->EntityName, &Sphere[0].mesh });
+		}
+		Request.Speed = 50.0;
+		// A smaller box than the dialog's default: the sphere is a tenth
+		// of the detail of a real model and this runs on every test pass.
+		Request.FarFieldFactor = 3.0;
+		Request.VtkPath = FPaths::Combine(FPlatformProcess::UserTempDir(), TEXT("aerotelic_document_test_flow.vtk"));
+		IFileManager::Get().Delete(*Request.VtkPath, false, true, true);
+		AerotelicPotentialFlow::FResult R;
+		FString Error;
+		const bool bSolved = AerotelicPotentialFlow::Run(Request, R, Error);
+		Check(bSolved, FString::Printf(TEXT("the potential flow around the sphere solved (%s)"), bSolved ? *FString::Printf(TEXT("%d nodes, %d tetrahedra, %.1f s"), R.Nodes, R.Tets, R.Seconds) : *Error));
+		if (bSolved)
+		{
+			// The wetted boundary of the fluid mesh is the body's own
+			// surface: it encloses the body's own volume, and the
+			// tetrahedra fill the box minus the body.
+			const double Body = Sphere[0].mesh.SignedVolume();
+			Check(FMath::Abs(R.WettedVolume - Body) <= 1e-9 * Body,
+				FString::Printf(TEXT("the wetted boundary encloses the body's volume (%.9g vs %.9g)"), R.WettedVolume, Body));
+			Check(FMath::Abs(R.FluidVolume - (R.BoxVolume - R.BodyVolume)) <= 1e-9 * R.BoxVolume,
+				FString::Printf(TEXT("the tetrahedra fill the box minus the body (%.9g vs %.9g)"), R.FluidVolume, R.BoxVolume - R.BodyVolume));
+			Check(R.WettedTriangles == static_cast<int32>(Sphere[0].mesh.triangles.size()),
+				FString::Printf(TEXT("every one of the body's triangles is a face of the mesh (%d of %d)"), R.WettedTriangles, (int32)Sphere[0].mesh.triangles.size()));
+			// The flow speeds up round the sphere, comes to rest fore and
+			// aft (Cp = 1) and accelerates to 1.5 U at the equator
+			// (Cp = -1.25); a coarse surface does not quite reach either.
+			Check(R.MaxSpeed > 1.2 * R.FreeStreamSpeed, FString::Printf(TEXT("the flow speeds up round the sphere (%.4g against the free stream %.4g)"), R.MaxSpeed, R.FreeStreamSpeed));
+			Check(R.MaxCpBody > 0.5 && R.MaxCpBody < 1.05, FString::Printf(TEXT("the flow comes to rest on the nose (Cp %.4f, exactly 1)"), R.MaxCpBody));
+			Check(R.MinCpBody < -0.5 && R.MinCpBody > -1.5, FString::Printf(TEXT("the suction peak is round the equator (Cp %.4f, exactly -1.25)"), R.MinCpBody));
+			// d'Alembert's paradox: a potential flow carries no force.
+			Check(R.ForceCoefficient < 0.1, FString::Printf(TEXT("the net force is zero to the discretisation (%.2e of q x frontal area)"), R.ForceCoefficient));
+			Check(IFileManager::Get().FileSize(*Request.VtkPath) > 0, FString::Printf(TEXT("the solution was written to %s"), *Request.VtkPath));
+			IFileManager::Get().Delete(*Request.VtkPath, false, true, true);
+		}
 	}
 
 	UE_LOG(LogAerotelicDocumentTest, Display, TEXT("step: save"));

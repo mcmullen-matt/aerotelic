@@ -174,5 +174,15 @@ public class AerotelicUE : ModuleRules
 		if (File.Exists(TetScript)) {
 			RuntimeDependencies.Add(TetScript, StagedFileType.NonUFS);
 		}
+
+		// Analysis -> Potential Flow runs tools/potential_flow.py (the fluid
+		// domain on gmsh and the solve on KratosMultiphysics) the same way,
+		// in the same environment (Entity/AerotelicPotentialFlow.cpp). It
+		// imports tet_gmsh.py above for the .tri reader and the surface
+		// checks, which is staged with it.
+		string FlowScript = Path.GetFullPath(Path.Combine(ModuleDirectory, "..", "..", "tools", "potential_flow.py"));
+		if (File.Exists(FlowScript)) {
+			RuntimeDependencies.Add(FlowScript, StagedFileType.NonUFS);
+		}
 	}
 }

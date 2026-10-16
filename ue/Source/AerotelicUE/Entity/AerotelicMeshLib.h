@@ -6,6 +6,8 @@
 #include "aerotelic/mesh.hpp"
 #include "aerotelic/vec3.hpp"
 
+class FJsonObject;
+
 // The MeshLib backend of the lattices' hollowing and infill
 // (tools/lattice_meshlib.py), run as a separate process in the
 // WingDesigner micromamba environment where MeshLib is installed with pip.
@@ -103,6 +105,16 @@ namespace AerotelicMeshLib
 	// Runs the backend. False with the reason on failure (no interpreter, a
 	// body that is not closed, a boolean MeshLib refused, ...).
 	bool Run(const FRequest& Request, FResult& Out, FString& OutError);
+
+	// Runs `Script` on a job directory in that interpreter, collects its
+	// output into the log and hands back the `result.json` it wrote. False
+	// with the reason the script gave (its "error" field, else its last
+	// "error:" line, else its exit code). Shared by every backend that
+	// works this way -- the lattice's own, the tetrahedral mesher
+	// (AerotelicTetGmsh.h) and the potential flow solver
+	// (AerotelicPotentialFlow.h) -- so that the process plumbing, the
+	// logging and the way a failure is reported are in one place.
+	bool RunJob(const FString& Script, const FString& Dir, TSharedPtr<FJsonObject>& OutResult, FString& OutError);
 
 	// The .tri files (exposed for tests).
 	bool WriteTri(const aerotelic::TriMesh& Mesh, const FString& Path);

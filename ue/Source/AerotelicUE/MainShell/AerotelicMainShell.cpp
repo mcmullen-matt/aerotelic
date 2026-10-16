@@ -13,6 +13,7 @@
 #include "Dialogs/BooleanOperationDialog.h"
 #include "Dialogs/ExportDialogs.h"
 #include "Dialogs/LatticeDialog.h"
+#include "Dialogs/PotentialFlowDialog.h"
 #include "Dialogs/ThemeDialog.h"
 #include "Branding/AerotelicTheme.h"
 
@@ -386,6 +387,9 @@ void SAerotelicMainShell::BindCommands()
 	Commands->MapAction(C.ExportSkinVtk, FExecuteAction::CreateLambda([this]() { ShowAerotelicExportSkinVtkDialog([this](const FText& T) { SetStatus(T); }); }));
 	Commands->MapAction(C.ExportTetVtk, FExecuteAction::CreateLambda([this]() { ShowAerotelicExportTetVtkDialog([this](const FText& T) { SetStatus(T); }); }));
 
+	// Analysis
+	Commands->MapAction(C.PotentialFlow, FExecuteAction::CreateLambda([this]() { ShowAerotelicPotentialFlowDialog([this](const FText& T) { SetStatus(T); }); }));
+
 	// View
 	Commands->MapAction(C.ViewIsometric, FExecuteAction::CreateSP(this, &SAerotelicMainShell::OnViewPreset, EAerotelicViewPreset::Isometric));
 	Commands->MapAction(C.ViewTop, FExecuteAction::CreateSP(this, &SAerotelicMainShell::OnViewPreset, EAerotelicViewPreset::Top));
@@ -473,6 +477,7 @@ TSharedRef<SWidget> SAerotelicMainShell::BuildMenuBar()
 	Bar.AddPullDownMenu(LOCTEXT("EditMenu", "Edit"), LOCTEXT("EditMenuTip", "Preferences"), PullDown(&SAerotelicMainShell::FillEditMenu));
 	Bar.AddPullDownMenu(LOCTEXT("GeometryMenu", "Geometry"), LOCTEXT("GeometryMenuTip", "Airfoils and boolean operations"), PullDown(&SAerotelicMainShell::FillGeometryMenu));
 	Bar.AddPullDownMenu(LOCTEXT("LatticeMenu", "Lattice"), LOCTEXT("LatticeMenuTip", "Lattice infill of the scene's bodies"), PullDown(&SAerotelicMainShell::FillLatticeMenu));
+	Bar.AddPullDownMenu(LOCTEXT("AnalysisMenu", "Analysis"), LOCTEXT("AnalysisMenuTip", "Flow analysis of the scene's geometry"), PullDown(&SAerotelicMainShell::FillAnalysisMenu));
 	Bar.AddPullDownMenu(LOCTEXT("ViewMenu", "View"), LOCTEXT("ViewMenuTip", "3D view"), PullDown(&SAerotelicMainShell::FillViewMenu));
 	Bar.AddPullDownMenu(LOCTEXT("HelpMenu", "Help"), LOCTEXT("HelpMenuTip", "Help"), PullDown(&SAerotelicMainShell::FillHelpMenu));
 	return Bar.MakeWidget();
@@ -520,6 +525,11 @@ void SAerotelicMainShell::FillLatticeMenu(FMenuBuilder& Menu)
 	Menu.AddMenuSeparator();
 	Menu.AddMenuEntry(C.ExportSkinVtk);
 	Menu.AddMenuEntry(C.ExportTetVtk);
+}
+
+void SAerotelicMainShell::FillAnalysisMenu(FMenuBuilder& Menu)
+{
+	Menu.AddMenuEntry(FAerotelicCommands::Get().PotentialFlow);
 }
 
 void SAerotelicMainShell::FillViewMenu(FMenuBuilder& Menu)

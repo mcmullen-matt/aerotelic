@@ -168,6 +168,80 @@ namespace AerotelicMeshLib
 		return FPaths::FileExists(Script) ? FPaths::ConvertRelativePathToFull(Script) : FString();
 	}
 
+	bool RunJob(const FString& Script, const FString& Dir, TSharedPtr<FJsonObject>& OutResult, FString& OutError)
+	{
+		const FString Python = FindPython();
+		if (Python.IsEmpty())
+		{
+			OutError = TEXT("The backend's Python interpreter was not found: point AEROTELIC_MESHLIB_PYTHON at a python.exe that has the libraries, or install them in the WingDesigner micromamba environment.");
+			return false;
+		}
+		const FString Name = FPaths::GetCleanFilename(Script);
+		const FString Params = FString::Printf(TEXT("\"%s\" \"%s\""), *Script, *Dir);
+		void* ReadPipe = nullptr; void* WritePipe = nullptr;
+		FPlatformProcess::CreatePipe(ReadPipe, WritePipe);
+		const FString WorkingDir = FPaths::GetPath(Script);
+		const double T0 = FPlatformTime::Seconds();
+		FProcHandle Proc = FPlatformProcess::CreateProc(*Python, *Params, false, true, true, nullptr, 0, *WorkingDir, WritePipe, nullptr, WritePipe);
+		// CloseProc resets the handle, so remember whether it started.
+		const bool bStarted = Proc.IsValid();
+		FString Output;
+		int32 Code = -1;
+		if (bStarted)
+		{
+			while (FPlatformProcess::IsProcRunning(Proc))
+			{
+				Output += FPlatformProcess::ReadPipe(ReadPipe);
+				FPlatformProcess::Sleep(0.02f);
+			}
+			Output += FPlatformProcess::ReadPipe(ReadPipe);
+			FPlatformProcess::GetProcReturnCode(Proc, &Code);
+			FPlatformProcess::CloseProc(Proc);
+		}
+		FPlatformProcess::ClosePipe(ReadPipe, WritePipe);
+		if (!bStarted)
+		{
+			OutError = FString::Printf(TEXT("could not start %s"), *Python);
+			return false;
+		}
+		UE_LOG(LogAerotelicMeshLib, Log, TEXT("%s exited with %d after %.2f s:\n%s"), *Name, Code, FPlatformTime::Seconds() - T0, *Output);
+
+		// The result: statistics, or the reason it failed.
+		FString ResultText;
+		OutResult.Reset();
+		if (FFileHelper::LoadFileToString(ResultText, *FPaths::Combine(Dir, TEXT("result.json"))))
+		{
+			TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(ResultText);
+			FJsonSerializer::Deserialize(Reader, OutResult);
+		}
+		bool bOk = false;
+		if (!OutResult.IsValid() || !OutResult->TryGetBoolField(TEXT("ok"), bOk) || !bOk)
+		{
+			FString Reason;
+			if (OutResult.IsValid())
+			{
+				OutResult->TryGetStringField(TEXT("error"), Reason);
+			}
+			if (Reason.IsEmpty())
+			{
+				// The script's last "error:" line, else its exit code.
+				TArray<FString> Lines;
+				Output.ParseIntoArrayLines(Lines);
+				for (int32 i = Lines.Num() - 1; i >= 0; --i)
+				{
+					if (Lines[i].StartsWith(TEXT("error:")) || Lines[i].Contains(TEXT("Error")))
+					{
+						Reason = Lines[i].TrimStartAndEnd();
+						break;
+					}
+				}
+			}
+			OutError = Reason.IsEmpty() ? FString::Printf(TEXT("%s exited with code %d (see the log)."), *Name, Code) : Reason;
+			return false;
+		}
+		return true;
+	}
+
 	bool Run(const FRequest& Request, FResult& Out, FString& OutError)
 	{
 		const FString Python = FindPython();
@@ -234,67 +308,9 @@ namespace AerotelicMeshLib
 		}
 
 		// Run it, collecting its output for the log.
-		const FString Params = FString::Printf(TEXT("\"%s\" \"%s\""), *Script, *Dir);
-		void* ReadPipe = nullptr; void* WritePipe = nullptr;
-		FPlatformProcess::CreatePipe(ReadPipe, WritePipe);
-		const FString WorkingDir = FPaths::GetPath(Script);
-		const double T0 = FPlatformTime::Seconds();
-		FProcHandle Proc = FPlatformProcess::CreateProc(*Python, *Params, false, true, true, nullptr, 0, *WorkingDir, WritePipe, nullptr, WritePipe);
-		// CloseProc resets the handle, so remember whether it started.
-		const bool bStarted = Proc.IsValid();
-		FString Output;
-		int32 Code = -1;
-		if (bStarted)
-		{
-			while (FPlatformProcess::IsProcRunning(Proc))
-			{
-				Output += FPlatformProcess::ReadPipe(ReadPipe);
-				FPlatformProcess::Sleep(0.02f);
-			}
-			Output += FPlatformProcess::ReadPipe(ReadPipe);
-			FPlatformProcess::GetProcReturnCode(Proc, &Code);
-			FPlatformProcess::CloseProc(Proc);
-		}
-		FPlatformProcess::ClosePipe(ReadPipe, WritePipe);
-		if (!bStarted)
-		{
-			OutError = FString::Printf(TEXT("could not start %s"), *Python);
-			Cleanup();
-			return false;
-		}
-		UE_LOG(LogAerotelicMeshLib, Log, TEXT("lattice_meshlib.py exited with %d after %.2f s:\n%s"), Code, FPlatformTime::Seconds() - T0, *Output);
-
-		// The result: statistics, or the reason it failed.
-		FString ResultText;
 		TSharedPtr<FJsonObject> Result;
-		if (FFileHelper::LoadFileToString(ResultText, *FPaths::Combine(Dir, TEXT("result.json"))))
+		if (!RunJob(Script, Dir, Result, OutError))
 		{
-			TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(ResultText);
-			FJsonSerializer::Deserialize(Reader, Result);
-		}
-		bool bOk = false;
-		if (!Result.IsValid() || !Result->TryGetBoolField(TEXT("ok"), bOk) || !bOk)
-		{
-			FString Reason;
-			if (Result.IsValid())
-			{
-				Result->TryGetStringField(TEXT("error"), Reason);
-			}
-			if (Reason.IsEmpty())
-			{
-				// The script's last "error:" line, else its exit code.
-				TArray<FString> Lines;
-				Output.ParseIntoArrayLines(Lines);
-				for (int32 i = Lines.Num() - 1; i >= 0; --i)
-				{
-					if (Lines[i].StartsWith(TEXT("error:")) || Lines[i].Contains(TEXT("Error")))
-					{
-						Reason = Lines[i].TrimStartAndEnd();
-						break;
-					}
-				}
-			}
-			OutError = Reason.IsEmpty() ? FString::Printf(TEXT("MeshLib's lattice backend exited with code %d (see the log)."), Code) : Reason;
 			Cleanup();
 			return false;
 		}

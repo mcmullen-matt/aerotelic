@@ -725,6 +725,96 @@ the core (the volume the lattice's orthotropic material card applies to).
   lattice fills conforms exactly in nested mode except the propeller
   blades, which degrade as they do in plain mode.
 
+## Potential flow on Kratos (2026-10-15)
+
+**Analysis -> Potential Flow (Kratos)...** computes the potential flow
+around selected geometry and writes the grid and the solution to a VTK
+file the user names. The dialog opens with the same question the Boolean
+Operation dialog asks -- *which geometry?* -- and the same two-list picker
+answers it (every entity, the mirrored half of each mirrored one, every
+boolean result); then the free stream, the size of the air around it, and
+the solution file.
+
+The route, and where each piece lives:
+
+* `Dialogs/PotentialFlowDialog.cpp` -- the dialog. The chosen operands are
+  triangulated with `GetPlacedMeshes` at the surface deflection, which is
+  the application's own loft triangulation placed as it sits in the scene.
+* `Entity/AerotelicPotentialFlow.cpp` -- the bridge: the bodies as `.tri`
+  files, the settings as `job.json`, `tools/potential_flow.py` run in the
+  WingDesigner micromamba environment, statistics back as `result.json`.
+  The same pattern as the lattice's MeshLib backend and the tetrahedral
+  mesher; the process plumbing those three shared by copy is now one
+  function, `AerotelicMeshLib::RunJob`.
+* `tools/potential_flow.py` -- the fluid domain, the solve and the output.
+
+**The fluid domain is the other mesh.** The structural route meshes the
+inside of a body; this one meshes the air, so the domain is a far-field box
+with the bodies as holes. The box is triangulated at the far-field element
+size and each body goes in as a gmsh DISCRETE surface, exactly as
+`tet_gmsh.py` does it, so gmsh adds interior nodes only: **the wetted
+boundary of the fluid mesh is the body's own triangulation**, which is both
+what makes the pressures land on the surface the designer sees and the
+reason the bodies must not intersect each other (fuse them with a boolean
+first). The element size is a distance field off the bodies -- their own
+mean triangle edge at the wall, held for twice that, then growing by 0.3
+per unit distance to the far-field size. Without the field gmsh grows
+straight off the wetted surface and the suction peaks come out smeared.
+
+**The solve** is Kratos's `CompressiblePotentialFlowApplication` over
+tetrahedra: one velocity potential per node, grad(phi) = u, written as a
+`.mdpa` with generic `Element3D4N` / `SurfaceCondition3D3N` that the solver
+replaces with its own. Only the far field gets a process
+(`apply_far_field_and_wake_process`, which fixes the potential on the
+inflow part of the box from the sign of u_inf . n and applies the flux on
+the rest); **the body needs no condition at all**, because d(phi)/dn = 0 is
+this formulation's natural boundary condition and that is exactly the
+non-penetration wall. `ComputeNodalValueProcess` projects the elemental
+velocity and pressure coefficient onto the nodes.
+
+**The output** is one legacy VTK unstructured grid in the same dialect as
+the structural export: the tetrahedra of the air, with
+`VELOCITY_POTENTIAL`, `VELOCITY` and `PRESSURE_COEFFICIENT` at every node,
+and the bodies' own surface triangles alongside them with cell data
+`region` = 1 against the fluid's 0 -- threshold on that in ParaView and the
+pressure distribution on the aircraft is on its own, from the same file.
+
+**No wake, so no lift.** This is the non-lifting potential flow: with no
+wake surface the circulation around a lifting section is zero. The velocity
+field, the suction peaks and the pressure distribution are real; the lift
+is zero by construction, and so, by d'Alembert's paradox, is the net force
+-- which is why the force the dialog reports is a measure of the
+discretisation (as a fraction of the dynamic pressure on the frontal area),
+not a load. Kratos does have a 3-D wake operation
+(`Define3DWakeOperation`), which needs the trailing edge identified and a
+wake sheet shed from it; that is the next step, not this prototype.
+
+**What it was marked against.** `tools/potential_flow_check.py` runs the
+real job on a sphere, where the exact solution is known: Cp = 1 -
+(9/4) sin^2(theta), from +1 at the stagnation points to -1.25 round the
+equator. It checks the wetted boundary encloses the body's own volume, the
+tetrahedra fill the box minus the bodies, the far field is undisturbed, the
+net force vanishes, and every wetted node against the formula:
+
+      triangles   h        Cp rms error   net force / q*area
+        1280      0.150      0.179            3.5e-03
+        5120      0.075      0.106            7.0e-04
+       20480      0.038      0.065            6.6e-04
+
+The error is fore-aft symmetric and is a uniform 3-4% deficit in the
+surface speed, worst where the speed is highest. That is the first-order
+bias of the postprocessing, not of the solve: the velocity is constant over
+a linear tetrahedron, and a wall node gets the average over the tetrahedra
+around it, all of which lie inside the fluid where the flow has already
+slowed towards the free stream. It falls off with the element size at the
+wall, so **the resolution of the body's own triangulation is what sets the
+accuracy of the pressures on it**.
+
+Install, once, into the WingDesigner environment (all at one version):
+
+    pip install KratosMultiphysics KratosFluidDynamicsApplication \
+                KratosCompressiblePotentialFlowApplication
+
 ## How the standalone build is put together
 
 * `Source/AerotelicUE.Target.cs` -- the game target that becomes `AerotelicUE.exe`.

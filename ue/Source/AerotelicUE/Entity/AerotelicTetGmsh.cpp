@@ -144,64 +144,9 @@ namespace AerotelicTetGmsh
 			return false;
 		}
 
-		const FString Params = FString::Printf(TEXT("\"%s\" \"%s\""), *Script, *Dir);
-		void* ReadPipe = nullptr; void* WritePipe = nullptr;
-		FPlatformProcess::CreatePipe(ReadPipe, WritePipe);
-		const FString WorkingDir = FPaths::GetPath(Script);
-		const double T0 = FPlatformTime::Seconds();
-		FProcHandle Proc = FPlatformProcess::CreateProc(*Python, *Params, false, true, true, nullptr, 0, *WorkingDir, WritePipe, nullptr, WritePipe);
-		const bool bStarted = Proc.IsValid();
-		FString Output;
-		int32 Code = -1;
-		if (bStarted)
-		{
-			while (FPlatformProcess::IsProcRunning(Proc))
-			{
-				Output += FPlatformProcess::ReadPipe(ReadPipe);
-				FPlatformProcess::Sleep(0.02f);
-			}
-			Output += FPlatformProcess::ReadPipe(ReadPipe);
-			FPlatformProcess::GetProcReturnCode(Proc, &Code);
-			FPlatformProcess::CloseProc(Proc);
-		}
-		FPlatformProcess::ClosePipe(ReadPipe, WritePipe);
-		if (!bStarted)
-		{
-			OutError = FString::Printf(TEXT("could not start %s"), *Python);
-			Cleanup();
-			return false;
-		}
-		UE_LOG(LogAerotelicTetGmsh, Log, TEXT("tet_gmsh.py exited with %d after %.2f s:\n%s"), Code, FPlatformTime::Seconds() - T0, *Output);
-
-		FString ResultText;
 		TSharedPtr<FJsonObject> Result;
-		if (FFileHelper::LoadFileToString(ResultText, *FPaths::Combine(Dir, TEXT("result.json"))))
+		if (!AerotelicMeshLib::RunJob(Script, Dir, Result, OutError))
 		{
-			TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(ResultText);
-			FJsonSerializer::Deserialize(Reader, Result);
-		}
-		bool bOk = false;
-		if (!Result.IsValid() || !Result->TryGetBoolField(TEXT("ok"), bOk) || !bOk)
-		{
-			FString Reason;
-			if (Result.IsValid())
-			{
-				Result->TryGetStringField(TEXT("error"), Reason);
-			}
-			if (Reason.IsEmpty())
-			{
-				TArray<FString> Lines;
-				Output.ParseIntoArrayLines(Lines);
-				for (int32 i = Lines.Num() - 1; i >= 0; --i)
-				{
-					if (Lines[i].StartsWith(TEXT("error:")) || Lines[i].Contains(TEXT("Error")))
-					{
-						Reason = Lines[i].TrimStartAndEnd();
-						break;
-					}
-				}
-			}
-			OutError = Reason.IsEmpty() ? FString::Printf(TEXT("gmsh's tetrahedral mesher exited with code %d (see the log)."), Code) : Reason;
 			Cleanup();
 			return false;
 		}

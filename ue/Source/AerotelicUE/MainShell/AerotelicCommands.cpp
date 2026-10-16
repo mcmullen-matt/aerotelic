@@ -33,6 +33,9 @@ void FAerotelicCommands::RegisterCommands()
 	UI_COMMAND(ExportSkinVtk, "Export Skin Tetrahedra (VTK)...", "Write the skin of every body a lattice fills as tetrahedra conforming exactly to the body's surface outside and to its offset at the skin depth inside (legacy VTK unstructured grid, cell data 'material' = 1), for a finite-element model", EUserInterfaceActionType::Button, FInputChord());
 	UI_COMMAND(ExportTetVtk, "Export Tetrahedral Mesh (VTK)...", "Write every body a lattice fills as tetrahedra conforming exactly to its surface, split at its offset into skin (material 1) and core (material 2) that together fill the body's volume exactly, as a legacy VTK unstructured grid for a finite-element model", EUserInterfaceActionType::Button, FInputChord());
 
+	// Analysis
+	UI_COMMAND(PotentialFlow, "Potential Flow (Kratos)...", "Compute the potential flow around selected geometry on KratosMultiphysics: the air around it is meshed with tetrahedra bounded by the bodies' own triangulation, and the velocity potential, the velocity and the pressure coefficient are written to a VTK file. No wake, so no lift: the pressure distribution is real, the lift is zero by construction", EUserInterfaceActionType::Button, FInputChord());
+
 	// View
 	UI_COMMAND(ViewIsometric, "Isometric", "Look at the scene from the isometric direction", EUserInterfaceActionType::Button, FInputChord());
 	UI_COMMAND(ViewTop, "Top", "Look straight down on the scene", EUserInterfaceActionType::Button, FInputChord());

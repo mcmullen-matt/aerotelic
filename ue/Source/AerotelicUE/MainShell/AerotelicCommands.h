@@ -35,6 +35,9 @@ public:
 	TSharedPtr<FUICommandInfo> ExportSkinVtk;
 	TSharedPtr<FUICommandInfo> ExportTetVtk;
 
+	// Analysis
+	TSharedPtr<FUICommandInfo> PotentialFlow;
+
 	// View
 	TSharedPtr<FUICommandInfo> ViewIsometric;
 	TSharedPtr<FUICommandInfo> ViewTop;
