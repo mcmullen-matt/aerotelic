@@ -6,9 +6,11 @@
 #include <fstream>
 #include <iostream>
 #include <string>
+#include <vector>
 
 #include <BRepGProp.hxx>
 #include <GProp_GProps.hxx>
+#include <TopExp_Explorer.hxx>
 
 #include "aerotelic/propeller_model.hpp"
 #include "token_reader.hpp"
@@ -102,10 +104,80 @@ void RunCase(TokenReader& r, const std::string& name) {
 	CheckClose(props.Mass(), volume_ref, 1e-3, name + " build_solid volume");
 }
 
+// The spinner is optional (PropellerSpec::spinner). On by default; off
+// drops exactly one body and relaxes the checks that only exist to keep
+// the blade roots buried in it.
+void CheckOptionalSpinner() {
+	PropellerSpec spec;
+	Check(spec.spinner, "spinner: on by default");
+
+	PropellerModel with(spec);
+	std::vector<NamedMesh> m_with = with.BuildMeshes(0.01);
+	Check(!m_with.empty() && m_with[0].name == "Spinner", "spinner on: the first body is the Spinner");
+	Check(static_cast<int>(m_with.size()) == spec.blade_count + 1, "spinner on: one body per blade plus the spinner");
+
+	spec.spinner = false;
+	PropellerModel without(spec);
+	std::vector<NamedMesh> m_without = without.BuildMeshes(0.01);
+	Check(static_cast<int>(m_without.size()) == spec.blade_count, "spinner off: one body per blade and no more");
+	bool any_spinner = false;
+	for (const NamedMesh& nm : m_without) {
+		if (nm.name == "Spinner") any_spinner = true;
+	}
+	Check(!any_spinner, "spinner off: no body called Spinner");
+	Check(!m_without.empty() && m_without[0].name == "Blade 1", "spinner off: the body list starts at Blade 1");
+
+	// The blades themselves must be untouched by the flag.
+	Check(m_with.size() == m_without.size() + 1, "spinner off: exactly one body fewer");
+	for (size_t i = 0; i < m_without.size(); ++i) {
+		Check(m_without[i].name == m_with[i + 1].name, "spinner off: blade " + std::to_string(i + 1) + " keeps its name");
+		CheckClose(m_without[i].mesh.SignedVolume(), m_with[i + 1].mesh.SignedVolume(), 1e-12,
+			"spinner off: blade " + std::to_string(i + 1) + " is unchanged");
+	}
+
+	// A blade root outside the spinner is an error WITH a spinner (the
+	// root would be left bare) and perfectly fine without one.
+	PropellerSpec bare = spec;
+	bare.spinner = true;
+	bare.hub_radius = 0.95;
+	bool threw = false;
+	try { PropellerModel(bare).Validate(); } catch (const std::exception&) { threw = true; }
+	Check(threw, "spinner on: a blade root outside the spinner is refused");
+	bare.spinner = false;
+	threw = false;
+	try { PropellerModel(bare).Validate(); } catch (const std::exception&) { threw = true; }
+	Check(!threw, "spinner off: the same blade root is allowed -- the roots are meant to be bare");
+
+	// The flag survives a round trip, and the profile with it.
+	PropellerSpec back = without.Serialize();
+	Check(!back.spinner, "spinner off: the flag round-trips through Serialize");
+	CheckClose(back.spinner_length, spec.spinner_length, 1e-12, "spinner off: the length is kept");
+	Check(back.spinner_curve.poles.rows() == spec.spinner_curve.poles.rows(),
+		"spinner off: the profile is kept, so switching it back on restores the shape");
+	PropellerSpec on_again = back;
+	on_again.spinner = true;
+	std::vector<NamedMesh> m_again = PropellerModel(on_again).BuildMeshes(0.01);
+	Check(!m_again.empty() && m_again[0].name == "Spinner", "switching it back on rebuilds the Spinner");
+	CheckClose(m_again[0].mesh.SignedVolume(), m_with[0].mesh.SignedVolume(), 1e-12,
+		"switching it back on gives the same spinner");
+
+	// An unfused solid is the bodies as they stand; it must lose the
+	// spinner too, not just the mesh path.
+	TopoDS_Shape solid = without.BuildSolid();
+	int n_solids = 0;
+	for (TopExp_Explorer e(solid, TopAbs_SOLID); e.More(); e.Next()) ++n_solids;
+	Check(n_solids == spec.blade_count, "spinner off: BuildSolid returns the blades alone");
+
+	std::cout << "optional spinner: on -> " << m_with.size() << " bodies (" << m_with[0].name
+	          << " + " << spec.blade_count << " blades), off -> " << m_without.size()
+	          << " bodies (" << m_without[0].name << " ...), blades identical either way\n";
+}
+
 } // namespace
 
 int main() {
 	try {
+		CheckOptionalSpinner();
 		std::ifstream in(AEROTELIC_TESTS_DIR "/propeller_fixtures.txt");
 		if (!in) throw std::runtime_error("cannot open propeller_fixtures.txt");
 		TokenReader r(in);

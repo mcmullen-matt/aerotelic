@@ -1,0 +1,51 @@
+! DUST solver input, written by Aerotelic.
+! Run:  dust dust.in      (after dust_pre)
+
+basename        = ./Output/dust
+geometry_file   = ./geo_input.h5
+reference_file  = ./References.in
+
+! ---- free stream -------------------------------------------
+! +x downstream, tilted towards +z by the angle of attack (0 deg)
+! and towards +y by the sideslip (0 deg).
+u_inf   = (/ 30, 0, 0 /)
+rho_inf = 1.225
+p_inf   = 101325
+a_inf   = 340
+mu_inf  = 1.81e-05
+
+! ---- time ---------------------------------------------------
+! The model is 2.93649 long along the flow, so the flow
+! crosses it in 0.0978829 s; this runs for 8 crossings in 320 steps.
+tstart  = 0
+tend    = 0.7830633772
+dt      = 0.002447073054
+dt_out  = 0.002447073054
+output_start = T
+
+! ---- wake ----------------------------------------------------
+! n_wake_panels rows of panel wake stay attached at the trailing
+! edge; everything past them is carried as free vortex particles,
+! which is what makes this a vortex particle method.
+n_wake_panels     = 1
+n_wake_particles  = 500000
+particles_box_min = (/ -13.04905607, -24.07415749, -16.22445577 /)
+particles_box_max = (/ 86.78176801, 24.07415749, 17.04325522 /)
+! A particle leaving the box is dropped, so the box is what bounds
+! the cost of a long run.
+
+! ---- models ---------------------------------------------------
+vortex_rad            = 0.1937157202
+fmm                   = T
+vortstretch           = T
+diffusion             = T
+penetration_avoidance = T
+
+! ---- octree, used by the fast multipole method ----------------
+! It has to cover the particle box above.
+box_length        = 33.26771099
+n_box             = (/ 4, 2, 1 /)
+octree_origin     = (/ -13.04905607, -24.07415749, -16.22445577 /)
+n_octree_levels   = 5
+min_octree_part   = 5
+multipole_degree  = 2

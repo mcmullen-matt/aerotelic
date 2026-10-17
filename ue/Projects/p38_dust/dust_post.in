@@ -1,0 +1,54 @@
+! DUST postprocessor input, written by Aerotelic.
+! Run:  dust_post dust_post.in      (after dust)
+
+basename      = ./Postprocessing/post
+data_basename = ./Output/dust
+
+! The flow field and the wake, as VTK files one per step: open the
+! post_viz-....vtu series in ParaView.
+analysis = {
+  type      = viz
+  name      = viz
+  format    = vtk
+  start_res = 1
+  end_res   = 321
+  step_res  = 1
+  wake      = T
+  variable  = Vorticity
+  variable  = Pressure
+}
+
+! Forces and moments on everything, per time step.
+analysis = {
+  type      = integral_loads
+  name      = loads_total
+  start_res = 1
+  end_res   = 321
+  step_res  = 1
+  format    = dat
+  reference_tag = 0
+  component = Wing
+  component = Wing_mirror
+}
+
+analysis = {
+  type      = integral_loads
+  name      = loads_Wing
+  start_res = 1
+  end_res   = 321
+  step_res  = 1
+  format    = dat
+  reference_tag = 0
+  component = Wing
+}
+
+analysis = {
+  type      = integral_loads
+  name      = loads_Wing_mirror
+  start_res = 1
+  end_res   = 321
+  step_res  = 1
+  format    = dat
+  reference_tag = 0
+  component = Wing_mirror
+}

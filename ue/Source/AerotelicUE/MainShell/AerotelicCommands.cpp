@@ -18,6 +18,7 @@ void FAerotelicCommands::RegisterCommands()
 	UI_COMMAND(OpenProject, "Open Project...", "Open a project file", EUserInterfaceActionType::Button, FInputChord(EModifierKey::Control, EKeys::O));
 	UI_COMMAND(ExportStep, "Export STEP...", "Write chosen bodies to one STEP file as named parts, rebuilt at the export tolerance", EUserInterfaceActionType::Button, FInputChord());
 	UI_COMMAND(ExportStl, "Export STL...", "Mesh chosen bodies at one density and write them to one STL file", EUserInterfaceActionType::Button, FInputChord());
+	UI_COMMAND(Export3DPdf, "Export 3D PDF...", "Write chosen bodies to a PDF page as one interactive 3D model, each body a named part in its scene colour", EUserInterfaceActionType::Button, FInputChord());
 	UI_COMMAND(Quit, "Quit", "Close the application", EUserInterfaceActionType::Button, FInputChord());
 
 	// Edit -> Preferences
@@ -34,6 +35,7 @@ void FAerotelicCommands::RegisterCommands()
 	UI_COMMAND(ExportTetVtk, "Export Tetrahedral Mesh (VTK)...", "Write every body a lattice fills as tetrahedra conforming exactly to its surface, split at its offset into skin (material 1) and core (material 2) that together fill the body's volume exactly, as a legacy VTK unstructured grid for a finite-element model", EUserInterfaceActionType::Button, FInputChord());
 
 	// Analysis
+	UI_COMMAND(DustVpm, "DUST (Vortex Particle Method)...", "Write a DUST case for selected geometry: surface panels shedding a free vortex-particle wake, which -- unlike the potential flow above -- lifts. The dialog writes the input files and its Help tab gives the commands that run them", EUserInterfaceActionType::Button, FInputChord());
 	UI_COMMAND(PotentialFlow, "Potential Flow (Kratos)...", "Compute the potential flow around selected geometry on KratosMultiphysics: the air around it is meshed with tetrahedra bounded by the bodies' own triangulation, and the velocity potential, the velocity and the pressure coefficient are written to a VTK file. No wake, so no lift: the pressure distribution is real, the lift is zero by construction", EUserInterfaceActionType::Button, FInputChord());
 
 	// View

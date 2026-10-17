@@ -14,6 +14,7 @@
 #include "Dialogs/ExportDialogs.h"
 #include "Dialogs/LatticeDialog.h"
 #include "Dialogs/PotentialFlowDialog.h"
+#include "Dialogs/DustDialog.h"
 #include "Dialogs/ThemeDialog.h"
 #include "Branding/AerotelicTheme.h"
 
@@ -353,6 +354,7 @@ void SAerotelicMainShell::BindCommands()
 	Commands->MapAction(C.OpenProject, FExecuteAction::CreateSP(this, &SAerotelicMainShell::OnOpen));
 	Commands->MapAction(C.ExportStep, FExecuteAction::CreateLambda([this]() { ShowAerotelicExportStepDialog([this](const FText& T) { SetStatus(T); }); }));
 	Commands->MapAction(C.ExportStl, FExecuteAction::CreateLambda([this]() { ShowAerotelicExportStlDialog([this](const FText& T) { SetStatus(T); }); }));
+	Commands->MapAction(C.Export3DPdf, FExecuteAction::CreateLambda([this]() { ShowAerotelicExport3DPdfDialog([this](const FText& T) { SetStatus(T); }); }));
 	Commands->MapAction(C.Quit, FExecuteAction::CreateSP(this, &SAerotelicMainShell::OnQuit));
 
 	// Edit
@@ -389,6 +391,7 @@ void SAerotelicMainShell::BindCommands()
 
 	// Analysis
 	Commands->MapAction(C.PotentialFlow, FExecuteAction::CreateLambda([this]() { ShowAerotelicPotentialFlowDialog([this](const FText& T) { SetStatus(T); }); }));
+	Commands->MapAction(C.DustVpm, FExecuteAction::CreateLambda([this]() { ShowAerotelicDustDialog([this](const FText& T) { SetStatus(T); }); }));
 
 	// View
 	Commands->MapAction(C.ViewIsometric, FExecuteAction::CreateSP(this, &SAerotelicMainShell::OnViewPreset, EAerotelicViewPreset::Isometric));
@@ -494,6 +497,7 @@ void SAerotelicMainShell::FillFileMenu(FMenuBuilder& Menu)
 	Menu.AddMenuSeparator();
 	Menu.AddMenuEntry(C.ExportStep);
 	Menu.AddMenuEntry(C.ExportStl);
+	Menu.AddMenuEntry(C.Export3DPdf);
 	Menu.AddMenuSeparator();
 	Menu.AddMenuEntry(C.Quit, NAME_None, TAttribute<FText>(), TAttribute<FText>(), FSlateIcon(), NAME_None);
 }
@@ -530,6 +534,7 @@ void SAerotelicMainShell::FillLatticeMenu(FMenuBuilder& Menu)
 void SAerotelicMainShell::FillAnalysisMenu(FMenuBuilder& Menu)
 {
 	Menu.AddMenuEntry(FAerotelicCommands::Get().PotentialFlow);
+	Menu.AddMenuEntry(FAerotelicCommands::Get().DustVpm);
 }
 
 void SAerotelicMainShell::FillViewMenu(FMenuBuilder& Menu)

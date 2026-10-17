@@ -113,6 +113,7 @@ PropellerModel::PropellerModel(const PropellerSpec& spec) {
 	blade_count = spec.blade_count;
 	blade_x = spec.blade_x;
 	hub_radius = spec.hub_radius;
+	spinner = spec.spinner;
 	spinner_length = spec.spinner_length;
 	reference_images = spec.reference_images;
 
@@ -143,6 +144,7 @@ PropellerSpec PropellerModel::Serialize() const {
 	s.blade_count = blade_count;
 	s.blade_x = blade_x;
 	s.hub_radius = hub_radius;
+	s.spinner = spinner;
 	s.spinner_length = spinner_length;
 	s.spinner_curve = spinner_curve_->Serialize();
 	s.blade = blade_->Serialize();
@@ -221,6 +223,12 @@ void PropellerModel::Validate() const {
 	if (!(hub_radius > 0.0 && hub_radius < 1.0)) {
 		throw std::invalid_argument("the blade root (hub) radius must lie between the axis and the tip");
 	}
+	// Everything below is about the spinner, and none of it applies when
+	// there is not going to be one: without a spinner the blade roots are
+	// MEANT to be bare, and the profile's own shape cannot make the
+	// propeller unbuildable because it is not built.
+	if (!spinner) return;
+
 	if (!(spinner_length > 0.0)) throw std::invalid_argument("the spinner needs a length greater than zero");
 
 	Mat pts = spinner_curve_->Sample(400);
@@ -286,8 +294,10 @@ std::vector<NamedMesh> PropellerModel::BuildMeshes(double tolerance) const {
 	std::vector<NamedMesh> out;
 
 	// Spinner: the profile (x/l, r/R) revolved about X; both ends are on
-	// the axis, so the chain starts and ends at an apex.
-	{
+	// the axis, so the chain starts and ends at an apex. Omitted whole
+	// when the spinner is switched off, so the body list is the blades
+	// alone and "Blade 1" is body zero.
+	if (spinner) {
 		LoftSource src;
 		src.closed_curve = true;
 		src.v_seeds = {0.0, 0.25, 0.5, 0.75};
@@ -333,7 +343,6 @@ std::vector<NamedMesh> PropellerModel::BuildMeshes(double tolerance) const {
 TopoDS_Shape PropellerModel::BuildSolid(int n_span, std::optional<double> station_tol, bool fuse) const {
 	Validate();
 	double R = radius;
-	TopoDS_Shape spinner = SpinnerSolid();
 	TopoDS_Shape blade_shape = BladeSolid(n_span, station_tol);
 
 	int n = blade_count;
@@ -350,20 +359,33 @@ TopoDS_Shape PropellerModel::BuildSolid(int n_span, std::optional<double> statio
 		BRep_Builder builder;
 		TopoDS_Compound compound;
 		builder.MakeCompound(compound);
-		builder.Add(compound, spinner);
+		if (spinner) builder.Add(compound, SpinnerSolid());
 		for (auto& b : blades) builder.Add(compound, b);
 		return compound;
 	}
 
+	// Fusing wants something to fuse ONTO. With a spinner that is the
+	// spinner; without one the blades are fused to each other, and a
+	// single blade has nothing to fuse at all -- they only ever meet at
+	// the hub, so with no spinner a multi-blade propeller may well come
+	// back as several solids, which is correct rather than a failure.
 	TopTools_ListOfShape args, tools;
-	args.Append(spinner);
-	for (auto& b : blades) tools.Append(b);
+	if (spinner) {
+		args.Append(SpinnerSolid());
+		for (auto& b : blades) tools.Append(b);
+	} else {
+		if (blades.size() == 1) return blades[0];
+		args.Append(blades[0]);
+		for (size_t i = 1; i < blades.size(); ++i) tools.Append(blades[i]);
+	}
 	BRepAlgoAPI_Fuse fuse_op;
 	fuse_op.SetArguments(args);
 	fuse_op.SetTools(tools);
 	fuse_op.SetRunParallel(true);
 	fuse_op.Build();
-	if (!fuse_op.IsDone()) throw std::runtime_error("fusing the blades to the spinner failed");
+	if (!fuse_op.IsDone()) {
+		throw std::runtime_error(spinner ? "fusing the blades to the spinner failed" : "fusing the blades to each other failed");
+	}
 	TopoDS_Shape shape = fuse_op.Shape();
 
 	std::vector<TopoDS_Shape> solids;

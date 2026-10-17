@@ -319,6 +319,7 @@ YAML::Node Encode(const PropellerSpec& spec) {
 	n["blade_count"] = spec.blade_count;
 	n["blade_x"] = spec.blade_x;
 	n["hub_radius"] = spec.hub_radius;
+	n["spinner"] = spec.spinner;
 	n["spinner_length"] = spec.spinner_length;
 	n["spinner_curve"] = Encode(spec.spinner_curve);
 	if (spec.blade) n["blade"] = Encode(*spec.blade);
@@ -334,6 +335,9 @@ PropellerSpec DecodePropellerSpec(const YAML::Node& node) {
 	spec.blade_count = node["blade_count"] ? node["blade_count"].as<int>() : 2;
 	spec.blade_x = node["blade_x"] ? node["blade_x"].as<double>() : 0.26;
 	spec.hub_radius = node["hub_radius"] ? node["hub_radius"].as<double>() : 0.12;
+	// Absent means on: every project written before the spinner became
+	// optional had one, and reading those files must not silently remove it.
+	spec.spinner = node["spinner"] ? node["spinner"].as<bool>() : true;
 	spec.spinner_length = node["spinner_length"] ? node["spinner_length"].as<double>() : 0.40;
 	if (node["spinner_curve"]) spec.spinner_curve = DecodeNurbsSpec(node["spinner_curve"]);
 	if (node["blade"]) spec.blade = DecodeWingModelSpec(node["blade"]);

@@ -1,0 +1,15 @@
+! DUST preprocessor input, written by Aerotelic.
+! Run:  dust_pre dust_pre.in
+! It collects the components below into the single geometry file
+! that the solver reads.
+
+comp_name = Wing
+geo_file  = ./components/Wing.in
+ref_tag   = 0
+
+comp_name = Wing_mirror
+geo_file  = ./components/Wing_mirror.in
+ref_tag   = 0
+
+! The preprocessed geometry the solver reads.
+file_name = ./geo_input.h5

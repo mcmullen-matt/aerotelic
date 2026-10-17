@@ -2,6 +2,7 @@
 
 #include "HAL/PlatformProcess.h"
 #include "HAL/FileManager.h"
+#include "Misc/Compression.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 #include "Misc/Guid.h"
@@ -251,6 +252,103 @@ namespace AerotelicExport
 		}
 		return FString();
 	}
+
+	// ------------------------------------------------------------ 3D PDF
+
+	std::vector<aerotelic::Pdf3dPart> MeshForPdf3d(const TArray<FAerotelicBooleanOperand>& Operands, const TArray<FString>& Labels,
+		double LinearDeflection, double AngularDeflectionDeg, TArray<FString>& OutFailures)
+	{
+		std::vector<aerotelic::Pdf3dPart> Parts;
+		OutFailures.Reset();
+		for (int32 i = 0; i < Operands.Num(); ++i)
+		{
+			const FString Label = Labels.IsValidIndex(i) ? Labels[i] : FString::Printf(TEXT("Body %d"), i + 1);
+			if (!Operands[i].Entity.IsValid())
+			{
+				OutFailures.Add(Label + TEXT(": no longer in the scene"));
+				continue;
+			}
+			AAerotelicEntityActor* Entity = Operands[i].Entity.Get();
+			std::vector<aerotelic::NamedMesh> Meshes;
+			try
+			{
+				Meshes = Entity->GetPlacedMeshes(Operands[i].bMirror, LinearDeflection);
+				if (Meshes.empty())
+				{
+					Meshes = AerotelicMeshing::MeshesFromShape(Entity->GetPlacedShape(Operands[i].bMirror), LinearDeflection, AngularDeflectionDeg);
+				}
+			}
+			catch (const std::exception& e)
+			{
+				OutFailures.Add(FString::Printf(TEXT("%s: meshing failed: %s"), *Label, UTF8_TO_TCHAR(e.what())));
+				continue;
+			}
+			bool bAny = false;
+			for (int32 b = 0; b < (int32)Meshes.size(); ++b)
+			{
+				if (Meshes[b].mesh.IsEmpty()) continue;
+				aerotelic::Pdf3dPart Part;
+				Part.name = TCHAR_TO_UTF8(*FString::Printf(TEXT("%s/%s"), *Label, UTF8_TO_TCHAR(Meshes[b].name.c_str())));
+				Part.mesh = std::move(Meshes[b].mesh);
+				// The colour the body is drawn in: its own override, else
+				// the entity's, else the per-type default. A body index
+				// the entity does not know (an OCCT fallback tessellation
+				// of a single shape) falls back to the entity's colour.
+				const FLinearColor C = Entity->GetBodies().IsValidIndex(b) ? Entity->GetBodyDisplayColor(b) : Entity->GetDisplayColor();
+				Part.colour[0] = C.R;
+				Part.colour[1] = C.G;
+				Part.colour[2] = C.B;
+				Parts.push_back(std::move(Part));
+				bAny = true;
+			}
+			if (!bAny)
+			{
+				OutFailures.Add(Label + TEXT(": produced no triangles"));
+			}
+		}
+		return Parts;
+	}
+
+	bool WritePdf3d(const std::vector<aerotelic::Pdf3dPart>& Parts, const FString& Path, aerotelic::Pdf3dOptions Options,
+		bool bCompress, FString& OutError, aerotelic::Pdf3dResult* OutStats)
+	{
+		if (bCompress)
+		{
+			// The engine's own zlib, through FCompression -- the core links
+			// none of its own on purpose (see pdf3d.hpp and the Build.cs
+			// note on shadowed zlib/libpng/freetype/tiff DLLs). NAME_Zlib
+			// writes a zlib stream, which is exactly what a PDF's
+			// /FlateDecode filter reads.
+			Options.deflate = [](const std::vector<uint8_t>& In, std::vector<uint8_t>& Out) -> bool
+			{
+				if (In.empty()) return false;
+				int64 Bound = 0;
+				if (!FCompression::CompressMemoryBound(NAME_Zlib, Bound, (int64)In.size()) || Bound <= 0)
+				{
+					return false;
+				}
+				Out.resize((size_t)Bound);
+				int64 Size = Bound;
+				if (!FCompression::CompressMemory(NAME_Zlib, Out.data(), Size, In.data(), (int64)In.size()) || Size <= 0)
+				{
+					Out.clear();
+					return false;
+				}
+				Out.resize((size_t)Size);
+				return true;
+			};
+		}
+
+		std::string Error;
+		const bool bOk = aerotelic::WritePdf3d(Parts, TCHAR_TO_UTF8(*Path), Options, Error, OutStats);
+		if (!bOk)
+		{
+			OutError = Error.empty() ? FString::Printf(TEXT("could not write %s"), *Path) : UTF8_TO_TCHAR(Error.c_str());
+		}
+		return bOk;
+	}
+
+	// -------------------------------------------------------------- STEP
 
 	bool WriteStep(const TArray<FBody>& Bodies, const FString& Path, bool bNamed, FString& OutError)
 	{

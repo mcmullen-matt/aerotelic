@@ -1,4 +1,4 @@
-﻿cmake_minimum_required(VERSION 3.20)
+cmake_minimum_required(VERSION 3.20)
 project(aerotelic_core C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
@@ -55,6 +55,8 @@ add_library(aerotelic_core STATIC
 	src/tet_skin.cpp
 	src/tet_improve.cpp
 	src/mesh_boolean.cpp
+	src/pdf3d.cpp
+	src/dust_case.cpp
 	# Shewchuk's exact geometric predicates (public domain), compiled as C
 	# with strict IEEE rounding: the adaptive arithmetic is defeated by
 	# fast-math style reassociation.
@@ -140,3 +142,10 @@ target_link_libraries(tet_check PRIVATE aerotelic_core)
 
 add_executable(mesh_boolean_check tests/mesh_boolean_check.cpp)
 target_link_libraries(mesh_boolean_check PRIVATE aerotelic_core)
+
+add_executable(pdf3d_check tests/pdf3d_check.cpp)
+target_link_libraries(pdf3d_check PRIVATE aerotelic_core)
+
+add_executable(dust_case_check tests/dust_case_check.cpp)
+target_link_libraries(dust_case_check PRIVATE aerotelic_core)
+

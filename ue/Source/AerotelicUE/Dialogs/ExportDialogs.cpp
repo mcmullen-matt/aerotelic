@@ -9,6 +9,8 @@
 #include "Widgets/Text/STextBlock.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SCheckBox.h"
+#include "Widgets/Input/SComboBox.h"
+#include "Widgets/Input/SEditableTextBox.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Styling/CoreStyle.h"
 #include "Misc/MessageDialog.h"
@@ -470,6 +472,223 @@ void ShowAerotelicExportStepDialog(TFunction<void(const FText&)> Status)
 				SNew(SHorizontalBox)
 				+ SHorizontalBox::Slot().AutoWidth().Padding(0, 0, 6, 0)
 				[ SNew(SButton).Text(LOCTEXT("SaveStep", "Save STEP...")).OnClicked_Lambda([&Save]() { Save(); return FReply::Handled(); }) ]
+				+ SHorizontalBox::Slot().AutoWidth()
+				[ SNew(SButton).Text(LOCTEXT("Close", "Close")).OnClicked_Lambda([Window]() { Window->RequestDestroyWindow(); return FReply::Handled(); }) ]
+			]
+		]);
+
+	Status(LOCTEXT("SelectBody", "Select at least one body to export."));
+	FSlateApplication::Get().AddModalWindow(Window, FSlateApplication::Get().GetActiveTopLevelWindow());
+}
+
+// ----------------------------------------------------------------- 3D PDF
+
+namespace
+{
+	// The page sizes offered, in PostScript points (72 to the inch).
+	struct FPageSize { const TCHAR* Label; double Width; double Height; };
+	const FPageSize kPageSizes[] = {
+		{ TEXT("A4 landscape"),     841.890, 595.276 },
+		{ TEXT("A4 portrait"),      595.276, 841.890 },
+		{ TEXT("Letter landscape"), 792.000, 612.000 },
+		{ TEXT("Letter portrait"),  612.000, 792.000 },
+		{ TEXT("A3 landscape"),    1190.551, 841.890 },
+	};
+}
+
+void ShowAerotelicExport3DPdfDialog(TFunction<void(const FText&)> Status)
+{
+	// Every scene body, as STL export takes them: a 3D PDF carries a
+	// triangulation, so a boolean result and a lattice are as exportable
+	// as a solid (unlike STEP, which needs a B-rep).
+	TArray<FAerotelicBodyChoicePtr> Choices = SceneBodyChoices();
+	if (Choices.Num() == 0)
+	{
+		AerotelicMessageBox(EAppMsgType::Ok, LOCTEXT("NothingPdf", "Nothing in the scene to export."), LOCTEXT("PdfTitle", "Export 3D PDF"));
+		return;
+	}
+
+	TSharedRef<SWindow> Window = MakeWindow(LOCTEXT("PdfTitle", "Export 3D PDF"), FVector2D(560, 700));
+	TSharedPtr<SAerotelicBodyPicker> Picker;
+	TSharedPtr<STextBlock> LblBodies, LblNodes, LblTris;
+	TSharedPtr<SEditableTextBox> TitleBox;
+	TSharedPtr<SCheckBox> CompressCheck;
+	double Deflection = 0.01, AngleDeg = 20.0;
+	std::vector<aerotelic::Pdf3dPart> Parts;
+
+	// The page the model is laid on.
+	TArray<TSharedPtr<FString>> PageOptions;
+	for (const FPageSize& P : kPageSizes) PageOptions.Add(MakeShared<FString>(P.Label));
+	TSharedPtr<FString> ChosenPage = PageOptions[0];
+
+	// The default document title is the project's name, as the file name
+	// the save dialog offers would be.
+	FString DefaultTitle = TEXT("Aerotelic model");
+	if (UAerotelicDocumentSubsystem* Doc = UAerotelicDocumentSubsystem::Get())
+	{
+		if (Doc->HasCurrentPath()) DefaultTitle = FPaths::GetBaseFilename(Doc->GetCurrentPath());
+	}
+
+	// The meshes are rebuilt when the body selection changes and re-meshed
+	// when a density changes; they are exactly what Save writes out.
+	auto Refresh = [&]()
+	{
+		TArray<FAerotelicBooleanOperand> Operands;
+		TArray<FString> Labels;
+		for (const FAerotelicBodyChoicePtr& C : Picker->GetChosen())
+		{
+			Operands.Add(C->Operand);
+			Labels.Add(C->Label);
+		}
+		auto Clear = [&]()
+		{
+			LblBodies->SetText(FText::FromString(TEXT("--")));
+			LblNodes->SetText(FText::FromString(TEXT("--")));
+			LblTris->SetText(FText::FromString(TEXT("--")));
+		};
+		if (Operands.Num() == 0)
+		{
+			Parts.clear();
+			Clear();
+			Status(LOCTEXT("SelectBody", "Select at least one body to export."));
+			return;
+		}
+		Status(LOCTEXT("Meshing", "Meshing..."));
+		TArray<FString> Failures;
+		Parts = AerotelicExport::MeshForPdf3d(Operands, Labels, Deflection, AngleDeg, Failures);
+		int64 Nodes = 0, Tris = 0;
+		for (const aerotelic::Pdf3dPart& P : Parts)
+		{
+			Nodes += (int64)P.mesh.vertices.size();
+			Tris += (int64)P.mesh.triangles.size();
+		}
+		const int64 NumParts = (int64)Parts.size();
+		if (NumParts == 0)
+		{
+			Clear();
+			Status(FText::FromString(TEXT("No body could be built: ") + FString::Join(Failures, TEXT("; "))));
+			return;
+		}
+		LblBodies->SetText(FText::FromString(Thousands(NumParts)));
+		LblNodes->SetText(FText::FromString(Thousands(Nodes)));
+		LblTris->SetText(FText::FromString(Thousands(Tris)));
+		Status(FText::FromString(FString::Printf(TEXT("%s triangles across %s bodies at %g / %g deg%s"), *Thousands(Tris), *Thousands(NumParts), Deflection, AngleDeg,
+			Failures.Num() ? *(TEXT("; skipped: ") + FString::Join(Failures, TEXT("; "))) : TEXT(""))));
+	};
+
+	auto Save = [&]()
+	{
+		if (Parts.empty())
+		{
+			AerotelicMessageBox(EAppMsgType::Ok, LOCTEXT("SelectBodyWarn", "Select at least one body to export."), LOCTEXT("PdfTitle", "Export 3D PDF"));
+			return;
+		}
+		FString Path;
+		if (!AskSavePath(Window, TEXT("Export 3D PDF"), TEXT("PDF Files (*.pdf)|*.pdf"), TEXT(".pdf"), Path))
+		{
+			return;
+		}
+
+		aerotelic::Pdf3dOptions Options;
+		const FString DocTitle = TitleBox->GetText().ToString().TrimStartAndEnd();
+		Options.title = TCHAR_TO_UTF8(*(DocTitle.IsEmpty() ? FPaths::GetBaseFilename(Path) : DocTitle));
+		const FString Caption = FString::Printf(TEXT("%s bodies, %s triangles.  Click the model and drag to orbit; the model tree lists the bodies."),
+			*Thousands((int64)Parts.size()), *LblTris->GetText().ToString());
+		Options.caption = TCHAR_TO_UTF8(*Caption);
+		for (const FPageSize& P : kPageSizes)
+		{
+			if (ChosenPage.IsValid() && *ChosenPage == P.Label)
+			{
+				Options.page_width = P.Width;
+				Options.page_height = P.Height;
+				break;
+			}
+		}
+
+		Status(LOCTEXT("WritingPdf", "Writing the 3D PDF..."));
+		FString Error;
+		aerotelic::Pdf3dResult Stats;
+		if (!AerotelicExport::WritePdf3d(Parts, Path, Options, CompressCheck->IsChecked(), Error, &Stats))
+		{
+			Status(LOCTEXT("Ready", "Ready"));
+			AerotelicMessageBox(EAppMsgType::Ok, FText::FromString(Error), LOCTEXT("ExportError", "Export Error"));
+			return;
+		}
+		Status(FText::FromString(FString::Printf(TEXT("Exported %s bodies, %s triangles -> %s (%s KB%s)"),
+			*Thousands((int64)Stats.parts), *Thousands((int64)Stats.faces), *Path,
+			*Thousands((int64)((Stats.pdf_bytes + 1023) / 1024)),
+			Stats.u3d_deflated ? TEXT(", 3D stream compressed") : TEXT(""))));
+		Window->RequestDestroyWindow();
+	};
+
+	auto Spin = [&](double& Var, double Min, double Max, double Delta, const FText& Suffix)
+	{
+		return SNew(SAerotelicNumericEntry)
+			.Value_Lambda([&Var]() { return Var; })
+			.MinValue(Min).MaxValue(Max).Delta(Delta).Suffix(Suffix)
+			.LiveUpdate(false)
+			.OnValueCommitted_Lambda([&Var, &Refresh](double V, ETextCommit::Type) { if (V != Var) { Var = V; Refresh(); } });
+	};
+
+	Window->SetContent(
+		SNew(SBorder).Padding(12)
+		[
+			SNew(SVerticalBox)
+			+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 8)
+			[
+				MakeGroup(LOCTEXT("Bodies", "Bodies to export"),
+					SAssignNew(Picker, SAerotelicBodyPicker).Choices(Choices).ListHeight(160.0f)
+					.OnChanged(FSimpleDelegate::CreateLambda([&Refresh]() { Refresh(); })))
+			]
+			+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 8)
+			[
+				MakeGroup(LOCTEXT("Density", "Mesh Density"),
+					SNew(SVerticalBox)
+					+ SVerticalBox::Slot().AutoHeight().Padding(0, 2) [ FormRow(LOCTEXT("Linear", "Linear deflection:"), Spin(Deflection, 1e-9, 1e9, 0.005, FText::GetEmpty())) ]
+					+ SVerticalBox::Slot().AutoHeight().Padding(0, 2) [ FormRow(LOCTEXT("Angular", "Angular deflection:"), Spin(AngleDeg, 1e-9, 180.0, 1.0, FText::FromString(TEXT(" deg")))) ]
+					+ SVerticalBox::Slot().AutoHeight().Padding(0, 4, 0, 0)
+					[ MakeInfoLabel(LOCTEXT("PdfDensityHint", "The same triangulation STL export writes. A 3D PDF carries triangles, not surfaces, so this is the accuracy of the model in the file -- and most of its size. A reader loads the whole model at once, so a dense airframe makes a slow page.")) ])
+			]
+			+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 8)
+			[
+				MakeGroup(LOCTEXT("Mesh", "Mesh"),
+					SNew(SVerticalBox)
+					+ SVerticalBox::Slot().AutoHeight() [ FormRow(LOCTEXT("BodiesN", "Bodies:"), Stat(LblBodies)) ]
+					+ SVerticalBox::Slot().AutoHeight() [ FormRow(LOCTEXT("Nodes", "Nodes:"), Stat(LblNodes)) ]
+					+ SVerticalBox::Slot().AutoHeight() [ FormRow(LOCTEXT("Triangles", "Triangles:"), Stat(LblTris)) ])
+			]
+			+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 10)
+			[
+				MakeGroup(LOCTEXT("Document", "Document"),
+					SNew(SVerticalBox)
+					+ SVerticalBox::Slot().AutoHeight().Padding(0, 2)
+					[
+						FormRow(LOCTEXT("DocTitle", "Title:"),
+							SAssignNew(TitleBox, SEditableTextBox).Text(FText::FromString(DefaultTitle)))
+					]
+					+ SVerticalBox::Slot().AutoHeight().Padding(0, 2)
+					[
+						FormRow(LOCTEXT("PageSize", "Page:"),
+							SNew(SComboBox<TSharedPtr<FString>>)
+							.OptionsSource(&PageOptions)
+							.InitiallySelectedItem(ChosenPage)
+							.OnGenerateWidget_Lambda([](TSharedPtr<FString> S) { return SNew(STextBlock).Text(FText::FromString(*S)); })
+							.OnSelectionChanged_Lambda([&ChosenPage](TSharedPtr<FString> S, ESelectInfo::Type) { if (S.IsValid()) ChosenPage = S; })
+							[ SNew(STextBlock).Text_Lambda([&ChosenPage]() { return FText::FromString(ChosenPage.IsValid() ? *ChosenPage : FString()); }) ])
+					]
+					+ SVerticalBox::Slot().AutoHeight().Padding(0, 2)
+					[
+						SAssignNew(CompressCheck, SCheckBox).IsChecked(ECheckBoxState::Checked)
+						[ SNew(STextBlock).Text(LOCTEXT("CompressPdf", "Compress the 3D model stream")) ]
+					]
+					+ SVerticalBox::Slot().AutoHeight().Padding(0, 4, 0, 0)
+					[ MakeInfoLabel(LOCTEXT("PdfHint", "One page holding the model as a U3D 3D annotation (ECMA-363), opened on an isometric view and activated when the page opens: drag to orbit, and the reader's model tree lists the bodies by name, each in its scene colour and separately hideable. Adobe Acrobat and Reader display it; most other PDF viewers show the page and the frame but not the model.")) ])
+			]
+			+ SVerticalBox::Slot().AutoHeight().HAlign(HAlign_Right)
+			[
+				SNew(SHorizontalBox)
+				+ SHorizontalBox::Slot().AutoWidth().Padding(0, 0, 6, 0)
+				[ SNew(SButton).Text(LOCTEXT("SavePdf", "Save 3D PDF...")).OnClicked_Lambda([&Save]() { Save(); return FReply::Handled(); }) ]
 				+ SHorizontalBox::Slot().AutoWidth()
 				[ SNew(SButton).Text(LOCTEXT("Close", "Close")).OnClicked_Lambda([Window]() { Window->RequestDestroyWindow(); return FReply::Handled(); }) ]
 			]

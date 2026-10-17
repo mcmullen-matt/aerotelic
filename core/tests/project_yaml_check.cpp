@@ -143,8 +143,28 @@ void CheckPropellerRoundTrip() {
 	ProjectEntity back = RoundTripThroughText(e);
 	auto& ps = std::get<PropellerSpec>(back.model);
 	Check(ps.blade.has_value(), "propeller round trip: blade spec present");
+	Check(ps.spinner, "propeller round trip: the spinner flag survives (on)");
 	PropellerModel rebuilt(ps);
 	CheckClose(Volume(original.BuildSolid(20, std::nullopt, false)), Volume(rebuilt.BuildSolid(20, std::nullopt, false)), 1e-6, "propeller round trip: volume");
+
+	// Off must survive too, and must not take the profile with it.
+	PropellerSpec no_spinner = pspec;
+	no_spinner.spinner = false;
+	ProjectEntity e2;
+	e2.name = "Prop2";
+	e2.type = EntityType::Propeller;
+	e2.model = PropellerModel(no_spinner).Serialize();
+	auto& ps2 = std::get<PropellerSpec>(RoundTripThroughText(e2).model);
+	Check(!ps2.spinner, "propeller round trip: the spinner flag survives (off)");
+	CheckClose(ps2.spinner_length, no_spinner.spinner_length, 1e-12, "propeller round trip: the spinner length is kept while off");
+
+	// A file written before the spinner became optional has no `spinner`
+	// key at all, and must still come back with one -- otherwise opening
+	// an old project would quietly delete a body.
+	YAML::Node legacy = Encode(PropellerSpec());
+	legacy.remove("spinner");
+	Check(!legacy["spinner"], "legacy propeller: the test's own node really has no spinner key");
+	Check(DecodePropellerSpec(legacy).spinner, "legacy propeller: a file with no spinner key still builds one");
 }
 
 void CheckPrimitiveRoundTrip() {

@@ -13,6 +13,7 @@
 #include "Widgets/Layout/SScrollBox.h"
 #include "Widgets/Text/STextBlock.h"
 #include "Widgets/Input/SSpinBox.h"
+#include "Widgets/Input/SCheckBox.h"
 
 #include "Entity/AerotelicEntityActor.h"
 #include "aerotelic/propeller_model.hpp"
@@ -65,12 +66,16 @@ namespace
 		"The suction side faces forward and the propeller turns clockwise seen from behind; mirror the entity for the opposite hand.\n\n"
 		"THE SPINNER\n"
 		"One curve, radius against length, revolved about the axis. Both ends are held on the axis so the body is closed; they move along the axis only via Spinner length. "
-		"Every other point moves freely as long as it stays off the axis. The dashed line marks the blades' axial position.\n\n"
+		"Every other point moves freely as long as it stays off the axis. The dashed line marks the blades' axial position.\n"
+		"The spinner is optional: clear Build the spinner on the Propeller tab and only the blades are built — a bare hub, or a rotor whose hub is modelled by other entities. "
+		"The profile is kept while it is off, so switching it back on restores the shape unchanged, and the Spinner tab stays editable either way. "
+		"With it off the body list starts at Blade 1, the blade root radius is no longer required to sit inside the spinner (the roots are meant to be bare), and the derived spinner figures read none.\n\n"
 		"CURVE EDITORS\n"
 		"Drag to move, double-click to add, right-click for weight or remove. In the knot graph drag the green knots, push one onto a neighbour to repeat it, right-click to insert or delete. "
 		"The wheel zooms; the right-click menu's Fit view to contents refits.\n\n"
 		"SOLID\n"
-		"While editing, the spinner and blades are drawn as separate overlapping bodies, which is quick; export joins them into one solid.");
+		"While editing, the spinner and blades are drawn as separate overlapping bodies, which is quick; export joins them into one solid. "
+		"Without a spinner the blades only meet at the hub, so a fused export may come back as several solids rather than one.");
 }
 
 void BuildPropellerDesignContent(AAerotelicEntityActor* Entity, FAerotelicDesignContent& Out)
@@ -151,6 +156,16 @@ void BuildPropellerDesignContent(AAerotelicEntityActor* Entity, FAerotelicDesign
 	{
 		return TAttribute<FText>::CreateLambda([Derived, Get]() { return Derived->M.IsSet() ? Get(Derived->M.GetValue()) : DashText(); });
 	};
+	// The same, for the two read-outs that describe a body which may not
+	// be built at all.
+	auto SpinnerMetric = [Derived, Model](TFunction<FText(const PropellerMetrics&)> Get)
+	{
+		return TAttribute<FText>::CreateLambda([Derived, Model, Get]()
+		{
+			if (!Model->spinner) return LOCTEXT("SpinnerNone", "none");
+			return Derived->M.IsSet() ? Get(Derived->M.GetValue()) : DashText();
+		});
+	};
 	TSharedRef<SWidget> PropellerInputs = SNew(SVerticalBox)
 		+ SVerticalBox::Slot().AutoHeight()
 		[ FormRow(LOCTEXT("Radius", "Radius R:"),
@@ -183,7 +198,24 @@ void BuildPropellerDesignContent(AAerotelicEntityActor* Entity, FAerotelicDesign
 				.MinValue(0.0).MaxValue(1.0).Delta(0.01).LiveUpdate(false)
 				.OnValueCommitted_Lambda([Model, OnLayoutChanged](double V, ETextCommit::Type)
 				{ if (!FMath::IsNearlyEqual(V, Model->hub_radius)) { Model->hub_radius = V; OnLayoutChanged.ExecuteIfBound(); } }),
-			LOCTEXT("HubRadiusTip", "Where each blade is cut off, as r/R. The blade is drawn from the axis\nout, so its axes are r/R; only the part beyond this radius is built,\nand it should be inside the spinner.")) ];
+			LOCTEXT("HubRadiusTip", "Where each blade is cut off, as r/R. The blade is drawn from the axis\nout, so its axes are r/R; only the part beyond this radius is built,\nand it should be inside the spinner.")) ]
+		+ SVerticalBox::Slot().AutoHeight()
+		[ FormRow(LOCTEXT("SpinnerOn", "Spinner:"),
+			SNew(SCheckBox)
+				.IsChecked_Lambda([Model]() { return Model->spinner ? ECheckBoxState::Checked : ECheckBoxState::Unchecked; })
+				.OnCheckStateChanged_Lambda([Model, SpinnerEditor, OnLayoutChanged](ECheckBoxState S)
+				{
+					const bool bOn = S == ECheckBoxState::Checked;
+					if (bOn == Model->spinner) return;
+					Model->spinner = bOn;
+					// The Spinner tab keeps editing the profile either way,
+					// so it only needs redrawing because the blade-axis
+					// marker is drawn against the spinner's outline.
+					SpinnerEditor->RequestRedraw();
+					OnLayoutChanged.ExecuteIfBound();
+				})
+				[ SNew(STextBlock).Text(LOCTEXT("SpinnerOnLabel", "Build the spinner")) ],
+			LOCTEXT("SpinnerOnTip", "Whether the spinner is built at all. On by default. Off leaves the\nblades on their own -- a bare hub, or a rotor whose hub is modelled\nby other entities -- and the body list starts at \"Blade 1\".\nThe profile on the Spinner tab is kept either way, so switching it\nback on restores the shape unchanged.")) ];
 
 	TSharedRef<SWidget> DerivedGroup = MakeGroup(LOCTEXT("DerivedGroup", "Derived"),
 		SNew(SVerticalBox)
@@ -192,8 +224,11 @@ void BuildPropellerDesignContent(AAerotelicEntityActor* Entity, FAerotelicDesign
 		+ SVerticalBox::Slot().AutoHeight() [ MakeMetricRow(LOCTEXT("ActivityFactor", "Activity factor (per blade):"), Metric([](const PropellerMetrics& M) { return FormatF(M.activity_factor, 1); })) ]
 		+ SVerticalBox::Slot().AutoHeight() [ MakeMetricRow(LOCTEXT("Beta75", "Blade angle β at 0.75 R:"), Metric([](const PropellerMetrics& M) { return FText::FromString(FString::Printf(TEXT("%.2f °"), M.beta_75)); })) ]
 		+ SVerticalBox::Slot().AutoHeight() [ MakeMetricRow(LOCTEXT("PitchRatio", "Geometric pitch P/D at 0.75 R:"), Metric([](const PropellerMetrics& M) { return FormatF(M.pitch_ratio, 3); })) ]
-		+ SVerticalBox::Slot().AutoHeight() [ MakeMetricRow(LOCTEXT("SpinnerDiameter", "Spinner diameter:"), Metric([](const PropellerMetrics& M) { return FormatG(M.spinner_diameter, 4); })) ]
-		+ SVerticalBox::Slot().AutoHeight() [ MakeMetricRow(LOCTEXT("SpinnerLength", "Spinner length:"), Metric([](const PropellerMetrics& M) { return FormatG(M.spinner_length, 4); })) ]);
+		// Reported as "none" rather than as a number when the spinner is
+		// switched off: the profile still has a size, but nothing is built
+		// from it, and a live figure there reads as a body that exists.
+		+ SVerticalBox::Slot().AutoHeight() [ MakeMetricRow(LOCTEXT("SpinnerDiameter", "Spinner diameter:"), SpinnerMetric([](const PropellerMetrics& M) { return FormatG(M.spinner_diameter, 4); })) ]
+		+ SVerticalBox::Slot().AutoHeight() [ MakeMetricRow(LOCTEXT("SpinnerLength", "Spinner length:"), SpinnerMetric([](const PropellerMetrics& M) { return FormatG(M.spinner_length, 4); })) ]);
 
 	TSharedRef<SWidget> PropellerTab = SNew(SScrollBox)
 		+ SScrollBox::Slot().Padding(8)

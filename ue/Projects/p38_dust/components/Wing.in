@@ -1,0 +1,16 @@
+! Component "Wing", written by Aerotelic.
+! The mesh is DUST's "basic" format: mesh_file is a PREFIX, and
+! DUST appends rr.dat (nodes) and ee.dat (elements) to it.
+
+mesh_file_type   = basic
+mesh_file        = ./geometry/Wing_
+el_type          = p
+scaling_factor   = 1.0
+
+! Trailing-edge detection. An edge is a trailing edge where the
+! two panels meeting at it face away from each other by more than
+! inner_product_te, after gaps narrower than tol_se_wing are sewn
+! shut. Raise inner_product_te towards 0 to catch a blunter edge;
+! a body with no sharp edge at all simply sheds no wake.
+tol_se_wing      = 6.147467166e-05
+inner_product_te = -0.5

@@ -40,7 +40,8 @@ The layout follows the Python/Qt version's main window (`aerotelic/ui/main_windo
   view's backdrop. Dialog windows, menus and the design panels' controls
   keep the engine's own dark style, so a light theme lightens the frame
   around them rather than the whole application.
-* **Menu bar**: File (New, Save, Save As, Open, Export STEP/STL, Quit), Edit
+* **Menu bar**: File (New, Save, Save As, Open, Export STEP/STL/3D PDF, Quit), Analysis
+  (Potential Flow (Kratos), DUST (Vortex Particle Method)), Edit
   (Preferences), Geometry (Airfoils, Boolean Operation), View (Isometric /
   Top / Front / Side, Ground Grid, Navigation Cube, Show Intermediate
   Features, Rebuild), Help. Same shortcuts as the Qt app (Ctrl+N/S/O,
@@ -217,6 +218,40 @@ The layout follows the Python/Qt version's main window (`aerotelic/ui/main_windo
   `Binaries\Win64\StepWriter\`, which the packaged build stages; a
   developer checkout falls back to the core build tree. Without the
   writer, Export STEP says so and does nothing.
+* **Export 3D PDF** (File menu, 2026-10-16): the chosen bodies as one
+  interactive model on a PDF page -- drag to orbit, and the reader's
+  model tree lists the bodies by name, each in its scene colour and
+  separately hideable. Same dialog bones as Export STL: the shared body
+  picker (lattices and boolean results included -- a 3D PDF carries
+  triangles, so anything that meshes exports), one mesh density with the
+  statistics recomputed on every change, then the document title (the
+  project's name by default), the page size (A4 / Letter / A3, portrait
+  or landscape) and "Compress the 3D model stream".
+  The file is written by the application itself:
+  `core/include/aerotelic/pdf3d.hpp` builds a **U3D** model
+  (ECMA-363) and wraps it in a PDF 3D annotation (ISO 32000-1 13.6),
+  with a default view aimed at the model's bounding sphere from an
+  isometric direction and `/3DA` set to activate the model when the page
+  opens. Each body becomes its own CLOD mesh generator, model node,
+  shader and material, which is what gives the model tree a named row per
+  body; positions are welded and corner normals averaged within a 30
+  degree crease, so a fuselage shades smoothly while a trailing edge
+  keeps its edge. Written in U3D's **no-compression profile** (9.4.1.2,
+  profile bit 0x4), where every field the block definitions mark
+  compressed is written as the plain value of its type: that keeps the
+  encoder to little-endian field writes -- no arithmetic coder, and no
+  histogram state that has to evolve in lockstep with the reader's --
+  and the PDF's own Flate filter takes the size back. The deflate is the
+  **engine's** zlib (`FCompression`, `NAME_Zlib`), passed in as a
+  callback, because the core must not link a second copy of that name
+  (the collision `AerotelicUE.Build.cs` documents at length).
+  `core/tests/pdf3d_check.cpp` walks the U3D blocks against their
+  declared sizes, checks the declaration and the base mesh agree, checks
+  the welding and the crease angle, and checks the PDF's cross-reference
+  table points at its objects; it writes
+  `core/build/aerotelic_3d_sample.pdf` to open in Acrobat, which is the
+  only thing that can say whether a *reader* draws it.
+  KNOWN OPEN: that last step has not been done -- see "Known limits".
 * **Boolean operations** (Geometry -> Boolean Operation...): WingDesigner's
   dialog -- the operands in order (every entity, the mirrored half of each
   mirrored one as its own row, every earlier boolean result), Add / Select
@@ -356,6 +391,31 @@ The layout follows the Python/Qt version's main window (`aerotelic/ui/main_windo
   nacelle Front and lofted-nacelle guide curves have "Reset to Circle..."
   with a radius prompt; lofted nacelle has an "Editing:" guide combo with
   Add/Remove; propeller shows derived metrics and a Spinner tab.
+* **Optional spinner** (propeller panel, 2026-10-16): a **Build the
+  spinner** checkbox on the Propeller tab, **on by default**
+  (`PropellerSpec::spinner`). Cleared, only the blades are built -- a
+  bare hub, or a rotor whose hub is modelled by other entities -- and
+  the body list starts at `Blade 1` instead of `Spinner`. The profile
+  and its length are kept while it is off and the Spinner tab stays
+  editable, so switching it back on restores the shape unchanged. Two
+  checks exist only to keep the blade roots buried in the spinner --
+  that the profile clears the axis, and that the blade root radius is
+  inside the spinner radius -- and both are skipped when there is no
+  spinner, because then the roots are *meant* to be bare. The derived
+  Spinner diameter and Spinner length read `none` rather than a number,
+  since the profile still has a size but nothing is built from it.
+  A fused export of a spinner-less propeller may come back as several
+  solids: the blades only ever meet at the hub.
+  Saved as `spinner: true|false`; **absent means on**, so a project
+  written before the flag existed keeps its spinner rather than quietly
+  losing a body. Bodies are matched by name on rebuild
+  (`AerotelicEntityActor`) and on load, so toggling it does not shift
+  the blades' own colours or visibility onto the wrong body -- the
+  Spinner's own colour is simply forgotten while it is off.
+  `propeller_fixture_check` covers the body list, the blades being
+  byte-identical either way, the relaxed validation, and the round
+  trip; `project_yaml_check` covers both flag states and a legacy node
+  with no `spinner` key at all.
 * **Transform dialog** (from the tree's context menu): one modeless window
   per entity with position, rotation axis and angle.
 * **Status bar**: last action on the left, project path on the right.
@@ -815,6 +875,133 @@ Install, once, into the WingDesigner environment (all at one version):
     pip install KratosMultiphysics KratosFluidDynamicsApplication \
                 KratosCompressiblePotentialFlowApplication
 
+## DUST, vortex particle method (2026-10-16)
+
+**Analysis -> DUST (Vortex Particle Method)...** writes a complete
+[DUST](https://public.gitlab.polimi.it/DAER/dust) case for the chosen
+bodies. DUST is Politecnico di Milano's mid-fidelity unsteady solver: the
+bodies carry surface panels and the vorticity they shed is carried away
+as free vortex PARTICLES, so the wake rolls up and blows back over the
+geometry. That is the thing the Kratos potential flow above cannot do --
+it has no wake, so no circulation and no lift. This one lifts.
+
+**The dialog writes input files; it does not run DUST.** DUST is a
+separate Fortran program with its own HDF5/CGNS/LAPACK chain, all of
+which must be built by the same Fortran compiler; keeping it at arm's
+length means a case can be written here and run anywhere, and that the
+feature works on a machine where DUST is not installed. The dialog's
+**Help tab** gives the three commands (`dust_pre`, `dust`, `dust_post`),
+explains what each does, and covers how to read the result; the case
+folder gets a `README.txt` repeating it.
+
+* `Dialogs/DustDialog.cpp` -- five tabs over the same two-list body
+  picker the boolean, export and potential-flow dialogs use: **Geometry**
+  (picker, surface deflection, panel count, panel-system size, overlap
+  check, trailing-edge detection), **Flow** (free stream, time), **Wake**
+  (particles, models, octree), **Output** (case folder, basename) and
+  **Help**. Everything derived -- time step, run length, particle core
+  radius, particle box, octree -- is shown live as it is edited, because
+  the blank-means-automatic fields would otherwise be invisible.
+* `core/include/aerotelic/dust_case.hpp`, `src/dust_case.cpp` -- the
+  writer. `DeriveDustCase` works everything out and writes nothing (what
+  the dialog calls on every change); `WriteDustCase` derives then writes.
+
+**The meshes go out in DUST's "basic" format**: two ASCII files per
+component, `<prefix>rr.dat` with a node per line and `<prefix>ee.dat`
+with an element per line. DUST's element array is four wide and reads a
+zero fourth index as a triangle (`mod_build_geo.f90`: `if (ee(4,i) .eq.
+0) nsides1 = 3`), which is exactly what the loft triangulation produces.
+The alternative, CGNS, would mean linking the CGNS library into this
+application for no gain.
+
+**Element type is DUST's `p`, surface panels** -- and that is not a
+choice. Vortex lattice (`v`) and lifting line (`l`) need a structured
+chordwise/spanwise mesh, which DUST only builds from its own
+`parametric` and `pointwise` inputs, never from a triangle mesh.
+
+**Bodies must not lie on top of one another.** Two surfaces in the same
+place give the panel method two unknowns with identical influence: the
+matrix is singular and the run diverges on step 1, not gradually. The
+everyday way to cause it here is to pick a wing AND its mirror -- each is
+a closed body and their root caps are the same wall seen from both sides.
+This was found the hard way, by running the generated case: loads reached
+1e35 at the first step, while the same two wings pulled half a unit apart
+converged normally. The writer therefore hashes panel centroids and
+reports bodies found overlapping, and the Geometry tab shows the warning
+in amber naming both bodies; the fix is to fuse them with a boolean
+operation and select the result. The check only finds surfaces lying ON
+each other, not one body poking through another.
+
+**Cost is quadratic.** DUST's panel method builds a dense influence
+matrix, so the Geometry tab shows its size in MB next to the panel count:
+a few thousand panels is comfortable, tens of thousands will not run.
+This is why surface deflection matters more here than in an export.
+
+**Derived settings.** The reference length is the model's extent *along
+the flow* (a wing's chord, a fuselage's length); the time step is the
+time to cross it divided by steps-per-length, and the run lasts that many
+crossings. The particle core radius defaults to the mean panel size, the
+particle box to the model's bounds plus margin and a long downstream tail,
+and the octree is sized to cover that box. Every one of those can be
+overridden; zero means "work it out".
+
+**Spinning propellers** (2026-10-17). A propeller given a non-zero speed
+on the dialog's **Rotors** tab is written as DUST's own rotor: the frame
+is `multiple = T` with `mult_type = rotor`, and DUST is handed **one
+blade**, which it replicates `n_blades` times about the axis and spins at
+`rot_rate`. That is the form DUST's post-processing is built around.
+Everything else still rides reference frame 0, and a propeller left at
+zero is written exactly as before -- bodies where they sit.
+
+**This changes nothing in the geometry engine.** Rotational speed is an
+analysis setting and is deliberately *not* a property of `PropellerSpec`,
+so it is not saved with the project and is forgotten when the dialog
+closes. The writer only *reads* three things that were already public:
+`GetModel()->BuildMeshes()` for hub-local geometry (`GetPlacedMeshes()`
+is that plus the placement), `PropellerModel::BuildMeshes`'s existing
+`Blade 1` at azimuth 0, and `GetEntityTransform()`.
+
+Details that matter:
+
+* The blade's mesh goes out in **hub-local** coordinates and the frame
+  carries the placement. Writing a placed mesh onto a placed frame would
+  apply the placement twice.
+* The **spinner stays on frame 0**, placed. It is a body of revolution
+  about the same axis, so spinning it would change nothing, and this
+  avoids a second multiple frame. `dust_pre` duly reports 0 trailing-edge
+  elements for it and 18 for the blade.
+* A **mirrored** propeller turns the opposite way and its placement
+  contains a reflection, which cannot be a DUST orientation matrix
+  (determinant -1). Writing M for the reflection, `M*R = (M*R*M)*M`: the
+  proper rotation `M*R*M` becomes the frame and the leftover `M` is
+  folded into the blade's own coordinates, with `rot_rate` negated.
+* `orientation` is read by DUST with a Fortran `reshape(...,(/3,3/))`,
+  which fills **column major**, so the nine numbers are the frame's x, y
+  and z axes -- the transpose of the row-major spelling.
+* `n_dofs` is **required and has no default**; zero is right for a rigid
+  propeller. Omitting it lets `dust_pre` pass and makes the *solver*
+  refuse the case, because the preprocessor never reads `References.in`.
+* The derived time step now resolves the **rotation** as well as the
+  flow: `DustCaseOptions::degrees_per_step` (5 by default) caps how far
+  the fastest blade sweeps per step, and the step is the smaller of that
+  and the flow-crossing one. On the P-38 propeller at 2400 rev/min that
+  took the step from 15.6 deg/step to 5, i.e. 72 steps a revolution.
+  Zero disables the rule. The panel count also counts a blade once per
+  blade, since DUST replicates it -- otherwise the dense-system estimate
+  would be out by a factor of `n_blades`.
+
+`References.in` still carries a commented-out template for a hand-written
+moving frame, for motion the dialog does not offer.
+
+`core/tests/dust_case_check.cpp` (53 checks) covers the file set, the
+`ee`/`rr` formats down to the zero fourth index and 1-based node indices,
+the derived-versus-written agreement, the octree covering the particle
+box, the overlap detection, and the refusals. **It was also validated
+against the real solver**: the generated case runs through the DUST built
+at `C:\Users\Matt\dust-install` -- `dust_pre` detects the trailing edge
+(30 elements on a default wing), `dust` solves 321 steps in 61 s, and
+`dust_post` produces the VTK series and load tables.
+
 ## How the standalone build is put together
 
 * `Source/AerotelicUE.Target.cs` -- the game target that becomes `AerotelicUE.exe`.
@@ -889,6 +1076,22 @@ Install, once, into the WingDesigner environment (all at one version):
   the name and the raw `features` graph is ignored (the mirror nodes it
   holds are covered by the entity's own `mirror` flag; its booleans are
   not recovered -- only the current `booleans:` list is read).
+* 3D PDF: **not yet opened in Adobe Acrobat.** The writer is checked
+  against ECMA-363 and ISO 32000-1 clause by clause, and
+  `pdf3d_check` validates every size and offset in both containers, but
+  no structural check can tell whether Acrobat's U3D loader accepts the
+  file -- in particular whether it honours the no-compression profile
+  bit, which the specification requires of every reader but which few
+  writers exercise. Open `core/build/aerotelic_3d_sample.pdf` (a sphere,
+  a box and a half-transparent cylinder) before trusting the feature; if
+  the model does not appear, the fallback is to implement the
+  specification's arithmetic coder (ECMA-363 clause 10 and Annex A.3.1,
+  about 120 lines) and write the compressed profile instead. Only
+  Acrobat and Reader display 3D annotations at all; other PDF viewers
+  show the page and the frame but no model, which is a property of the
+  format, not of this writer. The PDF-side dictionaries were checked
+  against a known-good SOLIDWORKS 3D PDF, which differs only in
+  carrying PRC where this carries U3D.
 * Build gotchas: a TArray must not be appended with a reference to its own
   element (`Pts.Add(Pts[0])` reallocates under the reference); if a crash
   leaves `CrashReportClientEditor.exe` running it holds the module DLL and

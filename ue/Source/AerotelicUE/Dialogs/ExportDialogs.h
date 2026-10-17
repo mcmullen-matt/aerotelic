@@ -32,3 +32,10 @@ void ShowAerotelicExportTetVtkDialog(TFunction<void(const FText&)> Status);
 // "Write named parts (STEP assembly)". The file is written by the
 // separate aerotelic_step_writer process (Export/AerotelicExport.h).
 void ShowAerotelicExportStepDialog(TFunction<void(const FText&)> Status);
+
+// File -> Export 3D PDF...: the same body picker and mesh density as
+// Export STL, plus the document title and page size, and one page holding
+// the bodies as an interactive 3D annotation -- a U3D model (ECMA-363)
+// written by core/include/aerotelic/pdf3d.hpp, each body a named node in
+// its scene colour. Modal, like the others.
+void ShowAerotelicExport3DPdfDialog(TFunction<void(const FText&)> Status);

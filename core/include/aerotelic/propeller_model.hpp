@@ -36,6 +36,12 @@ struct PropellerSpec {
 	int blade_count = 2;
 	double blade_x = 0.26;
 	double hub_radius = 0.12;
+	// Whether the spinner is built at all. On by default, which is both
+	// the usual propeller and what every project saved before this flag
+	// existed meant. Off leaves the blades alone -- a bare hub, or a
+	// rotor whose hub is modelled by other entities -- and the profile
+	// below is kept untouched so it comes back when it is switched on.
+	bool spinner = true;
 	double spinner_length = 0.40;
 	NurbsSpec spinner_curve;
 	std::optional<WingModelSpec> blade; // absent => MakeDefaultBlade(radius)
@@ -66,6 +72,10 @@ public:
 	int blade_count;
 	double blade_x;
 	double hub_radius;
+	// See PropellerSpec::spinner. The profile and its length stay live
+	// either way, so the Spinner editor still works with it switched off
+	// and nothing is lost by switching it off and back on.
+	bool spinner;
 	double spinner_length;
 	ReferenceImageMap reference_images;
 
@@ -96,11 +106,14 @@ public:
 	TopoDS_Shape BuildSolid(int n_span, std::optional<double> station_tol, bool fuse) const;
 	TopoDS_Shape BuildSolid() const override { return BuildSolid(40, std::nullopt, false); }
 
-	// "Spinner" (the profile revolved as a chain of rings) and "Blade k"
-	// (the blade's WingModel mesh from the hub station outward -- the span
-	// range standing in for BuildSolid()'s box trim, exact when the blade
-	// has no rake -- turned and placed like BuildSolid()'s blades), without
-	// OCCT. Never fused, as BuildSolid()'s default.
+	// "Spinner" (the profile revolved as a chain of rings, only when
+	// `spinner` is on) and "Blade k" (the blade's WingModel mesh from the
+	// hub station outward -- the span range standing in for BuildSolid()'s
+	// box trim, exact when the blade has no rake -- turned and placed like
+	// BuildSolid()'s blades), without OCCT. Never fused, as BuildSolid()'s
+	// default. With the spinner off the body list starts at "Blade 1";
+	// bodies are matched by name everywhere they are persisted, so a
+	// project that saved a "Spinner" body's colour simply stops finding it.
 	std::vector<NamedMesh> BuildMeshes(double tolerance) const override;
 
 	static constexpr int kMaxBlades = kPropellerMaxBlades;

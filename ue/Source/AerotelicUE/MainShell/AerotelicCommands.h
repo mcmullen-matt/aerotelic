@@ -20,6 +20,7 @@ public:
 	TSharedPtr<FUICommandInfo> OpenProject;
 	TSharedPtr<FUICommandInfo> ExportStep;
 	TSharedPtr<FUICommandInfo> ExportStl;
+	TSharedPtr<FUICommandInfo> Export3DPdf;
 	TSharedPtr<FUICommandInfo> Quit;
 
 	// Edit -> Preferences
@@ -37,6 +38,7 @@ public:
 
 	// Analysis
 	TSharedPtr<FUICommandInfo> PotentialFlow;
+	TSharedPtr<FUICommandInfo> DustVpm;
 
 	// View
 	TSharedPtr<FUICommandInfo> ViewIsometric;

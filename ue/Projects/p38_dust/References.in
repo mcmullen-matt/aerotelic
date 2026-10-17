@@ -1,0 +1,38 @@
+! Reference frames, written by Aerotelic.
+!
+! Every component is on reference frame 0, the global one, which
+! needs no definition -- so this file deliberately defines none.
+! It exists so there is somewhere to put motion: uncomment and
+! edit the block below to make a component move, then point its
+! ref_tag in dust_pre.in at the tag you give it here. A rotor is
+! the usual reason: a constant rotation about its own axis.
+!
+! reference_tag = Rotor
+! parent_tag    = 0
+! origin        = (/ 0.0, 0.0, 0.0 /)
+! orientation   = (/ 1.0,0.0,0.0, 0.0,1.0,0.0, 0.0,0.0,1.0 /)
+! multiple      = F
+! moving        = T
+! motion = {
+!   pole = {
+!     input = position
+!     input_type = simple_function
+!     function = (/ 0, 0, 0 /)
+!     amplitude = 0.0
+!     vector = (/ 0.0, 0.0, 0.0 /)
+!     omega  = (/ 0.0, 0.0, 0.0 /)
+!     phase  = (/ 0.0, 0.0, 0.0 /)
+!     offset = (/ 0.0, 0.0, 0.0 /)
+!   }
+!   rotation = {
+!     input = velocity
+!     input_type = simple_function
+!     function = 0
+!     axis = (/ 1.0, 0.0, 0.0 /)
+!     amplitude = 0.0
+!     omega = 0.0
+!     phase = 0.0
+!     offset = 0.0
+!     psi_0 = 0.0
+!   }
+! }

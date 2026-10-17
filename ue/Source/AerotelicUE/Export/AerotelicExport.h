@@ -4,9 +4,10 @@
 #include <TopoDS_Shape.hxx>
 
 #include "Entity/AerotelicBooleanModel.h"
+#include "aerotelic/pdf3d.hpp"
 
-// File -> Export STL / Export STEP (main_window.py _export_stl_dialog /
-// _export_step_dialog): the bodies behind the dialogs.
+// File -> Export STL / Export STEP / Export 3D PDF (main_window.py
+// _export_stl_dialog / _export_step_dialog): the bodies behind the dialogs.
 namespace AerotelicExport
 {
 	// A body chosen for export, with the shape to write.
@@ -77,4 +78,25 @@ namespace AerotelicExport
 	// (staged by tools/stage_step_writer.ps1 and the packaged build), else
 	// the core build tree in a developer checkout. Empty if neither exists.
 	FString FindStepWriter();
+
+	// ---- 3D PDF ----
+
+	// The operands' placed bodies as the parts of a 3D PDF: the same
+	// meshes STL export writes, at the same linear (and, for a body that
+	// needs OCCT, angular) deflection -- but kept per body and INDEXED,
+	// not as a triangle soup, because the U3D writer welds positions and
+	// smooths normals across shared vertices and a soup would have none.
+	// Each part is labelled "<entity>/<body>" and carries the colour the
+	// body is drawn in, so the PDF opens in the scene's own colours.
+	// Bodies that cannot be built are listed in OutFailures.
+	std::vector<aerotelic::Pdf3dPart> MeshForPdf3d(const TArray<FAerotelicBooleanOperand>& Operands, const TArray<FString>& Labels,
+		double LinearDeflection, double AngularDeflectionDeg, TArray<FString>& OutFailures);
+
+	// Writes the parts as a one-page 3D PDF (core/include/aerotelic/
+	// pdf3d.hpp: a U3D stream in a PDF 3D annotation). bCompress filters
+	// the U3D stream with the ENGINE's zlib -- never a second copy of that
+	// name in the process, which is the collision AerotelicUE.Build.cs
+	// documents. False with the reason on failure.
+	bool WritePdf3d(const std::vector<aerotelic::Pdf3dPart>& Parts, const FString& Path, aerotelic::Pdf3dOptions Options,
+		bool bCompress, FString& OutError, aerotelic::Pdf3dResult* OutStats = nullptr);
 }
