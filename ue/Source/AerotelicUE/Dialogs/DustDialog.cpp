@@ -21,6 +21,7 @@
 #include "Widgets/TabStrip.h"
 #include "aerotelic/dust_case.hpp"
 #include "aerotelic/propeller_model.hpp"
+#include "aerotelic/units.hpp"
 
 // Last: OCCT's Handle() macro vs engine headers.
 #include "Entity/AerotelicDocumentSubsystem.h"
@@ -291,9 +292,10 @@ namespace
 "\n"
 "Postprocessing/post_loads_total.dat has one line per time step: the time,\n"
 "then the force and the moment, then the reference frame. There is one\n"
-"such file per body as well. The loads are dimensional, in whatever units\n"
-"the geometry and the free stream were given in -- the model carries no\n"
-"units of its own, exactly as for an STL export.\n"
+"such file per body as well. The loads are dimensional and in SI: the\n"
+"case is written in metres, kilograms and seconds, converted from the\n"
+"project's units (Geometry > Units), so forces come back in newtons and\n"
+"moments in newton-metres whatever the project is drawn in.\n"
 "\n"
 "Expect the first steps to be dominated by the starting transient, and\n"
 "expect a surface panel method with coarse panelling to under-resolve the\n"
@@ -326,8 +328,25 @@ void ShowAerotelicDustDialog(TFunction<void(const FText&)> Status)
 	TSharedPtr<SCheckBox> FmmCheck, StretchCheck, DiffusionCheck, PenetrationCheck, PostCheck;
 
 	double Deflection = 0.05;
+
+	// The project's units: every field is typed in them and DUST is handed
+	// SI at Write. The option defaults are SI constants (sea-level air), so
+	// they are converted the other way first, or 1.225 would sit in a
+	// lbm/ft^3 field and reach DUST as 19.6 kg/m^3.
+	const UAerotelicDocumentSubsystem* UnitsDoc = UAerotelicDocumentSubsystem::Get();
+	const aerotelic::UnitSystem Units = UnitsDoc != nullptr ? UnitsDoc->GetUnits() : aerotelic::UnitSystem{};
+	const FText SpeedSuffix = FText::FromString(FString(TEXT(" ")) + UTF8_TO_TCHAR(Units.SpeedName().c_str()));
+	const FText DensitySuffix = FText::FromString(FString(TEXT(" ")) + UTF8_TO_TCHAR(Units.DensityName().c_str()));
+	const FText ViscositySuffix = FText::FromString(FString::Printf(TEXT(" %s/(%s s)"), UTF8_TO_TCHAR(Units.MassName()), UTF8_TO_TCHAR(Units.LengthName())));
+	const FText LengthSuffix = FText::FromString(FString(TEXT(" ")) + UTF8_TO_TCHAR(Units.LengthName()));
+
 	aerotelic::DustCaseOptions Opt;
 	Opt.basename = "dust";
+	Opt.speed = 30.0 / Units.SpeedToSI();
+	Opt.rho_inf = 1.225 / Units.DensityToSI();
+	Opt.p_inf = 101325.0 / Units.PressureToSI();
+	Opt.a_inf = 340.0 / Units.SpeedToSI();
+	Opt.mu_inf = 1.81e-5 / Units.ViscosityToSI();
 
 	// The chosen bodies, triangulated at the current deflection. Rebuilt
 	// only when the selection or the deflection changes, since that is
@@ -651,9 +670,35 @@ void ShowAerotelicDustDialog(TFunction<void(const FText&)> Status)
 		Opt.write_postprocessing = PostCheck->IsChecked();
 
 		Status(LOCTEXT("Writing", "Writing the DUST case..."));
+		// Everything DUST sees is SI: the panels scaled to metres, the rotor
+		// frames' origins with them, and every dimensional option converted.
+		// Times are seconds already; the dimensionless ratios pass through.
+		// The derived step and run length come out the same either way (a
+		// length over a speed), so what the Time tab showed still holds.
+		const double L = Units.LengthToSI();
+		std::vector<aerotelic::DustComponent> SiComponents = Components;
+		for (aerotelic::DustComponent& C : SiComponents)
+		{
+			for (aerotelic::Vec3& V : C.mesh.vertices) V *= L;
+		}
+		std::vector<aerotelic::DustFrame> SiFrames = Frames;
+		for (aerotelic::DustFrame& F : SiFrames)
+		{
+			F.origin *= L;
+			F.hub_offset *= L;
+		}
+		aerotelic::DustCaseOptions SiOpt = Opt;
+		SiOpt.speed *= Units.SpeedToSI();
+		SiOpt.rho_inf *= Units.DensityToSI();
+		SiOpt.p_inf *= Units.PressureToSI();
+		SiOpt.a_inf *= Units.SpeedToSI();
+		SiOpt.mu_inf *= Units.ViscosityToSI();
+		SiOpt.vortex_rad *= L;
+		SiOpt.tol_se_wing *= L;
+
 		aerotelic::DustCaseResult R;
 		std::string Error;
-		if (!aerotelic::WriteDustCase(Components, Frames, TCHAR_TO_UTF8(*Dir), Opt, R, Error))
+		if (!aerotelic::WriteDustCase(SiComponents, SiFrames, TCHAR_TO_UTF8(*Dir), SiOpt, R, Error))
 		{
 			Status(LOCTEXT("Ready", "Ready"));
 			AerotelicMessageBox(EAppMsgType::Ok, FText::FromString(UTF8_TO_TCHAR(Error.c_str())), LOCTEXT("Failed", "DUST Case Not Written"));
@@ -773,16 +818,16 @@ void ShowAerotelicDustDialog(TFunction<void(const FText&)> Status)
 		[
 			MakeGroup(LOCTEXT("FreeStream", "Free stream"),
 				SNew(SVerticalBox)
-				+ SVerticalBox::Slot().AutoHeight().Padding(0, 2) [ FormRow(LOCTEXT("Speed", "Speed:"), Spin(Opt.speed, 1e-9, 1e9, 5.0, LOCTEXT("PerSecond", " units/s"))) ]
+				+ SVerticalBox::Slot().AutoHeight().Padding(0, 2) [ FormRow(LOCTEXT("Speed", "Speed:"), Spin(Opt.speed, 1e-9, 1e9, 5.0, SpeedSuffix)) ]
 				+ SVerticalBox::Slot().AutoHeight().Padding(0, 2) [ FormRow(LOCTEXT("Alpha", "Angle of attack:"), Spin(Opt.alpha_deg, -90.0, 90.0, 0.5, FText::FromString(TEXT(" deg")))) ]
 				+ SVerticalBox::Slot().AutoHeight().Padding(0, 2) [ FormRow(LOCTEXT("Beta", "Sideslip:"), Spin(Opt.beta_deg, -90.0, 90.0, 0.5, FText::FromString(TEXT(" deg")))) ]
-				+ SVerticalBox::Slot().AutoHeight().Padding(0, 2) [ FormRow(LOCTEXT("Rho", "Air density:"), Spin(Opt.rho_inf, 1e-12, 1e9, 0.1, FText::GetEmpty())) ]
-				+ SVerticalBox::Slot().AutoHeight().Padding(0, 2) [ FormRow(LOCTEXT("Sound", "Speed of sound:"), Spin(Opt.a_inf, 1e-9, 1e9, 10.0, LOCTEXT("PerSecond2", " units/s"))) ]
-				+ SVerticalBox::Slot().AutoHeight().Padding(0, 2) [ FormRow(LOCTEXT("Mu", "Dynamic viscosity:"), Spin(Opt.mu_inf, 0.0, 1e9, 1e-6, FText::GetEmpty())) ]
+				+ SVerticalBox::Slot().AutoHeight().Padding(0, 2) [ FormRow(LOCTEXT("Rho", "Air density:"), Spin(Opt.rho_inf, 1e-12, 1e9, 0.1, DensitySuffix)) ]
+				+ SVerticalBox::Slot().AutoHeight().Padding(0, 2) [ FormRow(LOCTEXT("Sound", "Speed of sound:"), Spin(Opt.a_inf, 1e-9, 1e9, 10.0, SpeedSuffix)) ]
+				+ SVerticalBox::Slot().AutoHeight().Padding(0, 2) [ FormRow(LOCTEXT("Mu", "Dynamic viscosity:"), Spin(Opt.mu_inf, 0.0, 1e9, 1e-6, ViscositySuffix)) ]
 				+ SVerticalBox::Slot().AutoHeight().Padding(0, 4, 0, 0)
 				[
 					MakeInfoLabel(LOCTEXT("FlowHint",
-						"The flow runs along +x, tilted towards +z by the angle of attack and towards +y by the sideslip. Viscosity only matters with diffusion on."))
+						"The flow runs along +x, tilted towards +z by the angle of attack and towards +y by the sideslip. Viscosity only matters with diffusion on. Everything here is in the project's units (Geometry > Units); the case is written in SI."))
 				])
 		]
 		+ SVerticalBox::Slot().AutoHeight()

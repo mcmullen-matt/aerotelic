@@ -14,6 +14,7 @@
 #include "Dialogs/ExportDialogs.h"
 #include "Dialogs/LatticeDialog.h"
 #include "Dialogs/PotentialFlowDialog.h"
+#include "Dialogs/MassPropertiesDialog.h"
 #include "Dialogs/DustDialog.h"
 #include "Dialogs/ThemeDialog.h"
 #include "Branding/AerotelicTheme.h"
@@ -465,6 +466,7 @@ void SAerotelicMainShell::BindCommands()
 	Commands->MapAction(C.ExportTetVtk, FExecuteAction::CreateLambda([this]() { ShowAerotelicExportTetVtkDialog([this](const FText& T) { SetStatus(T); }); }));
 
 	// Analysis
+	Commands->MapAction(C.MassProperties, FExecuteAction::CreateLambda([this]() { ShowAerotelicMassPropertiesDialog([this](const FText& T) { SetStatus(T); }); }));
 	Commands->MapAction(C.PotentialFlow, FExecuteAction::CreateLambda([this]() { ShowAerotelicPotentialFlowDialog([this](const FText& T) { SetStatus(T); }); }));
 	Commands->MapAction(C.DustVpm, FExecuteAction::CreateLambda([this]() { ShowAerotelicDustDialog([this](const FText& T) { SetStatus(T); }); }));
 
@@ -602,6 +604,78 @@ void SAerotelicMainShell::FillGeometryMenu(FMenuBuilder& Menu)
 	Menu.AddMenuEntry(C.Airfoils);
 	Menu.AddMenuSeparator();
 	Menu.AddMenuEntry(C.BooleanOperation);
+	Menu.AddMenuSeparator();
+	// Geometry > Units: length and mass chosen separately, time fixed. A
+	// radio per unit, reading the document each time the menu opens.
+	Menu.AddSubMenu(LOCTEXT("UnitsMenu", "Units"),
+		LOCTEXT("UnitsMenuTip", "What the project's lengths and masses mean. Changing a unit converts nothing: every number already typed keeps its value and means the new unit from then on. Analysis codes are handed SI."),
+		FNewMenuDelegate::CreateLambda([this](FMenuBuilder& Sub)
+		{
+			Sub.SetSearchable(false);
+			auto Current = [this]() { UAerotelicDocumentSubsystem* Doc = GetDocument(); return Doc != nullptr ? Doc->GetUnits() : aerotelic::UnitSystem{}; };
+			auto LengthEntry = [this, &Sub, Current](const FText& Label, const FText& Tip, aerotelic::LengthUnit Unit)
+			{
+				Sub.AddMenuEntry(Label, Tip, FSlateIcon(),
+					FUIAction(
+						FExecuteAction::CreateLambda([this, Current, Unit]() { aerotelic::UnitSystem U = Current(); U.length = Unit; SetUnits(U); }),
+						FCanExecuteAction(),
+						FIsActionChecked::CreateLambda([Current, Unit]() { return Current().length == Unit; })),
+					NAME_None, EUserInterfaceActionType::RadioButton);
+			};
+			auto MassEntry = [this, &Sub, Current](const FText& Label, const FText& Tip, aerotelic::MassUnit Unit)
+			{
+				Sub.AddMenuEntry(Label, Tip, FSlateIcon(),
+					FUIAction(
+						FExecuteAction::CreateLambda([this, Current, Unit]() { aerotelic::UnitSystem U = Current(); U.mass = Unit; SetUnits(U); }),
+						FCanExecuteAction(),
+						FIsActionChecked::CreateLambda([Current, Unit]() { return Current().mass == Unit; })),
+					NAME_None, EUserInterfaceActionType::RadioButton);
+			};
+			Sub.BeginSection("Length", LOCTEXT("LengthSection", "Length"));
+			LengthEntry(LOCTEXT("Metres", "Metres (m)"), LOCTEXT("MetresTip", "Every length in the project is in metres (the default)"), aerotelic::LengthUnit::Metre);
+			LengthEntry(LOCTEXT("Millimetres", "Millimetres (mm)"), LOCTEXT("MillimetresTip", "Every length in the project is in millimetres"), aerotelic::LengthUnit::Millimetre);
+			LengthEntry(LOCTEXT("Feet", "Feet (ft)"), LOCTEXT("FeetTip", "Every length in the project is in feet"), aerotelic::LengthUnit::Foot);
+			Sub.EndSection();
+			Sub.BeginSection("Mass", LOCTEXT("MassSection", "Mass"));
+			MassEntry(LOCTEXT("Kilograms", "Kilograms (kg)"), LOCTEXT("KilogramsTip", "Every mass and density in the project is in kilograms (the default)"), aerotelic::MassUnit::Kilogram);
+			MassEntry(LOCTEXT("Pounds", "Pounds, mass (lbm)"), LOCTEXT("PoundsTip", "Every mass and density in the project is in pounds-mass: densities in lbm/ft^3 (or per the length unit). The analysis codes are handed kilograms, so no slugs are ever needed."), aerotelic::MassUnit::PoundMass);
+			Sub.EndSection();
+			Sub.BeginSection("Time", LOCTEXT("TimeSection", "Time"));
+			Sub.AddMenuEntry(LOCTEXT("Seconds", "Seconds (s) -- fixed"),
+				LOCTEXT("SecondsTip", "Time is always in seconds: speeds are per second, time steps are seconds. A rotational speed given in rev/min is its own unit and is converted where it is used."),
+				FSlateIcon(), FUIAction(FExecuteAction(), FCanExecuteAction::CreateLambda([]() { return false; })));
+			Sub.EndSection();
+		}));
+}
+
+FText SAerotelicMainShell::GetUnitsText() const
+{
+	UAerotelicDocumentSubsystem* Doc = GetDocument();
+	const aerotelic::UnitSystem Units = Doc != nullptr ? Doc->GetUnits() : aerotelic::UnitSystem{};
+	return FText::FromString(UTF8_TO_TCHAR(Units.Describe().c_str()));
+}
+
+void SAerotelicMainShell::SetUnits(const aerotelic::UnitSystem& Units)
+{
+	UAerotelicDocumentSubsystem* Doc = GetDocument();
+	if (Doc == nullptr || Doc->GetUnits() == Units)
+	{
+		return;
+	}
+	Doc->SetUnits(Units);
+	const FText Described = FText::FromString(UTF8_TO_TCHAR(Units.Describe().c_str()));
+	SetStatus(FText::Format(LOCTEXT("UnitsSet", "Project units: {0}. Nothing was converted -- every number keeps its value and means these units from now on."), Described));
+	// Said once, out loud, when there is something in the scene to be
+	// re-read: a wing 12 long is now 12 feet, and its density 2700 is now
+	// 2700 pounds per cubic foot.
+	if (Doc->GetEntities().Num() > 0)
+	{
+		AerotelicMessageBox(EAppMsgType::Ok,
+			FText::Format(LOCTEXT("UnitsChanged",
+				"The project's units are now {0}.\n\nNothing was converted: every number already typed -- every length, mass and density -- keeps its value and is read in these units from now on. Everything handed to an analysis code or written to a STEP file is converted to SI from them."),
+				Described),
+			LOCTEXT("UnitsTitle", "Units"));
+	}
 }
 
 void SAerotelicMainShell::FillLatticeMenu(FMenuBuilder& Menu)
@@ -616,6 +690,7 @@ void SAerotelicMainShell::FillLatticeMenu(FMenuBuilder& Menu)
 
 void SAerotelicMainShell::FillAnalysisMenu(FMenuBuilder& Menu)
 {
+	Menu.AddMenuEntry(FAerotelicCommands::Get().MassProperties);
 	Menu.AddMenuEntry(FAerotelicCommands::Get().PotentialFlow);
 	Menu.AddMenuEntry(FAerotelicCommands::Get().DustVpm);
 }
@@ -803,6 +878,13 @@ TSharedRef<SWidget> SAerotelicMainShell::BuildStatusBar()
 			+ SHorizontalBox::Slot().FillWidth(1.0f).VAlign(VAlign_Center)
 			[
 				SNew(STextBlock).Text(this, &SAerotelicMainShell::GetStatusText)
+			]
+			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 0, 16, 0)
+			[
+				SNew(STextBlock)
+				.Text(this, &SAerotelicMainShell::GetUnitsText)
+				.ToolTipText(LOCTEXT("UnitsReadoutTip", "The project's units: length, mass, time (Geometry > Units)"))
+				.ColorAndOpacity_Static(&MutedText)
 			]
 			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
 			[

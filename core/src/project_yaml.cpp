@@ -524,6 +524,34 @@ std::optional<std::array<double, 3>> DecodeColor(const YAML::Node& node) {
 
 } // namespace
 
+// ===========================================================================
+// Mass (`mass:` on an entity, a boolean result or a lattice)
+// ===========================================================================
+
+YAML::Node EncodeMassSpec(const MassSpec& m) {
+	// The key says the mode, so the file reads as the dialog does:
+	// `mass: {asserted: 12.5}` or `mass: {density: 2700}`. Unset writes
+	// nothing (the caller leaves the key out).
+	YAML::Node n;
+	if (m.mode == MassMode::Asserted) n["asserted"] = m.mass;
+	else if (m.mode == MassMode::Density) n["density"] = m.density;
+	n.SetStyle(YAML::EmitterStyle::Flow);
+	return n;
+}
+
+MassSpec DecodeMassSpec(const YAML::Node& node) {
+	MassSpec m;
+	if (!node || !node.IsMap()) return m;
+	if (node["asserted"]) {
+		m.mode = MassMode::Asserted;
+		m.mass = node["asserted"].as<double>();
+	} else if (node["density"]) {
+		m.mode = MassMode::Density;
+		m.density = node["density"].as<double>();
+	}
+	return m;
+}
+
 YAML::Node Encode(const ProjectBoolean& b) {
 	YAML::Node n;
 	n["name"] = b.name;
@@ -543,6 +571,7 @@ YAML::Node Encode(const ProjectBoolean& b) {
 	if (b.fillet_radius) n["fillet_radius"] = *b.fillet_radius;
 	if (b.hidden) n["hidden"] = true;
 	if (b.color) n["color"] = EncodeColor(*b.color);
+	if (b.mass.mode != MassMode::Unset) n["mass"] = EncodeMassSpec(b.mass);
 	if (!b.bodies.empty()) {
 		YAML::Node bodies(YAML::NodeType::Sequence);
 		for (const ProjectBooleanBody& body : b.bodies) {
@@ -579,6 +608,7 @@ ProjectBoolean DecodeProjectBoolean(const YAML::Node& node) {
 	if (node["fillet_radius"]) b.fillet_radius = node["fillet_radius"].as<double>();
 	b.hidden = node["hidden"] ? node["hidden"].as<bool>() : false;
 	b.color = DecodeColor(node["color"]);
+	b.mass = DecodeMassSpec(node["mass"]);
 	for (const auto& bn : node["bodies"]) {
 		ProjectBooleanBody body;
 		body.name = bn["name"] ? bn["name"].as<std::string>() : "";
@@ -694,6 +724,7 @@ YAML::Node Encode(const ProjectLattice& l) {
 	if (!l.exclusions.empty()) n["exclusions"] = EncodeOperands(l.exclusions);
 	if (l.hidden) n["hidden"] = true;
 	if (l.color) n["color"] = EncodeColor(*l.color);
+	if (l.mass.mode != MassMode::Unset) n["mass"] = EncodeMassSpec(l.mass);
 	return n;
 }
 
@@ -707,6 +738,7 @@ ProjectLattice DecodeProjectLattice(const YAML::Node& node) {
 	if (l.targets.empty()) throw std::invalid_argument("Lattice '" + l.name + "' fills no bodies.");
 	l.hidden = node["hidden"] ? node["hidden"].as<bool>() : false;
 	l.color = DecodeColor(node["color"]);
+	l.mass = DecodeMassSpec(node["mass"]);
 	return l;
 }
 
@@ -732,6 +764,7 @@ YAML::Node EncodeEntity(const ProjectEntity& e) {
 		n["color"] = c;
 	}
 	if (e.hidden) n["hidden"] = true;
+	if (e.mass.mode != MassMode::Unset) n["mass"] = EncodeMassSpec(e.mass);
 	return n;
 }
 
@@ -763,6 +796,7 @@ ProjectEntity DecodeEntity(const YAML::Node& node) {
 		e.color = std::array<double, 3>{c[0].as<double>(), c[1].as<double>(), c[2].as<double>()};
 	}
 	e.hidden = node["hidden"] ? node["hidden"].as<bool>() : false;
+	e.mass = DecodeMassSpec(node["mass"]);
 	return e;
 }
 
@@ -771,6 +805,15 @@ ProjectEntity DecodeEntity(const YAML::Node& node) {
 ProjectFile LoadProjectYaml(const std::string& path) {
 	YAML::Node root = YAML::LoadFile(path);
 	ProjectFile project;
+	// Absent means metres and kilograms -- every project before the key
+	// existed was taken to be in them. A unit the application does not
+	// offer, or a time unit other than seconds, is refused rather than
+	// silently read as something else.
+	if (const YAML::Node units = root["units"]) {
+		if (units["length"]) project.units.length = ParseLengthUnit(units["length"].as<std::string>());
+		if (units["mass"]) project.units.mass = ParseMassUnit(units["mass"].as<std::string>());
+		if (units["time"]) CheckTimeUnit(units["time"].as<std::string>());
+	}
 	if (root["entities"]) {
 		for (const auto& en : root["entities"]) project.entities.push_back(DecodeEntity(en));
 	}
@@ -818,6 +861,16 @@ ProjectFile LoadProjectYaml(const std::string& path) {
 
 void SaveProjectYaml(const ProjectFile& project, const std::string& path) {
 	YAML::Node root;
+	// First in the file, and always written -- the defaults included --
+	// so a reader sees what the numbers below mean without knowing the
+	// application's assumption. Time is stated too, though it is not a
+	// choice: the file documents it rather than relying on the reader.
+	YAML::Node units;
+	units["length"] = std::string(LengthUnitName(project.units.length));
+	units["mass"] = std::string(MassUnitName(project.units.mass));
+	units["time"] = std::string("s");
+	units.SetStyle(YAML::EmitterStyle::Flow);
+	root["units"] = units;
 	YAML::Node entities(YAML::NodeType::Sequence);
 	for (const auto& e : project.entities) entities.push_back(EncodeEntity(e));
 	root["entities"] = entities;

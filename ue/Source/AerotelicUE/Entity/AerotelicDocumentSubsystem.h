@@ -58,6 +58,15 @@ public:
 	bool HasCurrentPath() const { return !CurrentPath.IsEmpty(); }
 	FString GetCurrentPath() const { return CurrentPath; }
 
+	// The project's units (Geometry -> Units; aerotelic/units.hpp): what
+	// every typed length and mass means. Changing them converts nothing --
+	// the numbers keep their values and mean the new unit from then on --
+	// and everything handed to an analysis code is converted to SI from
+	// these. Saved with the project; New resets them to metres and
+	// kilograms, Open takes the file's (absent means the same).
+	const aerotelic::UnitSystem& GetUnits() const { return Units; }
+	void SetUnits(const aerotelic::UnitSystem& InUnits) { Units = InUnits; }
+
 	const TArray<TWeakObjectPtr<AAerotelicEntityActor>>& GetEntities() const { return Entities; }
 
 	// Every section airfoil on any Wing or Propeller blade in the scene --
@@ -212,6 +221,7 @@ private:
 	TOptional<aerotelic::project_yaml::ProjectEntity> Clipboard;
 
 	FString CurrentPath;
+	aerotelic::UnitSystem Units;
 	FAerotelicSurfaceStyle SurfaceStyle;
 	FAerotelicShadowStyle ShadowStyle;
 	EAerotelicRenderStyle RenderStyle = EAerotelicRenderStyle::Shaded;

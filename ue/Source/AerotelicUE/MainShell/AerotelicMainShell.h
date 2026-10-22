@@ -5,6 +5,8 @@
 #include "GenericPlatform/GenericApplication.h"
 #include "InputCoreTypes.h"
 
+#include "aerotelic/units.hpp"
+
 class AAerotelicEntityActor;
 class UAerotelicDocumentSubsystem;
 class FUICommandList;
@@ -123,5 +125,10 @@ private:
 
 	FText GetStatusText() const { return StatusText; }
 	FText GetProjectPathText() const;
+	// "m, kg, s" -- the status bar's readout of Geometry > Units.
+	FText GetUnitsText() const;
+	// Geometry > Units: sets the project's units, converting nothing, and
+	// says so once if there is anything in the scene to be re-read.
+	void SetUnits(const aerotelic::UnitSystem& Units);
 	UAerotelicDocumentSubsystem* GetDocument() const;
 };

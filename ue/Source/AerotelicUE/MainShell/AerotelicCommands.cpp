@@ -38,6 +38,7 @@ void FAerotelicCommands::RegisterCommands()
 	UI_COMMAND(ExportTetVtk, "Export Tetrahedral Mesh (VTK)...", "Write every body a lattice fills as tetrahedra conforming exactly to its surface, split at its offset into skin (material 1) and core (material 2) that together fill the body's volume exactly, as a legacy VTK unstructured grid for a finite-element model", EUserInterfaceActionType::Button, FInputChord());
 
 	// Analysis
+	UI_COMMAND(MassProperties, "Mass Properties...", "Weigh selected bodies: the mass, centre of mass and inertia of each, by the density or asserted mass set on its entity in the Scene tree, and of all of them as one assembly about its own centre (parallel-axis theorem)", EUserInterfaceActionType::Button, FInputChord());
 	UI_COMMAND(DustVpm, "DUST (Vortex Particle Method)...", "Write a DUST case for selected geometry: surface panels shedding a free vortex-particle wake, which -- unlike the potential flow above -- lifts. The dialog writes the input files and its Help tab gives the commands that run them", EUserInterfaceActionType::Button, FInputChord());
 	UI_COMMAND(PotentialFlow, "Potential Flow (Kratos)...", "Compute the potential flow around selected geometry on KratosMultiphysics: the air around it is meshed with tetrahedra bounded by the bodies' own triangulation, and the velocity potential, the velocity and the pressure coefficient are written to a VTK file. No wake, so no lift: the pressure distribution is real, the lift is zero by construction", EUserInterfaceActionType::Button, FInputChord());
 

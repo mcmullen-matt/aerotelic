@@ -1242,6 +1242,121 @@ round trip and that an axis survives storage un-normalised at zero
 angle; the document commandlet covers the same three promises through
 `ApplyPlacement`/`GetPlacement` on a real entity.
 
+## Mass properties (2026-10-22)
+
+Two pieces, joined by one setting per parameterisation.
+
+**Scene tree > Mass Properties...** (`MainShell/AerotelicMassSpecDialog`)
+on any row, derived ones included, sets how that entity weighs --
+`Placement`-style, stored on the actor (`AAerotelicEntityActor::MassSpec`)
+and written with it as `mass: {asserted: <total>}` or
+`mass: {density: <rho>}` on the entity, boolean or lattice (absent means
+unset, so older files read unchanged). *Assert the mass* states the
+total; when weighed it is spread uniformly over the surface as a thin
+shell, with the centre and inertia integrated over that surface -- the
+model for a skin whose thickness the geometry does not carry, where a
+density would give zero. *Compute from a density* weighs the entity as a
+uniform solid, the density times the volume its closed surface encloses.
+The dialog shows the entity's enclosed volume, surface area, whether the
+surface is closed, and what the current setting would weigh, so the zero
+a zero-thickness skin encloses is on screen before anyone wonders why.
+
+**Analysis > Mass Properties...** (`Dialogs/MassPropertiesDialog`) picks
+bodies with the shared two-list picker, meshes each at the chosen
+tolerance (the STL tolerance, 2e-3 by default) and reports a table: one
+row per component and, under a rule, the assembly; the columns the mass,
+the three components of the centre of mass, the three moments Ixx, Iyy,
+Izz and the three products Ixy, Ixz, Iyz -- the six independent entries
+of the tensor about that component's own centre (the assembly's about
+the assembly's centre, each body's tensor carried there by the
+parallel-axis theorem and summed). An entity with no setting keeps its
+row with dashes and the reason rather than being counted as zero; a body
+weighed by density whose surface is open is kept but flagged in its Note
+column, since its enclosed volume is not well defined. A multi-body
+entity (a propeller) shares an asserted mass between its bodies by area;
+a mirrored half is a second part and carries the whole mass again. The
+report is text: shown in the dialog, copied, or saved beside the project.
+
+The integrals are `core/include/aerotelic/mass_properties.hpp`, OCCT-free
+so a boolean result or a lattice -- which have no B-rep solid -- weigh the
+same way a wing does: every triangle and the origin make a tetrahedron
+whose signed volume, first moment and second-moment matrix add up over a
+closed surface to the body's (the divergence theorem one simplex at a
+time; the one simplex formula serves the shell with area/12 in place of
+volume/20), and the tensor is `tr(S) 1 - S` moved to the centre by the
+parallel-axis theorem run backwards. `PrincipalInertia` is a Jacobi
+eigen-solve. `mass_properties_check` (73 checks) holds the box solid and
+the box shell to their closed forms to 1e-9 -- the shell against six
+plates carried in by the parallel-axis theorem, a different derivation --
+a single triangle to `m(a^2+b^2+c^2)/36`, the sphere and cylinder to
+their analytic values within the tessellation's own error, translation
+and rotation invariance (principal moments unchanged, principal axes the
+turned body axes), and two unit cubes combined against the 2x1x1 box they
+make. The document commandlet weighs real entities: a sphere by density
+against the model's exact volume, an asserted fuselage and its mirror,
+an unset wing left out and named, and the settings through save/reopen.
+
+## Units (2026-10-22)
+
+Every number typed into a parameterisation is unit-agnostic to the
+geometry: a wing with a span of 12 is the same shape in feet or metres.
+What the units decide is what those numbers MEAN when they leave the
+geometry -- for a mass report, a STEP file, or an analysis code that
+computes forces. **Geometry > Units** sets them per project, length and
+mass chosen separately (metres / millimetres / feet; kilograms /
+pounds-mass), time always seconds; the status bar shows the three.
+
+Two rules, both deliberate. **Nothing is converted when the setting
+changes**: every typed length, mass and density keeps its value and is
+read in the new unit from then on (the menu says so, out loud, when there
+is anything in the scene to be re-read). And **everything handed to an
+analysis code is converted to SI first**, from the two base units --
+density as mass/length^3, speed as length/s, pressure and viscosity as
+mass/length, inertia as mass length^2 (`core/include/aerotelic/units.hpp`,
+with the exact definitions 1 ft = 0.3048 m, 1 lbm = 0.45359237 kg). No
+compound unit is ever chosen on its own, so the system cannot be
+inconsistent, and because the codes get kilograms no slug ever appears:
+the user types lbm, and lbm/ft^3 straight from a materials table.
+
+Where the setting reaches:
+
+* **The project file**: `units: {length: m, mass: kg, time: s}`, first in
+  the file and always written, the defaults included, so a reader sees
+  what the numbers mean. Absent on load means metres and kilograms --
+  what every project before the key existed was taken to be. A length
+  or mass unit the application does not offer, or a time unit other than
+  seconds, is refused rather than misread.
+* **Mass Properties**: the per-entity dialog labels its mass and density
+  fields and its volume/area read-outs; the report's header names the
+  system and its second header row gives each column's unit. The
+  integrals themselves are done in project units and stay there.
+* **STEP export**: the file now DECLARES the project's length unit
+  (`write.step.unit` = M, MM or FT, passed to `aerotelic_step_writer` as
+  `--unit`) and the geometry is written as it is, so CAD opens it at the
+  right size. Before this nothing set it and every export left declared
+  in OCCT's default, millimetres, whatever the project was drawn in.
+  STL, VTK and the tetrahedral exports are unitless by format and stay
+  in model units.
+* **Potential flow and DUST**: the dialogs' fields are in project units
+  with the unit on each; at Solve / Write the bodies are scaled to
+  metres and the stream (speed, density, speed of sound, pressure,
+  viscosity) converted, so the solver and the case are SI. DUST's
+  derived step and run length are a length over a speed and come out
+  the same either way, so what the Time tab shows still holds. The
+  dialogs' SI defaults (1.225 kg/m^3, 340 m/s, ...) are converted the
+  other way on opening, which is what keeps 1.225 from sitting in a
+  lbm/ft^3 field and reaching the solver as 19.6 kg/m^3. Results come
+  back in SI; lengths, speeds and areas are shown in project units
+  again, forces stay in newtons and say so -- a force in lbm ft/s^2 is a
+  poundal, which nobody wants.
+
+`units_check` covers the factors, every compound factor against the base
+ones, the sea-level air figures each system will show, the name
+spellings both ways and the refusals (inches, slugs, minutes);
+`project_yaml_check` the round trip, the key coming first, the absent
+key, and the refusals on load; the document commandlet sets feet and
+pounds, saves, reopens, and reads the file's `units:` line.
+
 ## How the standalone build is put together
 
 * `Source/AerotelicUE.Target.cs` -- the game target that becomes `AerotelicUE.exe`.

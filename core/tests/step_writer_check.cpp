@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
+#include <iterator>
 #include <string>
 
 #include <BRepTools.hxx>
@@ -30,6 +31,12 @@ std::string FirstLine(const std::string& path) {
 	std::string line;
 	std::getline(in, line);
 	return line;
+}
+
+bool Contains(const std::string& path, const std::string& needle) {
+	std::ifstream in(path);
+	std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+	return text.find(needle) != std::string::npos;
 }
 
 } // namespace
@@ -59,6 +66,21 @@ int main() {
 
 	const int rc_bad = std::system(("\"\"" AEROTELIC_STEP_WRITER "\" \"" + step + "\" --named \"X\" \"" + dir + "/does_not_exist.brep\"\"").c_str());
 	Check(rc_bad != 0, "a missing .brep is reported with a non-zero exit");
+
+	// --unit: the file DECLARES the length unit (Geometry > Units). Feet
+	// is a conversion-based unit named FOOT in STEP; millimetres and metres
+	// are the SI unit with and without the MILLI prefix. Without --unit
+	// OCCT's default, millimetres, applies as it always did.
+	auto write_with_unit = [&](const std::string& unit) {
+		std::remove(step.c_str());
+		const std::string flag = unit.empty() ? std::string() : " --unit " + unit;
+		return std::system(("\"\"" AEROTELIC_STEP_WRITER "\" \"" + step + "\"" + flag + " --named \"Sphere 1\" \"" + brep + "\"\"").c_str());
+	};
+	Check(write_with_unit("FT") == 0 && Contains(step, "FOOT"), "--unit FT writes a STEP file declaring FOOT");
+	Check(write_with_unit("MM") == 0 && Contains(step, ".MILLI."), "--unit MM declares millimetres");
+	Check(write_with_unit("M") == 0 && Contains(step, ".METRE.") && !Contains(step, ".MILLI."), "--unit M declares metres, unprefixed");
+	Check(write_with_unit("") == 0 && Contains(step, ".MILLI."), "no --unit is OCCT's default, millimetres, as before");
+	Check(write_with_unit("FURLONG") != 0, "an unknown unit is refused with a non-zero exit");
 
 	std::remove(brep.c_str());
 	std::remove(step.c_str());

@@ -30,6 +30,8 @@
 #include "aerotelic/feature_tree.hpp"
 #include "aerotelic/fuselage_model.hpp"
 #include "aerotelic/lattice.hpp"
+#include "aerotelic/mass_properties.hpp"
+#include "aerotelic/units.hpp"
 #include "aerotelic/lofted_nacelle_model.hpp"
 #include "aerotelic/nacelle_model.hpp"
 #include "aerotelic/primitive_model.hpp"
@@ -103,6 +105,9 @@ struct ProjectEntity {
 	// RGB in 0..1, no alpha -- the Qt app offered none.
 	std::optional<std::array<double, 3>> color;
 	bool hidden = false;
+	// How the entity weighs (Analysis -> Mass Properties): written only
+	// when set, as `mass: {asserted: <total>}` or `mass: {density: <rho>}`.
+	MassSpec mass;
 };
 
 // One operand of a boolean operation, by scene name: an entity, the
@@ -130,7 +135,12 @@ struct ProjectBoolean {
 	bool hidden = false;
 	std::optional<std::array<double, 3>> color;
 	std::vector<ProjectBooleanBody> bodies;
+	MassSpec mass;
 };
+
+// `mass:` as every scene item writes it (entity, boolean result, lattice).
+YAML::Node EncodeMassSpec(const MassSpec& m);
+MassSpec DecodeMassSpec(const YAML::Node& node);
 
 YAML::Node Encode(const ProjectBoolean& b);
 ProjectBoolean DecodeProjectBoolean(const YAML::Node& node);
@@ -145,6 +155,7 @@ struct ProjectLattice {
 	std::vector<BooleanOperand> exclusions;
 	bool hidden = false;
 	std::optional<std::array<double, 3>> color;
+	MassSpec mass;
 };
 
 YAML::Node Encode(const LatticeSpec& spec);
@@ -153,6 +164,9 @@ YAML::Node Encode(const ProjectLattice& l);
 ProjectLattice DecodeProjectLattice(const YAML::Node& node);
 
 struct ProjectFile {
+	// What every length and mass in the file means (units.hpp). Always
+	// written; absent on load means metres and kilograms.
+	UnitSystem units;
 	std::vector<ProjectEntity> entities;
 	// In build order; every operand names something listed before it.
 	std::vector<ProjectBoolean> booleans;

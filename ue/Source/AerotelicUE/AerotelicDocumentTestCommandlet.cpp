@@ -1,6 +1,7 @@
 #include "AerotelicDocumentTestCommandlet.h"
 
 #include "Misc/Paths.h"
+#include "Misc/FileHelper.h"
 #include "HAL/FileManager.h"
 
 #include "Entity/AerotelicDocumentSubsystem.h"
@@ -9,7 +10,9 @@
 #include "Entity/AerotelicLatticeModel.h"
 #include "Entity/AerotelicMeshLib.h"
 #include "Entity/AerotelicPotentialFlow.h"
+#include "Entity/AerotelicMassProperties.h"
 
+#include "aerotelic/primitive_model.hpp"
 #include "aerotelic/wing_model.hpp"
 
 DEFINE_LOG_CATEGORY_STATIC(LogAerotelicDocumentTest, Log, All);
@@ -150,6 +153,107 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 		Wing->ApplyPlacement(Saved);
 		Check(Wing->GetPlacement().rotation_deg == Saved.rotation_deg && !Wing->GetPlacement().euler.used,
 			"placement: restored for the rest of the run");
+	}
+
+	// Analysis > Mass Properties over real entities: a density weighs the
+	// enclosed volume, an asserted mass is spread over the surface and the
+	// mirrored half carries it again, an entity with no setting is left out
+	// and named, and the assembly is the parallel-axis sum. The settings
+	// stay on the entities for the save/reopen round trip checked below.
+	UE_LOG(LogAerotelicDocumentTest, Display, TEXT("step: mass properties"));
+	if (Wing != nullptr && Fuselage != nullptr && Primitive != nullptr)
+	{
+		aerotelic::MassSpec ByDensity;
+		ByDensity.mode = aerotelic::MassMode::Density;
+		ByDensity.density = 2.0;
+		Primitive->SetMassSpec(ByDensity);
+		aerotelic::MassSpec Asserted;
+		Asserted.mode = aerotelic::MassMode::Asserted;
+		Asserted.mass = 150.0;
+		Fuselage->SetMassSpec(Asserted);
+		// The wing deliberately keeps no setting.
+
+		FAerotelicBooleanOperand P, F, W, FM;
+		P.Entity = Primitive;
+		F.Entity = Fuselage;
+		W.Entity = Wing;
+		FM.Entity = Fuselage;
+		FM.bMirror = true;
+		const FAerotelicMassReport Report = ComputeAerotelicMassReport({ P, F, W, FM }, 2e-3);
+
+		auto Find = [&Report](const FString& Label) -> const FAerotelicMassLine*
+		{
+			for (const FAerotelicMassLine& L : Report.Bodies)
+			{
+				if (L.Label == Label) return &L;
+			}
+			return nullptr;
+		};
+		const FAerotelicMassLine* Prim = Find(Primitive->EntityName);
+		const FAerotelicMassLine* Fuse = Find(Fuselage->EntityName);
+		const FAerotelicMassLine* FuseMirror = Find(Fuselage->EntityName + TEXT(" (mirror)"));
+		const FAerotelicMassLine* WingLine = Find(Wing->EntityName);
+		Check(Prim && Fuse && FuseMirror && WingLine, "mass: one report line per chosen body, labelled by entity (mirror marked)");
+		if (Prim != nullptr)
+		{
+			const double ExactVolume = Primitive->GetModelAs<aerotelic::PrimitiveModel>()->Volume();
+			Check(Prim->bIncluded, "mass: a density weighs the body in");
+			Check(FMath::IsNearlyEqual(Prim->Props.mass, 2.0 * ExactVolume, 2e-2 * 2.0 * ExactVolume),
+				FString::Printf(TEXT("mass: density * exact volume (got %f, expected %f)"), Prim->Props.mass, 2.0 * ExactVolume));
+			Check(Prim->Note.IsEmpty(), FString::Printf(TEXT("mass: a closed primitive carries no caveat (%s)"), *Prim->Note));
+			Check(Prim->Props.inertia[0] > 0.0 && FMath::IsNearlyEqual(Prim->Props.inertia[0], Prim->Props.inertia[4], 1e-3 * Prim->Props.inertia[0]),
+				"mass: the primitive's inertia is positive and (for a sphere) isotropic to the tessellation");
+		}
+		if (Fuse != nullptr && FuseMirror != nullptr)
+		{
+			Check(Fuse->bIncluded && FMath::IsNearlyEqual(Fuse->Props.mass, 150.0, 1e-9), "mass: an asserted mass comes back exactly");
+			Check(FMath::IsNearlyEqual(FuseMirror->Props.mass, 150.0, 1e-9), "mass: the mirrored half carries the whole asserted mass again");
+			Check(FMath::IsNearlyEqual(FuseMirror->Props.centre.y, -Fuse->Props.centre.y, 1e-9)
+				&& FMath::IsNearlyEqual(FuseMirror->Props.centre.x, Fuse->Props.centre.x, 1e-9),
+				"mass: the mirror's centre is the reflection of the original's");
+			Check(FMath::IsNearlyEqual(FuseMirror->Props.inertia[0], Fuse->Props.inertia[0], 1e-9 * FMath::Max(1.0, Fuse->Props.inertia[0]))
+				&& FMath::IsNearlyEqual(FuseMirror->Props.inertia[1], -Fuse->Props.inertia[1], 1e-9 * FMath::Max(1.0, FMath::Abs(Fuse->Props.inertia[1]))),
+				"mass: reflection keeps Ixx and flips the sign of the xy product");
+			Check(Fuse->Props.area > 0.0 && FMath::IsNearlyEqual(Fuse->Props.area, FuseMirror->Props.area, 1e-9 * Fuse->Props.area),
+				"mass: the surface the asserted mass was spread over is reported");
+		}
+		if (WingLine != nullptr)
+		{
+			Check(!WingLine->bIncluded && WingLine->Note.Contains(TEXT("no mass properties")),
+				"mass: an entity with no setting is left out and says why");
+		}
+		Check(Report.IncludedCount == 3, FString::Printf(TEXT("mass: three bodies weighed (got %d)"), Report.IncludedCount));
+		if (Prim != nullptr)
+		{
+			Check(FMath::IsNearlyEqual(Report.Assembly.mass, 300.0 + Prim->Props.mass, 1e-9),
+				"mass: the assembly's mass is the sum of what was weighed");
+			// Carrying each body to the joint centre can only add inertia.
+			double OwnIxx = 0.0;
+			for (const FAerotelicMassLine& L : Report.Bodies) if (L.bIncluded) OwnIxx += L.Props.inertia[0];
+			Check(Report.Assembly.inertia[0] >= OwnIxx - 1e-9, "mass: the assembly's Ixx is at least the sum of the bodies' own (parallel axis adds)");
+		}
+		// The table: a header, one row per chosen component (the unset wing's
+		// with dashes and the reason), and the assembly row.
+		Check(Doc->GetUnits() == aerotelic::UnitSystem{}, "units: a new project is in metres and kilograms");
+		const FString Text = FormatAerotelicMassReport(Report, Doc->GetUnits());
+		Check(Text.Contains(TEXT("Component")) && Text.Contains(TEXT("Iyz")) && Text.Contains(TEXT("ASSEMBLY (3 bodies)")),
+			"mass: the report is a table with a header and the assembly row");
+		Check(Text.Contains(TEXT("(kg)")) && Text.Contains(TEXT("(kg m^2)")) && Text.Contains(TEXT("Project units: m, kg, s")),
+			"mass: the report names the project's units in its header and columns");
+		aerotelic::UnitSystem Imperial;
+		Imperial.length = aerotelic::LengthUnit::Foot;
+		Imperial.mass = aerotelic::MassUnit::PoundMass;
+		const FString ImperialText = FormatAerotelicMassReport(Report, Imperial);
+		Check(ImperialText.Contains(TEXT("(lbm)")) && ImperialText.Contains(TEXT("(lbm ft^2)")),
+			"mass: the same report labels itself in feet and pounds when asked");
+		TArray<FString> Lines;
+		Text.ParseIntoArrayLines(Lines);
+		int32 WingRows = 0;
+		for (const FString& L : Lines)
+		{
+			if (L.StartsWith(Wing->EntityName) && L.Contains(TEXT("left out: no mass properties"))) ++WingRows;
+		}
+		Check(WingRows == 1, "mass: the unset wing keeps its row, with the reason in place of numbers");
 	}
 
 	// A boolean result over the fuselage and the sphere, saved under
@@ -328,6 +432,15 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 		}
 	}
 
+	// Geometry > Units: set before the save, read back after the reopen.
+	{
+		aerotelic::UnitSystem U;
+		U.length = aerotelic::LengthUnit::Foot;
+		U.mass = aerotelic::MassUnit::PoundMass;
+		Doc->SetUnits(U);
+		Check(Doc->GetUnits().length == aerotelic::LengthUnit::Foot, "units: set on the document");
+	}
+
 	UE_LOG(LogAerotelicDocumentTest, Display, TEXT("step: save"));
 	const FString TmpPath = FPaths::Combine(FPlatformProcess::UserTempDir(), TEXT("aerotelic_document_test.yaml"));
 	Check(Doc->SaveProjectToPath(TmpPath), "save succeeded");
@@ -352,6 +465,14 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 	Check(Doc->OpenProjectPath(TmpPath), "reopen succeeded");
 	UE_LOG(LogAerotelicDocumentTest, Display, TEXT("step: reopen done"));
 	Check(Doc->GetEntities().Num() == 5, "reopened scene has 3 entities, the boolean result and the lattice");
+	Check(Doc->GetUnits().length == aerotelic::LengthUnit::Foot && Doc->GetUnits().mass == aerotelic::MassUnit::PoundMass,
+		"units: feet and pounds came back with the project");
+	{
+		FString Saved;
+		FFileHelper::LoadFileToString(Saved, *TmpPath);
+		Check(Saved.Contains(TEXT("units:")) && Saved.Contains(TEXT("length: ft")) && Saved.Contains(TEXT("mass: lbm")) && Saved.Contains(TEXT("time: s")),
+			"units: the project file carries them, time included");
+	}
 
 	// Copy refuses the derived kinds, while they are still in the scene: a
 	// boolean result and a lattice are solids built FROM other entities,
@@ -440,6 +561,20 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 	Check(bFoundWing && bFoundFuselage && bFoundPrimitive && bFoundBoolean && bFoundLattice, "all three entity types, the boolean and the lattice survived the round trip");
 
 	// Deleting an operand cascades to the result built on it.
+	// The mass settings set before the save came back with their entities.
+	if (ReopenedFuselage != nullptr)
+	{
+		const aerotelic::MassSpec& M = ReopenedFuselage->GetMassSpec();
+		Check(M.mode == aerotelic::MassMode::Asserted && FMath::IsNearlyEqual(M.mass, 150.0, 1e-12),
+			"mass: the fuselage's asserted mass round-tripped through the project file");
+	}
+	if (ReopenedPrimitive != nullptr)
+	{
+		const aerotelic::MassSpec& M = ReopenedPrimitive->GetMassSpec();
+		Check(M.mode == aerotelic::MassMode::Density && FMath::IsNearlyEqual(M.density, 2.0, 1e-12),
+			"mass: the primitive's density round-tripped through the project file");
+	}
+
 	if (ReopenedFuselage != nullptr)
 	{
 		Doc->RemoveEntity(ReopenedFuselage);

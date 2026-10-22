@@ -95,7 +95,18 @@ void ShowAerotelicPotentialFlowDialog(TFunction<void(const FText&)> Status)
 	TArray<TSharedPtr<FString>> Models = { MakeShared<FString>(TEXT("Incompressible")), MakeShared<FString>(TEXT("Compressible")) };
 	TSharedPtr<FString> Model = Models[0];
 
-	double Speed = 50.0, AngleDeg = 0.0, Density = 1.225, SpeedOfSound = 340.0;
+	// The project's units: the fields are typed in them, the solver is
+	// given SI, and what comes back in SI is shown in them again. The
+	// defaults are SI constants (sea-level air), so they are converted the
+	// other way first -- 1.225 typed into a lbm/ft^3 field would be 19.6
+	// kg/m^3 by the time the solver saw it.
+	const UAerotelicDocumentSubsystem* Doc = UAerotelicDocumentSubsystem::Get();
+	const aerotelic::UnitSystem Units = Doc != nullptr ? Doc->GetUnits() : aerotelic::UnitSystem{};
+	const FText SpeedSuffix = FText::FromString(FString(TEXT(" ")) + UTF8_TO_TCHAR(Units.SpeedName().c_str()));
+	const FText LengthSuffix = FText::FromString(FString(TEXT(" ")) + UTF8_TO_TCHAR(Units.LengthName()));
+	const FText DensitySuffix = FText::FromString(FString(TEXT(" ")) + UTF8_TO_TCHAR(Units.DensityName().c_str()));
+
+	double Speed = 50.0 / Units.SpeedToSI(), AngleDeg = 0.0, Density = 1.225 / Units.DensityToSI(), SpeedOfSound = 340.0 / Units.SpeedToSI();
 	double Deflection = 2e-3, FarFactor = 5.0, NearSize = 0.0, FarSize = 0.0;
 
 	auto RefreshCount = [&]()
@@ -186,19 +197,27 @@ void ShowAerotelicPotentialFlowDialog(TFunction<void(const FText&)> Status)
 			return;
 		}
 
+		// Everything the solver sees is SI: the bodies scaled to metres
+		// (the meshes are this dialog's own copies), the stream and the
+		// element sizes converted. Dimensionless controls pass through.
+		const double L = Units.LengthToSI();
+		for (aerotelic::NamedMesh& H : Held)
+		{
+			for (aerotelic::Vec3& V : H.mesh.vertices) V *= L;
+		}
 		AerotelicPotentialFlow::FRequest Request;
 		for (int32 i = 0; i < static_cast<int32>(Held.size()); ++i)
 		{
 			Request.Bodies.Add({ Labels[i], &Held[i].mesh });
 		}
-		Request.Speed = Speed;
+		Request.Speed = Speed * Units.SpeedToSI();
 		Request.AngleOfAttackDeg = AngleDeg;
-		Request.Density = Density;
-		Request.SpeedOfSound = SpeedOfSound;
+		Request.Density = Density * Units.DensityToSI();
+		Request.SpeedOfSound = SpeedOfSound * Units.SpeedToSI();
 		Request.ElementType = *Model == TEXT("Compressible") ? TEXT("compressible") : TEXT("incompressible");
 		Request.FarFieldFactor = FarFactor;
-		Request.NearElementSize = NearSize;
-		Request.FarElementSize = FarSize;
+		Request.NearElementSize = NearSize * L;
+		Request.FarElementSize = FarSize * L;
 		Request.VtkPath = Path;
 
 		Status(FText::FromString(FString::Printf(TEXT("Meshing the air around %d bodies and solving..."), Request.Bodies.Num())));
@@ -213,13 +232,17 @@ void ShowAerotelicPotentialFlowDialog(TFunction<void(const FText&)> Status)
 
 		LblMesh->SetText(FText::FromString(FString::Printf(TEXT("%s nodes, %s tetrahedra; %s wetted triangles"),
 			*Thousands(R.Nodes), *Thousands(R.Tets), *Thousands(R.WettedTriangles))));
-		LblQuality->SetText(FText::FromString(FString::Printf(TEXT("worst %.3f, mean %.3f (%s under 0.1); element size %.4g at the bodies, %.4g far out"),
-			R.MinQuality, R.MeanQuality, *Thousands(R.PoorQuality), R.NearElementSize, R.FarElementSize)));
-		LblSpeed->SetText(FText::FromString(FString::Printf(TEXT("up to %.4g (free stream %.4g)"), R.MaxSpeed, R.FreeStreamSpeed)));
+		// Back into the project's units for the lengths and speeds; the
+		// force stays in newtons, labelled, since a force in lbm ft/s^2 is a
+		// poundal and nobody wants one.
+		LblQuality->SetText(FText::FromString(FString::Printf(TEXT("worst %.3f, mean %.3f (%s under 0.1); element size %.4g %s at the bodies, %.4g far out"),
+			R.MinQuality, R.MeanQuality, *Thousands(R.PoorQuality), R.NearElementSize / L, UTF8_TO_TCHAR(Units.LengthName()), R.FarElementSize / L)));
+		LblSpeed->SetText(FText::FromString(FString::Printf(TEXT("up to %.4g %s (free stream %.4g)"),
+			R.MaxSpeed / Units.SpeedToSI(), UTF8_TO_TCHAR(Units.SpeedName().c_str()), R.FreeStreamSpeed / Units.SpeedToSI())));
 		LblCp->SetText(FText::FromString(FString::Printf(TEXT("%.4g to %.4g on the bodies (%.4g to %.4g over the field)"),
 			R.MinCpBody, R.MaxCpBody, R.MinCp, R.MaxCp)));
-		LblForce->SetText(FText::FromString(FString::Printf(TEXT("(%.4g, %.4g, %.4g) = %.2e of q x frontal area %.4g"),
-			R.Force[0], R.Force[1], R.Force[2], R.ForceCoefficient, R.FrontalArea)));
+		LblForce->SetText(FText::FromString(FString::Printf(TEXT("(%.4g, %.4g, %.4g) N = %.2e of q x frontal area %.4g %s"),
+			R.Force[0], R.Force[1], R.Force[2], R.ForceCoefficient, R.FrontalArea / Units.AreaToSI(), UTF8_TO_TCHAR(Units.AreaName().c_str()))));
 		LblTime->SetText(FText::FromString(FString::Printf(TEXT("%.1f s (%.1f meshing, %.1f solving)"), R.Seconds, R.SecondsMesh, R.SecondsSolve)));
 
 		FString Line = FString::Printf(TEXT("Potential flow solved on %s tetrahedra: Cp %.3g to %.3g on the bodies, net force %.1e of q x frontal area (zero in an exact potential flow) -> %s"),
@@ -269,10 +292,10 @@ void ShowAerotelicPotentialFlowDialog(TFunction<void(const FText&)> Status)
 			[
 				MakeGroup(LOCTEXT("FreeStream", "Free stream"),
 					SNew(SVerticalBox)
-					+ SVerticalBox::Slot().AutoHeight().Padding(0, 2) [ FormRow(LOCTEXT("Speed", "Speed:"), Spin(Speed, 1e-9, 1e9, 5.0, LOCTEXT("PerSecond", " units/s"))) ]
+					+ SVerticalBox::Slot().AutoHeight().Padding(0, 2) [ FormRow(LOCTEXT("Speed", "Speed:"), Spin(Speed, 1e-9, 1e9, 5.0, SpeedSuffix)) ]
 					+ SVerticalBox::Slot().AutoHeight().Padding(0, 2) [ FormRow(LOCTEXT("Aoa", "Angle of attack:"), Spin(AngleDeg, -90.0, 90.0, 0.5, FText::FromString(TEXT(" deg")))) ]
-					+ SVerticalBox::Slot().AutoHeight().Padding(0, 2) [ FormRow(LOCTEXT("Density", "Air density:"), Spin(Density, 1e-9, 1e9, 0.1, FText::GetEmpty())) ]
-					+ SVerticalBox::Slot().AutoHeight().Padding(0, 2) [ FormRow(LOCTEXT("Sound", "Speed of sound:"), Spin(SpeedOfSound, 1e-9, 1e9, 10.0, LOCTEXT("PerSecond2", " units/s"))) ]
+					+ SVerticalBox::Slot().AutoHeight().Padding(0, 2) [ FormRow(LOCTEXT("Density", "Air density:"), Spin(Density, 1e-9, 1e9, 0.1, DensitySuffix)) ]
+					+ SVerticalBox::Slot().AutoHeight().Padding(0, 2) [ FormRow(LOCTEXT("Sound", "Speed of sound:"), Spin(SpeedOfSound, 1e-9, 1e9, 10.0, SpeedSuffix)) ]
 					+ SVerticalBox::Slot().AutoHeight().Padding(0, 2)
 					[
 						FormRow(LOCTEXT("ModelRow", "Flow model:"),
@@ -286,17 +309,17 @@ void ShowAerotelicPotentialFlowDialog(TFunction<void(const FText&)> Status)
 					+ SVerticalBox::Slot().AutoHeight().Padding(0, 4, 0, 0)
 					[
 						MakeInfoLabel(LOCTEXT("FlowHint",
-							"The flow runs along +x, tilted towards +z by the angle of attack. There is no wake, so there is no circulation and no lift: the pressure distribution is real, the lift is zero by construction. Density and the speed of sound only scale the pressures into forces and set the Mach number for the compressible model."))
+							"The flow runs along +x, tilted towards +z by the angle of attack. There is no wake, so there is no circulation and no lift: the pressure distribution is real, the lift is zero by construction. Density and the speed of sound only scale the pressures into forces and set the Mach number for the compressible model. All of this is in the project's units (Geometry > Units); the solver is given SI."))
 					])
 			]
 			+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 8)
 			[
 				MakeGroup(LOCTEXT("MeshGroup", "Mesh"),
 					SNew(SVerticalBox)
-					+ SVerticalBox::Slot().AutoHeight().Padding(0, 2) [ FormRow(LOCTEXT("Deflection", "Surface deflection:"), Spin(Deflection, 1e-9, 1e9, 0.001, FText::GetEmpty())) ]
+					+ SVerticalBox::Slot().AutoHeight().Padding(0, 2) [ FormRow(LOCTEXT("Deflection", "Surface deflection:"), Spin(Deflection, 1e-9, 1e9, 0.001, LengthSuffix)) ]
 					+ SVerticalBox::Slot().AutoHeight().Padding(0, 2) [ FormRow(LOCTEXT("FarFactor", "Far field, in model sizes:"), Spin(FarFactor, 0.6, 1000.0, 1.0, FText::GetEmpty())) ]
-					+ SVerticalBox::Slot().AutoHeight().Padding(0, 2) [ FormRow(LOCTEXT("NearSize", "Element size at the bodies:"), Spin(NearSize, 0.0, 1e9, 0.01, FText::GetEmpty())) ]
-					+ SVerticalBox::Slot().AutoHeight().Padding(0, 2) [ FormRow(LOCTEXT("FarSize", "Element size far out:"), Spin(FarSize, 0.0, 1e9, 0.1, FText::GetEmpty())) ]
+					+ SVerticalBox::Slot().AutoHeight().Padding(0, 2) [ FormRow(LOCTEXT("NearSize", "Element size at the bodies:"), Spin(NearSize, 0.0, 1e9, 0.01, LengthSuffix)) ]
+					+ SVerticalBox::Slot().AutoHeight().Padding(0, 2) [ FormRow(LOCTEXT("FarSize", "Element size far out:"), Spin(FarSize, 0.0, 1e9, 0.1, LengthSuffix)) ]
 					+ SVerticalBox::Slot().AutoHeight().Padding(0, 4, 0, 0)
 					[
 						MakeInfoLabel(LOCTEXT("MeshHint",

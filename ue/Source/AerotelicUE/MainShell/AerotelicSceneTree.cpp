@@ -2,6 +2,7 @@
 #include "Widgets/MessageBox.h"
 #include "AerotelicDesignDock.h"
 #include "AerotelicTransformDialog.h"
+#include "AerotelicMassSpecDialog.h"
 
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Layout/SBox.h"
@@ -449,6 +450,14 @@ TSharedPtr<SWidget> SAerotelicSceneTree::MakeEntityMenu(FItem Item)
 		Menu.AddMenuEntry(LOCTEXT("Transform", "Transform"), LOCTEXT("TransformTip", "Translate and rotate this entity"), FSlateIcon(),
 			FUIAction(FExecuteAction::CreateLambda([Entity]() { if (Entity.IsValid()) OpenAerotelicTransformDialog(Entity.Get()); })));
 	}
+
+	// On every row, derived ones included: a boolean result or a lattice
+	// has a density as much as a wing does, and Analysis > Mass Properties
+	// weighs whatever is chosen by this setting.
+	Menu.AddMenuEntry(LOCTEXT("MassProperties", "Mass Properties..."),
+		LOCTEXT("MassPropertiesTip", "How this parameterisation weighs: assert its mass, or give a density for the volume it encloses. Analysis > Mass Properties then reports mass, centre and inertia."),
+		FSlateIcon(),
+		FUIAction(FExecuteAction::CreateLambda([Entity]() { if (Entity.IsValid()) OpenAerotelicMassSpecDialog(Entity.Get()); })));
 
 	Menu.AddMenuEntry(LOCTEXT("Color", "Color"), LOCTEXT("ColorTip", "Pick the colour every body of this entity is drawn in (the mirrored ones included)"), FSlateIcon(),
 		FUIAction(FExecuteAction::CreateLambda([this, Entity]() { if (Entity.IsValid()) PickEntityColor(Entity.Get()); })));

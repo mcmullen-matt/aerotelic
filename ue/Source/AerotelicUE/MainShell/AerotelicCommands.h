@@ -40,6 +40,7 @@ public:
 	TSharedPtr<FUICommandInfo> ExportTetVtk;
 
 	// Analysis
+	TSharedPtr<FUICommandInfo> MassProperties;
 	TSharedPtr<FUICommandInfo> PotentialFlow;
 	TSharedPtr<FUICommandInfo> DustVpm;
 

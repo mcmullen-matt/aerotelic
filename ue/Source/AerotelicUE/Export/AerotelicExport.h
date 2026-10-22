@@ -72,7 +72,9 @@ namespace AerotelicExport
 	// see core/src/step_export.cpp). bNamed writes an XCAF product
 	// structure so each body arrives as a named part; otherwise one plain
 	// compound. False with the reason on failure.
-	bool WriteStep(const TArray<FBody>& Bodies, const FString& Path, bool bNamed, FString& OutError);
+	// StepUnit is what the file declares its lengths to be (M, MM or FT --
+	// UnitSystem::StepUnitName()); the geometry is written as it is.
+	bool WriteStep(const TArray<FBody>& Bodies, const FString& Path, bool bNamed, const FString& StepUnit, FString& OutError);
 
 	// Where the writer is: Binaries/Win64/StepWriter beside the application
 	// (staged by tools/stage_step_writer.ps1 and the packaged build), else

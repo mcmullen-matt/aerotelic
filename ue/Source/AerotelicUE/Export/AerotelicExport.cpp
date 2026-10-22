@@ -350,7 +350,7 @@ namespace AerotelicExport
 
 	// -------------------------------------------------------------- STEP
 
-	bool WriteStep(const TArray<FBody>& Bodies, const FString& Path, bool bNamed, FString& OutError)
+	bool WriteStep(const TArray<FBody>& Bodies, const FString& Path, bool bNamed, const FString& StepUnit, FString& OutError)
 	{
 		const FString Writer = FindStepWriter();
 		if (Writer.IsEmpty())
@@ -361,7 +361,7 @@ namespace AerotelicExport
 		// The bodies go through .brep files in a scratch folder.
 		const FString Scratch = FPaths::Combine(FPlatformProcess::UserTempDir(), TEXT("aerotelic_step_") + FGuid::NewGuid().ToString(EGuidFormats::Short));
 		IFileManager::Get().MakeDirectory(*Scratch, true);
-		FString Params = FString::Printf(TEXT("\"%s\" %s"), *FPaths::ConvertRelativePathToFull(Path), bNamed ? TEXT("--named") : TEXT("--plain"));
+		FString Params = FString::Printf(TEXT("\"%s\" --unit %s %s"), *FPaths::ConvertRelativePathToFull(Path), *StepUnit, bNamed ? TEXT("--named") : TEXT("--plain"));
 		for (int32 i = 0; i < Bodies.Num(); ++i)
 		{
 			const FString Brep = FPaths::Combine(Scratch, FString::Printf(TEXT("body_%d.brep"), i));

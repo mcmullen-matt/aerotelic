@@ -39,8 +39,9 @@ namespace AerotelicPotentialFlow
 	{
 		TArray<FBody> Bodies;
 
-		// --- the free stream (model units; 1 unit = 1 m for the pressures
-		// to be pascals and the forces newtons) ---
+		// --- the free stream, in SI (the dialog converts from the project's
+		// units: metres in the bodies, m/s, kg/m^3; pressures come back in
+		// pascals and forces in newtons) ---
 		double Speed = 50.0;
 		double AngleOfAttackDeg = 0.0;
 		// Only the ratio to the speed matters, and only to the compressible

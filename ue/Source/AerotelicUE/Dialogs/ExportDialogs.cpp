@@ -411,7 +411,11 @@ void ShowAerotelicExportStepDialog(TFunction<void(const FText&)> Status)
 		}
 		Status(LOCTEXT("Writing", "Writing STEP..."));
 		FString Error;
-		if (!AerotelicExport::WriteStep(Bodies, Path, NamedCheck->IsChecked(), Error))
+		// The file declares the project's length unit (Geometry > Units), so
+		// CAD opens it at the right size whatever the project is drawn in.
+		const UAerotelicDocumentSubsystem* UnitsDoc = UAerotelicDocumentSubsystem::Get();
+		const FString StepUnit = UTF8_TO_TCHAR((UnitsDoc != nullptr ? UnitsDoc->GetUnits() : aerotelic::UnitSystem{}).StepUnitName());
+		if (!AerotelicExport::WriteStep(Bodies, Path, NamedCheck->IsChecked(), StepUnit, Error))
 		{
 			Status(LOCTEXT("Ready", "Ready"));
 			AerotelicMessageBox(EAppMsgType::Ok, FText::FromString(Error), LOCTEXT("ExportError", "Export Error"));

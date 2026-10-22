@@ -294,6 +294,7 @@ void UAerotelicDocumentSubsystem::ClearScene()
 	}
 	Entities.Empty();
 	CurrentPath.Empty();
+	Units = aerotelic::UnitSystem{};
 	OnEntityListChanged.Broadcast();
 }
 
@@ -669,6 +670,7 @@ bool UAerotelicDocumentSubsystem::CopyEntityToClipboard(const AAerotelicEntityAc
 		Snapshot.color = std::array<double, 3>{ Color->R, Color->G, Color->B };
 	}
 	Snapshot.hidden = !Entity->IsEntityVisible();
+	Snapshot.mass = Entity->GetMassSpec();
 	Clipboard = MoveTemp(Snapshot);
 	return true;
 }
@@ -742,6 +744,7 @@ AAerotelicEntityActor* UAerotelicDocumentSubsystem::PasteEntity(FString& OutErro
 	{
 		Actor->SetEntityVisible(false);
 	}
+	Actor->SetMassSpec(Clipboard->mass);
 	SetSelectedEntity(Actor);
 	return Actor;
 }
@@ -951,6 +954,7 @@ bool UAerotelicDocumentSubsystem::OpenProjectPath(const FString& InPath, bool bA
 	}
 
 	ClearScene();
+	Units = Project.units;
 	// Anything that could not be built: entities whose model refuses (a
 	// wing with a negative chord), boolean operations, lattices. Reported
 	// together at the end; the rest of the project still opens.
@@ -985,6 +989,7 @@ bool UAerotelicDocumentSubsystem::OpenProjectPath(const FString& InPath, bool bA
 			{
 				Actor->SetEntityVisible(false);
 			}
+			Actor->SetMassSpec(Entity.mass);
 		}
 	}
 	// The boolean operations, in build order, over what is now in the
@@ -1022,6 +1027,7 @@ bool UAerotelicDocumentSubsystem::OpenProjectPath(const FString& InPath, bool bA
 			continue;
 		}
 		Actor->RefreshProxy();
+		Actor->SetMassSpec(B.mass);
 		if (B.color)
 		{
 			Actor->SetColorOverride(FLinearColor((float)(*B.color)[0], (float)(*B.color)[1], (float)(*B.color)[2]));
@@ -1094,6 +1100,7 @@ bool UAerotelicDocumentSubsystem::OpenProjectPath(const FString& InPath, bool bA
 			continue;
 		}
 		Actor->RefreshProxy();
+		Actor->SetMassSpec(L.mass);
 		if (L.color)
 		{
 			Actor->SetColorOverride(FLinearColor((float)(*L.color)[0], (float)(*L.color)[1], (float)(*L.color)[2]));
@@ -1124,6 +1131,7 @@ bool UAerotelicDocumentSubsystem::SaveProjectToPath(const FString& InPath)
 	}
 
 	ProjectFile Project;
+	Project.units = Units;
 	for (auto& WeakEntity : Entities)
 	{
 		if (!WeakEntity.IsValid())
@@ -1147,6 +1155,7 @@ bool UAerotelicDocumentSubsystem::SaveProjectToPath(const FString& InPath)
 			Pe.color = std::array<double, 3>{ Color->R, Color->G, Color->B };
 		}
 		Pe.hidden = !Entity->IsEntityVisible();
+		Pe.mass = Entity->GetMassSpec();
 		SpecFromEntityModel(*Entity, Pe.model);
 		RelativiseReferenceImagePaths(Pe.model, FPaths::GetPath(Path));
 		Project.entities.push_back(std::move(Pe));
@@ -1178,6 +1187,7 @@ bool UAerotelicDocumentSubsystem::SaveProjectToPath(const FString& InPath)
 			Pb.operands.push_back(Ref);
 		}
 		Pb.hidden = !Entity->IsEntityVisible();
+		Pb.mass = Entity->GetMassSpec();
 		if (const TOptional<FLinearColor> Color = Entity->GetColorOverride(); Color.IsSet())
 		{
 			Pb.color = std::array<double, 3>{ Color->R, Color->G, Color->B };
@@ -1231,6 +1241,7 @@ bool UAerotelicDocumentSubsystem::SaveProjectToPath(const FString& InPath)
 		Pl.targets = Refs(M->Targets);
 		Pl.exclusions = Refs(M->Exclusions);
 		Pl.hidden = !Entity->IsEntityVisible();
+		Pl.mass = Entity->GetMassSpec();
 		if (const TOptional<FLinearColor> Color = Entity->GetColorOverride(); Color.IsSet())
 		{
 			Pl.color = std::array<double, 3>{ Color->R, Color->G, Color->B };

@@ -27,6 +27,8 @@
 #include <IFSelect_ReturnStatus.hxx>
 #include <STEPCAFControl_Writer.hxx>
 #include <STEPControl_Writer.hxx>
+#include <Interface_Static.hxx>
+#include <STEPControl_Controller.hxx>
 #include <Standard_Failure.hxx>
 #include <TCollection_ExtendedString.hxx>
 #include <TDataStd_Name.hxx>
@@ -47,18 +49,33 @@ int Fail(const std::string& why) {
 
 int main(int argc, char** argv) {
 	if (argc < 4) {
-		return Fail("usage: aerotelic_step_writer <out.step> [--named|--plain] <label> <body.brep> ...");
+		return Fail("usage: aerotelic_step_writer <out.step> [--named|--plain] [--unit M|MM|FT] <label> <body.brep> ...");
 	}
 	const std::string out_path = argv[1];
 	bool named = true;
+	// The length unit the file DECLARES (OCCT's write.step.unit): the
+	// geometry is written as given, and a reader scales by this. Absent,
+	// OCCT's own default -- millimetres -- applies, as it always did.
+	std::string unit;
 	int first = 2;
-	if (std::strcmp(argv[2], "--named") == 0) { named = true; first = 3; }
-	else if (std::strcmp(argv[2], "--plain") == 0) { named = false; first = 3; }
+	while (first < argc && std::strncmp(argv[first], "--", 2) == 0) {
+		if (std::strcmp(argv[first], "--named") == 0) { named = true; first += 1; }
+		else if (std::strcmp(argv[first], "--plain") == 0) { named = false; first += 1; }
+		else if (std::strcmp(argv[first], "--unit") == 0 && first + 1 < argc) { unit = argv[first + 1]; first += 2; }
+		else return Fail(std::string("unknown option ") + argv[first]);
+	}
 	if ((argc - first) < 2 || (argc - first) % 2 != 0) {
 		return Fail("bodies must be given as <label> <body.brep> pairs");
 	}
 
 	try {
+		// The write.step.* parameters only exist once the STEP controller
+		// has registered them -- which a writer's constructor does, but
+		// that is too late to set the unit it reads. Init() is idempotent.
+		STEPControl_Controller::Init();
+		if (!unit.empty() && !Interface_Static::SetCVal("write.step.unit", unit.c_str())) {
+			return Fail("STEP unit '" + unit + "' is not one OCCT accepts (M, MM, FT, ...)");
+		}
 		std::vector<std::pair<std::string, TopoDS_Shape>> bodies;
 		BRep_Builder builder;
 		for (int i = first; i + 1 < argc; i += 2) {

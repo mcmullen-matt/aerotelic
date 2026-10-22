@@ -122,6 +122,15 @@ public:
 	FLinearColor GetDisplayColor() const;
 	static FLinearColor DefaultColorFor(aerotelic::project_yaml::EntityType Type);
 
+	// ---- mass ----
+
+	// How this parameterisation weighs (the Scene tree's Mass Properties
+	// dialog): an asserted total spread over its surface, or a density
+	// times its enclosed volume. Per entity, not per body; saved with it.
+	// Unset means Analysis -> Mass Properties leaves it out and says so.
+	void SetMassSpec(const aerotelic::MassSpec& InSpec) { MassSpec = InSpec; }
+	const aerotelic::MassSpec& GetMassSpec() const { return MassSpec; }
+
 	// ---- surface finish, style, section ----
 
 	// Re-applies the scene-wide finish to every body and mirror material.
@@ -265,6 +274,7 @@ private:
 	bool bMirrorHasTessellation = false;
 	EAerotelicRenderStyle RenderStyle = EAerotelicRenderStyle::Shaded;
 	TOptional<FLinearColor> ColorOverride;
+	aerotelic::MassSpec MassSpec;
 	FDelegateHandle TransformHandle;
 	FDelegateHandle GeometryHandle;
 	// The model's solid from the last build that needed OCCT (unplaced):

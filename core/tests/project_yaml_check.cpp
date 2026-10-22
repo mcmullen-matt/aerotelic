@@ -258,6 +258,91 @@ void CheckPlacementRoundTrip() {
 	}
 }
 
+// `mass:` on an entity -- asserted or by density -- round-trips, and an
+// entity without one writes no key at all.
+void CheckMassSpecRoundTrip() {
+	ProjectEntity e;
+	e.name = "Prim1";
+	e.type = EntityType::Primitive;
+	e.model = PrimitiveSpec{};
+
+	ProjectEntity none = RoundTripThroughText(e);
+	Check(none.mass.mode == MassMode::Unset, "mass round trip: no setting stays unset");
+
+	e.mass.mode = MassMode::Asserted;
+	e.mass.mass = 12.5;
+	ProjectEntity asserted = RoundTripThroughText(e);
+	Check(asserted.mass.mode == MassMode::Asserted, "mass round trip: asserted mode survives");
+	CheckClose(asserted.mass.mass, 12.5, 1e-12, "mass round trip: the asserted mass");
+
+	e.mass.mode = MassMode::Density;
+	e.mass.density = 2700.0;
+	ProjectEntity by_density = RoundTripThroughText(e);
+	Check(by_density.mass.mode == MassMode::Density, "mass round trip: density mode survives");
+	CheckClose(by_density.mass.density, 2700.0, 1e-12, "mass round trip: the density");
+
+	// The two flat forms the file is meant to read as.
+	MassSpec from_text = DecodeMassSpec(YAML::Load("{asserted: 3.5}"));
+	Check(from_text.mode == MassMode::Asserted && from_text.mass == 3.5, "mass: `{asserted: 3.5}` decodes");
+	from_text = DecodeMassSpec(YAML::Load("{density: 1200}"));
+	Check(from_text.mode == MassMode::Density && from_text.density == 1200.0, "mass: `{density: 1200}` decodes");
+}
+
+// `units:` is always written -- the defaults too -- and read back; a file
+// without it is metres and kilograms; a unit the application does not
+// offer is refused.
+void CheckUnitsRoundTrip() {
+	const std::string path = AEROTELIC_TESTS_DIR "/project_yaml_check_tmp.yaml";
+	ProjectEntity e;
+	e.name = "Prim1";
+	e.type = EntityType::Primitive;
+	e.model = PrimitiveSpec{};
+
+	ProjectFile pf;
+	pf.entities.push_back(e);
+	SaveProjectYaml(pf, path);
+	{
+		std::ifstream in(path);
+		std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+		Check(text.find("units:") != std::string::npos && text.find("length: m") != std::string::npos
+			&& text.find("mass: kg") != std::string::npos && text.find("time: s") != std::string::npos,
+			"units: the defaults are written out, time included");
+		Check(text.find("units:") < text.find("entities:"), "units: comes first in the file");
+	}
+	ProjectFile back = LoadProjectYaml(path);
+	Check(back.units == UnitSystem{}, "units: the defaults read back");
+
+	pf.units.length = LengthUnit::Foot;
+	pf.units.mass = MassUnit::PoundMass;
+	SaveProjectYaml(pf, path);
+	back = LoadProjectYaml(path);
+	Check(back.units.length == LengthUnit::Foot && back.units.mass == MassUnit::PoundMass, "units: feet and pounds round-trip");
+
+	// A file from before the key existed.
+	{
+		std::ofstream out(path);
+		out << "entities:\n  - name: P\n    type: primitive\n    model: {shape: box}\n";
+	}
+	back = LoadProjectYaml(path);
+	Check(back.units == UnitSystem{}, "units: a file without the key is metres and kilograms");
+
+	// One claiming a unit the application does not offer.
+	{
+		std::ofstream out(path);
+		out << "units: {length: inch, mass: kg, time: s}\nentities: []\n";
+	}
+	bool threw = false;
+	try { LoadProjectYaml(path); } catch (const std::invalid_argument&) { threw = true; }
+	Check(threw, "units: an unoffered length unit is refused on load");
+	{
+		std::ofstream out(path);
+		out << "units: {length: m, mass: kg, time: min}\nentities: []\n";
+	}
+	threw = false;
+	try { LoadProjectYaml(path); } catch (const std::invalid_argument&) { threw = true; }
+	Check(threw, "units: a time unit other than seconds is refused on load");
+}
+
 // A lattice under `lattices:` (OpenLattice parameters, targets, reserved
 // volumes) round-trips, and its references are validated like a boolean's.
 void CheckLatticeRoundTrip() {
@@ -455,6 +540,8 @@ int main() {
 		CheckPropellerRoundTrip();
 		CheckPrimitiveRoundTrip();
 		CheckPlacementRoundTrip();
+		CheckMassSpecRoundTrip();
+		CheckUnitsRoundTrip();
 		CheckLatticeRoundTrip();
 		CheckRealPythonProjectFile();
 	} catch (const std::exception& e) {

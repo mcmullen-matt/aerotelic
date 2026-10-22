@@ -57,6 +57,8 @@ add_library(aerotelic_core STATIC
 	src/mesh_boolean.cpp
 	src/pdf3d.cpp
 	src/dust_case.cpp
+	src/mass_properties.cpp
+	src/units.cpp
 	# Shewchuk's exact geometric predicates (public domain), compiled as C
 	# with strict IEEE rounding: the adaptive arithmetic is defeated by
 	# fast-math style reassociation.
@@ -148,4 +150,10 @@ target_link_libraries(pdf3d_check PRIVATE aerotelic_core)
 
 add_executable(dust_case_check tests/dust_case_check.cpp)
 target_link_libraries(dust_case_check PRIVATE aerotelic_core)
+
+add_executable(mass_properties_check tests/mass_properties_check.cpp)
+target_link_libraries(mass_properties_check PRIVATE aerotelic_core)
+
+add_executable(units_check tests/units_check.cpp)
+target_link_libraries(units_check PRIVATE aerotelic_core)
 
