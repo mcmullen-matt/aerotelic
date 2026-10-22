@@ -21,6 +21,9 @@ void FAerotelicCommands::RegisterCommands()
 	UI_COMMAND(Export3DPdf, "Export 3D PDF...", "Write chosen bodies to a PDF page as one interactive 3D model, each body a named part in its scene colour", EUserInterfaceActionType::Button, FInputChord());
 	UI_COMMAND(Quit, "Quit", "Close the application", EUserInterfaceActionType::Button, FInputChord());
 
+	// Edit
+	UI_COMMAND(CopyEntity, "Copy", "Copy the selected parameterisation. Paste makes a second, independent entity from it -- edits to one never reach the other. Boolean results and lattices cannot be copied: they are solids built from other entities, not parameterisations of their own.", EUserInterfaceActionType::Button, FInputChord(EModifierKey::Control, EKeys::C));
+	UI_COMMAND(PasteEntity, "Paste", "Add a copy of the parameterisation on the clipboard, placed where the original sits and ready to be transformed or edited on its own", EUserInterfaceActionType::Button, FInputChord(EModifierKey::Control, EKeys::V));
 	// Edit -> Preferences
 	UI_COMMAND(ColorTheme, "Color Theme...", "Pick the application's colour theme (dark, light and operational palettes)", EUserInterfaceActionType::Button, FInputChord());
 

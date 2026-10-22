@@ -10,6 +10,8 @@
 #include "Entity/AerotelicMeshLib.h"
 #include "Entity/AerotelicPotentialFlow.h"
 
+#include "aerotelic/wing_model.hpp"
+
 DEFINE_LOG_CATEGORY_STATIC(LogAerotelicDocumentTest, Log, All);
 
 namespace
@@ -297,6 +299,32 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 	UE_LOG(LogAerotelicDocumentTest, Display, TEXT("step: reopen done"));
 	Check(Doc->GetEntities().Num() == 5, "reopened scene has 3 entities, the boolean result and the lattice");
 
+	// Copy refuses the derived kinds, while they are still in the scene: a
+	// boolean result and a lattice are solids built FROM other entities,
+	// with no parameterisation of their own to hand a constructor.
+	{
+		AAerotelicEntityActor* AnyBoolean = nullptr;
+		AAerotelicEntityActor* AnyLattice = nullptr;
+		AAerotelicEntityActor* AnyWing = nullptr;
+		for (auto& Weak : Doc->GetEntities())
+		{
+			if (!Weak.IsValid()) continue;
+			if (Weak->GetEntityType() == aerotelic::project_yaml::EntityType::Boolean) AnyBoolean = Weak.Get();
+			if (Weak->GetEntityType() == aerotelic::project_yaml::EntityType::Lattice) AnyLattice = Weak.Get();
+			if (Weak->GetEntityType() == aerotelic::project_yaml::EntityType::Wing) AnyWing = Weak.Get();
+		}
+		Check(!UAerotelicDocumentSubsystem::CanCopyEntity(AnyBoolean), "copy: a boolean result cannot be copied");
+		Check(!UAerotelicDocumentSubsystem::CanCopyEntity(AnyLattice), "copy: a lattice cannot be copied");
+		Check(!UAerotelicDocumentSubsystem::CanCopyEntity(nullptr), "copy: nothing selected cannot be copied");
+		Check(UAerotelicDocumentSubsystem::CanCopyEntity(AnyWing), "copy: a wing can be copied");
+		// A refused copy must leave whatever was on the clipboard alone
+		// rather than emptying it.
+		Check(Doc->CopyEntityToClipboard(AnyWing) && Doc->HasClipboardEntity(), "copy: the wing went onto the clipboard");
+		Check(!Doc->CopyEntityToClipboard(AnyBoolean), "copy: copying the boolean result returns false");
+		Check(Doc->HasClipboardEntity() && AnyWing != nullptr && Doc->GetClipboardEntityName() == AnyWing->EntityName,
+			"copy: the refused copy left the wing on the clipboard untouched");
+	}
+
 	bool bFoundWing = false, bFoundFuselage = false, bFoundPrimitive = false, bFoundBoolean = false, bFoundLattice = false;
 	AAerotelicEntityActor* ReopenedFuselage = nullptr;
 	AAerotelicEntityActor* ReopenedPrimitive = nullptr;
@@ -371,6 +399,87 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 	}
 
 	IFileManager::Get().Delete(*TmpPath);
+
+	// ---- Edit > Copy / Paste (Ctrl+C / Ctrl+V) ----
+	// The one thing that matters: the copy is INDEPENDENT. Only the wing is
+	// left in the scene by now, which is all this needs.
+	UE_LOG(LogAerotelicDocumentTest, Display, TEXT("step: copy/paste"));
+	{
+		AAerotelicEntityActor* Source = nullptr;
+		for (auto& Weak : Doc->GetEntities())
+		{
+			if (Weak.IsValid() && Weak->GetEntityType() == aerotelic::project_yaml::EntityType::Wing) Source = Weak.Get();
+		}
+		Check(Source != nullptr, "copy/paste: a wing is left to copy");
+		if (Source != nullptr)
+		{
+			aerotelic::WingModel* SourceModel = Source->GetModelAs<aerotelic::WingModel>();
+			const double OriginalSpan = SourceModel->planform().SemiSpan();
+			Source->SetColorOverride(FLinearColor(0.25f, 0.5f, 0.75f));
+			Source->SetActorLocation(FVector(1.0, 2.0, 3.0));
+			const int32 Before = Doc->GetEntities().Num();
+
+			Check(Doc->CopyEntityToClipboard(Source), "copy/paste: the wing copies");
+			FString Error;
+			AAerotelicEntityActor* Copy = Doc->PasteEntity(Error);
+			Check(Copy != nullptr, FString::Printf(TEXT("copy/paste: paste made an entity: %s"), *Error));
+			if (Copy != nullptr)
+			{
+				Check(Doc->GetEntities().Num() == Before + 1, "copy/paste: the scene gained exactly one entity");
+				Check(Copy != Source, "copy/paste: the copy is a different actor");
+				Check(Copy->EntityName != Source->EntityName, "copy/paste: the copy got its own unique name");
+				Check(!Doc->IsNameTaken(Copy->EntityName, Copy), "copy/paste: that name is unique in the scene");
+				Check(Copy->GetEntityType() == Source->GetEntityType(), "copy/paste: same kind");
+				Check(Doc->GetSelectedEntity() == Copy, "copy/paste: the copy is selected, ready to transform");
+
+				// The model object itself must be a different one, or the
+				// two would be one entity wearing two names.
+				aerotelic::WingModel* CopyModel = Copy->GetModelAs<aerotelic::WingModel>();
+				Check(CopyModel != SourceModel, "copy/paste: the copy has a model of its own, not a shared pointer");
+				Check(FMath::IsNearlyEqual(CopyModel->planform().SemiSpan(), OriginalSpan, 1e-12),
+					"copy/paste: the copy starts with the source's parameters");
+				Check(Copy->GetActorLocation().Equals(Source->GetActorLocation(), 1e-6), "copy/paste: pasted where the original sits");
+				Check(Copy->GetColorOverride().IsSet(), "copy/paste: the colour came with it");
+
+				// THE REQUIREMENT: editing either one must not touch the
+				// other, in both directions.
+				SourceModel->planform().SetSemiSpan(OriginalSpan * 2.0);
+				Check(FMath::IsNearlyEqual(CopyModel->planform().SemiSpan(), OriginalSpan, 1e-12),
+					"copy/paste: editing the SOURCE leaves the copy alone");
+				CopyModel->planform().SetSemiSpan(OriginalSpan * 5.0);
+				Check(FMath::IsNearlyEqual(SourceModel->planform().SemiSpan(), OriginalSpan * 2.0, 1e-12),
+					"copy/paste: editing the COPY leaves the source alone");
+				Source->SetActorLocation(FVector(40.0, 50.0, 60.0));
+				Check(Copy->GetActorLocation().Equals(FVector(1.0, 2.0, 3.0), 1e-6),
+					"copy/paste: moving the source leaves the copy where it was");
+
+				// A second paste gives a third entity, not a rename of the
+				// second: the clipboard is reusable.
+				AAerotelicEntityActor* Again = Doc->PasteEntity(Error);
+				Check(Again != nullptr && Again != Copy && Again->EntityName != Copy->EntityName,
+					"copy/paste: pasting twice gives two separate copies");
+				// ...and it is a SNAPSHOT: it still carries the parameters
+				// as they were when copied, not as the source is now.
+				if (Again != nullptr)
+				{
+					Check(FMath::IsNearlyEqual(Again->GetModelAs<aerotelic::WingModel>()->planform().SemiSpan(), OriginalSpan, 1e-12),
+						"copy/paste: the clipboard holds what was copied, not the source's later edits");
+					Doc->RemoveEntity(Again);
+				}
+
+				// Deleting the source must not disturb the copy -- nothing
+				// links them, so no cascade.
+				const FString CopyName = Copy->EntityName;
+				Doc->RemoveEntity(Source);
+				bool bCopySurvived = false;
+				for (auto& Weak : Doc->GetEntities())
+				{
+					if (Weak.IsValid() && Weak->EntityName == CopyName) bCopySurvived = true;
+				}
+				Check(bCopySurvived, "copy/paste: deleting the source does not cascade to the copy");
+			}
+		}
+	}
 
 	UE_LOG(LogAerotelicDocumentTest, Display, TEXT("RESULT: %d passed, %d failed"), g_pass, g_fail);
 	return g_fail == 0 ? 0 : 1;

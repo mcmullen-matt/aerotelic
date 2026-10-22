@@ -308,9 +308,29 @@ SAerotelicMainShell::~SAerotelicMainShell()
 #endif
 }
 
+bool SAerotelicMainShell::AlreadyHandledThisFrame(const FKey& Key)
+{
+	if (LastShortcutKey == Key && LastShortcutFrame == GFrameCounter)
+	{
+		return true;
+	}
+	LastShortcutKey = Key;
+	LastShortcutFrame = GFrameCounter;
+	return false;
+}
+
 bool SAerotelicMainShell::ProcessShortcut(const FKey& Key, const FModifierKeysState& Modifiers, bool bRepeat)
 {
-	return Commands.IsValid() && Commands->ProcessCommandBindings(Key, Modifiers, bRepeat);
+	if (!Commands.IsValid())
+	{
+		return false;
+	}
+	// Swallowed rather than passed on: the other path has already run it.
+	if (AlreadyHandledThisFrame(Key))
+	{
+		return true;
+	}
+	return Commands->ProcessCommandBindings(Key, Modifiers, bRepeat);
 }
 
 bool SAerotelicMainShell::GetViewHoleRect(FVector2D& OutAbsPos, FVector2D& OutAbsSize) const
@@ -331,12 +351,52 @@ void SAerotelicMainShell::SetStatus(const FText& Text)
 }
 
 #if WITH_EDITOR
+namespace
+{
+	// Whether a text field currently holds the keyboard.
+	bool TextEntryHasKeyboardFocus()
+	{
+		if (!FSlateApplication::IsInitialized())
+		{
+			return false;
+		}
+		for (TSharedPtr<SWidget> W = FSlateApplication::Get().GetKeyboardFocusedWidget(); W.IsValid(); W = W->GetParentWidget())
+		{
+			const FName Type = W->GetType();
+			if (Type == TEXT("SEditableText") || Type == TEXT("SMultiLineEditableText") ||
+				Type == TEXT("SEditableTextBox") || Type == TEXT("SMultiLineEditableTextBox") ||
+				Type == TEXT("SSearchBox") || Type == TEXT("SSpinBox<double>") || Type == TEXT("SSpinBox<int32>"))
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+}
+
 void SAerotelicMainShell::OnPreKeyDown(const FKeyEvent& KeyEvent)
 {
-	if (Commands.IsValid())
+	if (!Commands.IsValid())
 	{
-		Commands->ProcessCommandBindings(KeyEvent);
+		return;
 	}
+	// This listener is handed keys BEFORE the focused widget sees them, so
+	// the clipboard chords have to be left alone while a text field is
+	// being typed in -- otherwise Ctrl+C in a numeric entry would copy the
+	// selected entity instead of the number the user meant. The rest
+	// (Ctrl+N, Ctrl+S, Ctrl+O, Ctrl+G) are not keys a text field wants, so
+	// they keep working as they always have.
+	const bool bClipboardChord = KeyEvent.IsControlDown() && !KeyEvent.IsAltDown() && !KeyEvent.IsShiftDown() &&
+		(KeyEvent.GetKey() == EKeys::C || KeyEvent.GetKey() == EKeys::V);
+	if (bClipboardChord && TextEntryHasKeyboardFocus())
+	{
+		return;
+	}
+	if (AlreadyHandledThisFrame(KeyEvent.GetKey()))
+	{
+		return;
+	}
+	Commands->ProcessCommandBindings(KeyEvent);
 }
 #endif
 
@@ -358,6 +418,21 @@ void SAerotelicMainShell::BindCommands()
 	Commands->MapAction(C.Quit, FExecuteAction::CreateSP(this, &SAerotelicMainShell::OnQuit));
 
 	// Edit
+	Commands->MapAction(C.CopyEntity, FExecuteAction::CreateSP(this, &SAerotelicMainShell::OnCopyEntity),
+		FCanExecuteAction::CreateLambda([]()
+		{
+			// Live whenever something is selected, even when that something
+			// cannot be copied: Ctrl+C then saying why beats Ctrl+C doing
+			// nothing at all with no word as to the reason.
+			UAerotelicDocumentSubsystem* Doc = UAerotelicDocumentSubsystem::Get();
+			return Doc != nullptr && Doc->GetSelectedEntity() != nullptr;
+		}));
+	Commands->MapAction(C.PasteEntity, FExecuteAction::CreateSP(this, &SAerotelicMainShell::OnPasteEntity),
+		FCanExecuteAction::CreateLambda([]()
+		{
+			UAerotelicDocumentSubsystem* Doc = UAerotelicDocumentSubsystem::Get();
+			return Doc != nullptr && Doc->HasClipboardEntity();
+		}));
 	Commands->MapAction(C.ColorTheme, FExecuteAction::CreateLambda([]() { ShowAerotelicThemeDialog(); }));
 
 	// Geometry
@@ -504,6 +579,14 @@ void SAerotelicMainShell::FillFileMenu(FMenuBuilder& Menu)
 
 void SAerotelicMainShell::FillEditMenu(FMenuBuilder& Menu)
 {
+	const FAerotelicCommands& C = FAerotelicCommands::Get();
+	Menu.AddMenuEntry(C.CopyEntity);
+	// Named after what is on the clipboard, so it is plain what will land.
+	UAerotelicDocumentSubsystem* Doc = UAerotelicDocumentSubsystem::Get();
+	const FString Held = Doc != nullptr ? Doc->GetClipboardEntityName() : FString();
+	Menu.AddMenuEntry(C.PasteEntity, NAME_None,
+		Held.IsEmpty() ? TAttribute<FText>() : TAttribute<FText>(FText::Format(LOCTEXT("PasteNamed", "Paste Copy of {0}"), FText::FromString(Held))));
+	Menu.AddMenuSeparator();
 	Menu.AddSubMenu(LOCTEXT("Preferences", "Preferences"), LOCTEXT("PreferencesTip", "Application preferences"),
 		FNewMenuDelegate::CreateLambda([](FMenuBuilder& Sub)
 		{
@@ -860,6 +943,58 @@ void SAerotelicMainShell::OnAddPropeller()
 void SAerotelicMainShell::OnAddPrimitive(FString Shape)
 {
 	if (UAerotelicDocumentSubsystem* Doc = GetDocument()) AfterAdd(Doc->AddPrimitive(Shape));
+}
+
+void SAerotelicMainShell::OnCopyEntity()
+{
+	UAerotelicDocumentSubsystem* Doc = GetDocument();
+	if (Doc == nullptr)
+	{
+		return;
+	}
+	AAerotelicEntityActor* Selected = Doc->GetSelectedEntity();
+	if (Selected == nullptr)
+	{
+		SetStatus(LOCTEXT("CopyNothing", "Select an entity in the scene tree to copy."));
+		return;
+	}
+	// Said rather than silently ignored: the command stays enabled for
+	// these so the reason reaches the user.
+	if (!UAerotelicDocumentSubsystem::CanCopyEntity(Selected))
+	{
+		SetStatus(FText::Format(LOCTEXT("CopyDerived", "{0} cannot be copied: a {1} is a solid built from other entities, not a parameterisation of its own. Copy the entities it is built from instead."),
+			FText::FromString(Selected->EntityName),
+			Selected->GetEntityType() == aerotelic::project_yaml::EntityType::Lattice ? LOCTEXT("ALattice", "lattice") : LOCTEXT("ABoolean", "boolean result")));
+		return;
+	}
+	if (!Doc->CopyEntityToClipboard(Selected))
+	{
+		SetStatus(FText::Format(LOCTEXT("CopyFailed", "Could not copy {0}."), FText::FromString(Selected->EntityName)));
+		return;
+	}
+	SetStatus(FText::Format(LOCTEXT("Copied", "Copied {0} -- Edit > Paste (Ctrl+V) adds an independent copy"), FText::FromString(Selected->EntityName)));
+}
+
+void SAerotelicMainShell::OnPasteEntity()
+{
+	UAerotelicDocumentSubsystem* Doc = GetDocument();
+	if (Doc == nullptr)
+	{
+		return;
+	}
+	const FString Source = Doc->GetClipboardEntityName();
+	FString Error;
+	AAerotelicEntityActor* Pasted = Doc->PasteEntity(Error);
+	if (Pasted == nullptr)
+	{
+		SetStatus(FText::FromString(Error));
+		return;
+	}
+	// Opens the copy's own design panel, as adding an entity does: the
+	// point of a copy is to go on and edit or move it.
+	SAerotelicSceneTree::EditEntity(Pasted);
+	SetStatus(FText::Format(LOCTEXT("Pasted", "Pasted {0} as {1}, where the original sits -- Transform moves it"),
+		FText::FromString(Source), FText::FromString(Pasted->EntityName)));
 }
 
 #undef LOCTEXT_NAMESPACE

@@ -53,6 +53,15 @@ public:
 	bool ProcessShortcut(const FKey& Key, const FModifierKeysState& Modifiers, bool bRepeat);
 
 private:
+	// Editor binaries hosting the game (-game, run_aerotelic_dev.bat) have
+	// BOTH the pre-input listener below and the player controller calling
+	// ProcessShortcut, so a chord would otherwise run its command twice --
+	// harmless for Ctrl+S, but Ctrl+V pasted two copies. True when this key
+	// has already been acted on this frame.
+	bool AlreadyHandledThisFrame(const FKey& Key);
+	FKey LastShortcutKey;
+	uint64 LastShortcutFrame = 0;
+
 	TSharedPtr<FUICommandList> Commands;
 	TSharedPtr<SWidget> ViewHole;
 	FText StatusText;
@@ -102,6 +111,8 @@ private:
 	void OnAddLoftedNacelle();
 	void OnAddPropeller();
 	void OnAddPrimitive(FString Shape);
+	void OnCopyEntity();
+	void OnPasteEntity();
 	void AfterAdd(AAerotelicEntityActor* Entity);
 
 #if WITH_EDITOR

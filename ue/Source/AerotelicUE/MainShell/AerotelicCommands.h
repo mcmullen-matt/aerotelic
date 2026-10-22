@@ -23,6 +23,9 @@ public:
 	TSharedPtr<FUICommandInfo> Export3DPdf;
 	TSharedPtr<FUICommandInfo> Quit;
 
+	// Edit
+	TSharedPtr<FUICommandInfo> CopyEntity;
+	TSharedPtr<FUICommandInfo> PasteEntity;
 	// Edit -> Preferences
 	TSharedPtr<FUICommandInfo> ColorTheme;
 

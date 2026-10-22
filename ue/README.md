@@ -103,6 +103,50 @@ The layout follows the Python/Qt version's main window (`aerotelic/ui/main_windo
   right-click an entity for Hide/Show, Edit, Rename, Transform, Color,
   Default Color, Mirrored (toggle), Delete; a body for Hide/Show, Color,
   Entity's Color.
+* **Copy and Paste** (Edit menu, Ctrl+C / Ctrl+V, and Copy on the tree
+  row's own menu): duplicates the selected *parameterisation* as a second,
+  wholly **independent** entity -- not a link. The copy is made the way a
+  save and a reload are: the source model's own `Serialize()` spec goes to
+  a fresh model's constructor (`ModelFromEntitySpec`), so the two share no
+  state and neither one's edits, moves or deletion reach the other. The
+  clipboard holds a whole `ProjectEntity` *by value*, which is already the
+  value form of everything a copy needs (type, spec, placement, mirror,
+  colour, hidden), so it is a snapshot: editing the source after copying
+  does not change what pastes, and the clipboard survives the source being
+  deleted, and New/Open -- an entity can be carried between projects.
+  Pasting twice gives two separate copies.
+  The copy is named like a newly added entity of its kind ("Wing 1" ->
+  "Wing 2", the source's trailing number being the numbering `UniqueLabel`
+  redoes), lands **where the original sits** (inventing an offset would
+  only be a guess at how far; it is selected and its design panel opened,
+  so Transform or an edit is the next move), and keeps the source's
+  placement, mirror flag, colour and hidden state.
+  **Only parameterisations can be copied.** A boolean result or a lattice
+  is a solid built *from* other entities with no parameterisation of its
+  own -- there is nothing to hand a constructor, and a "copy" could only
+  point at the same operands, which is the link this is meant not to be.
+  Copy stays *enabled* for them so Ctrl+C can say why in the status bar
+  rather than doing nothing without a word; the tree row's menu simply
+  omits Copy for a derived row.
+  `SpecFromEntityModel`/`ModelFromEntitySpec` are now the one place that
+  knows which spec belongs to which entity type: save, load and copy/paste
+  all go through them, so a new entity type is taught once instead of in
+  three switches that can drift apart.
+  Two input details, both found by driving the real application:
+  the Editor host listens for keys *before* the focused widget
+  (`OnApplicationPreInputKeyDownListener`), so the clipboard chords are
+  skipped while a text field has the keyboard -- otherwise Ctrl+C in a
+  numeric entry would copy the selected entity instead of the number; and
+  editor binaries hosting the game (`-game`, `run_aerotelic_dev.bat`) have
+  **both** that listener and the player controller's `ProcessShortcut`
+  live, which ran every shortcut twice -- invisible for Ctrl+S, but one
+  Ctrl+V pasted two copies. `AlreadyHandledThisFrame` now swallows the
+  second, which also cures Ctrl+N/Ctrl+O prompting twice in that host.
+  `AerotelicDocumentTest` covers the refusals, the unique name, that the
+  copy has a model object of its own, that editing either side leaves the
+  other alone in *both* directions, that moving or deleting the source
+  does not disturb the copy, and that the clipboard pastes a snapshot
+  rather than the source's later edits.
 * **Mirroring** (entity menu, Mirrored): a port-side copy reflected about
   world Y = 0 from the *placed* shape, exactly WingDesigner's
   MirrorFeature -- an off-centre boom lands on the other side and a

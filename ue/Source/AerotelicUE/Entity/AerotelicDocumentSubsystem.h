@@ -114,6 +114,32 @@ public:
 	// it (the feature tree's cascading remove).
 	void RemoveEntity(AAerotelicEntityActor* Entity);
 
+	// ---- Edit -> Copy / Paste (Ctrl+C / Ctrl+V) ----
+	// Copying a parameterisation gives two INDEPENDENT entities: the copy
+	// is built by handing the source's own spec to a fresh model's
+	// constructor, which is the same path a save and a reload take, so it
+	// shares no state with its source and neither one's edits reach the
+	// other.
+	//
+	// Only the authored types can be copied. A boolean result or a lattice
+	// is a solid built *from* other entities rather than a parameterisation
+	// of its own, so there is nothing to feed a constructor: a "copy" could
+	// only point at the same operands, which is the link this is meant not
+	// to be.
+	static bool CanCopyEntity(const AAerotelicEntityActor* Entity);
+	// Takes a snapshot of Entity's parameterisation, placement and display
+	// state. A snapshot by value, so editing or deleting the source
+	// afterwards leaves what was copied alone -- and so the clipboard
+	// outlives New/Open and can carry an entity between projects.
+	bool CopyEntityToClipboard(const AAerotelicEntityActor* Entity);
+	bool HasClipboardEntity() const { return Clipboard.IsSet(); }
+	// The name the clipboard is holding (for the Paste menu item's label).
+	FString GetClipboardEntityName() const;
+	// Builds a new entity from the clipboard, named uniquely and placed
+	// where the source was, and selects it. Null with OutError if there is
+	// nothing to paste or the model refuses to build.
+	AAerotelicEntityActor* PasteEntity(FString& OutError);
+
 	// The application's own selection (the standalone app has no World
 	// Outliner): at most one entity, highlighted in the 3D view, and the
 	// target of Edit Selected / Delete Selected / the Placement fields /
@@ -178,6 +204,12 @@ private:
 	TArray<TWeakObjectPtr<AAerotelicEntityActor>> Entities;
 
 	TWeakObjectPtr<AAerotelicEntityActor> SelectedEntity;
+
+	// The copy/paste clipboard: a whole ProjectEntity, which is already the
+	// value form of everything a copy needs (type, spec, placement, mirror,
+	// colour, hidden) and keeps copy/paste on the same footing as save and
+	// load. Deliberately not cleared by New/Open.
+	TOptional<aerotelic::project_yaml::ProjectEntity> Clipboard;
 
 	FString CurrentPath;
 	FAerotelicSurfaceStyle SurfaceStyle;

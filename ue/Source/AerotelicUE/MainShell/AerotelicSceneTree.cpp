@@ -425,6 +425,25 @@ TSharedPtr<SWidget> SAerotelicSceneTree::MakeEntityMenu(FItem Item)
 	Menu.AddMenuEntry(LOCTEXT("Rename", "Rename"), LOCTEXT("RenameTip", "Give this entity a new, unique name"), FSlateIcon(),
 		FUIAction(FExecuteAction::CreateLambda([this, Entity]() { if (Entity.IsValid()) RenameEntity(Entity.Get()); })));
 
+	// Only on a parameterisation: a derived row has nothing to hand a
+	// constructor (see UAerotelicDocumentSubsystem::CanCopyEntity).
+	if (!bDerived)
+	{
+		Menu.AddMenuEntry(LOCTEXT("Copy", "Copy"),
+			LOCTEXT("CopyTip", "Copy this parameterisation. Edit > Paste (Ctrl+V) then adds a second, independent entity from it -- edits to one never reach the other."),
+			FSlateIcon(),
+			FUIAction(FExecuteAction::CreateLambda([this, Entity]()
+			{
+				UAerotelicDocumentSubsystem* Doc = UAerotelicDocumentSubsystem::Get();
+				if (!Entity.IsValid() || Doc == nullptr || !Doc->CopyEntityToClipboard(Entity.Get()))
+				{
+					return;
+				}
+				Status(FText::Format(LOCTEXT("StatusCopied", "Copied {0} -- Edit > Paste (Ctrl+V) adds an independent copy"),
+					FText::FromString(Entity->EntityName)));
+			})));
+	}
+
 	if (!bDerived)
 	{
 		Menu.AddMenuEntry(LOCTEXT("Transform", "Transform"), LOCTEXT("TransformTip", "Translate and rotate this entity"), FSlateIcon(),

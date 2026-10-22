@@ -31,6 +31,99 @@
 using namespace aerotelic;
 using namespace aerotelic::project_yaml;
 
+namespace
+{
+	// Model <-> spec for the parameterised entity types: the one place that
+	// knows which spec belongs to which type. Saving, loading and
+	// copy/paste all go through these two, so a new entity type is taught
+	// here once instead of in three switches that can drift apart.
+	//
+	// Boolean results and lattices are not among them: they are solids
+	// built FROM other entities rather than parameterisations of their own
+	// (hence no entry in EntityModelSpec, and hence `booleans:` and
+	// `lattices:` being separate sections of the project file).
+	bool SpecFromEntityModel(const AAerotelicEntityActor& Entity, EntityModelSpec& OutSpec)
+	{
+		switch (Entity.GetEntityType())
+		{
+		case EntityType::Wing:
+			OutSpec = Entity.GetModelAs<WingModel>()->Serialize();
+			return true;
+		case EntityType::Fuselage:
+			OutSpec = Entity.GetModelAs<FuselageModel>()->Serialize();
+			return true;
+		case EntityType::Nacelle:
+			OutSpec = Entity.GetModelAs<NacelleModel>()->Serialize();
+			return true;
+		case EntityType::LoftedNacelle:
+			OutSpec = Entity.GetModelAs<LoftedNacelleModel>()->Serialize();
+			return true;
+		case EntityType::Propeller:
+			OutSpec = Entity.GetModelAs<PropellerModel>()->Serialize();
+			return true;
+		case EntityType::Primitive:
+		{
+			const PrimitiveModel* Pm = Entity.GetModelAs<PrimitiveModel>();
+			PrimitiveSpec Ps;
+			Ps.shape = Pm->shape;
+			Ps.name = Pm->name;
+			Ps.radius = Pm->radius;
+			Ps.stretch = Pm->stretch;
+			Ps.size = Pm->size;
+			Ps.cyl_radius = Pm->cyl_radius;
+			Ps.cyl_length = Pm->cyl_length;
+			OutSpec = Ps;
+			return true;
+		}
+		case EntityType::Boolean:
+		case EntityType::Lattice:
+			return false;
+		}
+		return false;
+	}
+
+	std::unique_ptr<ISolidModel> ModelFromEntitySpec(EntityType Type, const EntityModelSpec& Spec)
+	{
+		switch (Type)
+		{
+		case EntityType::Wing:
+			return std::make_unique<WingModel>(std::get<WingModelSpec>(Spec));
+		case EntityType::Fuselage:
+			return std::make_unique<FuselageModel>(std::get<FuselageSpec>(Spec));
+		case EntityType::Nacelle:
+			return std::make_unique<NacelleModel>(std::get<NacelleSpec>(Spec));
+		case EntityType::LoftedNacelle:
+			return std::make_unique<LoftedNacelleModel>(std::get<LoftedNacelleSpec>(Spec));
+		case EntityType::Propeller:
+			return std::make_unique<PropellerModel>(std::get<PropellerSpec>(Spec));
+		case EntityType::Primitive:
+		{
+			const PrimitiveSpec& Ps = std::get<PrimitiveSpec>(Spec);
+			auto Pm = std::make_unique<PrimitiveModel>();
+			Pm->shape = Ps.shape;
+			Pm->name = Ps.name;
+			Pm->radius = Ps.radius;
+			Pm->stretch = Ps.stretch;
+			Pm->size = Ps.size;
+			Pm->cyl_radius = Ps.cyl_radius;
+			Pm->cyl_length = Ps.cyl_length;
+			return Pm;
+		}
+		case EntityType::Boolean:
+		case EntityType::Lattice:
+			return nullptr;
+		}
+		return nullptr;
+	}
+
+	// Every spec carries the entity's name; a copy needs its own.
+	void SetSpecName(EntityModelSpec& Spec, const FString& Name)
+	{
+		const std::string Utf8 = TCHAR_TO_UTF8(*Name);
+		std::visit([&Utf8](auto& S) { S.name = Utf8; }, Spec);
+	}
+}
+
 UAerotelicDocumentSubsystem* UAerotelicDocumentSubsystem::Get()
 {
 	return GEngine ? GEngine->GetEngineSubsystem<UAerotelicDocumentSubsystem>() : nullptr;
@@ -544,6 +637,115 @@ AAerotelicEntityActor* UAerotelicDocumentSubsystem::AddBoolean(const FString& Na
 	return SpawnEntity(EntityType::Boolean, std::move(Model), Name);
 }
 
+// ------------------------------------------------------------ copy / paste
+
+bool UAerotelicDocumentSubsystem::CanCopyEntity(const AAerotelicEntityActor* Entity)
+{
+	if (Entity == nullptr)
+	{
+		return false;
+	}
+	const EntityType Type = Entity->GetEntityType();
+	return Type != EntityType::Boolean && Type != EntityType::Lattice;
+}
+
+bool UAerotelicDocumentSubsystem::CopyEntityToClipboard(const AAerotelicEntityActor* Entity)
+{
+	if (!CanCopyEntity(Entity))
+	{
+		return false;
+	}
+	ProjectEntity Snapshot;
+	if (!SpecFromEntityModel(*Entity, Snapshot.model))
+	{
+		return false;
+	}
+	Snapshot.name = TCHAR_TO_UTF8(*Entity->EntityName);
+	Snapshot.type = Entity->GetEntityType();
+	Snapshot.mirror = Entity->IsMirrored();
+	Snapshot.placement = Entity->GetPlacement();
+	if (const TOptional<FLinearColor> Color = Entity->GetColorOverride(); Color.IsSet())
+	{
+		Snapshot.color = std::array<double, 3>{ Color->R, Color->G, Color->B };
+	}
+	Snapshot.hidden = !Entity->IsEntityVisible();
+	Clipboard = MoveTemp(Snapshot);
+	return true;
+}
+
+FString UAerotelicDocumentSubsystem::GetClipboardEntityName() const
+{
+	return Clipboard.IsSet() ? UTF8_TO_TCHAR(Clipboard->name.c_str()) : FString();
+}
+
+AAerotelicEntityActor* UAerotelicDocumentSubsystem::PasteEntity(FString& OutError)
+{
+	if (!Clipboard.IsSet())
+	{
+		OutError = TEXT("There is nothing to paste: copy an entity first (Edit > Copy, Ctrl+C).");
+		return nullptr;
+	}
+	// A copy is named like a newly added entity of its kind rather than
+	// "Wing 1 2": the source's trailing number, if it has one, is the
+	// numbering UniqueLabel is about to redo.
+	FString Base = UTF8_TO_TCHAR(Clipboard->name.c_str());
+	int32 Space = INDEX_NONE;
+	if (Base.FindLastChar(TEXT(' '), Space) && Space > 0 && Space + 1 < Base.Len())
+	{
+		const FString Tail = Base.Mid(Space + 1);
+		if (!Tail.IsEmpty() && Tail.IsNumeric())
+		{
+			Base = Base.Left(Space);
+		}
+	}
+	const FString Label = UniqueLabel(Base);
+
+	// The spec is a value and this is our own copy of it, so naming it and
+	// handing it to the constructor cannot reach back to the source.
+	EntityModelSpec Spec = Clipboard->model;
+	SetSpecName(Spec, Label);
+	std::unique_ptr<ISolidModel> Model;
+	try
+	{
+		Model = ModelFromEntitySpec(Clipboard->type, Spec);
+	}
+	catch (const std::exception& e)
+	{
+		OutError = UTF8_TO_TCHAR(e.what());
+		return nullptr;
+	}
+	if (Model == nullptr)
+	{
+		OutError = TEXT("That kind of entity cannot be copied.");
+		return nullptr;
+	}
+
+	AAerotelicEntityActor* Actor = SpawnEntity(Clipboard->type, std::move(Model), Label);
+	if (Actor == nullptr)
+	{
+		OutError = TEXT("Could not place the copy in the scene.");
+		return nullptr;
+	}
+	// The same display state the loader applies, so a pasted entity and a
+	// reloaded one are the same thing. Pasted where the source sits: the
+	// copy is then dragged or transformed wherever it is wanted, and
+	// inventing an offset here would only be a guess at how far.
+	Actor->ApplyPlacement(Clipboard->placement);
+	Actor->RefreshProxy();
+	Actor->SetMirrored(Clipboard->mirror);
+	if (Clipboard->color)
+	{
+		const auto& C = *Clipboard->color;
+		Actor->SetColorOverride(FLinearColor((float)C[0], (float)C[1], (float)C[2]));
+	}
+	if (Clipboard->hidden)
+	{
+		Actor->SetEntityVisible(false);
+	}
+	SetSelectedEntity(Actor);
+	return Actor;
+}
+
 void UAerotelicDocumentSubsystem::SetSelectedEntity(AAerotelicEntityActor* Entity)
 {
 	AAerotelicEntityActor* Previous = SelectedEntity.Get();
@@ -755,39 +957,7 @@ bool UAerotelicDocumentSubsystem::OpenProjectPath(const FString& InPath, bool bA
 	TArray<FString> Failures;
 	for (const ProjectEntity& Entity : Project.entities)
 	{
-		std::unique_ptr<ISolidModel> Model;
-		switch (Entity.type)
-		{
-		case EntityType::Wing:
-			Model = std::make_unique<WingModel>(std::get<WingModelSpec>(Entity.model));
-			break;
-		case EntityType::Fuselage:
-			Model = std::make_unique<FuselageModel>(std::get<FuselageSpec>(Entity.model));
-			break;
-		case EntityType::Nacelle:
-			Model = std::make_unique<NacelleModel>(std::get<NacelleSpec>(Entity.model));
-			break;
-		case EntityType::LoftedNacelle:
-			Model = std::make_unique<LoftedNacelleModel>(std::get<LoftedNacelleSpec>(Entity.model));
-			break;
-		case EntityType::Propeller:
-			Model = std::make_unique<PropellerModel>(std::get<PropellerSpec>(Entity.model));
-			break;
-		case EntityType::Primitive:
-		{
-			const PrimitiveSpec& Ps = std::get<PrimitiveSpec>(Entity.model);
-			auto Pm = std::make_unique<PrimitiveModel>();
-			Pm->shape = Ps.shape;
-			Pm->name = Ps.name;
-			Pm->radius = Ps.radius;
-			Pm->stretch = Ps.stretch;
-			Pm->size = Ps.size;
-			Pm->cyl_radius = Ps.cyl_radius;
-			Pm->cyl_length = Ps.cyl_length;
-			Model = std::move(Pm);
-			break;
-		}
-		}
+		std::unique_ptr<ISolidModel> Model = ModelFromEntitySpec(Entity.type, Entity.model);
 		if (Model == nullptr)
 		{
 			continue;
@@ -977,41 +1147,7 @@ bool UAerotelicDocumentSubsystem::SaveProjectToPath(const FString& InPath)
 			Pe.color = std::array<double, 3>{ Color->R, Color->G, Color->B };
 		}
 		Pe.hidden = !Entity->IsEntityVisible();
-		switch (Pe.type)
-		{
-		case EntityType::Wing:
-			Pe.model = Entity->GetModelAs<WingModel>()->Serialize();
-			break;
-		case EntityType::Fuselage:
-			Pe.model = Entity->GetModelAs<FuselageModel>()->Serialize();
-			break;
-		case EntityType::Nacelle:
-			Pe.model = Entity->GetModelAs<NacelleModel>()->Serialize();
-			break;
-		case EntityType::LoftedNacelle:
-			Pe.model = Entity->GetModelAs<LoftedNacelleModel>()->Serialize();
-			break;
-		case EntityType::Propeller:
-			Pe.model = Entity->GetModelAs<PropellerModel>()->Serialize();
-			break;
-		case EntityType::Primitive:
-		{
-			PrimitiveModel* Pm = Entity->GetModelAs<PrimitiveModel>();
-			PrimitiveSpec Ps;
-			Ps.shape = Pm->shape;
-			Ps.name = Pm->name;
-			Ps.radius = Pm->radius;
-			Ps.stretch = Pm->stretch;
-			Ps.size = Pm->size;
-			Ps.cyl_radius = Pm->cyl_radius;
-			Ps.cyl_length = Pm->cyl_length;
-			Pe.model = Ps;
-			break;
-		}
-		case EntityType::Boolean:
-		case EntityType::Lattice:
-			break; // skipped above
-		}
+		SpecFromEntityModel(*Entity, Pe.model);
 		RelativiseReferenceImagePaths(Pe.model, FPaths::GetPath(Path));
 		Project.entities.push_back(std::move(Pe));
 	}
