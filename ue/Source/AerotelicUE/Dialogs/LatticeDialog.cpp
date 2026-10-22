@@ -160,17 +160,21 @@ void ShowAerotelicLatticeDialog(AAerotelicEntityActor* Existing, TFunction<void(
 	}
 
 	// ---- option lists ----
-	TArray<TSharedPtr<FString>> Families = { MakeShared<FString>(TEXT("TPMS")), MakeShared<FString>(TEXT("Strut-based")), MakeShared<FString>(TEXT("Auxetic")) };
+	TArray<TSharedPtr<FString>> Families = { MakeShared<FString>(TEXT("TPMS")), MakeShared<FString>(TEXT("Strut-based")), MakeShared<FString>(TEXT("Auxetic")), MakeShared<FString>(TEXT("Honeycomb")) };
 	TArray<TSharedPtr<FString>> Phases = { MakeShared<FString>(TEXT("Network")), MakeShared<FString>(TEXT("Sheet (matrix)")), MakeShared<FString>(TEXT("Iso-surface")) };
+	TArray<TSharedPtr<FString>> Axes = { MakeShared<FString>(TEXT("X")), MakeShared<FString>(TEXT("Y")), MakeShared<FString>(TEXT("Z")) };
+	TArray<TSharedPtr<FString>> Sizings = { MakeShared<FString>(TEXT("From volume fraction")), MakeShared<FString>(TEXT("Wall thickness")) };
 	TArray<TSharedPtr<FString>> Types = Options(aerotelic::LatticeTypeNames(Spec.family));
 	TSharedPtr<FString> Family = Families[static_cast<int32>(Spec.family)];
 	TSharedPtr<FString> Phase = Phases[static_cast<int32>(Spec.phase)];
+	TSharedPtr<FString> Axis = Axes[static_cast<int32>(Spec.axis)];
+	TSharedPtr<FString> Sizing = Sizings[static_cast<int32>(Spec.wall_sizing)];
 	TSharedPtr<FString> Type = Find(Types, UTF8_TO_TCHAR(Spec.type.c_str()));
 	TSharedPtr<SComboBox<TSharedPtr<FString>>> TypeCombo, PhaseCombo;
 	TSharedPtr<SAerotelicBodyPicker> TargetPicker, ReservedPicker;
 	TSharedPtr<STextBlock> EstimateLabel;
 	TSharedPtr<SEditableTextBox> NameBox;
-	TSharedPtr<SWidget> FractionRow, WallRow;
+	TSharedPtr<SWidget> FractionRow, WallRow, AspectRow, AxisRow, SizingRow;
 	const FString DefaultName = bEdit ? Existing->EntityName : Doc->NextLatticeName();
 	bool bAccepted = false;
 
@@ -202,6 +206,8 @@ void ShowAerotelicLatticeDialog(AAerotelicEntityActor* Existing, TFunction<void(
 		aerotelic::LatticeSpec S = Spec;
 		S.family = static_cast<aerotelic::LatticeFamily>(Families.IndexOfByKey(Family));
 		S.phase = static_cast<aerotelic::TpmsPhase>(Phases.IndexOfByKey(Phase));
+		S.axis = static_cast<aerotelic::PrismAxis>(Axes.IndexOfByKey(Axis));
+		S.wall_sizing = static_cast<aerotelic::WallSizing>(Sizings.IndexOfByKey(Sizing));
 		S.type = TCHAR_TO_UTF8(*(Type.IsValid() ? *Type : FString()));
 		return S;
 	};
@@ -235,22 +241,60 @@ void ShowAerotelicLatticeDialog(AAerotelicEntityActor* Existing, TFunction<void(
 		aerotelic::Box3 B;
 		B.Add(aerotelic::Vec3{Bounds.Min.X, Bounds.Min.Y, Bounds.Min.Z});
 		B.Add(aerotelic::Vec3{Bounds.Max.X, Bounds.Max.Y, Bounds.Max.Z});
-		const aerotelic::LatticeGrid G = aerotelic::PlanLatticeGrid(CurrentSpec(), B);
-		const double Cells = Bounds.GetSize().X / Spec.cell_size * Bounds.GetSize().Y / Spec.cell_size * Bounds.GetSize().Z / Spec.cell_size;
-		const bool bHeavy = G.Nodes() > 40000000;
-		EstimateLabel->SetText(FText::FromString(FString::Printf(TEXT("Grid: %d x %d x %d = %s samples (%.3g unit cells across the bounds)%s"),
-			G.nx, G.ny, G.nz, *Thousands(static_cast<int64>(G.Nodes())), Cells,
-			bHeavy ? TEXT("\nThat is a lot: expect a long wait and a very large mesh. A larger cell or a lower resolution is cheaper.") : TEXT(""))));
-		EstimateLabel->SetColorAndOpacity(FSlateColor(bHeavy ? FLinearColor(1.0f, 0.6f, 0.3f) : FLinearColor(0.85f, 0.85f, 0.85f)));
+		const aerotelic::LatticeSpec S = CurrentSpec();
+		FString Text, Trouble;
+		try
+		{
+			const aerotelic::LatticeGrid G = aerotelic::PlanLatticeGrid(S, B);
+			const double Cells = Bounds.GetSize().X / Spec.cell_size * Bounds.GetSize().Y / Spec.cell_size * Bounds.GetSize().Z / Spec.cell_size;
+			Text = FString::Printf(TEXT("Grid: %d x %d x %d = %s samples (%.3g unit cells across the bounds)"),
+				G.nx, G.ny, G.nz, *Thousands(static_cast<int64>(G.Nodes())), Cells);
+			// A honeycomb's wall is set apart from its cell, so say how thick
+			// it came out and whether the grid can carry it.
+			if (S.family == aerotelic::LatticeFamily::Honeycomb)
+			{
+				const double Wall = aerotelic::HoneycombWallThickness(S);
+				Text += FString::Printf(TEXT("\nWall: %.4g thick, %.1f voxels across"), Wall, Wall / G.h);
+			}
+			if (G.Nodes() > 40000000)
+			{
+				Trouble = TEXT("That is a lot: expect a long wait and a very large mesh. A larger cell or a lower resolution is cheaper.");
+			}
+			const FString Why = UTF8_TO_TCHAR(aerotelic::LatticeResolutionWarning(S, G).c_str());
+			if (!Why.IsEmpty())
+			{
+				Trouble = Why;
+			}
+		}
+		catch (const std::exception& E)
+		{
+			Trouble = UTF8_TO_TCHAR(E.what());
+		}
+		if (!Trouble.IsEmpty())
+		{
+			Text += (Text.IsEmpty() ? TEXT("") : TEXT("\n"));
+			Text += Trouble;
+		}
+		EstimateLabel->SetText(FText::FromString(Text));
+		EstimateLabel->SetColorAndOpacity(FSlateColor(Trouble.IsEmpty() ? FLinearColor(0.85f, 0.85f, 0.85f) : FLinearColor(1.0f, 0.6f, 0.3f)));
 	};
 
-	auto UpdatePhaseRows = [&]()
+	// Which parameter rows apply: the TPMS phase and the honeycomb's own
+	// three, and whether the thickness or the fraction is the live knob.
+	auto UpdateRows = [&]()
 	{
-		const bool bTpms = Families.IndexOfByKey(Family) == 0;
+		const int32 Fam = Families.IndexOfByKey(Family);
+		const bool bTpms = Fam == 0;
+		const bool bComb = Fam == 3;
 		const bool bIso = bTpms && Phases.IndexOfByKey(Phase) == 2;
+		const bool bByThickness = bComb && Sizings.IndexOfByKey(Sizing) == 1;
+		const bool bSquare = bComb && Type.IsValid() && *Type == TEXT("Square");
 		if (PhaseCombo.IsValid()) PhaseCombo->SetEnabled(bTpms);
-		if (FractionRow.IsValid()) FractionRow->SetEnabled(!bIso);
-		if (WallRow.IsValid()) WallRow->SetEnabled(bIso);
+		if (FractionRow.IsValid()) FractionRow->SetEnabled(!bIso && !bByThickness);
+		if (WallRow.IsValid()) WallRow->SetEnabled(bIso || bByThickness);
+		if (AspectRow.IsValid()) AspectRow->SetEnabled(bComb && !bSquare);
+		if (AxisRow.IsValid()) AxisRow->SetEnabled(bComb);
+		if (SizingRow.IsValid()) SizingRow->SetEnabled(bComb);
 	};
 
 	auto Spin = [&](double& Var, double Min, double Max, double Delta, const FText& Suffix)
@@ -280,36 +324,43 @@ void ShowAerotelicLatticeDialog(AAerotelicEntityActor* Existing, TFunction<void(
 								Types = Options(aerotelic::LatticeTypeNames(static_cast<aerotelic::LatticeFamily>(Families.IndexOfByKey(Family))));
 								Type = Types.Num() ? Types[0] : nullptr;
 								if (TypeCombo.IsValid()) { TypeCombo->RefreshOptions(); TypeCombo->SetSelectedItem(Type); }
-								UpdatePhaseRows();
+								UpdateRows();
+								UpdateEstimate();
 							})) ]
 						+ SVerticalBox::Slot().AutoHeight().Padding(0, 2)
 						[ FormRow(LOCTEXT("Type", "Type:"), SAssignNew(TypeCombo, SComboBox<TSharedPtr<FString>>)
 							.OptionsSource(&Types)
 							.InitiallySelectedItem(Type)
 							.OnGenerateWidget_Lambda([](TSharedPtr<FString> S) { return SNew(STextBlock).Text(FText::FromString(*S)); })
-							.OnSelectionChanged_Lambda([&Type](TSharedPtr<FString> S, ESelectInfo::Type) { if (S.IsValid()) Type = S; })
+							.OnSelectionChanged_Lambda([&Type, &UpdateRows, &UpdateEstimate](TSharedPtr<FString> S, ESelectInfo::Type)
+								{ if (S.IsValid()) { Type = S; UpdateRows(); UpdateEstimate(); } })
 							[ SNew(STextBlock).Text_Lambda([&Type]() { return FText::FromString(Type.IsValid() ? *Type : FString()); }) ]) ]
 						+ SVerticalBox::Slot().AutoHeight().Padding(0, 2)
 						[ FormRow(LOCTEXT("Phase", "TPMS phase:"), SAssignNew(PhaseCombo, SComboBox<TSharedPtr<FString>>)
 							.OptionsSource(&Phases)
 							.InitiallySelectedItem(Phase)
 							.OnGenerateWidget_Lambda([](TSharedPtr<FString> S) { return SNew(STextBlock).Text(FText::FromString(*S)); })
-							.OnSelectionChanged_Lambda([&Phase, &UpdatePhaseRows](TSharedPtr<FString> S, ESelectInfo::Type) { if (S.IsValid()) { Phase = S; UpdatePhaseRows(); } })
+							.OnSelectionChanged_Lambda([&Phase, &UpdateRows, &UpdateEstimate](TSharedPtr<FString> S, ESelectInfo::Type)
+								{ if (S.IsValid()) { Phase = S; UpdateRows(); UpdateEstimate(); } })
 							[ SNew(STextBlock).Text_Lambda([&Phase]() { return FText::FromString(Phase.IsValid() ? *Phase : FString()); }) ]) ]
+						+ SVerticalBox::Slot().AutoHeight().Padding(0, 2)
+						[ SAssignNew(AxisRow, SBox) [ FormRow(LOCTEXT("Axis", "Prism axis:"), Combo(&Axes, Axis, [&](TSharedPtr<FString>) { UpdateEstimate(); })) ] ]
 						+ SVerticalBox::Slot().AutoHeight().Padding(0, 4, 0, 0)
-						[ MakeInfoLabel(LOCTEXT("FamilyHint", "TPMS: a level-set surface (27 types, after OpenLattice's library). Network keeps one side of it; Sheet thickens it to the volume fraction; Iso-surface thickens it to a wall thickness. Strut-based and auxetic cells are unions of cylindrical struts.")) ])
+						[ MakeInfoLabel(LOCTEXT("FamilyHint", "TPMS: a level-set surface (27 types, after OpenLattice's library). Network keeps one side of it; Sheet thickens it to the volume fraction; Iso-surface thickens it to a wall thickness. Strut-based and auxetic cells are unions of cylindrical struts. Honeycomb cells are a 2D tiling's walls extruded along the prism axis -- a sandwich core, stiff along that axis and soft across it; the other families are much the same in every direction. The prism axis applies to honeycombs only.")) ])
 				]
 				+ SScrollBox::Slot().Padding(0, 0, 0, 8)
 				[
 					MakeGroup(LOCTEXT("Parameters", "Parameters"),
 						SNew(SVerticalBox)
 						+ SVerticalBox::Slot().AutoHeight().Padding(0, 2) [ FormRow(LOCTEXT("CellSize", "Unit cell size:"), Spin(Spec.cell_size, 1e-6, 1e9, 0.01, FText::GetEmpty())) ]
+						+ SVerticalBox::Slot().AutoHeight().Padding(0, 2) [ SAssignNew(AspectRow, SBox) [ FormRow(LOCTEXT("Aspect", "Cell aspect:"), Spin(Spec.cell_aspect, 0.05, 20.0, 0.1, FText::GetEmpty())) ] ]
+						+ SVerticalBox::Slot().AutoHeight().Padding(0, 2) [ SAssignNew(SizingRow, SBox) [ FormRow(LOCTEXT("Sizing", "Wall set by:"), Combo(&Sizings, Sizing, [&](TSharedPtr<FString>) { UpdateRows(); UpdateEstimate(); })) ] ]
 						+ SVerticalBox::Slot().AutoHeight().Padding(0, 2) [ SAssignNew(FractionRow, SBox) [ FormRow(LOCTEXT("Fraction", "Volume fraction:"), Spin(Spec.volume_fraction, 0.02, 0.95, 0.05, FText::GetEmpty())) ] ]
 						+ SVerticalBox::Slot().AutoHeight().Padding(0, 2) [ SAssignNew(WallRow, SBox) [ FormRow(LOCTEXT("Wall", "Wall thickness:"), Spin(Spec.wall_thickness, 1e-6, 1e9, 0.001, FText::GetEmpty())) ] ]
 						+ SVerticalBox::Slot().AutoHeight().Padding(0, 2) [ FormRow(LOCTEXT("Resolution", "Voxels per cell:"), Spin(Resolution, 2, 64, 1, FText::GetEmpty())) ]
 						+ SVerticalBox::Slot().AutoHeight().Padding(0, 2) [ FormRow(LOCTEXT("Skin", "Solid skin thickness:"), Spin(Spec.skin_thickness, 1e-6, 1e9, 0.001, FText::GetEmpty())) ]
 						+ SVerticalBox::Slot().AutoHeight().Padding(0, 4, 0, 0)
-						[ MakeInfoLabel(LOCTEXT("ParamHint", "Sizes are in model units. Volume fraction is the lattice's share of the filled volume (its level-set parameter or strut radius is calibrated to it). Voxels per cell is the sampling resolution of the surface extraction (OpenLattice's mesh density); 8-16 is usual, more is finer and slower. The skin is the part's solid outer shell to that depth, always present (one percent of the largest root chord by default): each body is hollowed by MeshLib's inward offset of its surface (so any thickness is fine, and a concave corner is rounded from the inside), giving its own body, 'Skin', beside the 'Lattice' body -- the lattice cut to the hollowed interior by a mesh boolean -- so the two can be coloured, exported and given materials separately. Lattice > Export Skin Tetrahedra / Export Tetrahedral Mesh mesh each body with gmsh into skin and core tetrahedra whose outer faces are the body's own triangles and whose volumes sum to the body's exactly. A region thinner than two skins comes out solid. Needs MeshLib and gmsh in the WingDesigner Python environment.")) ]
+						[ MakeInfoLabel(LOCTEXT("ParamHint", "Sizes are in model units. Volume fraction is the lattice's share of the filled volume (its level-set parameter, strut radius or honeycomb wall thickness is calibrated to it). For a honeycomb, the unit cell size is the side of a Square or Triangle, the width of a Rectangle or a Hexagon's size across the flats, and the cell aspect stretches the cross-section's second dimension by that factor (1 is the regular cell; Square ignores it). A honeycomb wall can be set by thickness instead of volume fraction, which is what a printed or bonded core is actually specified by -- whole bead widths or foil gauge -- and the achieved fraction then follows from it. Voxels per cell is the sampling resolution of the surface extraction (OpenLattice's mesh density); 8-16 is usual, more is finer and slower. The skin is the part's solid outer shell to that depth, always present (one percent of the largest root chord by default): each body is hollowed by MeshLib's inward offset of its surface (so any thickness is fine, and a concave corner is rounded from the inside), giving its own body, 'Skin', beside the 'Lattice' body -- the lattice cut to the hollowed interior by a mesh boolean -- so the two can be coloured, exported and given materials separately. Lattice > Export Skin Tetrahedra / Export Tetrahedral Mesh mesh each body with gmsh into skin and core tetrahedra whose outer faces are the body's own triangles and whose volumes sum to the body's exactly. A region thinner than two skins comes out solid. Needs MeshLib and gmsh in the WingDesigner Python environment.")) ]
 						+ SVerticalBox::Slot().AutoHeight().Padding(0, 6, 0, 0)
 						[ SAssignNew(EstimateLabel, STextBlock).AutoWrapText(true) ])
 				]
@@ -343,7 +394,7 @@ void ShowAerotelicLatticeDialog(AAerotelicEntityActor* Existing, TFunction<void(
 			]
 		]);
 
-	UpdatePhaseRows();
+	UpdateRows();
 	UpdateEstimate();
 	FSlateApplication::Get().AddModalWindow(Window, FSlateApplication::Get().GetActiveTopLevelWindow());
 	if (!bAccepted)

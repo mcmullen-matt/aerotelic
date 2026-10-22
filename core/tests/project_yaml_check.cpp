@@ -251,6 +251,30 @@ void CheckLatticeRoundTrip() {
 	pf.lattices[0].targets = {{"Wing", false}};
 	SaveProjectYaml(pf, path);
 	Check(LoadProjectYaml(path).lattices[0].spec.phase == TpmsPhase::Sheet, "lattice round trip: TPMS phase");
+
+	// A honeycomb keeps its cross-section, its prism axis and how its wall
+	// is sized -- the three things no other family has.
+	pf.lattices[0].spec.family = LatticeFamily::Honeycomb;
+	pf.lattices[0].spec.type = "Hexagon";
+	pf.lattices[0].spec.cell_aspect = 1.75;
+	pf.lattices[0].spec.axis = PrismAxis::Y;
+	pf.lattices[0].spec.wall_sizing = WallSizing::Thickness;
+	pf.lattices[0].spec.wall_thickness = 0.03;
+	SaveProjectYaml(pf, path);
+	const LatticeSpec hc = LoadProjectYaml(path).lattices[0].spec;
+	Check(hc.family == LatticeFamily::Honeycomb && hc.type == "Hexagon", "lattice round trip: honeycomb family and cell");
+	CheckClose(hc.cell_aspect, 1.75, 1e-12, "lattice round trip: honeycomb cell aspect");
+	Check(hc.axis == PrismAxis::Y, "lattice round trip: honeycomb prism axis");
+	Check(hc.wall_sizing == WallSizing::Thickness, "lattice round trip: honeycomb wall sizing");
+	CheckClose(hc.wall_thickness, 0.03, 1e-12, "lattice round trip: honeycomb wall thickness");
+
+	// A cell that is not in the honeycomb family's list is refused, like
+	// any other family's.
+	pf.lattices[0].spec.type = "Gyroid";
+	SaveProjectYaml(pf, path);
+	threw = false;
+	try { LoadProjectYaml(path); } catch (const std::invalid_argument&) { threw = true; }
+	Check(threw, "lattice round trip: a TPMS name is not a honeycomb cell");
 }
 
 void CheckRealPythonProjectFile() {

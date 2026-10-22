@@ -435,6 +435,17 @@ int main() {
 					"a body on the global frame is written as given");
 			}
 
+			// The spinner and the blade are deliberately the SAME mesh here.
+			// Compared as stored they are one body on top of another; the
+			// blade is only somewhere else once its frame has placed it.
+			Check(r.coincident_panels == 0,
+				"the blade is compared where its frame mounts it, not in hub coordinates (" +
+				std::to_string(r.coincident_panels) + " panels)");
+			// And the particle box has to reach the hub, which is the one
+			// place in this case the wake actually comes from.
+			Check(r.box_min.y <= hub.origin.y && r.box_max.x >= hub.origin.x,
+				"the particle box contains the hub the blade is mounted on");
+
 			// A rotor turns on its own clock: the step must resolve the
 			// blade passing, not just the flow crossing the model.
 			Check(r.degrees_per_step > 0.0 && r.degrees_per_step <= 5.0 + 1e-9,
@@ -451,6 +462,58 @@ int main() {
 			Check(DeriveDustCase(rotor, {}, opt, plain, perr) && plain.dt > r.dt * 2.0,
 				"the flow alone would have given a far coarser step");
 		}
+	}
+
+	// ---- two propellers of the same model ------------------------------------
+	// The case that exposed this: an aircraft with four propellers, each one
+	// exported as a single hub-local blade with the placement in its frame.
+	// Two props of the same model have the SAME blade mesh, so comparing the
+	// meshes as stored reported every panel of one as lying on top of the
+	// other -- 912 of them, between hubs 4 m apart -- and told the user to
+	// fuse propellers he needs to keep turning.
+	{
+		std::vector<DustComponent> twin(2);
+		twin[0].name = "Propeller 8/Blade 1";
+		twin[0].mesh = comps[0].mesh;
+		twin[0].ref_tag = "hub_8";
+		twin[1].name = "Propeller 9/Blade 1";
+		twin[1].mesh = comps[0].mesh;   // identical, as a second prop of the same model is
+		twin[1].ref_tag = "hub_9";
+
+		DustFrame h8;
+		h8.tag = "hub_8";
+		h8.origin = Vec3{-0.25, 2.2, 0.25};
+		h8.n_blades = 2;
+		h8.rot_axis = Vec3{1.0, 0.0, 0.0};
+		h8.rot_rate = 1000.0 * 2.0 * 3.14159265358979323846 / 60.0;
+		DustFrame h9 = h8;
+		h9.tag = "hub_9";
+		h9.origin = Vec3{3.75, 2.2, 0.55};
+
+		DustCaseResult r;
+		std::string err;
+		const bool tok = DeriveDustCase(twin, {h8, h9}, opt, r, err);
+		Check(tok, "two propellers of the same model derive" + (tok ? std::string() : " -- " + err));
+		Check(r.coincident_panels == 0,
+			"identical blades on hubs 4 m apart raise no overlap warning (" +
+			std::to_string(r.coincident_panels) + " panels)");
+		Check(r.box_min.x <= h8.origin.x && r.box_max.x >= h9.origin.x,
+			"the particle box spans both hubs, not just the origin the meshes are stored at");
+
+		// Put the second hub on top of the first and they ARE coincident:
+		// the check still works through a frame, it now just works in the
+		// space DUST solves in.
+		DustFrame stacked = h9;
+		stacked.origin = h8.origin;
+		DustCaseResult r2;
+		std::string err2;
+		// Derived on its own line: as an argument alongside the message it
+		// would be a toss-up whether the count in the message is the one
+		// this call produced.
+		const bool sok = DeriveDustCase(twin, {h8, stacked}, opt, r2, err2);
+		Check(sok && r2.coincident_panels > 0,
+			"two propellers mounted at the same place are still caught (" +
+			std::to_string(r2.coincident_panels) + " panels)");
 	}
 
 	// A rotor the user has asked to leave coarse: degrees_per_step = 0

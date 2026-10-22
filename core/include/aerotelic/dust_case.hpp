@@ -230,6 +230,13 @@ struct DustCaseResult {
 	// from both sides. Fusing them with a boolean first removes the
 	// internal wall and the degeneracy with it. Reported rather than
 	// refused: a user may be deliberately stacking surfaces.
+	//
+	// Bodies are compared WHERE DUST MOUNTS THEM, so a rotor's blade is
+	// placed by its frame and replicated to every blade first. Comparing
+	// the meshes as stored would compare a hub-local blade with a
+	// world-space airframe, which flagged two identical propellers metres
+	// apart (their hub-local blades are the same mesh) while missing a
+	// blade that genuinely sat inside a wing.
 	std::size_t coincident_panels = 0;
 	std::string coincident_a, coincident_b;
 };

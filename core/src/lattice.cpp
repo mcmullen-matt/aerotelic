@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <cstdio>
 #include <limits>
 #include <map>
 #include <mutex>
@@ -28,6 +29,7 @@ const std::vector<std::string> kTpmsNames = {
 };
 const std::vector<std::string> kStrutNames = {"BCC", "FCC", "G7", "Grid", "Octet", "Tesseract", "Vintiles", "X-lattice"};
 const std::vector<std::string> kAuxeticNames = {"Re-entrant"};
+const std::vector<std::string> kHoneycombNames = {"Square", "Rectangle", "Hexagon", "Triangle"};
 
 std::string Lower(std::string s) {
 	for (char& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
@@ -213,7 +215,165 @@ double PieceDistanceSq(const Vec3& r, const Vec3& p0, const Vec3& p1, const Vec3
 	return DistanceSq(r, q);
 }
 
+// ---------------------------------------------------------------------------
+// Honeycomb cross-sections
+// ---------------------------------------------------------------------------
+
+double Dot2(const double a[2], const double b[2]) { return a[0] * b[0] + a[1] * b[1]; }
+double Len2(const double a[2]) { return std::sqrt(a[0] * a[0] + a[1] * a[1]); }
+
+// The two in-plane dimensions of a honeycomb cell: cell_size, and
+// cell_size * cell_aspect across it.
+void CombDimensions(const LatticeSpec& spec, double* first, double* second) {
+	*first = spec.cell_size;
+	*second = spec.cell_size * (Lower(spec.type) == "square" ? 1.0 : spec.cell_aspect);
+}
+
+// A family of parallel lines through the lattice points: the unit normal
+// perpendicular to `along`, spaced by the step of `across` across it.
+void LineFamily(HoneycombCell& c, int f, const double along[2], const double across[2]) {
+	double n[2] = {along[1], -along[0]};
+	const double len = Len2(n);
+	c.normal[f][0] = n[0] / len;
+	c.normal[f][1] = n[1] / len;
+	c.spacing[f] = std::fabs(Dot2(across, c.normal[f]));
+}
+
+// The eight lattice vectors that can bound a 2D Voronoi cell (Conway and
+// Sloane's relevant vectors): +-a, +-b, +-(a + b), +-(a - b).
+void VoronoiNeighbours(const HoneycombCell& c, double out[8][2]) {
+	const double v[4][2] = {{c.a[0], c.a[1]}, {c.b[0], c.b[1]}, {c.a[0] + c.b[0], c.a[1] + c.b[1]}, {c.a[0] - c.b[0], c.a[1] - c.b[1]}};
+	for (int i = 0; i < 4; ++i) {
+		out[2 * i][0] = v[i][0];
+		out[2 * i][1] = v[i][1];
+		out[2 * i + 1][0] = -v[i][0];
+		out[2 * i + 1][1] = -v[i][1];
+	}
+}
+
 } // namespace
+
+// ---------------------------------------------------------------------------
+// HoneycombCell
+// ---------------------------------------------------------------------------
+
+double HoneycombCell::TileArea() const { return std::fabs(a[0] * b[1] - a[1] * b[0]); }
+
+double HoneycombCell::Distance(double u, double v) const {
+	if (!voronoi) {
+		double best = std::numeric_limits<double>::infinity();
+		const double p[2] = {u, v};
+		for (int f = 0; f < families; ++f) {
+			const double t = Dot2(p, normal[f]) / spacing[f];
+			best = std::min(best, std::fabs(t - std::round(t)) * spacing[f]);
+		}
+		return best;
+	}
+	// The nearest lattice point, from the point's lattice coordinates. The
+	// search covers two cells each way, which is ample for any aspect the
+	// spec allows (HoneycombCellFor clamps it).
+	const double det = a[0] * b[1] - a[1] * b[0];
+	const double s = (u * b[1] - v * b[0]) / det;
+	const double t = (a[0] * v - a[1] * u) / det;
+	double cx = 0.0, cy = 0.0, nearest = std::numeric_limits<double>::infinity();
+	for (int di = -2; di <= 2; ++di)
+		for (int dj = -2; dj <= 2; ++dj) {
+			const double si = std::round(s) + di, tj = std::round(t) + dj;
+			const double x = si * a[0] + tj * b[0], y = si * a[1] + tj * b[1];
+			const double d = (u - x) * (u - x) + (v - y) * (v - y);
+			if (d < nearest) { nearest = d; cx = x; cy = y; }
+		}
+	// Inside a convex cell the distance to its boundary is the smallest
+	// distance to the edges' own lines, so the half-planes of the bisectors
+	// give it without having to build the polygon. A bisector that does not
+	// bound the cell lies outside it and so is never the smallest.
+	double w[8][2];
+	VoronoiNeighbours(*this, w);
+	double best = std::numeric_limits<double>::infinity();
+	for (const auto& wi : w) {
+		const double len = Len2(wi);
+		if (!(len > 0.0)) continue;
+		const double proj = ((u - cx) * wi[0] + (v - cy) * wi[1]) / len;
+		best = std::min(best, 0.5 * len - proj);
+	}
+	return std::max(best, 0.0);
+}
+
+double HoneycombCell::Inradius() const {
+	if (voronoi) {
+		double w[8][2];
+		VoronoiNeighbours(*this, w);
+		double best = std::numeric_limits<double>::infinity();
+		for (const auto& wi : w) {
+			const double len = Len2(wi);
+			if (len > 0.0) best = std::min(best, 0.5 * len);
+		}
+		return best;
+	}
+	if (families == 3) {
+		// One triangle of the tiling has the sides |a|, |b| and |a - b| and
+		// half the lattice's area; its incircle is area / semiperimeter.
+		const double d[2] = {a[0] - b[0], a[1] - b[1]};
+		return TileArea() / (Len2(a) + Len2(b) + Len2(d));
+	}
+	double best = std::numeric_limits<double>::infinity();
+	for (int f = 0; f < families; ++f) best = std::min(best, 0.5 * spacing[f]);
+	return best;
+}
+
+HoneycombCell HoneycombCellFor(const LatticeSpec& spec) {
+	const std::string t = Lower(spec.type);
+	const auto& names = kHoneycombNames;
+	if (!std::any_of(names.begin(), names.end(), [&](const std::string& n) { return Lower(n) == t; })) {
+		throw std::invalid_argument("unknown honeycomb cell '" + spec.type + "'");
+	}
+	if (!(spec.cell_size > 0.0)) throw std::invalid_argument("the lattice cell size must be greater than zero");
+	if (!(spec.cell_aspect > 0.0)) throw std::invalid_argument("the honeycomb cell aspect must be greater than zero");
+	LatticeSpec s = spec;
+	s.cell_aspect = std::clamp(spec.cell_aspect, 0.05, 20.0);
+	double first = 0.0, second = 0.0;
+	CombDimensions(s, &first, &second);
+
+	HoneycombCell c;
+	if (t == "square" || t == "rectangle") {
+		c.a[0] = first; c.a[1] = 0.0;
+		c.b[0] = 0.0;   c.b[1] = second;
+		c.families = 2;
+		const double along_b[2] = {0.0, 1.0}, along_a[2] = {1.0, 0.0};
+		LineFamily(c, 0, along_b, c.a); // the lines x = k * first
+		LineFamily(c, 1, along_a, c.b); // the lines y = k * second
+		return c;
+	}
+	// Hexagon and Triangle share the triangular lattice: a step of `first`
+	// across, and the row above it offset by half of that. `second` scales
+	// the row spacing, so an aspect of 1 is the regular cell.
+	c.a[0] = first;       c.a[1] = 0.0;
+	c.b[0] = 0.5 * first; c.b[1] = second * std::sqrt(3.0) / 2.0;
+	if (t == "hexagon") {
+		// The walls are the cell edges of the lattice points' Voronoi
+		// hexagons, whose flat-to-flat size across is `first`.
+		c.voronoi = true;
+		return c;
+	}
+	// Triangle: the three families of lines through the lattice points --
+	// the rows, and the two diagonals -- which cut it into triangles of
+	// side `first`.
+	const double diag[2] = {c.a[0] - c.b[0], c.a[1] - c.b[1]};
+	c.families = 3;
+	LineFamily(c, 0, c.b, c.a);
+	LineFamily(c, 1, c.a, c.b);
+	LineFamily(c, 2, diag, c.a);
+	return c;
+}
+
+void PrismCoords(PrismAxis axis, const Vec3& p, double* u, double* v, double* w) {
+	switch (axis) {
+		case PrismAxis::X: *u = p.y; *v = p.z; if (w) *w = p.x; return;
+		case PrismAxis::Y: *u = p.z; *v = p.x; if (w) *w = p.y; return;
+		case PrismAxis::Z: *u = p.x; *v = p.y; if (w) *w = p.z; return;
+	}
+	*u = p.x; *v = p.y; if (w) *w = p.z;
+}
 
 // ---------------------------------------------------------------------------
 // Names
@@ -224,6 +384,7 @@ const char* LatticeFamilyName(LatticeFamily f) {
 		case LatticeFamily::Tpms: return "tpms";
 		case LatticeFamily::Strut: return "strut";
 		case LatticeFamily::Auxetic: return "auxetic";
+		case LatticeFamily::Honeycomb: return "honeycomb";
 	}
 	return "tpms";
 }
@@ -233,7 +394,8 @@ LatticeFamily ParseLatticeFamily(const std::string& s) {
 	if (l == "tpms") return LatticeFamily::Tpms;
 	if (l == "strut" || l == "strut-based") return LatticeFamily::Strut;
 	if (l == "auxetic") return LatticeFamily::Auxetic;
-	throw std::invalid_argument("unknown lattice family '" + s + "' (expected tpms, strut or auxetic)");
+	if (l == "honeycomb" || l == "prismatic") return LatticeFamily::Honeycomb;
+	throw std::invalid_argument("unknown lattice family '" + s + "' (expected tpms, strut, auxetic or honeycomb)");
 }
 
 const char* TpmsPhaseName(TpmsPhase p) {
@@ -253,14 +415,48 @@ TpmsPhase ParseTpmsPhase(const std::string& s) {
 	throw std::invalid_argument("unknown TPMS phase '" + s + "' (expected network, sheet or iso-surface)");
 }
 
+const char* PrismAxisName(PrismAxis a) {
+	switch (a) {
+		case PrismAxis::X: return "x";
+		case PrismAxis::Y: return "y";
+		case PrismAxis::Z: return "z";
+	}
+	return "z";
+}
+
+PrismAxis ParsePrismAxis(const std::string& s) {
+	std::string l = Lower(s);
+	if (l == "x") return PrismAxis::X;
+	if (l == "y") return PrismAxis::Y;
+	if (l == "z") return PrismAxis::Z;
+	throw std::invalid_argument("unknown prism axis '" + s + "' (expected x, y or z)");
+}
+
+const char* WallSizingName(WallSizing w) {
+	switch (w) {
+		case WallSizing::VolumeFraction: return "volume-fraction";
+		case WallSizing::Thickness: return "thickness";
+	}
+	return "volume-fraction";
+}
+
+WallSizing ParseWallSizing(const std::string& s) {
+	std::string l = Lower(s);
+	if (l == "volume-fraction" || l == "volume_fraction" || l == "fraction") return WallSizing::VolumeFraction;
+	if (l == "thickness" || l == "wall-thickness" || l == "wall_thickness") return WallSizing::Thickness;
+	throw std::invalid_argument("unknown wall sizing '" + s + "' (expected volume-fraction or thickness)");
+}
+
 const std::vector<std::string>& TpmsTypeNames() { return kTpmsNames; }
 const std::vector<std::string>& StrutTypeNames() { return kStrutNames; }
 const std::vector<std::string>& AuxeticTypeNames() { return kAuxeticNames; }
+const std::vector<std::string>& HoneycombTypeNames() { return kHoneycombNames; }
 const std::vector<std::string>& LatticeTypeNames(LatticeFamily f) {
 	switch (f) {
 		case LatticeFamily::Tpms: return kTpmsNames;
 		case LatticeFamily::Strut: return kStrutNames;
 		case LatticeFamily::Auxetic: return kAuxeticNames;
+		case LatticeFamily::Honeycomb: return kHoneycombNames;
 	}
 	return kTpmsNames;
 }
@@ -372,6 +568,22 @@ std::vector<double> CellSamples(const LatticeSpec& spec, int samples, double* me
 		if (mean_gradient) *mean_gradient = grad_sum / values.size();
 		return values;
 	}
+	if (spec.family == LatticeFamily::Honeycomb) {
+		// A prismatic cell is the same at every height, so one period of the
+		// cross-section is the whole cell: n * n samples of the distance to
+		// the wall network, in model units. The samples are taken in lattice
+		// coordinates, which an affine map carries to a uniform spread over
+		// the tile, so counting them gives its area fraction -- and that is
+		// the volume fraction, the cell being an extrusion.
+		const HoneycombCell cell = HoneycombCellFor(spec);
+		for (int i = 0; i < n; ++i)
+			for (int j = 0; j < n; ++j) {
+				const double s = (i + Jitter(rng)) / n, t = (j + Jitter(rng)) / n;
+				values.push_back(cell.Distance(s * cell.a[0] + t * cell.b[0], s * cell.a[1] + t * cell.b[1]));
+			}
+		if (mean_gradient) *mean_gradient = 1.0; // the distance is exact
+		return values;
+	}
 	const StrutCell& cell = StrutCellFor(spec.type);
 	std::vector<std::array<Vec3, 2>> pieces;
 	for (const auto& s : cell.struts) {
@@ -411,7 +623,18 @@ double CellSolidFraction(const LatticeSpec& spec, double level, int samples) {
 	return FractionAt(spec, CellSamples(spec, samples, nullptr), level);
 }
 
+double HoneycombWallThickness(const LatticeSpec& spec, int samples) {
+	if (spec.family != LatticeFamily::Honeycomb) throw std::invalid_argument("HoneycombWallThickness: not a honeycomb spec");
+	if (spec.wall_sizing == WallSizing::Thickness) return spec.wall_thickness;
+	return 2.0 * CalibrateLevel(spec, nullptr, samples);
+}
+
 double CalibrateLevel(const LatticeSpec& spec, double* mean_gradient, int samples) {
+	if (spec.family == LatticeFamily::Honeycomb && spec.wall_sizing == WallSizing::Thickness) {
+		// The thickness is given outright, so there is nothing to calibrate.
+		if (mean_gradient) *mean_gradient = 1.0;
+		return 0.5 * spec.wall_thickness;
+	}
 	std::vector<double> values = CellSamples(spec, samples, mean_gradient);
 	if (spec.family == LatticeFamily::Tpms && spec.phase == TpmsPhase::IsoSurface) return 0.0;
 	const double target = std::clamp(spec.volume_fraction, 0.001, 0.999);
@@ -423,6 +646,11 @@ double CalibrateLevel(const LatticeSpec& spec, double* mean_gradient, int sample
 		lo = 0.0;
 		hi = 0.0;
 		for (double v : values) hi = std::max(hi, std::fabs(v));
+	} else if (spec.family == LatticeFamily::Honeycomb) {
+		lo = 0.0;
+		// Half a wall this thick reaches the cell's furthest point from a
+		// wall, which is to say it fills the cell.
+		hi = *std::max_element(values.begin(), values.end());
 	} else {
 		lo = 0.0;
 		hi = 0.9; // a radius this large fills any cell
@@ -450,6 +678,13 @@ LatticeField::LatticeField(const LatticeSpec& spec) : spec_(spec) {
 		double mean_grad = 1.0;
 		level_ = CalibrateLevel(spec, &mean_grad);
 		gradient_scale_ = std::max(mean_grad, 1e-6) * k_;
+	} else if (spec.family == LatticeFamily::Honeycomb) {
+		comb_ = HoneycombCellFor(spec); // validates the type, size and aspect
+		level_ = CalibrateLevel(spec);  // the half wall thickness, model units
+		if (!(level_ > 0.0)) throw std::invalid_argument("the honeycomb wall thickness must be greater than zero");
+		if (level_ >= comb_.Inradius()) {
+			throw std::invalid_argument("the honeycomb wall is at least as thick as the cell, so the lattice would come out solid: use a thinner wall, a lower volume fraction or a larger cell");
+		}
 	} else {
 		cell_ = &StrutCellFor(spec.type);
 		level_ = CalibrateLevel(spec);
@@ -488,6 +723,13 @@ double LatticeField::operator()(const Vec3& p) const {
 		}
 		return u;
 	}
+	if (spec_.family == LatticeFamily::Honeycomb) {
+		// Prismatic: the axial coordinate does not enter, and the walls are
+		// planes and bisector planes, so this is an exact signed distance.
+		double u = 0.0, v = 0.0;
+		PrismCoords(spec_.axis, p - spec_.origin, &u, &v);
+		return comb_.Distance(u, v) - level_;
+	}
 	Vec3 r = (p - spec_.origin) / spec_.cell_size;
 	double best = std::numeric_limits<double>::infinity();
 	for (size_t i = 0; i < pieces_.size(); ++i) best = std::min(best, PieceDistanceSq(r, pieces_[i][0], pieces_[i][1], piece_mid_[i]));
@@ -498,11 +740,30 @@ double LatticeField::operator()(const Vec3& p) const {
 // Grid planning and sampling
 // ---------------------------------------------------------------------------
 
+namespace {
+
+// The cell dimension `resolution` counts voxels across.
+double VoxelCell(const LatticeSpec& spec) {
+	if (spec.family != LatticeFamily::Honeycomb) return spec.cell_size;
+	double first = 0.0, second = 0.0;
+	CombDimensions(spec, &first, &second);
+	return std::min(first, second);
+}
+
+} // namespace
+
+double LatticeVoxelSize(const LatticeSpec& spec) {
+	if (!(spec.cell_size > 0.0)) throw std::invalid_argument("the lattice cell size must be greater than zero");
+	if (spec.family == LatticeFamily::Honeycomb && !(spec.cell_aspect > 0.0)) {
+		throw std::invalid_argument("the honeycomb cell aspect must be greater than zero");
+	}
+	return VoxelCell(spec) / std::max(spec.resolution, 2);
+}
+
 LatticeGrid PlanLatticeGrid(const LatticeSpec& spec, const Box3& bounds) {
 	if (bounds.IsEmpty()) throw std::invalid_argument("the lattice domain is empty");
-	if (!(spec.cell_size > 0.0)) throw std::invalid_argument("the lattice cell size must be greater than zero");
 	LatticeGrid g;
-	g.h = spec.cell_size / std::max(spec.resolution, 2);
+	g.h = LatticeVoxelSize(spec);
 	Box3 b = bounds.Expanded(2.0 * g.h);
 	g.origin = b.min;
 	Vec3 ext = b.Extent();
@@ -510,6 +771,30 @@ LatticeGrid PlanLatticeGrid(const LatticeSpec& spec, const Box3& bounds) {
 	g.ny = std::max(2, static_cast<int>(std::ceil(ext.y / g.h)));
 	g.nz = std::max(2, static_cast<int>(std::ceil(ext.z / g.h)));
 	return g;
+}
+
+std::string LatticeResolutionWarning(const LatticeSpec& spec, const LatticeGrid& grid) {
+	if (!(grid.h > 0.0)) return {};
+	double wall = 0.0;
+	if (spec.family == LatticeFamily::Honeycomb) wall = HoneycombWallThickness(spec);
+	else if (spec.family == LatticeFamily::Tpms && spec.phase == TpmsPhase::IsoSurface) wall = spec.wall_thickness;
+	else return {}; // every other family's thickness follows the cell
+	// A wall thinner than the sample pitch can sit between two nodes with
+	// neither inside it, and then it is simply not there: the surface comes
+	// out holed where the offset happens to fall badly. At a pitch or more
+	// some node of every row lands inside, so the wall always registers --
+	// coarsely, but it is there. That is the line between refusing and
+	// letting the caller judge; two or three voxels is what a wall whose
+	// thickness is meant to be accurate wants.
+	const double voxels = wall / grid.h;
+	if (!(wall > 0.0) || voxels >= 1.0) return {};
+	const int needed = static_cast<int>(std::ceil(VoxelCell(spec) / wall));
+	char buf[320];
+	std::snprintf(buf, sizeof buf,
+		"the wall is %.4g thick but a voxel is %.4g, so the wall is only %.2f voxels across and would fall between the samples. "
+		"Use at least %d voxels per cell (two or three times that for an accurate wall), a thicker wall, or a larger cell.",
+		wall, grid.h, voxels, needed);
+	return buf;
 }
 
 LatticeResult GenerateLattice(const LatticeSpec& spec, const LatticeDomain& domain, const std::function<bool(double)>& progress,
@@ -522,6 +807,8 @@ LatticeResult GenerateLattice(const LatticeSpec& spec, const LatticeDomain& doma
 		throw std::runtime_error("the lattice grid would need " + std::to_string(g.Nodes()) + " samples (limit " + std::to_string(max_nodes) +
 			"): use a larger cell size or a lower resolution");
 	}
+	const std::string unresolvable = LatticeResolutionWarning(spec, g);
+	if (!unresolvable.empty()) throw std::runtime_error(unresolvable);
 	LatticeField lattice(spec);
 	if (progress && !progress(0.0)) { result.cancelled = true; return result; }
 

@@ -472,7 +472,22 @@ The layout follows the Python/Qt version's main window (`aerotelic/ui/main_windo
   Octet, Tesseract, Vintiles, X-lattice, Re-entrant) as the paper's
   periodic strut distance field (nearest periodic copy by rounding,
   distance to the segment, normalised by the strut radius, minimum over
-  struts), the radius calibrated the same way. `GenerateLattice` samples
+  struts), the radius calibrated the same way. Honeycomb (prismatic) cells
+  are ours, not the paper's: a 2D tiling's walls extruded along a chosen
+  axis -- Square, Rectangle, Hexagon and Triangle, the cell size being the
+  side of a square or triangle, the width of a rectangle or a hexagon's
+  size across the flats, with a cell aspect stretching the cross-section's
+  second dimension. Square, Rectangle and Triangle are the exact distance
+  to two or three families of parallel lines through the tiling's lattice
+  points; Hexagon is the distance to those points' Voronoi edges, taken as
+  the nearest point's bisector half-planes (inside a convex cell the
+  distance to the boundary is the least distance to its edges' own lines),
+  so every cell's field is a true signed distance and the aspect stays
+  exact. The wall is either calibrated to the volume fraction like
+  everything else or given outright -- what a printed or bonded core is
+  actually specified by. Unlike the other two families these cells are
+  anisotropic on purpose, so the prism axis is part of the spec.
+  `GenerateLattice` samples
   the lattice field intersected with the body's distance field (and minus
   the reserved volumes) on a grid of N voxels per cell, skipping whole
   blocks far from the body surface (a 1-Lipschitz field lets one
@@ -487,19 +502,36 @@ The layout follows the Python/Qt version's main window (`aerotelic/ui/main_windo
   trailing edge should be: the sampled field cannot represent a wedge
   thinner than a voxel, and without a skin the infill's struts simply end
   wherever they last met the skin, raggedly on a swept edge.
+  A wall set apart from its cell (a honeycomb's, or a TPMS iso-surface's)
+  can be asked for thinner than a voxel, and then it falls between the
+  samples and is simply not there; `LatticeResolutionWarning` says so, the
+  dialog shows it while the numbers are being chosen, and generation throws
+  rather than return a holed mesh.
   `tests/lattice_check.cpp` calibrates every type, checks the marching
   tetrahedra on a sphere, and generates in a box and in a sphere with a
   reserved sphere and a skin (both bodies closed, the shell's volume right).
+  The honeycomb cells are checked against closed forms -- the void is each
+  cell shrunk inward by half the wall, so a cell with an incircle gives
+  (1 - t/2r)^2 and a rectangle (A-t)(B-t)/AB -- plus a stretched hexagon
+  against a patch many cells across (converging on the one-tile figure, so
+  the tile is the right fundamental domain), the field's being prismatic,
+  periodic and 1-Lipschitz, and a hexagonal fill of a box whose mesh volume
+  matches the field's own share of that box. Note that the share of a small
+  box runs under the fraction asked for by order 1 / cells across, the
+  boundary cutting the tiling; the calibration is exact, the box is not.
 * **Lattice menu** -- *Generate Lattice...* opens the dialog: family (TPMS /
-  Strut-based / Auxetic), type, TPMS phase, unit cell size, volume fraction
-  (or wall thickness for the iso-surface phase), voxels per cell (the
+  Strut-based / Auxetic / Honeycomb), type, TPMS phase, prism axis and cell
+  aspect (honeycomb), unit cell size, volume fraction or wall thickness
+  (whichever the honeycomb's "wall set by" chooses; wall thickness for the
+  iso-surface phase), voxels per cell (the
   paper's mesh density), solid skin thickness (always positive: one percent
   of the largest root chord among the wings filled by default, else of the
   largest body's longest extent; a saved lattice without one gets the same
   default on load), the bodies to fill (every non-primitive body, mirrored
   halves and boolean results included, chosen by default), the reserved
   volumes (every primitive, chosen by default -- WingDesigner's primitives
-  mark payload bays), a name, and a live estimate of the sample grid. The
+  mark payload bays), a name, and a live estimate of the sample grid (with
+  a honeycomb's wall thickness and how many voxels span it). The
   result is a scene item of kind *lattice* with two bodies, "Skin" (the
   outer shell) and "Lattice" (the infill): each shown, coloured, hidden,
   sectioned, exported to STL (not STEP: they are meshes; an ASCII STL
@@ -932,6 +964,21 @@ in amber naming both bodies; the fix is to fuse them with a boolean
 operation and select the result. The check only finds surfaces lying ON
 each other, not one body poking through another.
 
+**The comparison happens where DUST mounts each body**, blade by blade.
+A body's mesh is stored in its own reference frame's coordinates, so a
+rotor's blade is hub-local while the airframe is already in world
+coordinates, and the two have to be placed before they can be compared at
+all. Leaving that out is how a four-propeller aircraft got told that 912
+panels of Propeller 8 and Propeller 9 lay on top of each other: the props
+are the same model, so their hub-local blades are the same mesh, and the
+hubs they actually hang from are 4 m apart. It also hid the real thing --
+a blade sitting inside a wing was never compared against it. The same
+placement sizes the particle box, which otherwise enclosed an aircraft
+with all its propellers piled up at the origin. Blades are compared at
+their mounted azimuth only: a blade that sweeps *through* a body further
+round is a collision over the run, not a singular matrix on step 1, and
+this warning is about step 1.
+
 **Cost is quadratic.** DUST's panel method builds a dense influence
 matrix, so the Geometry tab shows its size in MB next to the panel count:
 a few thousand panels is comfortable, tens of thousands will not run.
@@ -970,11 +1017,32 @@ Details that matter:
   about the same axis, so spinning it would change nothing, and this
   avoids a second multiple frame. `dust_pre` duly reports 0 trailing-edge
   elements for it and 18 for the blade.
+* **`rot_rate` goes out negative for a positive RPM** (2026-10-17). A
+  positive speed on the Rotors tab must drive the blade *leading edge*
+  first, and the blade's own geometry decides which way that is:
+  `PropellerModel::BuildMeshes` turns the blade -90 degrees about y,
+  carrying the wing's chord (leading edge at low x, since +x is aft) onto
+  local **+z**. So the leading edge sits at low z and the blade has to
+  travel towards -z -- while a blade at radius r along +y under rate w
+  about +x has `v = (w,0,0) x (0,r,0) = (0,0,+w*r)`, which points at -z
+  only for `w < 0`. Written positive, as it was at first, every propeller
+  in the case turned trailing-edge first. Measured on the Zipline P2
+  blade to be sure: the chord-perpendicular thickness 15% in from each
+  end is 3:1 in favour of the low-z end at every span station, with a
+  textbook twist of 60.9 degrees at the root falling to 13.9 at the tip.
+  The sign lives in `DustDialog.cpp` and nowhere else -- the writer takes
+  it as given, `dust_case.cpp` only ever reads `fabs(rot_rate)` for the
+  time step, and no geometry depends on it -- so the whole convention is
+  one negation at the one place that knows the propeller's handedness.
 * A **mirrored** propeller turns the opposite way and its placement
   contains a reflection, which cannot be a DUST orientation matrix
   (determinant -1). Writing M for the reflection, `M*R = (M*R*M)*M`: the
   proper rotation `M*R*M` becomes the frame and the leftover `M` is
-  folded into the blade's own coordinates, with `rot_rate` negated.
+  folded into the blade's own coordinates, with `rot_rate` negated. That
+  negation is right for two reasons that agree: a reflection turns a
+  rotation around, `M*R_x(t)*M = R_x(-t)`, and the reflected blade spans
+  -y with its edges still where they were in z, so `v = (0,0,-w*r)` and
+  the sign it needs flips back.
 * `orientation` is read by DUST with a Fortran `reshape(...,(/3,3/))`,
   which fills **column major**, so the nine numbers are the frame's x, y
   and z axes -- the transpose of the row-major spelling.
@@ -993,7 +1061,7 @@ Details that matter:
 `References.in` still carries a commented-out template for a hand-written
 moving frame, for motion the dialog does not offer.
 
-`core/tests/dust_case_check.cpp` (53 checks) covers the file set, the
+`core/tests/dust_case_check.cpp` (97 checks) covers the file set, the
 `ee`/`rr` formats down to the zero fourth index and 1-based node indices,
 the derived-versus-written agreement, the octree covering the particle
 box, the overlap detection, and the refusals. **It was also validated
@@ -1066,7 +1134,15 @@ at `C:\Users\Matt\dust-install` -- `dust_pre` detects the trailing edge
   cells; G7 (BCC with a vertical pillar), Vintiles (the cuboctahedral
   frame on the edge midpoints) and Re-entrant (vertical edges bowed a
   quarter cell inward) are reconstructions in `lattice.cpp`'s tables and
-  are plain data to edit. A propeller blade's mesh is trimmed at the hub
+  are plain data to edit. The honeycomb family is not in the paper at all
+  and claims no authority from it. Its cells are axis-aligned: the prism
+  axis picks x, y or z, not an arbitrary direction, and the tiling is not
+  rotated within its plane, so a honeycomb that should follow a swept spar
+  has to be approximated by the axis nearest it. A thin wall on a large
+  part is expensive, the sampling having to resolve the wall everywhere
+  (a 0.6 mm wall across a 600 mm part is a 1000:1 span); the grid cap and
+  the resolution warning both bite well before anything silently degrades.
+  A propeller blade's mesh is trimmed at the hub
   by its span range rather than a box cut (exact without rake). A nacelle
   with chevrons still goes through OCCT. The lattice dialog is modal and
   generation runs on the game thread, so the window does not repaint until

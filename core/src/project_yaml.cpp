@@ -606,6 +606,11 @@ YAML::Node Encode(const LatticeSpec& spec) {
 	n["family"] = std::string(LatticeFamilyName(spec.family));
 	n["type"] = spec.type;
 	if (spec.family == LatticeFamily::Tpms) n["phase"] = std::string(TpmsPhaseName(spec.phase));
+	if (spec.family == LatticeFamily::Honeycomb) {
+		n["cell_aspect"] = spec.cell_aspect;
+		n["axis"] = std::string(PrismAxisName(spec.axis));
+		n["wall_sizing"] = std::string(WallSizingName(spec.wall_sizing));
+	}
 	n["cell_size"] = spec.cell_size;
 	n["volume_fraction"] = spec.volume_fraction;
 	n["wall_thickness"] = spec.wall_thickness;
@@ -626,6 +631,9 @@ LatticeSpec DecodeLatticeSpec(const YAML::Node& node) {
 	if (node["family"]) s.family = ParseLatticeFamily(node["family"].as<std::string>());
 	if (node["type"]) s.type = node["type"].as<std::string>();
 	if (node["phase"]) s.phase = ParseTpmsPhase(node["phase"].as<std::string>());
+	if (node["cell_aspect"]) s.cell_aspect = node["cell_aspect"].as<double>();
+	if (node["axis"]) s.axis = ParsePrismAxis(node["axis"].as<std::string>());
+	if (node["wall_sizing"]) s.wall_sizing = ParseWallSizing(node["wall_sizing"].as<std::string>());
 	if (node["cell_size"]) s.cell_size = node["cell_size"].as<double>();
 	if (node["volume_fraction"]) s.volume_fraction = node["volume_fraction"].as<double>();
 	if (node["wall_thickness"]) s.wall_thickness = node["wall_thickness"].as<double>();
@@ -642,6 +650,12 @@ LatticeSpec DecodeLatticeSpec(const YAML::Node& node) {
 	if (!known) throw std::invalid_argument("unknown " + std::string(LatticeFamilyName(s.family)) + " lattice type '" + s.type + "'");
 	if (!(s.cell_size > 0.0)) throw std::invalid_argument("the lattice cell size must be greater than zero");
 	if (s.resolution < 2) throw std::invalid_argument("the lattice resolution must be at least 2 voxels per cell");
+	if (s.family == LatticeFamily::Honeycomb) {
+		if (!(s.cell_aspect > 0.0)) throw std::invalid_argument("the honeycomb cell aspect must be greater than zero");
+		if (s.wall_sizing == WallSizing::Thickness && !(s.wall_thickness > 0.0)) {
+			throw std::invalid_argument("the honeycomb wall thickness must be greater than zero");
+		}
+	}
 	return s;
 }
 

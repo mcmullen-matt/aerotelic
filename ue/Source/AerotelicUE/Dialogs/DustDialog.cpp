@@ -536,7 +536,22 @@ void ShowAerotelicDustDialog(TFunction<void(const FText&)> Status)
 				Frame.n_blades = FMath::Max(1, Blades);
 				// Aerotelic spins its propellers about the model's local +x.
 				Frame.rot_axis = aerotelic::Vec3{1.0, 0.0, 0.0};
-				Frame.rot_rate = Rpm * 2.0 * PI / 60.0;
+				// NEGATIVE, and that is not a typo. A positive RPM has to
+				// drive the blade LEADING EDGE first, and the blade's own
+				// geometry decides which way that is: PropellerModel turns
+				// the blade -90 degrees about y, which carries the wing's
+				// chord (leading edge at low x, +x being aft) onto local +z.
+				// So the leading edge sits at low z, the trailing edge at
+				// high z, and the blade must travel towards -z. A blade at
+				// radius r along +y moving under rate w about +x has
+				// v = (w,0,0) x (0,r,0) = (0,0,+w*r), which is towards -z
+				// only for w < 0. Written positive, every propeller in the
+				// case turned trailing-edge first.
+				Frame.rot_rate = -Rpm * 2.0 * PI / 60.0;
+				// A mirrored blade is reflected about y, so it spans -y with
+				// its edges still where they were in z: v = (0,0,-w*r), and
+				// the sign flips back. This is also what the reflection does
+				// to the motion on its own -- M*R_x(t)*M = R_x(-t).
 				if (C->Operand.bMirror) Frame.rot_rate = -Frame.rot_rate;
 				Frames.push_back(Frame);
 

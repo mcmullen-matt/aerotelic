@@ -85,12 +85,115 @@ double MeanPanelSize(const std::vector<DustComponent>& components, const std::ve
 	return n > 0 ? total / static_cast<double>(n) : 0.0;
 }
 
+// A rigid placement: world = origin + R * v, with R held as its columns.
+struct Placement {
+	Vec3 origin{};
+	Vec3 x{1, 0, 0}, y{0, 1, 0}, z{0, 0, 1};
+
+	Vec3 Rotate(const Vec3& v) const { return x * v.x + y * v.y + z * v.z; }
+	Vec3 Apply(const Vec3& v) const { return origin + Rotate(v); }
+};
+
+// outer applied to whatever inner produced.
+Placement Compose(const Placement& outer, const Placement& inner) {
+	Placement p;
+	p.origin = outer.Apply(inner.origin);
+	p.x = outer.Rotate(inner.x);
+	p.y = outer.Rotate(inner.y);
+	p.z = outer.Rotate(inner.z);
+	return p;
+}
+
+// Rotation of psi radians about `axis` (which need not be unit).
+Placement AxisRotation(const Vec3& axis, double psi) {
+	const Vec3 a = Normalized(axis);
+	if (!(LengthSq(a) > 0.0)) return Placement();
+	const double c = std::cos(psi), s = std::sin(psi), t = 1.0 - c;
+	Placement p;
+	p.x = Vec3{c + t * a.x * a.x, t * a.x * a.y + s * a.z, t * a.x * a.z - s * a.y};
+	p.y = Vec3{t * a.x * a.y - s * a.z, c + t * a.y * a.y, t * a.y * a.z + s * a.x};
+	p.z = Vec3{t * a.x * a.z + s * a.y, t * a.y * a.z - s * a.x, c + t * a.z * a.z};
+	return p;
+}
+
+const DustFrame* FindFrame(const std::vector<DustFrame>& frames, const std::string& tag) {
+	if (tag.empty() || tag == "0") return nullptr;
+	for (const DustFrame& f : frames) {
+		if (f.tag == tag) return &f;
+	}
+	return nullptr;
+}
+
+// The frame's placement in world coordinates, parent chain included.
+// Walks up to frame 0, giving up after as many steps as there are frames
+// so a malformed parent -- missing, or a cycle -- cannot hang the dialog
+// this runs on.
+Placement FrameToWorld(const std::vector<DustFrame>& frames, const std::string& tag) {
+	Placement out;
+	const DustFrame* f = FindFrame(frames, tag);
+	for (std::size_t guard = 0; f != nullptr && guard <= frames.size(); ++guard) {
+		Placement local;
+		local.origin = f->origin;
+		local.x = f->x_axis;
+		local.y = f->y_axis;
+		local.z = f->z_axis;
+		out = Compose(local, out);
+		f = FindFrame(frames, f->parent);
+	}
+	return out;
+}
+
+// Where DUST will actually mount a component: one placement for a body on
+// the global frame, and one PER BLADE for a body on a rotor frame, since
+// DUST replicates it around the axis.
+//
+// This is the only thing that puts the two kinds of body in the same
+// space. A component's mesh is in its OWN frame's coordinates (see
+// DustComponent::mesh), so a rotor's blade is hub-local while the
+// airframe is already in world coordinates -- and anything that compares
+// or measures them together has to place them first. Leaving it out made
+// two identical propellers at opposite ends of an aircraft look like one
+// body lying on top of another, and sized the particle box from blades
+// sitting at the origin.
+//
+// DUST mounts blade k at psi_0 + k * 360/n_blades about rot_axis, in the
+// frame's own components. The blade frame BladeFrame builds below does
+// not enter into it: the writer expresses the mesh in that frame and DUST
+// reads it back in the same frame, so the two cancel and the mesh arrives
+// as the hub-local coordinates it is stored in.
+std::vector<Placement> ComponentPlacements(const DustComponent& c, const std::vector<DustFrame>& frames) {
+	const DustFrame* f = FindFrame(frames, c.ref_tag);
+	if (f == nullptr) return {Placement()};
+	const Placement to_world = FrameToWorld(frames, c.ref_tag);
+	if (f->n_blades <= 0) return {to_world};
+
+	std::vector<Placement> out;
+	out.reserve(static_cast<std::size_t>(f->n_blades));
+	for (int k = 0; k < f->n_blades; ++k) {
+		const double psi = (f->psi_0_deg + 360.0 * k / f->n_blades) * kPi / 180.0;
+		out.push_back(Compose(to_world, AxisRotation(f->rot_axis, psi)));
+	}
+	return out;
+}
+
 // Counts panels of different bodies sitting on top of one another, which
 // makes DUST's influence matrix singular (see DustCaseResult). Centroids
 // are hashed into cells a panel wide, so this is linear in the panel
 // count rather than quadratic -- it has to run on every dialog refresh.
-std::size_t CountCoincidentPanels(const std::vector<DustComponent>& components, double panel_size,
-	std::string& out_a, std::string& out_b) {
+//
+// Everything is compared WHERE DUST WILL PUT IT (see ComponentPlacements),
+// including every blade of a rotor, so a blade is checked against the
+// airframe it turns in front of rather than against another hub's blade
+// in hub coordinates. Two blades of the SAME rotor are not compared with
+// each other: they are the one component DUST replicated, and the skip on
+// `e.component == ci` is what keeps a body from overlapping itself.
+//
+// Blades are compared at their mounted azimuth only. A blade that sweeps
+// THROUGH a body at some other azimuth is not found here -- that is a
+// collision over the run, not a singular matrix on step 1, which is what
+// this warning is about.
+std::size_t CountCoincidentPanels(const std::vector<DustComponent>& components,
+	const std::vector<DustFrame>& frames, double panel_size, std::string& out_a, std::string& out_b) {
 	if (!(panel_size > 0.0)) return 0;
 	const double cell = panel_size;
 	const double tol = 0.05 * panel_size;
@@ -108,30 +211,34 @@ std::size_t CountCoincidentPanels(const std::vector<DustComponent>& components, 
 	std::size_t hits = 0;
 	for (int ci = 0; ci < static_cast<int>(components.size()); ++ci) {
 		const TriMesh& m = components[ci].mesh;
-		for (const auto& t : m.triangles) {
-			const Vec3 c = (m.vertices[t[0]] + m.vertices[t[1]] + m.vertices[t[2]]) / 3.0;
-			bool hit = false;
-			for (int dx = -1; dx <= 1 && !hit; ++dx) {
-				for (int dy = -1; dy <= 1 && !hit; ++dy) {
-					for (int dz = -1; dz <= 1 && !hit; ++dz) {
-						const Vec3 probe{c.x + dx * cell, c.y + dy * cell, c.z + dz * cell};
-						auto it = grid.find(key(probe));
-						if (it == grid.end()) continue;
-						for (const Entry& e : it->second) {
-							if (e.component == ci) continue;
-							if (LengthSq(e.c - c) > tol2) continue;
-							++hits;
-							if (out_a.empty()) {
-								out_a = components[e.component].name;
-								out_b = components[ci].name;
+		// The centroid of a placed triangle is the placed centroid: the
+		// placement is affine, so there is no need to move three vertices.
+		for (const Placement& place : ComponentPlacements(components[ci], frames)) {
+			for (const auto& t : m.triangles) {
+				const Vec3 c = place.Apply((m.vertices[t[0]] + m.vertices[t[1]] + m.vertices[t[2]]) / 3.0);
+				bool hit = false;
+				for (int dx = -1; dx <= 1 && !hit; ++dx) {
+					for (int dy = -1; dy <= 1 && !hit; ++dy) {
+						for (int dz = -1; dz <= 1 && !hit; ++dz) {
+							const Vec3 probe{c.x + dx * cell, c.y + dy * cell, c.z + dz * cell};
+							auto it = grid.find(key(probe));
+							if (it == grid.end()) continue;
+							for (const Entry& e : it->second) {
+								if (e.component == ci) continue;
+								if (LengthSq(e.c - c) > tol2) continue;
+								++hits;
+								if (out_a.empty()) {
+									out_a = components[e.component].name;
+									out_b = components[ci].name;
+								}
+								hit = true;
+								break;
 							}
-							hit = true;
-							break;
 						}
 					}
 				}
+				grid[key(c)].push_back({c, ci});
 			}
-			grid[key(c)].push_back({c, ci});
 		}
 	}
 	return hits;
@@ -215,9 +322,16 @@ bool DeriveDustCase(const std::vector<DustComponent>& components, const std::vec
 
 	// ---- the numbers the case is derived from -------------------------
 
+	// Every body placed where DUST will mount it, blade by blade. A rotor's
+	// blade mesh is hub-local and reaches its hub only through its frame,
+	// so a box measured from the meshes as stored would be a box around an
+	// aircraft with all its propellers piled up at the origin -- too small
+	// where the rotors actually are, which is exactly where the wake is.
 	Box3 bounds;
 	for (const DustComponent& c : components) {
-		for (const Vec3& v : c.mesh.vertices) bounds.Add(v);
+		for (const Placement& place : ComponentPlacements(c, frames)) {
+			for (const Vec3& v : c.mesh.vertices) bounds.Add(place.Apply(v));
+		}
 	}
 	if (bounds.IsEmpty()) {
 		error = "the chosen bodies carry no geometry";
@@ -317,7 +431,7 @@ bool DeriveDustCase(const std::vector<DustComponent>& components, const std::vec
 	// DUST's panel method solves a dense system over the panels.
 	result.linear_system_mb = static_cast<double>(result.panels) * static_cast<double>(result.panels) * 8.0 / (1024.0 * 1024.0);
 
-	result.coincident_panels = CountCoincidentPanels(components, result.mean_panel_size,
+	result.coincident_panels = CountCoincidentPanels(components, frames, result.mean_panel_size,
 		result.coincident_a, result.coincident_b);
 
 	return true;

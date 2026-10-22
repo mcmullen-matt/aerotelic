@@ -134,6 +134,14 @@ namespace
 			throw std::runtime_error("the lattice grid would need " + std::to_string(Grid.Nodes()) + " samples (limit " + std::to_string(kMaxGridNodes) +
 				"): use a larger cell size or a lower resolution");
 		}
+		// A wall thinner than a voxel can fall between the samples and go
+		// missing (a honeycomb's, or a TPMS iso-surface's, thickness is set
+		// apart from its cell, so it can be asked for at any size).
+		const std::string Unresolvable = aerotelic::LatticeResolutionWarning(Sampled, Grid);
+		if (!Unresolvable.empty())
+		{
+			throw std::runtime_error(Unresolvable);
+		}
 		const aerotelic::LatticeField Lattice(Sampled);
 		AerotelicMeshLib::FField Field;
 		Field.Nx = Grid.nx + 1;
@@ -195,7 +203,7 @@ double FAerotelicLatticeModel::BodyTolerance(const aerotelic::LatticeSpec& Spec)
 	// The body mesh is the skin's outer surface as it stands, and the
 	// offset's distance field sees it to a fraction of its voxel, so it is
 	// built a few voxels finer than the lattice grid and than the skin.
-	const double Voxel = Spec.cell_size / FMath::Max(Spec.resolution, 2);
+	const double Voxel = aerotelic::LatticeVoxelSize(Spec);
 	double Tolerance = 0.25 * Voxel;
 	if (Spec.skin_thickness > 0.0)
 	{
@@ -261,7 +269,7 @@ std::vector<aerotelic::NamedMesh> FAerotelicLatticeModel::BuildMeshes(double) co
 	}
 	Request.SkinThickness = Spec.skin_thickness;
 	{
-		const double LatticeVoxel = Spec.cell_size / FMath::Max(Spec.resolution, 2);
+		const double LatticeVoxel = aerotelic::LatticeVoxelSize(Spec);
 		double Voxel = FMath::Min(0.25 * Spec.skin_thickness, LatticeVoxel);
 		const aerotelic::Vec3 Ext = DomainBounds.Extent() + aerotelic::Vec3{2.0, 2.0, 2.0} * Spec.skin_thickness;
 		const double Volume = Ext.x * Ext.y * Ext.z;
