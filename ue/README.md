@@ -497,7 +497,9 @@ The layout follows the Python/Qt version's main window (`aerotelic/ui/main_windo
   cancel it -- that the OCCT solid's centroid flips in `z` and not along
   the axis, cross-checking the `gp_Trsf` mirror against the matrix one.
 * **Transform dialog** (from the tree's context menu): one modeless window
-  per entity with position, rotation axis and angle.
+  per entity, a tab each for Translation and Rotation, the rotation tab
+  offering a choice of approach -- an axis and an angle, or three Euler
+  angles. See *The Transform dialog* below.
 * **Status bar**: last action on the left, project path on the right.
 
 ## Meshing, distance fields and lattices (2026-10-11)
@@ -1157,6 +1159,88 @@ against the real solver**: the generated case runs through the DUST built
 at `C:\Users\Matt\dust-install` -- `dust_pre` detects the trailing edge
 (30 elements on a default wing), `dust` solves 321 steps in 61 s, and
 `dust_post` produces the VTK series and load tables.
+
+## The Transform dialog (2026-10-22)
+
+**Translation and Rotation have a tab each**, and the Rotation tab leads
+with an **Approach** choice -- *Axis and angle* or *Euler angles* --
+which switches the fields below it. The approach is not dialog state: it
+is `Placement::euler.used`, the entity's own record of how its rotation
+was authored, so re-opening the dialog (or the project) comes back to
+the approach it was left on. Switching never moves the entity; each
+approach opens on the rotation already in effect, expressed its way.
+
+### What was wrong with it
+
+The dialog kept no state of its own: every edit read the placement back
+out of the actor's `FQuat`, changed one field and wrote the quaternion
+again. A quaternion holds a rotation, not the parameters that describe
+one, so two things the dialog had to keep did not survive the trip.
+
+* **An axis set while the angle was zero was lost.** `ApplyPlacement`
+  stored `FQuat::Identity` for a zero angle, and reading that back gave
+  UE's fallback axis from `FQuat::GetRotationAxis()` -- so every axis
+  field repainted as X = 1 whatever had been typed, and setting the axis
+  before winding the angle on was impossible.
+* **A typed axis was rescaled.** The round trip normalised it, so typing
+  `1` into Z beside an existing X axis read back as 0.707, and the axis
+  rows were clamped to -1..1, which blocked honest directions like
+  `(0, 2, 1)` as well.
+
+### Storing the placement instead of re-reading it
+
+`AAerotelicEntityActor` now **stores** `aerotelic::Placement` and derives
+the actor transform from it (`ApplyPlacement`), never the other way
+about; `GetPlacement()` returns what was authored and
+`GetEntityTransform()` -- what the feature tree places geometry with --
+reads the same stored values. Normalising was never needed anyway: both
+`gp_Dir` in `core` and `FQuat` here normalise for themselves. A
+zero-length axis is now treated as no rotation in `Place()` and in
+`GetEntityTransform()` rather than reaching `gp_Dir`, which throws on a
+null direction. The axis rows have the same wide bounds as every other
+field, since an axis is a direction and not a unit vector.
+
+### The Euler approach
+
+A rotation can instead be authored as three turns in sequence: **Order**
+picks which axes and in what order, **Axes** whether each turn is about
+the axes the earlier turns already moved (*Moving (intrinsic)*, the
+aircraft convention) or about the fixed world axes. `EulerMatrix`
+composes the three
+single-axis matrices -- intrinsic post-multiplies, extrinsic
+pre-multiplies, which is why intrinsic Z,Y,X is extrinsic X,Y,Z
+reversed -- and `AxisAngleFromMatrix` reduces the product to the one
+axis and angle it amounts to. **Nothing downstream knows Euler angles
+exist**: `rotation_axis`/`rotation_deg` remain the whole rotation for
+the feature tree, the mesh paths and every older reader of a project
+file.
+
+What is stored beside them is only authoring provenance:
+`Placement::euler` (`used`, `intrinsic`, `order`, `angles_deg`),
+serialised as an optional `rotation_euler` block under an entity's
+`placement`. It has to be stored because a matrix does not decompose
+into a triple uniquely -- and not at all at gimbal lock -- so the three
+numbers could not be recovered to re-open the dialog on. `used` is the
+Approach choice: with it set, `SyncPlacementRotation` derives the axis
+and angle from the triple on every edit and on load (so a hand-edited
+`rotation_deg` beside an Euler block cannot disagree with the angles),
+and the "Composes to" read-out shows what they amount to. Under the
+axis/angle approach the Euler rows would show `EulerAnglesFromMatrix` of
+the current rotation -- one valid decomposition, not three zeros beside
+a live rotation -- which is what switching approach adopts. Changing
+Order or Axes keeps the three numbers and turns the entity differently:
+the user is declaring which convention they are in.
+
+`feature_tree_check` covers the composition (orthonormal, det +1, equal
+to the three matrices multiplied by hand, the intrinsic/extrinsic
+equivalence), known values (a 90-degree roll from Z,Y,X `(0, 0, 90)`;
+fixed-axis Z90 then X90 as 120 degrees about `(1, -1, 1)/sqrt(3)`), the
+axis+angle round trip at 0.5, 45, 90, 179.5 and 180 degrees, and
+decompose/recompose over all six orders in both frames including two
+gimbal-locked sets. `project_yaml_check` covers the `rotation_euler`
+round trip and that an axis survives storage un-normalised at zero
+angle; the document commandlet covers the same three promises through
+`ApplyPlacement`/`GetPlacement` on a real entity.
 
 ## How the standalone build is put together
 

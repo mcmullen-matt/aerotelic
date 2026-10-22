@@ -431,6 +431,16 @@ YAML::Node Encode(const Placement& p) {
 	n["translation"] = EncodeDoubles({p.translation[0], p.translation[1], p.translation[2]});
 	n["rotation_axis"] = EncodeDoubles({p.rotation_axis[0], p.rotation_axis[1], p.rotation_axis[2]});
 	n["rotation_deg"] = p.rotation_deg;
+	// Only when the rotation was authored as an Euler triple. Older files
+	// have no such key and every reader older than this one ignores it:
+	// rotation_axis/rotation_deg above are always the whole rotation.
+	if (p.euler.used) {
+		YAML::Node e;
+		e["order"] = std::string(EulerOrderName(p.euler.order));
+		e["frame"] = std::string(p.euler.intrinsic ? "intrinsic" : "extrinsic");
+		e["angles_deg"] = EncodeDoubles({p.euler.angles_deg[0], p.euler.angles_deg[1], p.euler.angles_deg[2]});
+		n["rotation_euler"] = e;
+	}
 	return n;
 }
 
@@ -446,6 +456,19 @@ Placement DecodePlacement(const YAML::Node& node) {
 		for (const auto& v : node["rotation_axis"]) p.rotation_axis[i++] = v.as<double>();
 	}
 	if (node["rotation_deg"]) p.rotation_deg = node["rotation_deg"].as<double>();
+	if (const YAML::Node e = node["rotation_euler"]) {
+		p.euler.used = true;
+		if (e["order"]) p.euler.order = ParseEulerOrder(e["order"].as<std::string>());
+		if (e["frame"]) p.euler.intrinsic = e["frame"].as<std::string>() != "extrinsic";
+		if (e["angles_deg"]) {
+			int i = 0;
+			for (const auto& v : e["angles_deg"]) p.euler.angles_deg[i++] = v.as<double>();
+		}
+		// The triple is the authored rotation, so it wins over whatever
+		// axis+angle the file carries -- a hand-edited rotation_deg beside
+		// an Euler block would otherwise silently disagree with the tab.
+		SyncPlacementRotation(p);
+	}
 	return p;
 }
 

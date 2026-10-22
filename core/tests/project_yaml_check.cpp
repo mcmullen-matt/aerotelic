@@ -217,6 +217,47 @@ void CheckPrimitiveRoundTrip() {
 	CheckClose(Volume(original.BuildSolid()), Volume(rebuilt.BuildSolid()), 1e-6, "primitive round trip: volume");
 }
 
+// A placement written by the Transform dialog: an axis as typed (not
+// normalised, and kept even at zero angle) and, when the Euler tab
+// authored the rotation, the triple beside the axis+angle it composes to.
+void CheckPlacementRoundTrip() {
+	ProjectEntity e;
+	e.name = "Prim1";
+	e.type = EntityType::Primitive;
+	e.model = PrimitiveSpec{};
+	e.placement.translation = {1.0, 2.0, 3.0};
+	e.placement.rotation_axis = {0.0, 2.0, 1.0};  // as typed
+	e.placement.rotation_deg = 0.0;               // ...and no angle yet
+
+	ProjectEntity back = RoundTripThroughText(e);
+	CheckClose(back.placement.rotation_axis[1], 2.0, 1e-12, "placement round trip: the axis is stored as typed");
+	CheckClose(back.placement.rotation_axis[2], 1.0, 1e-12, "placement round trip: ...all of it");
+	CheckClose(back.placement.rotation_deg, 0.0, 1e-12, "placement round trip: a zero angle does not erase the axis");
+	Check(!back.placement.euler.used, "placement round trip: no Euler block without an Euler rotation");
+
+	// With the Euler tab in use: the triple comes back, and the axis+angle
+	// beside it is the one it composes to.
+	e.placement.euler.used = true;
+	e.placement.euler.intrinsic = true;
+	e.placement.euler.order = EulerOrder::ZYX;
+	e.placement.euler.angles_deg = {15.0, -30.0, 45.0};
+	SyncPlacementRotation(e.placement);
+
+	ProjectEntity with_euler = RoundTripThroughText(e);
+	const Placement& p = with_euler.placement;
+	Check(p.euler.used && p.euler.intrinsic && p.euler.order == EulerOrder::ZYX,
+		"placement round trip: the Euler order and frame survive");
+	CheckClose(p.euler.angles_deg[0], 15.0, 1e-12, "placement round trip: euler angle 0");
+	CheckClose(p.euler.angles_deg[1], -30.0, 1e-12, "placement round trip: euler angle 1");
+	CheckClose(p.euler.angles_deg[2], 45.0, 1e-12, "placement round trip: euler angle 2");
+	CheckClose(p.rotation_deg, e.placement.rotation_deg, 1e-9,
+		"placement round trip: the derived angle agrees with the triple");
+	for (int i = 0; i < 3; ++i) {
+		CheckClose(p.rotation_axis[i], e.placement.rotation_axis[i], 1e-9,
+			"placement round trip: the derived axis agrees with the triple");
+	}
+}
+
 // A lattice under `lattices:` (OpenLattice parameters, targets, reserved
 // volumes) round-trips, and its references are validated like a boolean's.
 void CheckLatticeRoundTrip() {
@@ -413,6 +454,7 @@ int main() {
 		CheckLoftedNacelleRoundTrip();
 		CheckPropellerRoundTrip();
 		CheckPrimitiveRoundTrip();
+		CheckPlacementRoundTrip();
 		CheckLatticeRoundTrip();
 		CheckRealPythonProjectFile();
 	} catch (const std::exception& e) {

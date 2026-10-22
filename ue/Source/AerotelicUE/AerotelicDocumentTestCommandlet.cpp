@@ -29,6 +29,17 @@ namespace
 		UE_LOG(LogAerotelicDocumentTest, Error, TEXT("FAIL: %s"), *Msg);
 	}
 
+	// Moves an entity the way the Transform dialog does. SetActorLocation()
+	// would move the actor without touching its placement, which is what
+	// gets saved and copied (AerotelicEntityActor::GetPlacement).
+	void MoveTo(AAerotelicEntityActor* Entity, const FVector& Where)
+	{
+		if (Entity == nullptr) return;
+		aerotelic::Placement P = Entity->GetPlacement();
+		P.translation = {Where.X, Where.Y, Where.Z};
+		Entity->ApplyPlacement(P);
+	}
+
 	// RefreshProxy() -- the only thing that normally calls BuildSolid() --
 	// short-circuits under IsRunningCommandlet() (see AerotelicEntityActor.cpp;
 	// that guard exists to dodge a real StaticMeshComponent hang under -run=).
@@ -93,9 +104,52 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 		if (E != nullptr) Doc->RemoveEntity(E);
 	}
 
+	MoveTo(Wing, FVector(10.0, 20.0, 30.0));
+
+	// What the Transform dialog needs of a placement, which reading one
+	// back off the actor's quaternion could not give it.
+	UE_LOG(LogAerotelicDocumentTest, Display, TEXT("step: placement"));
 	if (Wing != nullptr)
 	{
-		Wing->SetActorLocation(FVector(10.0, 20.0, 30.0));
+		const aerotelic::Placement Saved = Wing->GetPlacement();
+		aerotelic::Placement P = Saved;
+
+		// An axis typed while the angle is still zero has to survive: the
+		// transform it derives is the identity, which has no axis at all.
+		P.rotation_axis = {0.0, 1.0, 0.0};
+		P.rotation_deg = 0.0;
+		Wing->ApplyPlacement(P);
+		const aerotelic::Placement AtZero = Wing->GetPlacement();
+		Check(AtZero.rotation_axis[0] == 0.0 && AtZero.rotation_axis[1] == 1.0 && AtZero.rotation_axis[2] == 0.0,
+			"placement: an axis set while the angle is zero is kept");
+
+		// ...and an axis is kept as typed, not rescaled to unit length.
+		P.rotation_axis = {0.0, 2.0, 1.0};
+		P.rotation_deg = 45.0;
+		Wing->ApplyPlacement(P);
+		const aerotelic::Placement Unnormalised = Wing->GetPlacement();
+		Check(Unnormalised.rotation_axis[1] == 2.0 && Unnormalised.rotation_axis[2] == 1.0,
+			"placement: the axis is not normalised behind the user's back");
+		Check(Unnormalised.rotation_deg == 45.0, "placement: the angle is kept exactly");
+
+		// The Euler tab: the triple is what was authored, and the axis and
+		// angle the geometry uses are derived from it. ZYX with only the
+		// last angle set is a 90-degree roll about X.
+		P.euler.used = true;
+		P.euler.intrinsic = true;
+		P.euler.order = aerotelic::EulerOrder::ZYX;
+		P.euler.angles_deg = {0.0, 0.0, 90.0};
+		Wing->ApplyPlacement(P);
+		const aerotelic::EntityTransform T = Wing->GetEntityTransform();
+		Check(FMath::IsNearlyEqual(T.angle_deg, 90.0, 1e-9) && FMath::IsNearlyEqual(T.ax, 1.0, 1e-9)
+			&& FMath::IsNearlyZero(T.ay) && FMath::IsNearlyZero(T.az),
+			FString::Printf(TEXT("placement: an Euler triple drives the axis+angle the geometry uses (got %f about %f,%f,%f)"),
+				T.angle_deg, T.ax, T.ay, T.az));
+		Check(Wing->GetPlacement().euler.used, "placement: the triple itself is kept, so the Euler tab reopens on it");
+
+		Wing->ApplyPlacement(Saved);
+		Check(Wing->GetPlacement().rotation_deg == Saved.rotation_deg && !Wing->GetPlacement().euler.used,
+			"placement: restored for the rest of the run");
 	}
 
 	// A boolean result over the fuselage and the sphere, saved under
@@ -416,7 +470,7 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 			aerotelic::WingModel* SourceModel = Source->GetModelAs<aerotelic::WingModel>();
 			const double OriginalSpan = SourceModel->planform().SemiSpan();
 			Source->SetColorOverride(FLinearColor(0.25f, 0.5f, 0.75f));
-			Source->SetActorLocation(FVector(1.0, 2.0, 3.0));
+			MoveTo(Source, FVector(1.0, 2.0, 3.0));
 			const int32 Before = Doc->GetEntities().Num();
 
 			Check(Doc->CopyEntityToClipboard(Source), "copy/paste: the wing copies");
@@ -449,7 +503,7 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 				CopyModel->planform().SetSemiSpan(OriginalSpan * 5.0);
 				Check(FMath::IsNearlyEqual(SourceModel->planform().SemiSpan(), OriginalSpan * 2.0, 1e-12),
 					"copy/paste: editing the COPY leaves the source alone");
-				Source->SetActorLocation(FVector(40.0, 50.0, 60.0));
+				MoveTo(Source, FVector(40.0, 50.0, 60.0));
 				Check(Copy->GetActorLocation().Equals(FVector(1.0, 2.0, 3.0), 1e-6),
 					"copy/paste: moving the source leaves the copy where it was");
 

@@ -187,16 +187,27 @@ public:
 
 	// This actor's placement as the backend's feature tree wants it.
 	aerotelic::EntityTransform GetEntityTransform() const;
-	// Applies a saved placement (from a loaded project file) to this actor.
+	// Applies a placement -- from a loaded project file, the clipboard, or
+	// the Transform dialog -- and makes it this entity's stored one.
 	// Placement is declared in the base `aerotelic` namespace (feature_tree.hpp),
 	// not `aerotelic::project_yaml` -- project_yaml.hpp only (de)serializes it.
-	void ApplyPlacement(const aerotelic::Placement& Placement);
-	aerotelic::Placement GetPlacement() const;
+	void ApplyPlacement(const aerotelic::Placement& InPlacement);
+	// The placement as authored, NOT as read back off the actor transform.
+	// The two are not interchangeable: a quaternion cannot hold an axis at
+	// zero angle (it is the identity whatever the axis was) nor an axis
+	// that was typed un-normalised, so reading the dialog's fields back out
+	// of one overwrote them -- see the comment on Placement in ApplyPlacement.
+	aerotelic::Placement GetPlacement() const { return Placement; }
 
 	UPROPERTY(VisibleAnywhere, Category = "Aerotelic")
 	FString EntityName;
 
 private:
+	// This entity's placement, as authored. The actor's own transform is
+	// derived from it (ApplyPlacement) for the viewport's benefit and is
+	// never read back as the placement: that round-trip is lossy.
+	aerotelic::Placement Placement{{0.0, 0.0, 0.0}, {0.0, 0.0, 1.0}, 0.0};
+
 	UPROPERTY(VisibleAnywhere, Category = "Aerotelic")
 	TObjectPtr<USceneComponent> ProxyRoot;
 

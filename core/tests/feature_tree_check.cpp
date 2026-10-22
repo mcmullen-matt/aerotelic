@@ -4,6 +4,8 @@
 // (GProp) and internal consistency (volume-preserving mirror, additive
 // volume for non-overlapping fuses, etc.) rather than a Python cross-check.
 
+#include <algorithm>
+#include <cmath>
 #include <iostream>
 #include <string>
 
@@ -183,6 +185,159 @@ void CheckFoldBooleanAndSerializeRoundTrip() {
 	CheckClose(Volume(reloaded_terminal->result), 3.0, 1e-9, "round-tripped tree rebuilds to the same volume");
 }
 
+// ---------------------------------------------------------------------
+// Euler rotations (the Transform dialog's Euler tab)
+// ---------------------------------------------------------------------
+
+const EulerOrder kAllOrders[6] = {EulerOrder::XYZ, EulerOrder::XZY, EulerOrder::YXZ,
+	EulerOrder::YZX, EulerOrder::ZXY, EulerOrder::ZYX};
+
+double WorstDifference(const Mat3& a, const Mat3& b) {
+	double worst = 0.0;
+	for (int i = 0; i < 9; ++i) worst = std::max(worst, std::abs(a[i] - b[i]));
+	return worst;
+}
+
+std::string Describe(EulerOrder order, bool intrinsic, const std::array<double, 3>& angles) {
+	return std::string(EulerOrderName(order)) + (intrinsic ? " intrinsic" : " extrinsic") + " ("
+		+ std::to_string(static_cast<int>(angles[0])) + ", " + std::to_string(static_cast<int>(angles[1])) + ", "
+		+ std::to_string(static_cast<int>(angles[2])) + ")";
+}
+
+void CheckEulerComposition() {
+	// A composed triple is a rotation: orthonormal, right-handed, and the
+	// product of exactly the three single-axis matrices in order.
+	EulerRotation e;
+	e.order = EulerOrder::ZYX;
+	e.intrinsic = true;
+	e.angles_deg = {20.0, -35.0, 60.0};
+	const Mat3 m = EulerMatrix(e);
+	const Mat3 by_hand = MatrixMultiply(MatrixMultiply(
+		RotationMatrix({0, 0, 1}, 20.0), RotationMatrix({0, 1, 0}, -35.0)), RotationMatrix({1, 0, 0}, 60.0));
+	CheckClose(WorstDifference(m, by_hand), 0.0, 1e-15,
+		"intrinsic ZYX is Rz * Ry * Rx, the three matrices in application order");
+
+	const double det = m[0] * (m[4] * m[8] - m[5] * m[7]) - m[1] * (m[3] * m[8] - m[5] * m[6])
+		+ m[2] * (m[3] * m[7] - m[4] * m[6]);
+	CheckClose(det, 1.0, 1e-12, "a composed Euler matrix is a rotation (det = +1)");
+	const Mat3 should_be_identity = MatrixMultiply(m, {m[0], m[3], m[6], m[1], m[4], m[7], m[2], m[5], m[8]});
+	CheckClose(WorstDifference(should_be_identity, {1, 0, 0, 0, 1, 0, 0, 0, 1}), 0.0, 1e-12,
+		"a composed Euler matrix is orthonormal (M * M^T = I)");
+
+	// The classic equivalence: turning about the moving axes in one order
+	// is the same as turning about the fixed axes in the opposite one.
+	EulerRotation reversed;
+	reversed.order = EulerOrder::XYZ;
+	reversed.intrinsic = false;
+	reversed.angles_deg = {60.0, -35.0, 20.0};
+	CheckClose(WorstDifference(m, EulerMatrix(reversed)), 0.0, 1e-15,
+		"intrinsic ZYX equals extrinsic XYZ read backwards");
+
+	// Zero everywhere is the identity, so the placement it syncs is no
+	// rotation at all rather than some arbitrary axis.
+	EulerRotation none;
+	const auto [none_axis, none_deg] = AxisAngleFromEuler(none);
+	CheckClose(none_deg, 0.0, 1e-15, "three zero angles are no rotation");
+	CheckClose(none_axis[2], 1.0, 1e-15, "...reported about Z rather than a degenerate axis");
+}
+
+void CheckEulerToAxisAngle() {
+	// Only the last angle of an intrinsic ZYX set: a 90-degree roll about X.
+	EulerRotation roll;
+	roll.order = EulerOrder::ZYX;
+	roll.intrinsic = true;
+	roll.angles_deg = {0.0, 0.0, 90.0};
+	auto [axis, deg] = AxisAngleFromEuler(roll);
+	CheckClose(deg, 90.0, 1e-12, "ZYX (0, 0, 90) is a 90-degree rotation");
+	CheckClose(axis[0], 1.0, 1e-12, "...about +X");
+	CheckClose(axis[1], 0.0, 1e-12, "...with no Y component");
+	CheckClose(axis[2], 0.0, 1e-12, "...and no Z component");
+
+	// 90 about Z then 90 about X, both about the fixed axes, is the
+	// axis-cycling rotation: 120 degrees about (1, -1, 1)/sqrt(3).
+	EulerRotation cycle;
+	cycle.order = EulerOrder::ZXY;  // Z first, then X, then an unused Y
+	cycle.intrinsic = false;
+	cycle.angles_deg = {90.0, 90.0, 0.0};
+	auto [cycle_axis, cycle_deg] = AxisAngleFromEuler(cycle);
+	const double k = 1.0 / std::sqrt(3.0);
+	CheckClose(cycle_deg, 120.0, 1e-12, "extrinsic Z90 then X90 is 120 degrees");
+	CheckClose(cycle_axis[0], k, 1e-12, "...about (1, -1, 1)/sqrt(3): x");
+	CheckClose(cycle_axis[1], -k, 1e-12, "...y");
+	CheckClose(cycle_axis[2], k, 1e-12, "...z");
+
+	// An axis+angle is itself recoverable from the matrix it builds, at
+	// every angle including the two that lose precision naively.
+	for (double angle : {0.5, 45.0, 90.0, 179.5, 180.0}) {
+		const std::array<double, 3> in{0.0, 2.0, 1.0};  // deliberately not unit
+		auto [out_axis, out_deg] = AxisAngleFromMatrix(RotationMatrix(in, angle));
+		CheckClose(WorstDifference(RotationMatrix(in, angle), RotationMatrix(out_axis, out_deg)), 0.0, 1e-12,
+			"axis+angle round-trips through its matrix at " + std::to_string(static_cast<int>(angle)) + " degrees");
+		Check(out_deg >= 0.0 && out_deg <= 180.0 + 1e-9, "...reported the short way round");
+	}
+}
+
+void CheckEulerDecomposition() {
+	// Every order, both frames: a triple composed into a matrix and read
+	// back out must be the same rotation. The second and third sets sit at
+	// gimbal lock, where the first and third angles are not separable and
+	// only their sum survives -- still the same rotation.
+	const std::array<double, 3> sets[3] = {{37.0, -22.0, 115.0}, {30.0, 90.0, 0.0}, {30.0, -90.0, 45.0}};
+	for (EulerOrder order : kAllOrders) {
+		for (bool intrinsic : {true, false}) {
+			for (const std::array<double, 3>& angles : sets) {
+				EulerRotation e;
+				e.order = order;
+				e.intrinsic = intrinsic;
+				e.angles_deg = angles;
+				const Mat3 m = EulerMatrix(e);
+
+				EulerRotation back = e;
+				back.angles_deg = EulerAnglesFromMatrix(m, order, intrinsic);
+				CheckClose(WorstDifference(m, EulerMatrix(back)), 0.0 , 1e-12,
+					"euler " + Describe(order, intrinsic, angles) + " decomposes to the same rotation");
+				Check(std::abs(back.angles_deg[1]) <= 90.0 + 1e-9,
+					"euler " + Describe(order, intrinsic, angles) + ": the middle angle comes back in [-90, 90]");
+
+				// Away from gimbal lock the triple itself comes back, not
+				// merely an equivalent one.
+				if (std::abs(angles[1]) < 89.0) {
+					for (int i = 0; i < 3; ++i) {
+						CheckClose(back.angles_deg[i], angles[i], 1e-9,
+							"euler " + Describe(order, intrinsic, angles) + ": angle " + std::to_string(i) + " survives");
+					}
+				}
+			}
+		}
+	}
+}
+
+void CheckPlacementRotationSync() {
+	// An Euler triple in use drives the axis+angle every consumer reads.
+	Placement p{{1.0, 2.0, 3.0}, {0.0, 0.0, 1.0}, 0.0};
+	p.euler.used = true;
+	p.euler.order = EulerOrder::ZYX;
+	p.euler.intrinsic = true;
+	p.euler.angles_deg = {0.0, 0.0, 90.0};
+	SyncPlacementRotation(p);
+	CheckClose(p.rotation_deg, 90.0, 1e-12, "sync: an Euler triple sets the angle");
+	CheckClose(p.rotation_axis[0], 1.0, 1e-12, "sync: ...and the axis");
+
+	// An unused one leaves an axis+angle placement completely alone,
+	// un-normalised axis included.
+	Placement q{{0.0, 0.0, 0.0}, {0.0, 2.0, 1.0}, 30.0};
+	SyncPlacementRotation(q);
+	Check(q.rotation_axis[1] == 2.0 && q.rotation_axis[2] == 1.0 && q.rotation_deg == 30.0,
+		"sync: without an Euler triple the axis and angle are untouched");
+
+	// A zero-length axis is no rotation whatever the angle says. gp_Dir
+	// throws on a null direction, and a hand-edited project file or a
+	// half-typed axis in the dialog can hold one.
+	PrimitiveModel box = MakeBox(2, 2, 2);
+	TopoDS_Shape placed = Place(box.BuildSolid(), {0.0, 0.0, 0.0}, {0.0, 0.0, 0.0}, 90.0);
+	CheckClose(Volume(placed), 8.0, 1e-9, "Place with a zero-length axis is a no-op, not a gp_Dir throw");
+}
+
 } // namespace
 
 int main() {
@@ -192,6 +347,10 @@ int main() {
 		CheckFilletAppliedFlag();
 		CheckTreeBookkeeping();
 		CheckFoldBooleanAndSerializeRoundTrip();
+		CheckEulerComposition();
+		CheckEulerToAxisAngle();
+		CheckEulerDecomposition();
+		CheckPlacementRotationSync();
 	} catch (const std::exception& e) {
 		std::cout << "UNEXPECTED EXCEPTION: " << e.what() << "\n";
 		return 1;

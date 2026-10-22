@@ -1139,19 +1139,29 @@ void AAerotelicEntityActor::ShowBoxFallback(const TopoDS_Shape& Shape)
 
 aerotelic::EntityTransform AAerotelicEntityActor::GetEntityTransform() const
 {
-	const FVector Loc = GetActorLocation();
-	FVector Axis;
-	float AngleRad;
-	GetActorQuat().ToAxisAndAngle(Axis, AngleRad);
-	if (!Axis.IsNearlyZero())
+	const aerotelic::Placement& P = Placement;
+	// A zero-length axis is no rotation whatever the angle reads: OCC's
+	// gp_Dir, which Place() hands this to, throws on a null direction.
+	const bool bHasAxis = P.rotation_axis[0] != 0.0 || P.rotation_axis[1] != 0.0 || P.rotation_axis[2] != 0.0;
+	if (!bHasAxis)
 	{
-		return { Loc.X, Loc.Y, Loc.Z, Axis.X, Axis.Y, Axis.Z, FMath::RadiansToDegrees(AngleRad) };
+		return { P.translation[0], P.translation[1], P.translation[2], 0.0, 0.0, 1.0, 0.0 };
 	}
-	return { Loc.X, Loc.Y, Loc.Z, 0.0, 0.0, 1.0, 0.0 };
+	return { P.translation[0], P.translation[1], P.translation[2],
+		P.rotation_axis[0], P.rotation_axis[1], P.rotation_axis[2], P.rotation_deg };
 }
 
-void AAerotelicEntityActor::ApplyPlacement(const aerotelic::Placement& Placement)
+void AAerotelicEntityActor::ApplyPlacement(const aerotelic::Placement& InPlacement)
 {
+	// The placement is stored verbatim, never normalised and never read
+	// back off the transform below. An FQuat holds a rotation, not the
+	// parameters that describe one: at zero angle it is the identity and
+	// has forgotten the axis entirely, and it cannot hold an axis that was
+	// typed as (0, 2, 1) rather than a unit vector. Normalising is also
+	// unnecessary -- gp_Dir (core) and FQuat (here) both do it themselves.
+	Placement = InPlacement;
+	aerotelic::SyncPlacementRotation(Placement);
+
 	const FVector Loc(Placement.translation[0], Placement.translation[1], Placement.translation[2]);
 	const FVector Axis(Placement.rotation_axis[0], Placement.rotation_axis[1], Placement.rotation_axis[2]);
 	FQuat Quat = FQuat::Identity;
@@ -1159,11 +1169,9 @@ void AAerotelicEntityActor::ApplyPlacement(const aerotelic::Placement& Placement
 	{
 		Quat = FQuat(Axis.GetSafeNormal(), FMath::DegreesToRadians(Placement.rotation_deg));
 	}
+	// Moving the root is what refreshes the mirror and rebuilds any
+	// boolean over this entity -- see OnRootTransformed. An edit that
+	// leaves the transform alone (an axis typed while the angle is zero)
+	// deliberately rebuilds nothing: the geometry really is unchanged.
 	SetActorLocationAndRotation(Loc, Quat);
-}
-
-aerotelic::Placement AAerotelicEntityActor::GetPlacement() const
-{
-	aerotelic::EntityTransform T = GetEntityTransform();
-	return { {T.tx, T.ty, T.tz}, {T.ax, T.ay, T.az}, T.angle_deg };
 }

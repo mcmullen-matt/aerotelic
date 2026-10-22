@@ -69,7 +69,83 @@ const char* FeatureKindName(FeatureKind k);
 // supplied by whatever owns the scene (not this module's business).
 struct EntityTransform { double tx, ty, tz, ax, ay, az, angle_deg; };
 
-struct Placement { std::array<double, 3> translation; std::array<double, 3> rotation_axis; double rotation_deg; };
+// ---------------------------------------------------------------------
+// Euler rotations
+// ---------------------------------------------------------------------
+
+// A sizeof needs a complete type, so these two instantiate the array
+// specialisations the signatures below return *before* they are declared.
+// Without that MSVC has to guess how a not-yet-instantiated UDT comes
+// back and warns C4686 ("possible change in behavior, change in UDT
+// return calling convention") at every call site in another translation
+// unit -- harmless in itself, but not a warning worth leaving sitting in
+// the geometry path for someone to re-diagnose later.
+static_assert(sizeof(std::array<double, 9>) == 9 * sizeof(double), "a 3x3 matrix is nine doubles");
+static_assert(sizeof(std::array<int, 3>) == 3 * sizeof(int), "an axis triple is three ints");
+
+// A rotation authored as three angles instead of one axis and one angle
+// (the Transform dialog's Euler approach). `order` names the axes in the order
+// the three rotations are applied and `angles_deg` runs parallel to it;
+// `intrinsic` says each turn is about the axes the previous turns already
+// moved (the aircraft convention: yaw, then pitch about the yawed axis),
+// false that they are about the fixed world axes.
+//
+// Composing them is still one rotation matrix, so still one equivalent
+// axis+angle -- which is what the geometry uses. Nothing downstream of
+// Placement knows Euler angles exist.
+enum class EulerOrder { XYZ, XZY, YXZ, YZX, ZXY, ZYX };
+const char* EulerOrderName(EulerOrder o);
+EulerOrder ParseEulerOrder(const std::string& s);
+// The three axis indices (0 = X, 1 = Y, 2 = Z) in application order.
+std::array<int, 3> EulerOrderAxes(EulerOrder o);
+
+struct EulerRotation {
+	// True: these three angles are what the user authored, and the
+	// placement's axis+angle is derived from them. A matrix decomposes
+	// into a triple non-uniquely (and not at all at gimbal lock), so the
+	// triple has to be stored to re-open the tab on what was typed.
+	bool used = false;
+	bool intrinsic = true;
+	EulerOrder order = EulerOrder::ZYX;
+	std::array<double, 3> angles_deg{{0.0, 0.0, 0.0}};
+};
+
+// Row-major 3x3 (m[3 * row + col]) acting on column vectors, v' = M v --
+// the convention OCC's gp_Trsf rotation and UE's FQuat both use.
+using Mat3 = std::array<double, 9>;
+
+// Rotation of `angle_deg` about `axis` by the right-hand rule. `axis` need
+// not be unit; a zero-length one gives the identity rather than throwing
+// (gp_Dir, which ApplyRotation feeds, would throw).
+Mat3 RotationMatrix(const std::array<double, 3>& axis, double angle_deg);
+Mat3 MatrixMultiply(const Mat3& a, const Mat3& b);
+// The three rotations composed into the single matrix they amount to.
+Mat3 EulerMatrix(const EulerRotation& e);
+// `m` as one rotation about one axis: a unit axis and an angle in
+// [0, 180] degrees. The identity gives ({0, 0, 1}, 0).
+std::pair<std::array<double, 3>, double> AxisAngleFromMatrix(const Mat3& m);
+// AxisAngleFromEuler(e) == AxisAngleFromMatrix(EulerMatrix(e)).
+std::pair<std::array<double, 3>, double> AxisAngleFromEuler(const EulerRotation& e);
+// The inverse, so the Euler tab can open on a rotation that was authored
+// as an axis and an angle: `m` as a triple in `order` with `intrinsic`'s
+// frame. The middle angle comes back in [-90, 90]; at gimbal lock (middle
+// = +/-90) the first and third are not separable and only their sum is
+// meaningful, so the third is reported as 0 and the first carries the sum.
+std::array<double, 3> EulerAnglesFromMatrix(const Mat3& m, EulerOrder order, bool intrinsic);
+
+struct Placement {
+	std::array<double, 3> translation;
+	std::array<double, 3> rotation_axis;
+	double rotation_deg;
+	// Authoring provenance only: `rotation_axis`/`rotation_deg` above stay
+	// the rotation every consumer reads, whichever tab typed them.
+	EulerRotation euler{};
+};
+
+// Recomputes rotation_axis/rotation_deg from p.euler when that is in use;
+// leaves the placement alone otherwise. Every writer of `euler` ends with
+// this call, so the axis+angle a consumer reads is never stale.
+void SyncPlacementRotation(Placement& p);
 
 // One node in the dependency graph. Subclasses implement Compute(), called
 // only when the node is dirty and only after every upstream input is rebuilt.
