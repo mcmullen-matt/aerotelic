@@ -140,6 +140,7 @@ entities:
       pole_links:
         {}
     color: [0.33333298563957214, 0.33333298563957214, 0.33333298563957214]
+    hidden: true
   - name: Wing
     type: wing
     mirror: true
@@ -1231,6 +1232,7 @@ entities:
                 - 0.96956221358687589
                 - 0.97966981818565324
     color: [0.33333298563957214, 0.33333298563957214, 0.33333298563957214]
+    hidden: true
   - name: Boom
     type: fuselage
     mirror: true
@@ -1359,6 +1361,7 @@ entities:
       pole_links:
         {}
     color: [0.33333298563957214, 0.33333298563957214, 0.33333298563957214]
+    hidden: true
   - name: VT
     type: wing
     mirror: true
@@ -2460,6 +2463,7 @@ entities:
                 - 0.96956221358687589
                 - 0.97966981818565324
     color: [0.33333298563957214, 0.33333298563957214, 0.33333298563957214]
+    hidden: true
   - name: HT
     type: wing
     mirror: true
@@ -3561,6 +3565,7 @@ entities:
                 - 0.96956221358687589
                 - 0.97966981818565324
     color: [0.33333298563957214, 0.33333298563957214, 0.33333298563957214]
+    hidden: true
   - name: Nacelle 6
     type: nacelle
     mirror: true
@@ -3678,6 +3683,7 @@ entities:
       chevron_count: 0
       chevron_depth: 0.0625
     color: [0.33333298563957214, 0.33333298563957214, 0.33333298563957214]
+    hidden: true
   - name: Propeller 7
     type: propeller
     mirror: true
@@ -3697,6 +3703,7 @@ entities:
       blade_count: 4
       blade_x: 0.26000000000000001
       hub_radius: 0.12
+      spinner: true
       spinner_length: 0.40000000000000002
       spinner_curve:
         degree: 3
@@ -5665,6 +5672,7 @@ entities:
                   - 0.99425250276046251
                   - 0.99666051580363746
                   - 0.99838573363481975
+    hidden: true
   - name: Cylinder 8
     type: primitive
     mirror: true
@@ -5693,3 +5701,52 @@ entities:
       cyl_radius: 0.25
       cyl_length: 4
     color: [0.33333298563957214, 0.33333298563957214, 0.33333298563957214]
+    hidden: true
+booleans:
+  - name: BoolOp 1
+    operation: fuse
+    operands:
+      - Center
+      - Wing
+      - {mirror: Wing}
+      - Boom
+      - {mirror: Boom}
+      - VT
+      - {mirror: VT}
+      - HT
+      - {mirror: HT}
+      - Nacelle 6
+      - {mirror: Nacelle 6}
+    hidden: true
+lattices:
+  - name: Lattice 1
+    lattice:
+      family: honeycomb
+      type: Square
+      cell_aspect: 1
+      axis: z
+      wall_sizing: volume-fraction
+      cell_size: 0.69999999999999996
+      volume_fraction: 0.20000000000000001
+      wall_thickness: 0.02
+      resolution: 10
+      skin_thickness: 0.029364876643183564
+      origin: [0, 0, 0]
+    targets:
+      - Center
+      - Wing
+      - {mirror: Wing}
+      - Boom
+      - {mirror: Boom}
+      - VT
+      - {mirror: VT}
+      - HT
+      - {mirror: HT}
+      - Nacelle 6
+      - {mirror: Nacelle 6}
+      - Propeller 7
+      - {mirror: Propeller 7}
+      - BoolOp 1
+    exclusions:
+      - Cylinder 8
+      - {mirror: Cylinder 8}

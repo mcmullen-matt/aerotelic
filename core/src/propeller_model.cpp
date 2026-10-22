@@ -1,6 +1,7 @@
 #include "aerotelic/propeller_model.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <limits>
 #include <stdexcept>
@@ -22,6 +23,7 @@
 #include <TopTools_ListOfShape.hxx>
 #include <TopoDS_Compound.hxx>
 #include <gp_Ax1.hxx>
+#include <gp_Ax2.hxx>
 #include <gp_Dir.hxx>
 #include <gp_Pnt.hxx>
 #include <gp_Trsf.hxx>
@@ -58,6 +60,22 @@ double Trapezoid(const std::vector<double>& y, const std::vector<double>& x) {
 }
 
 } // namespace
+
+const char* SpinDirectionName(SpinDirection d) {
+	switch (d) {
+		case SpinDirection::Positive: return "positive";
+		case SpinDirection::Negative: return "negative";
+	}
+	return "positive";
+}
+
+SpinDirection ParseSpinDirection(const std::string& s) {
+	std::string l = s;
+	for (char& c : l) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+	if (l == "positive" || l == "+" || l == "right" || l == "rh") return SpinDirection::Positive;
+	if (l == "negative" || l == "-" || l == "left" || l == "lh") return SpinDirection::Negative;
+	throw std::invalid_argument("unknown propeller spin direction '" + s + "' (expected positive or negative)");
+}
 
 PropellerSpec::PropellerSpec() {
 	spinner_curve.degree = 3;
@@ -115,6 +133,7 @@ PropellerModel::PropellerModel(const PropellerSpec& spec) {
 	hub_radius = spec.hub_radius;
 	spinner = spec.spinner;
 	spinner_length = spec.spinner_length;
+	spin_direction = spec.spin_direction;
 	reference_images = spec.reference_images;
 
 	// Held on the axis at both ends, and at the two ends of the length.
@@ -146,6 +165,7 @@ PropellerSpec PropellerModel::Serialize() const {
 	s.hub_radius = hub_radius;
 	s.spinner = spinner;
 	s.spinner_length = spinner_length;
+	s.spin_direction = spin_direction;
 	s.spinner_curve = spinner_curve_->Serialize();
 	s.blade = blade_->Serialize();
 	s.reference_images = reference_images;
@@ -285,6 +305,14 @@ TopoDS_Shape PropellerModel::BladeSolid(int n_span, std::optional<double> statio
 
 	gp_Trsf turn;
 	turn.SetRotation(gp_Ax1(gp_Pnt(0, 0, 0), gp_Dir(0, 1, 0)), -0.5 * kPi);
+	if (spin_direction == SpinDirection::Negative) {
+		// The same reflection BuildMeshes folds into its turn: the plane
+		// z = 0, which after the turn holds the axis and the span. Applied
+		// after the turn (mirror * turn), so the blade keeps its azimuth.
+		gp_Trsf mirror;
+		mirror.SetMirror(gp_Ax2(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1)));
+		turn = mirror.Multiplied(turn);
+	}
 	return BRepBuilderAPI_Transform(blade_shape, turn, true).Shape();
 }
 
@@ -324,7 +352,20 @@ std::vector<NamedMesh> PropellerModel::BuildMeshes(double tolerance) const {
 	// Blades: the wing loft from the hub station, turned -90 degrees about
 	// Y, then each copy rotated about X and shifted along it.
 	TriMesh blade = blade_->BuildMesh(tolerance, hub_radius, 1.0);
-	const std::array<double, 9> turn = {0, 0, -1, 0, 1, 0, 1, 0, 0}; // R_y(-pi/2)
+	std::array<double, 9> turn = {0, 0, -1, 0, 1, 0, 1, 0, 0}; // R_y(-pi/2)
+	// The turn carries the wing's chord onto local z, so reflecting z is
+	// the reflection in the plane of the axis and the span: it reverses
+	// the blade's camber and twist and leaves the span on +y and the
+	// axial direction alone, which is the opposite hand. Folded into the
+	// turn (negating its z row) rather than applied afterwards, so the
+	// blades keep their azimuths and Blade 1 still sits at zero -- the
+	// DUST writer reads Blade 1 at azimuth 0. TriMesh::Transform reverses
+	// the winding for us, the matrix now being a reflection.
+	if (spin_direction == SpinDirection::Negative) {
+		turn[6] = -turn[6];
+		turn[7] = -turn[7];
+		turn[8] = -turn[8];
+	}
 	for (int k = 0; k < blade_count; ++k) {
 		double a = 2.0 * kPi * k / blade_count;
 		double c = std::cos(a), s = std::sin(a);

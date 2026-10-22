@@ -106,7 +106,8 @@ The layout follows the Python/Qt version's main window (`aerotelic/ui/main_windo
 * **Mirroring** (entity menu, Mirrored): a port-side copy reflected about
   world Y = 0 from the *placed* shape, exactly WingDesigner's
   MirrorFeature -- an off-centre boom lands on the other side and a
-  mirrored propeller comes out the opposite hand. It follows every move
+  mirrored propeller comes out the opposite hand (independently of its own
+  Spin direction, which the mirror reverses in turn). It follows every move
   and edit of its entity, inherits its colours, and is never edited on
   its own. Saved as the entity's `mirror:` flag.
 * **Colour**: per entity and per body, chosen with the engine's own colour
@@ -416,6 +417,41 @@ The layout follows the Python/Qt version's main window (`aerotelic/ui/main_windo
   byte-identical either way, the relaxed validation, and the round
   trip; `project_yaml_check` covers both flag states and a legacy node
   with no `spinner` key at all.
+* **Spin direction** (propeller panel): a **Spin direction** combo on the
+  Propeller tab, **Positive** or **Negative**
+  (`PropellerSpec::spin_direction`). The convention is the right-hand
+  rule with the thumb along the shaft pointing *from the propeller
+  towards the spinner* -- that is, forward, the spinner's tip being the
+  front of the hub. Since `+x` is aft, that thumb points along `-x`, so
+  a positive spin is the **negative** sense about the model's `+x`:
+  clockwise seen from behind, the usual right-hand tractor propeller,
+  and the only hand the model had before this field -- hence the
+  default, and hence `spin_direction:` **absent means positive**, so an
+  older project opens turning as it was drawn.
+  Negative is the mirror image. The blade is reflected in the plane of
+  the axis and the span -- `z = 0` after `BuildMeshes`' turn, the chord
+  lying along `z` there -- which reverses its camber and twist, so it
+  still leads with the leading edge and still thrusts forward while
+  turning the other way. The reflection is folded into that turn
+  (negating its `z` row) rather than applied after, so the blades keep
+  their azimuths and `Blade 1` still sits at zero, which the DUST writer
+  relies on; `TriMesh::Transform` reverses the winding on its own, the
+  matrix now having determinant -1. `BladeSolid` does the same with a
+  `gp_Trsf` mirror about `gp_Ax2(origin, (0,0,1))`, composed as
+  `mirror * turn`.
+  Nothing else moves: the spinner is a body of revolution, and the
+  blade's twist curve and every derived metric read the same either way
+  -- the hand is in the geometry, not in the sign of beta. It composes
+  with mirroring the *entity*, which also reverses the hand, so a
+  mirrored negative-spin propeller turns like an unmirrored positive
+  one. `propeller_fixture_check` checks that `Blade 1` negative is
+  `Blade 1` positive reflected in `z` vertex for vertex, that both
+  enclose the same volume outward (a reflection that forgot the winding
+  would come back inside out), that the blade really is handed in `z` at
+  all (else the setting would do nothing), that the metrics do not
+  budge, and -- on a one-blade propeller, so the blade opposite does not
+  cancel it -- that the OCCT solid's centroid flips in `z` and not along
+  the axis, cross-checking the `gp_Trsf` mirror against the matrix one.
 * **Transform dialog** (from the tree's context menu): one modeless window
   per entity with position, rotation axis and angle.
 * **Status bar**: last action on the left, project path on the right.
@@ -444,7 +480,8 @@ The layout follows the Python/Qt version's main window (`aerotelic/ui/main_windo
   section as a curve, `ConicCrossSectionPoint`), both nacelles (one
   periodic chain: outer skin, trailing-edge rim, inner skin, lip rim),
   propeller (spinner profile revolved as rings; blades from the hub station
-  outward, turned and placed as `BuildSolid` does) and the primitives.
+  outward, turned -- and reflected, for a negative spin direction -- and
+  placed as `BuildSolid` does) and the primitives.
   The viewport, the mirror and STL export use these meshes; the OCCT solid
   is only built on demand (booleans, STEP export) or for a model without a
   mesh builder (a boolean result; a nacelle with chevrons, which needs the
@@ -1034,6 +1071,13 @@ Details that matter:
   it as given, `dust_case.cpp` only ever reads `fabs(rot_rate)` for the
   time step, and no geometry depends on it -- so the whole convention is
   one negation at the one place that knows the propeller's handedness.
+  That reasoning is for a **positive-spin** propeller. A negative-spin
+  one (`PropellerSpec::spin_direction`) is that blade reflected in `z`,
+  so its leading edge sits at high `z` instead of low and it has to
+  travel towards `+z`: the sign flips back. The two flips are
+  independent and compose -- a mirrored negative-spin propeller gets
+  both and ends up back where it started, which is right, since each
+  reversal reverses the hand.
 * A **mirrored** propeller turns the opposite way and its placement
   contains a reflection, which cannot be a DUST orientation matrix
   (determinant -1). Writing M for the reflection, `M*R = (M*R*M)*M`: the

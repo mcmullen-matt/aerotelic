@@ -321,6 +321,7 @@ YAML::Node Encode(const PropellerSpec& spec) {
 	n["hub_radius"] = spec.hub_radius;
 	n["spinner"] = spec.spinner;
 	n["spinner_length"] = spec.spinner_length;
+	n["spin_direction"] = std::string(SpinDirectionName(spec.spin_direction));
 	n["spinner_curve"] = Encode(spec.spinner_curve);
 	if (spec.blade) n["blade"] = Encode(*spec.blade);
 	EncodeReferenceImages(n, spec.reference_images);
@@ -339,6 +340,9 @@ PropellerSpec DecodePropellerSpec(const YAML::Node& node) {
 	// optional had one, and reading those files must not silently remove it.
 	spec.spinner = node["spinner"] ? node["spinner"].as<bool>() : true;
 	spec.spinner_length = node["spinner_length"] ? node["spinner_length"].as<double>() : 0.40;
+	// Absent means positive: that was the only hand the model had before
+	// this field, so an older project must read back turning as it did.
+	spec.spin_direction = node["spin_direction"] ? ParseSpinDirection(node["spin_direction"].as<std::string>()) : SpinDirection::Positive;
 	if (node["spinner_curve"]) spec.spinner_curve = DecodeNurbsSpec(node["spinner_curve"]);
 	if (node["blade"]) spec.blade = DecodeWingModelSpec(node["blade"]);
 	return spec;

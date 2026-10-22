@@ -3,6 +3,8 @@
 // tools/generate_propeller_fixtures.py). Uses the default blade shape
 // throughout, matching this port's scope cut (propeller_model.hpp).
 
+#include <algorithm>
+#include <cmath>
 #include <fstream>
 #include <iostream>
 #include <string>
@@ -173,11 +175,110 @@ void CheckOptionalSpinner() {
 	          << " bodies (" << m_without[0].name << " ...), blades identical either way\n";
 }
 
+// The spin direction (PropellerSpec::spin_direction). Positive is the
+// default and the hand the model had before the field existed, so it must
+// be the untouched geometry; negative must be its exact mirror image in
+// the plane of the axis and the span, built the same way by the mesh path
+// and the OCCT path.
+void CheckSpinDirection() {
+	PropellerSpec spec;
+	Check(spec.spin_direction == SpinDirection::Positive, "spin: positive by default");
+	Check(std::string(SpinDirectionName(SpinDirection::Positive)) == "positive" &&
+		std::string(SpinDirectionName(SpinDirection::Negative)) == "negative" &&
+		ParseSpinDirection("positive") == SpinDirection::Positive &&
+		ParseSpinDirection("NEGATIVE") == SpinDirection::Negative,
+		"spin: the names round-trip, case-insensitively");
+	bool threw = false;
+	try { ParseSpinDirection("widdershins"); } catch (const std::invalid_argument&) { threw = true; }
+	Check(threw, "spin: an unknown direction is refused");
+
+	PropellerSpec neg = spec;
+	neg.spin_direction = SpinDirection::Negative;
+	PropellerModel pos_model(spec), neg_model(neg);
+	std::vector<NamedMesh> mp = pos_model.BuildMeshes(0.01);
+	std::vector<NamedMesh> mn = neg_model.BuildMeshes(0.01);
+	Check(mp.size() == mn.size(), "spin: the same body list either way");
+
+	// The spinner is a body of revolution about the axis, so it cannot
+	// care which way the propeller turns.
+	Check(mp[0].name == "Spinner" && mn[0].name == "Spinner", "spin: the Spinner is still body zero");
+	CheckClose(mn[0].mesh.SignedVolume(), mp[0].mesh.SignedVolume(), 1e-12, "spin: the spinner is untouched");
+
+	// Blade 1 sits at azimuth zero in both, spanning +y, so the negative
+	// blade must be the positive one with z negated -- vertex for vertex,
+	// the same loft having been transformed.
+	const TriMesh& bp = mp[1].mesh;
+	const TriMesh& bn = mn[1].mesh;
+	Check(mp[1].name == "Blade 1" && mn[1].name == "Blade 1", "spin: Blade 1 is still body one");
+	Check(bp.vertices.size() == bn.vertices.size() && bp.triangles.size() == bn.triangles.size(),
+		"spin: the mirrored blade is the same mesh, not a rebuilt one");
+	double worst = 0.0;
+	if (bp.vertices.size() == bn.vertices.size()) {
+		for (size_t i = 0; i < bp.vertices.size(); ++i) {
+			worst = std::max(worst, std::abs(bn.vertices[i].x - bp.vertices[i].x));
+			worst = std::max(worst, std::abs(bn.vertices[i].y - bp.vertices[i].y));
+			worst = std::max(worst, std::abs(bn.vertices[i].z + bp.vertices[i].z));
+		}
+	}
+	CheckClose(worst, 0.0, 1e-12, "spin: Blade 1 negative is Blade 1 positive reflected in z");
+
+	// A reflection reverses the winding, so without the flip the mirrored
+	// blade would come back inside out. Both must enclose the same volume,
+	// outward.
+	Check(bp.SignedVolume() > 0.0 && bn.SignedVolume() > 0.0, "spin: both blades are outward, so the winding followed the reflection");
+	CheckClose(bn.SignedVolume(), bp.SignedVolume(), 1e-12, "spin: the mirrored blade encloses the same volume");
+
+	// ...and the reflection has to be a real change: a blade symmetric in
+	// z would pass everything above while turning the same way both ways.
+	double zp = 0.0, zn = 0.0;
+	for (const Vec3& v : bp.vertices) zp += v.z;
+	for (const Vec3& v : bn.vertices) zn += v.z;
+	zp /= static_cast<double>(bp.vertices.size());
+	zn /= static_cast<double>(bn.vertices.size());
+	Check(std::abs(zp) > 1e-3 * spec.radius, "spin: the blade really is handed in z (else the setting would do nothing)");
+	CheckClose(zn, -zp, 1e-12, "spin: the blade's chordwise bias flips with the direction");
+
+	// The twist curve and every derived figure belong to the blade, not to
+	// the hand, so they must not move.
+	CheckClose(neg_model.BladeAngle(0.75), pos_model.BladeAngle(0.75), 1e-12, "spin: the blade angle at 0.75 R is unchanged");
+	PropellerMetrics gp = pos_model.Metrics(), gn = neg_model.Metrics();
+	Check(gp.blade_count == gn.blade_count, "spin: metrics.blade_count unchanged");
+	CheckClose(gn.solidity, gp.solidity, 1e-12, "spin: metrics.solidity unchanged");
+	CheckClose(gn.activity_factor, gp.activity_factor, 1e-9, "spin: metrics.activity_factor unchanged");
+	CheckClose(gn.pitch_ratio, gp.pitch_ratio, 1e-12, "spin: metrics.pitch_ratio unchanged");
+
+	// The OCCT path mirrors with a gp_Trsf where the mesh path negates a
+	// matrix row -- two independent implementations of the same thing, so
+	// cross-check them. One blade, so the hub's own asymmetry is not
+	// cancelled by the blade opposite it (and the spinner sits on the
+	// axis, contributing nothing to the centroid in z).
+	PropellerSpec one = spec;
+	one.blade_count = 1;
+	PropellerSpec one_neg = one;
+	one_neg.spin_direction = SpinDirection::Negative;
+	GProp_GProps sp, sn;
+	BRepGProp::VolumeProperties(PropellerModel(one).BuildSolid(), sp);
+	BRepGProp::VolumeProperties(PropellerModel(one_neg).BuildSolid(), sn);
+	CheckClose(sn.Mass(), sp.Mass(), 1e-6, "spin: the solid encloses the same volume either way");
+	Check(std::abs(sp.CentreOfMass().Z()) > 1e-4 * spec.radius, "spin: the one-blade solid is handed in z");
+	CheckClose(sn.CentreOfMass().Z(), -sp.CentreOfMass().Z(), 1e-6, "spin: the solid's centroid flips in z, so OCCT mirrors as the mesh does");
+	CheckClose(sn.CentreOfMass().X(), sp.CentreOfMass().X(), 1e-6, "spin: and does not move along the axis");
+
+	// The field survives a round trip.
+	Check(neg_model.Serialize().spin_direction == SpinDirection::Negative, "spin: the direction round-trips through Serialize");
+	Check(pos_model.Serialize().spin_direction == SpinDirection::Positive, "spin: and so does positive");
+
+	std::cout << "spin direction: Blade 1 reflects in z exactly (worst " << worst
+	          << "), chordwise bias " << zp << " -> " << zn
+	          << ", one-blade solid centroid z " << sp.CentreOfMass().Z() << " -> " << sn.CentreOfMass().Z() << "\n";
+}
+
 } // namespace
 
 int main() {
 	try {
 		CheckOptionalSpinner();
+		CheckSpinDirection();
 		std::ifstream in(AEROTELIC_TESTS_DIR "/propeller_fixtures.txt");
 		if (!in) throw std::runtime_error("cannot open propeller_fixtures.txt");
 		TokenReader r(in);

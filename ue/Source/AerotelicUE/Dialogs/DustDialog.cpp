@@ -466,9 +466,11 @@ void ShowAerotelicDustDialog(TFunction<void(const FText&)> Status)
 				Rot.bMirror = C->Operand.bMirror;
 				Rot.Rpm = Rpm;
 				Rot.Tag = FString::Printf(TEXT("%s_hub"), *C->Label.Replace(TEXT(" "), TEXT("_")).Replace(TEXT("/"), TEXT("_")));
+				bool bNegativeSpin = false;
 				if (const aerotelic::PropellerModel* P = Entity->GetModelAs<aerotelic::PropellerModel>())
 				{
 					Rot.Radius = P->radius;
+					bNegativeSpin = P->spin_direction == aerotelic::SpinDirection::Negative;
 				}
 
 				int32 Blades = 0;
@@ -548,6 +550,11 @@ void ShowAerotelicDustDialog(TFunction<void(const FText&)> Status)
 				// only for w < 0. Written positive, every propeller in the
 				// case turned trailing-edge first.
 				Frame.rot_rate = -Rpm * 2.0 * PI / 60.0;
+				// ... for a POSITIVE-spin propeller. A negative-spin one is
+				// that blade reflected in z (PropellerSpec::spin_direction),
+				// so its leading edge sits at high z instead of low and it
+				// has to travel towards +z: the sign flips back.
+				if (bNegativeSpin) Frame.rot_rate = -Frame.rot_rate;
 				// A mirrored blade is reflected about y, so it spans -y with
 				// its edges still where they were in z: v = (0,0,-w*r), and
 				// the sign flips back. This is also what the reflection does

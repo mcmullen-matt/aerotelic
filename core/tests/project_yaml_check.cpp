@@ -165,6 +165,30 @@ void CheckPropellerRoundTrip() {
 	legacy.remove("spinner");
 	Check(!legacy["spinner"], "legacy propeller: the test's own node really has no spinner key");
 	Check(DecodePropellerSpec(legacy).spinner, "legacy propeller: a file with no spinner key still builds one");
+
+	// The spin direction survives, and a file written before it existed
+	// comes back positive -- the hand it was drawn with.
+	PropellerSpec negative = pspec;
+	negative.spin_direction = SpinDirection::Negative;
+	ProjectEntity e3;
+	e3.name = "Prop3";
+	e3.type = EntityType::Propeller;
+	e3.model = PropellerModel(negative).Serialize();
+	auto& ps3 = std::get<PropellerSpec>(RoundTripThroughText(e3).model);
+	Check(ps3.spin_direction == SpinDirection::Negative, "propeller round trip: the spin direction survives (negative)");
+	Check(std::get<PropellerSpec>(back.model).spin_direction == SpinDirection::Positive,
+		"propeller round trip: and positive");
+	YAML::Node no_spin = Encode(PropellerSpec());
+	no_spin.remove("spin_direction");
+	Check(!no_spin["spin_direction"], "legacy propeller: the test's own node really has no spin_direction key");
+	Check(DecodePropellerSpec(no_spin).spin_direction == SpinDirection::Positive,
+		"legacy propeller: a file with no spin_direction key turns positive, as it did when it was written");
+	// A direction that is not one of the two is a bad file, not a default.
+	YAML::Node bad = Encode(PropellerSpec());
+	bad["spin_direction"] = "sideways";
+	bool spin_threw = false;
+	try { DecodePropellerSpec(bad); } catch (const std::invalid_argument&) { spin_threw = true; }
+	Check(spin_threw, "propeller: an unknown spin direction in a file is refused");
 }
 
 void CheckPrimitiveRoundTrip() {

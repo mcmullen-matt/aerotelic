@@ -27,6 +27,27 @@ namespace aerotelic {
 constexpr double kPropellerDefaultRadius = 0.965;
 constexpr int kPropellerMaxBlades = 12;
 
+// Which way the propeller turns, by the right-hand rule with the thumb
+// along the shaft pointing from the propeller towards the spinner. The
+// spinner's tip is the front of the hub and +x is aft, so that thumb
+// points along -x and a positive spin is the NEGATIVE sense about the
+// model's +x axis -- clockwise seen from behind, the usual right-hand
+// tractor propeller.
+//
+// Positive is the hand the model had before this field existed, so it is
+// the default and every project saved without it reads back unchanged.
+// Negative is the mirror image: the blade is reflected in the plane of
+// the axis and the span, which reverses its camber and twist so it still
+// leads with the leading edge and still thrusts forward while turning
+// the other way. Nothing else about the propeller changes -- the spinner
+// is a body of revolution, and the blade's own twist curve and every
+// derived metric are left alone (the hand lives in the geometry, not in
+// the sign of beta).
+enum class SpinDirection { Positive, Negative };
+
+const char* SpinDirectionName(SpinDirection d);
+SpinDirection ParseSpinDirection(const std::string& s);
+
 struct PropellerSpec {
 	// Fills spinner_curve with _SPINNER_CURVE's default ogive profile.
 	PropellerSpec();
@@ -43,6 +64,9 @@ struct PropellerSpec {
 	// below is kept untouched so it comes back when it is switched on.
 	bool spinner = true;
 	double spinner_length = 0.40;
+	// See SpinDirection. Positive both is the common propeller and is what
+	// every project saved before this field existed meant.
+	SpinDirection spin_direction = SpinDirection::Positive;
 	NurbsSpec spinner_curve;
 	std::optional<WingModelSpec> blade; // absent => MakeDefaultBlade(radius)
 	ReferenceImageMap reference_images; // "spinner"
@@ -77,6 +101,9 @@ public:
 	// and nothing is lost by switching it off and back on.
 	bool spinner;
 	double spinner_length;
+	// See SpinDirection. Only the blades' own geometry depends on it, so
+	// it can be switched at any time and switched back with nothing lost.
+	SpinDirection spin_direction;
 	ReferenceImageMap reference_images;
 
 	const NurbsCurve& spinner_curve() const { return *spinner_curve_; }

@@ -14,6 +14,7 @@
 #include "Widgets/Text/STextBlock.h"
 #include "Widgets/Input/SSpinBox.h"
 #include "Widgets/Input/SCheckBox.h"
+#include "Widgets/Input/SComboBox.h"
 
 #include "Entity/AerotelicEntityActor.h"
 #include "aerotelic/propeller_model.hpp"
@@ -48,7 +49,7 @@ namespace
 
 	const FText kPropellerNote = LOCTEXT("PropellerNote",
 		"R is the length scale: the blade's span fraction is r/R, its planform is drawn in x/R, and the spinner in x/R and r/R. "
-		"Changing R rescales the whole propeller. The propeller turns clockwise seen from behind; mirror the entity for the other hand. See Help.");
+		"Changing R rescales the whole propeller. Spin direction sets which way it turns — positive is clockwise seen from behind. See Help.");
 
 	const FText kSpinnerInfo = LOCTEXT("SpinnerInfo",
 		"The spinner's radius along its length, revolved about the axis. Both ends stay on the axis (r = 0) — the tip at the front, the closure at the back — and move along it only with Spinner length. "
@@ -63,7 +64,13 @@ namespace
 		"Planform: leading and trailing edges in the plane of rotation, the pitch-change axis at x = 0; moving both edges together skews the blade. "
 		"Dihedral: the blade's rake, forward positive, aft negative, in units of R. Sections: airfoils at r/R stations, blended between. "
 		"Twist: the blade angle β from the plane of rotation; for a constant geometric pitch P, tan β = (P/D) / (π r/R). "
-		"The suction side faces forward and the propeller turns clockwise seen from behind; mirror the entity for the opposite hand.\n\n"
+		"The suction side faces forward.\n\n"
+		"SPIN DIRECTION\n"
+		"Which way the propeller turns, by the right-hand rule with the thumb along the shaft pointing from the propeller towards the spinner — that is, forward, the spinner's tip being the front of the hub. "
+		"Positive, the default, is clockwise seen from behind: the usual right-hand tractor propeller, and the only hand this model had before the setting existed, so older projects open turning as they did. "
+		"Negative is the mirror image. The blade is reflected in the plane of the axis and the span, which reverses its camber and twist, so it still leads with the leading edge and still thrusts forward while turning the other way. "
+		"Only the blades change — the spinner is a body of revolution — and the blade angle β and every derived figure read the same either way, the hand being in the geometry rather than in the sign of β. "
+		"Setting it is independent of mirroring the entity: a mirrored placement also reverses the hand, so a mirrored negative-spin propeller turns the same way as an unmirrored positive one.\n\n"
 		"THE SPINNER\n"
 		"One curve, radius against length, revolved about the axis. Both ends are held on the axis so the body is closed; they move along the axis only via Spinner length. "
 		"Every other point moves freely as long as it stays off the axis. The dashed line marks the blades' axial position.\n"
@@ -166,6 +173,17 @@ void BuildPropellerDesignContent(AAerotelicEntityActor* Entity, FAerotelicDesign
 			return Derived->M.IsSet() ? Get(Derived->M.GetValue()) : DashText();
 		});
 	};
+
+	// Spin direction: the option strings have to outlive this function (the
+	// panel is a persistent tab, not a modal), so they ride a shared state
+	// the combo's own lambdas keep alive -- WingDesignTabs' planform-type
+	// combo does the same.
+	struct FSpinState { TArray<TSharedPtr<FString>> Options; };
+	TSharedRef<FSpinState> SpinState = MakeShared<FSpinState>();
+	SpinState->Options.Add(MakeShared<FString>(TEXT("Positive")));
+	SpinState->Options.Add(MakeShared<FString>(TEXT("Negative")));
+	auto SpinItem = [SpinState](SpinDirection D) { return SpinState->Options[D == SpinDirection::Negative ? 1 : 0]; };
+
 	TSharedRef<SWidget> PropellerInputs = SNew(SVerticalBox)
 		+ SVerticalBox::Slot().AutoHeight()
 		[ FormRow(LOCTEXT("Radius", "Radius R:"),
@@ -199,6 +217,25 @@ void BuildPropellerDesignContent(AAerotelicEntityActor* Entity, FAerotelicDesign
 				.OnValueCommitted_Lambda([Model, OnLayoutChanged](double V, ETextCommit::Type)
 				{ if (!FMath::IsNearlyEqual(V, Model->hub_radius)) { Model->hub_radius = V; OnLayoutChanged.ExecuteIfBound(); } }),
 			LOCTEXT("HubRadiusTip", "Where each blade is cut off, as r/R. The blade is drawn from the axis\nout, so its axes are r/R; only the part beyond this radius is built,\nand it should be inside the spinner.")) ]
+		+ SVerticalBox::Slot().AutoHeight()
+		[ FormRow(LOCTEXT("Spin", "Spin direction:"),
+			SNew(SBox).MinDesiredWidth(120)
+			[
+				SNew(SComboBox<TSharedPtr<FString>>)
+				.OptionsSource(&SpinState->Options)
+				.InitiallySelectedItem(SpinItem(Model->spin_direction))
+				.OnGenerateWidget_Lambda([](TSharedPtr<FString> S) { return SNew(STextBlock).Text(FText::FromString(*S)); })
+				.OnSelectionChanged_Lambda([Model, SpinState, OnLayoutChanged](TSharedPtr<FString> S, ESelectInfo::Type)
+				{
+					if (!S.IsValid()) return;
+					const SpinDirection D = SpinState->Options.IndexOfByKey(S) == 1 ? SpinDirection::Negative : SpinDirection::Positive;
+					if (D == Model->spin_direction) return;
+					Model->spin_direction = D;
+					OnLayoutChanged.ExecuteIfBound();
+				})
+				[ SNew(STextBlock).Text_Lambda([Model, SpinItem]() { return FText::FromString(*SpinItem(Model->spin_direction)); }) ]
+			],
+			LOCTEXT("SpinTip", "Which way the propeller turns, by the right-hand rule with the thumb\nalong the shaft pointing from the propeller towards the spinner --\nthat is, forward. Positive (the default) is clockwise seen from\nbehind, the usual right-hand tractor propeller; Negative is the\nmirror image, turning the other way and still thrusting forward.\nOnly the blades change: the blade angle beta and every derived\nfigure are the same either way, the hand being in the geometry.")) ]
 		+ SVerticalBox::Slot().AutoHeight()
 		[ FormRow(LOCTEXT("SpinnerOn", "Spinner:"),
 			SNew(SCheckBox)
