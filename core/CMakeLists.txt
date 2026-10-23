@@ -59,6 +59,7 @@ add_library(aerotelic_core STATIC
 	src/dust_case.cpp
 	src/mass_properties.cpp
 	src/units.cpp
+	src/materials.cpp
 	# Shewchuk's exact geometric predicates (public domain), compiled as C
 	# with strict IEEE rounding: the adaptive arithmetic is defeated by
 	# fast-math style reassociation.

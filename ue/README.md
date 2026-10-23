@@ -1246,17 +1246,22 @@ angle; the document commandlet covers the same three promises through
 
 Two pieces, joined by one setting per parameterisation.
 
-**Scene tree > Mass Properties...** (`MainShell/AerotelicMassSpecDialog`)
-on any row, derived ones included, sets how that entity weighs --
+**Scene tree > Material Properties...** (`MainShell/AerotelicMaterialDialog`;
+it was "Mass Properties..." for a few hours on 2026-10-22) on any row,
+derived ones included, sets what that entity is made of --
 `Placement`-style, stored on the actor (`AAerotelicEntityActor::MassSpec`)
 and written with it as `mass: {asserted: <total>}` or
-`mass: {density: <rho>}` on the entity, boolean or lattice (absent means
-unset, so older files read unchanged). *Assert the mass* states the
-total; when weighed it is spread uniformly over the surface as a thin
-shell, with the centre and inertia integrated over that surface -- the
-model for a skin whose thickness the geometry does not carry, where a
-density would give zero. *Compute from a density* weighs the entity as a
-uniform solid, the density times the volume its closed surface encloses.
+`mass: {material: {name, density, youngs_modulus, poisson_ratio,
+allowable_stress}}` on the entity, boolean or lattice (absent means
+unset, so older files read unchanged; the interim `mass: {density: <rho>}`
+reads as a custom material with only a density). *An asserted mass*
+states the total; when weighed it is spread uniformly over the surface
+as a thin shell, with the centre and inertia integrated over that
+surface -- the model for a skin whose thickness the geometry does not
+carry, where a density would give zero. *A material* weighs the entity
+as a uniform solid, its density times the volume its closed surface
+encloses, and is what Analysis > Structural analyses with; see *Materials
+and the structural analysis* below.
 The dialog shows the entity's enclosed volume, surface area, whether the
 surface is closed, and what the current setting would weigh, so the zero
 a zero-thickness skin encloses is on screen before anyone wonders why.
@@ -1356,6 +1361,88 @@ spellings both ways and the refusals (inches, slugs, minutes);
 `project_yaml_check` the round trip, the key coming first, the absent
 key, and the refusals on load; the document commandlet sets feet and
 pounds, saves, reopens, and reads the file's `units:` line.
+
+## Materials and the structural analysis (2026-10-22)
+
+**A material is a property of the stuff, not of the units.** The
+presets (`core/include/aerotelic/materials.hpp`: 2024-T3, 7075-T6,
+6061-T6, Ti-6Al-4V, 4130, 17-4PH, AZ31B, quasi-isotropic CFRP and GFRP,
+spruce, a PMI foam) and every custom material are SI -- kg/m^3, Pa --
+whatever the project is drawn in; the Material Properties dialog shows
+them in the project's units and converts back on edit, and the analysis
+bridges hand them on as they are. Picking a preset copies its figures in
+with its name; editing a figure makes the material "Custom" (by the
+numbers: a figure typed back to the preset's is the preset again). The
+project file writes the figures beside the name so a later change to a
+preset cannot reach into saved projects. Because stress is a force per
+area it is its own unit -- lbm/(ft s^2) would be a poundal per square
+foot -- so **Geometry > Units** gained a *Stress* choice (Pa, MPa, psi,
+ksi; `stress:` in the file's `units:` line) that Young's modulus, the
+allowables and every reported stress use.
+
+**Analysis > Structural (Kratos FEA)...** (`Dialogs/StructuralFeaDialog`,
+`Entity/AerotelicStructuralFea`, `tools/structural_fea.py`) is a linear
+static analysis of a lattice-filled body's skin and core tetrahedra --
+the mesh Lattice > Export Tetrahedral Mesh writes, whose outer faces are
+the body's own surface triangles -- on KratosMultiphysics'
+StructuralMechanicsApplication, run as a separate process in the
+WingDesigner environment like the potential flow. The skin tetrahedra
+are made of their body's material, the core tetrahedra of the lattice's
+own (its EFFECTIVE density and stiffness, set on the lattice row); a
+region without a structural material stops the solve and says which.
+Everything the solver sees is SI: the mesh scaled by the length unit,
+the materials as they are, loads in newtons and pascals; the dialog
+converts the results back.
+
+Second-order (10-node) tetrahedra are the default and should stay on: a
+skin one tetrahedron thick is a bending problem, and first-order
+tetrahedra lock. The script adds the mid-edge nodes itself (straight
+edges; the corner nodes and so the surface are untouched), so the tet
+pipeline and its exports are unchanged.
+
+Phase 1 is dummy loads. The support fixes every degree of freedom of the
+nodes on a coordinate plane -- y = 0 by default, the root of a mirrored
+half and its symmetry plane; or the mesh's own minimum / maximum along an
+axis. The loads are an inertial load factor (the body's own mass under
+that many g along -z; 1 is its weight, a 4 g pull-up a real case), a
+uniform pressure on the wetted faces (positive presses inward:
+`POSITIVE_FACE_PRESSURE` acts against the face normal, and the faces go
+in outward), and a point force at the node nearest a point. The job
+already takes the pressure **per wetted face** (`pressure_file`), so
+phase 2 -- the pressure field from the potential flow or DUST, at the
+same tolerance and so face for face -- is a file in place of a constant.
+Forces are newtons whatever the project's units.
+
+Reported: nodes, elements and DOF; the peak displacement and where;
+the peak von Mises overall and per material, with the margin
+allowable / peak - 1; the mass; the force balance -- the reactions at the
+support against gravity, the pressure's resultant and the point force,
+which must be equal and opposite; and the mean of u.n over the wetted
+nodes, so an inward pressure can be seen to move the surface inward.
+The VTK holds the displacement and the von Mises stress (element peaks
+over the integration points, averaged to the nodes) as 10-node
+tetrahedra, in SI, for ParaView.
+
+Two Kratos details worth knowing before touching the script: a load
+assigned with `assign_vector_by_direction_process` /
+`assign_vector_variable_process` must say `"constrained": false`, or the
+process tries to fix a degree of freedom the load is not; and the
+constraint process FREES the support's degrees of freedom again when
+the step ends, so reactions are read from the Support sub model part,
+not by asking which nodes are fixed.
+
+The document commandlet solves the lattice-filled sphere -- an aluminium
+skin 0.05 thick on a unit sphere over a very soft core, stood on its
+bottom under its own weight and 1 bar of external pressure (64,056 DOF,
+~18 s) -- and holds it to closed forms: the mass is the densities over
+the regions' volumes to 1e-6; the support carries the weight (to 2%:
+17.62 kN against 17.92 kN -- the iterative solve's residual, not chased
+yet) and nothing else, the pressure's resultant over a closed surface
+being zero to 1e-11; the surface moves inward; the skin's peak von Mises
+(1.27 MPa) is Lame's thick-shell hoop stress for a/b = 0.95 (1.05 MPa)
+plus the weight on the support; the soft core carries under a tenth of
+that; and the displacement is the core sagging under its own weight,
+millimetres at E = 1e5 Pa, while the skin moves microns.
 
 ## How the standalone build is put together
 

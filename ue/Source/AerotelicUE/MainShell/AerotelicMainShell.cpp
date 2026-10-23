@@ -15,6 +15,7 @@
 #include "Dialogs/LatticeDialog.h"
 #include "Dialogs/PotentialFlowDialog.h"
 #include "Dialogs/MassPropertiesDialog.h"
+#include "Dialogs/StructuralFeaDialog.h"
 #include "Dialogs/DustDialog.h"
 #include "Dialogs/ThemeDialog.h"
 #include "Branding/AerotelicTheme.h"
@@ -467,6 +468,7 @@ void SAerotelicMainShell::BindCommands()
 
 	// Analysis
 	Commands->MapAction(C.MassProperties, FExecuteAction::CreateLambda([this]() { ShowAerotelicMassPropertiesDialog([this](const FText& T) { SetStatus(T); }); }));
+	Commands->MapAction(C.StructuralFea, FExecuteAction::CreateLambda([this]() { ShowAerotelicStructuralFeaDialog([this](const FText& T) { SetStatus(T); }); }));
 	Commands->MapAction(C.PotentialFlow, FExecuteAction::CreateLambda([this]() { ShowAerotelicPotentialFlowDialog([this](const FText& T) { SetStatus(T); }); }));
 	Commands->MapAction(C.DustVpm, FExecuteAction::CreateLambda([this]() { ShowAerotelicDustDialog([this](const FText& T) { SetStatus(T); }); }));
 
@@ -640,6 +642,21 @@ void SAerotelicMainShell::FillGeometryMenu(FMenuBuilder& Menu)
 			MassEntry(LOCTEXT("Kilograms", "Kilograms (kg)"), LOCTEXT("KilogramsTip", "Every mass and density in the project is in kilograms (the default)"), aerotelic::MassUnit::Kilogram);
 			MassEntry(LOCTEXT("Pounds", "Pounds, mass (lbm)"), LOCTEXT("PoundsTip", "Every mass and density in the project is in pounds-mass: densities in lbm/ft^3 (or per the length unit). The analysis codes are handed kilograms, so no slugs are ever needed."), aerotelic::MassUnit::PoundMass);
 			Sub.EndSection();
+			auto StressEntry = [this, &Sub, Current](const FText& Label, const FText& Tip, aerotelic::StressUnit Unit)
+			{
+				Sub.AddMenuEntry(Label, Tip, FSlateIcon(),
+					FUIAction(
+						FExecuteAction::CreateLambda([this, Current, Unit]() { aerotelic::UnitSystem U = Current(); U.stress = Unit; SetUnits(U); }),
+						FCanExecuteAction(),
+						FIsActionChecked::CreateLambda([Current, Unit]() { return Current().stress == Unit; })),
+					NAME_None, EUserInterfaceActionType::RadioButton);
+			};
+			Sub.BeginSection("Stress", LOCTEXT("StressSection", "Stress (Young's modulus, allowables, results)"));
+			StressEntry(LOCTEXT("Pascals", "Pascals (Pa)"), LOCTEXT("PascalsTip", "Stresses and moduli in pascals (the default)"), aerotelic::StressUnit::Pascal);
+			StressEntry(LOCTEXT("Megapascals", "Megapascals (MPa)"), LOCTEXT("MegapascalsTip", "Stresses and moduli in megapascals"), aerotelic::StressUnit::Megapascal);
+			StressEntry(LOCTEXT("Psi", "Pounds per square inch (psi)"), LOCTEXT("PsiTip", "Stresses and moduli in psi. A force per area is its own unit, not derivable from the length and mass: lbm/(ft s^2) would be poundals per square foot, which no materials table lists"), aerotelic::StressUnit::Psi);
+			StressEntry(LOCTEXT("Ksi", "Thousands of psi (ksi)"), LOCTEXT("KsiTip", "Stresses and moduli in ksi"), aerotelic::StressUnit::Ksi);
+			Sub.EndSection();
 			Sub.BeginSection("Time", LOCTEXT("TimeSection", "Time"));
 			Sub.AddMenuEntry(LOCTEXT("Seconds", "Seconds (s) -- fixed"),
 				LOCTEXT("SecondsTip", "Time is always in seconds: speeds are per second, time steps are seconds. A rotational speed given in rev/min is its own unit and is converted where it is used."),
@@ -672,7 +689,7 @@ void SAerotelicMainShell::SetUnits(const aerotelic::UnitSystem& Units)
 	{
 		AerotelicMessageBox(EAppMsgType::Ok,
 			FText::Format(LOCTEXT("UnitsChanged",
-				"The project's units are now {0}.\n\nNothing was converted: every number already typed -- every length, mass and density -- keeps its value and is read in these units from now on. Everything handed to an analysis code or written to a STEP file is converted to SI from them."),
+				"The project's units are now {0}.\n\nNothing was converted: every number already typed -- every length, mass, pressure and stress -- keeps its value and is read in these units from now on. Materials are the exception: a material is SI underneath and is only displayed in these units, so a preset's figures stay right. Everything handed to an analysis code or written to a STEP file is converted to SI."),
 				Described),
 			LOCTEXT("UnitsTitle", "Units"));
 	}
@@ -691,6 +708,7 @@ void SAerotelicMainShell::FillLatticeMenu(FMenuBuilder& Menu)
 void SAerotelicMainShell::FillAnalysisMenu(FMenuBuilder& Menu)
 {
 	Menu.AddMenuEntry(FAerotelicCommands::Get().MassProperties);
+	Menu.AddMenuEntry(FAerotelicCommands::Get().StructuralFea);
 	Menu.AddMenuEntry(FAerotelicCommands::Get().PotentialFlow);
 	Menu.AddMenuEntry(FAerotelicCommands::Get().DustVpm);
 }
@@ -883,7 +901,7 @@ TSharedRef<SWidget> SAerotelicMainShell::BuildStatusBar()
 			[
 				SNew(STextBlock)
 				.Text(this, &SAerotelicMainShell::GetUnitsText)
-				.ToolTipText(LOCTEXT("UnitsReadoutTip", "The project's units: length, mass, time (Geometry > Units)"))
+				.ToolTipText(LOCTEXT("UnitsReadoutTip", "The project's units: length, mass, time, stress (Geometry > Units)"))
 				.ColorAndOpacity_Static(&MutedText)
 			]
 			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)

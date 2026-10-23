@@ -530,11 +530,25 @@ std::optional<std::array<double, 3>> DecodeColor(const YAML::Node& node) {
 
 YAML::Node EncodeMassSpec(const MassSpec& m) {
 	// The key says the mode, so the file reads as the dialog does:
-	// `mass: {asserted: 12.5}` or `mass: {density: 2700}`. Unset writes
-	// nothing (the caller leaves the key out).
+	// `mass: {asserted: 12.5}` (the project's mass unit) or
+	// `mass: {material: {name: Aluminium 2024-T3, density: 2780, ...}}` (SI,
+	// as every material is). The numbers are written beside the name so the
+	// file stands on its own -- a later change to a preset's figures does not
+	// reach back into saved projects. Unset writes nothing (the caller
+	// leaves the key out).
 	YAML::Node n;
-	if (m.mode == MassMode::Asserted) n["asserted"] = m.mass;
-	else if (m.mode == MassMode::Density) n["density"] = m.density;
+	if (m.mode == MassMode::Asserted) {
+		n["asserted"] = m.mass;
+	} else if (m.mode == MassMode::Material) {
+		YAML::Node mat;
+		mat["name"] = m.material.name;
+		mat["density"] = m.material.density;
+		mat["youngs_modulus"] = m.material.youngs_modulus;
+		mat["poisson_ratio"] = m.material.poisson_ratio;
+		mat["allowable_stress"] = m.material.allowable_stress;
+		mat.SetStyle(YAML::EmitterStyle::Flow);
+		n["material"] = mat;
+	}
 	n.SetStyle(YAML::EmitterStyle::Flow);
 	return n;
 }
@@ -545,9 +559,19 @@ MassSpec DecodeMassSpec(const YAML::Node& node) {
 	if (node["asserted"]) {
 		m.mode = MassMode::Asserted;
 		m.mass = node["asserted"].as<double>();
+	} else if (const YAML::Node mat = node["material"]) {
+		m.mode = MassMode::Material;
+		if (mat["name"]) m.material.name = mat["name"].as<std::string>();
+		if (mat["density"]) m.material.density = mat["density"].as<double>();
+		if (mat["youngs_modulus"]) m.material.youngs_modulus = mat["youngs_modulus"].as<double>();
+		if (mat["poisson_ratio"]) m.material.poisson_ratio = mat["poisson_ratio"].as<double>();
+		if (mat["allowable_stress"]) m.material.allowable_stress = mat["allowable_stress"].as<double>();
 	} else if (node["density"]) {
-		m.mode = MassMode::Density;
-		m.density = node["density"].as<double>();
+		// The form before materials existed: a bare density, SI (every
+		// project then was metres and kilograms), as a custom material.
+		m.mode = MassMode::Material;
+		m.material.name = "Custom";
+		m.material.density = node["density"].as<double>();
 	}
 	return m;
 }
@@ -813,6 +837,7 @@ ProjectFile LoadProjectYaml(const std::string& path) {
 		if (units["length"]) project.units.length = ParseLengthUnit(units["length"].as<std::string>());
 		if (units["mass"]) project.units.mass = ParseMassUnit(units["mass"].as<std::string>());
 		if (units["time"]) CheckTimeUnit(units["time"].as<std::string>());
+		if (units["stress"]) project.units.stress = ParseStressUnit(units["stress"].as<std::string>());
 	}
 	if (root["entities"]) {
 		for (const auto& en : root["entities"]) project.entities.push_back(DecodeEntity(en));
@@ -869,6 +894,7 @@ void SaveProjectYaml(const ProjectFile& project, const std::string& path) {
 	units["length"] = std::string(LengthUnitName(project.units.length));
 	units["mass"] = std::string(MassUnitName(project.units.mass));
 	units["time"] = std::string("s");
+	units["stress"] = std::string(StressUnitName(project.units.stress));
 	units.SetStyle(YAML::EmitterStyle::Flow);
 	root["units"] = units;
 	YAML::Node entities(YAML::NodeType::Sequence);

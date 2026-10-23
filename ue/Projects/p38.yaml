@@ -1,3 +1,4 @@
+units: {length: m, mass: kg, time: s, stress: Pa}
 entities:
   - name: Center
     type: fuselage
@@ -141,6 +142,7 @@ entities:
         {}
     color: [0.33333298563957214, 0.33333298563957214, 0.33333298563957214]
     hidden: true
+    mass: {material: {name: Aluminium 2024-T3, density: 2780, youngs_modulus: 73100000000, poisson_ratio: 0.33000000000000002, allowable_stress: 345000000}}
   - name: Wing
     type: wing
     mirror: true
@@ -1233,6 +1235,7 @@ entities:
                 - 0.97966981818565324
     color: [0.33333298563957214, 0.33333298563957214, 0.33333298563957214]
     hidden: true
+    mass: {material: {name: Aluminium 2024-T3, density: 2780, youngs_modulus: 73100000000, poisson_ratio: 0.33000000000000002, allowable_stress: 345000000}}
   - name: Boom
     type: fuselage
     mirror: true
@@ -1362,6 +1365,7 @@ entities:
         {}
     color: [0.33333298563957214, 0.33333298563957214, 0.33333298563957214]
     hidden: true
+    mass: {material: {name: Aluminium 2024-T3, density: 2780, youngs_modulus: 73100000000, poisson_ratio: 0.33000000000000002, allowable_stress: 345000000}}
   - name: VT
     type: wing
     mirror: true
@@ -2464,6 +2468,7 @@ entities:
                 - 0.97966981818565324
     color: [0.33333298563957214, 0.33333298563957214, 0.33333298563957214]
     hidden: true
+    mass: {material: {name: Aluminium 2024-T3, density: 2780, youngs_modulus: 73100000000, poisson_ratio: 0.33000000000000002, allowable_stress: 345000000}}
   - name: HT
     type: wing
     mirror: true
@@ -3566,6 +3571,7 @@ entities:
                 - 0.97966981818565324
     color: [0.33333298563957214, 0.33333298563957214, 0.33333298563957214]
     hidden: true
+    mass: {material: {name: Aluminium 2024-T3, density: 2780, youngs_modulus: 73100000000, poisson_ratio: 0.33000000000000002, allowable_stress: 345000000}}
   - name: Nacelle 6
     type: nacelle
     mirror: true
@@ -3684,6 +3690,7 @@ entities:
       chevron_depth: 0.0625
     color: [0.33333298563957214, 0.33333298563957214, 0.33333298563957214]
     hidden: true
+    mass: {material: {name: Aluminium 2024-T3, density: 2780, youngs_modulus: 73100000000, poisson_ratio: 0.33000000000000002, allowable_stress: 345000000}}
   - name: Propeller 7
     type: propeller
     mirror: true
@@ -3705,6 +3712,7 @@ entities:
       hub_radius: 0.12
       spinner: true
       spinner_length: 0.40000000000000002
+      spin_direction: positive
       spinner_curve:
         degree: 3
         poles:
@@ -5673,6 +5681,7 @@ entities:
                   - 0.99666051580363746
                   - 0.99838573363481975
     hidden: true
+    mass: {material: {name: Aluminium 2024-T3, density: 2780, youngs_modulus: 73100000000, poisson_ratio: 0.33000000000000002, allowable_stress: 345000000}}
   - name: Cylinder 8
     type: primitive
     mirror: true
@@ -5702,6 +5711,7 @@ entities:
       cyl_length: 4
     color: [0.33333298563957214, 0.33333298563957214, 0.33333298563957214]
     hidden: true
+    mass: {material: {name: Aluminium 2024-T3, density: 2780, youngs_modulus: 73100000000, poisson_ratio: 0.33000000000000002, allowable_stress: 345000000}}
 booleans:
   - name: BoolOp 1
     operation: fuse
@@ -5718,6 +5728,7 @@ booleans:
       - Nacelle 6
       - {mirror: Nacelle 6}
     hidden: true
+    mass: {material: {name: Aluminium 2024-T3, density: 2780, youngs_modulus: 73100000000, poisson_ratio: 0.33000000000000002, allowable_stress: 345000000}}
 lattices:
   - name: Lattice 1
     lattice:
@@ -5750,3 +5761,4 @@ lattices:
     exclusions:
       - Cylinder 8
       - {mirror: Cylinder 8}
+    mass: {material: {name: Aluminium 2024-T3, density: 2780, youngs_modulus: 73100000000, poisson_ratio: 0.33000000000000002, allowable_stress: 345000000}}

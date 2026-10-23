@@ -81,7 +81,8 @@ namespace
 	}
 }
 
-FAerotelicMassReport ComputeAerotelicMassReport(const TArray<FAerotelicBooleanOperand>& Bodies, double Tolerance)
+FAerotelicMassReport ComputeAerotelicMassReport(const TArray<FAerotelicBooleanOperand>& Bodies, double Tolerance,
+	const aerotelic::UnitSystem& Units)
 {
 	FAerotelicMassReport Report;
 	Report.Tolerance = Tolerance;
@@ -130,10 +131,16 @@ FAerotelicMassReport ComputeAerotelicMassReport(const TArray<FAerotelicBooleanOp
 			switch (Spec.mode)
 			{
 			case MassMode::Unset:
-				Line.Note = TEXT("no mass properties assigned (Scene tree > Mass Properties...)");
+				Line.Note = TEXT("no material assigned (Scene tree > Material Properties...)");
 				break;
-			case MassMode::Density:
-				Line.Props = aerotelic::SolidMassProperties(M.mesh, Spec.density);
+			case MassMode::Material:
+				if (!Spec.material.HasDensity())
+				{
+					Line.Note = TEXT("the material has no density (Scene tree > Material Properties...)");
+					break;
+				}
+				// The material's density is SI; the mesh is in project units.
+				Line.Props = aerotelic::SolidMassProperties(M.mesh, Spec.material.density / Units.DensityToSI());
 				Line.bIncluded = true;
 				if (!M.mesh.IsClosedManifold())
 				{

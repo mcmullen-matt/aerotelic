@@ -70,7 +70,7 @@ const char* MassModeName(MassMode m) {
 	switch (m) {
 		case MassMode::Unset: return "unset";
 		case MassMode::Asserted: return "asserted";
-		case MassMode::Density: return "density";
+		case MassMode::Material: return "material";
 	}
 	return "unset";
 }
@@ -80,8 +80,10 @@ MassMode ParseMassMode(const std::string& s) {
 	for (char c : s) l += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
 	if (l == "unset" || l.empty()) return MassMode::Unset;
 	if (l == "asserted") return MassMode::Asserted;
-	if (l == "density") return MassMode::Density;
-	throw std::invalid_argument("unknown mass mode '" + s + "' (expected unset, asserted or density)");
+	// "density" is what the mode was called before it carried a whole
+	// material (2026-10-22, the same day); the files that wrote it are read.
+	if (l == "material" || l == "density") return MassMode::Material;
+	throw std::invalid_argument("unknown mass mode '" + s + "' (expected unset, asserted or material)");
 }
 
 MassProperties SolidMassProperties(const TriMesh& mesh, double density) {

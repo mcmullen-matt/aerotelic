@@ -38,9 +38,12 @@ struct FAerotelicMassReport
 };
 
 // Meshes every body at Tolerance (the STL / lattice tolerance) and weighs
-// it. A body whose entity has no MassSpec, or no geometry, is listed with
-// the reason and left out of the assembly rather than counted as zero.
-FAerotelicMassReport ComputeAerotelicMassReport(const TArray<FAerotelicBooleanOperand>& Bodies, double Tolerance);
+// it in the project's units (a material's SI density is converted to
+// them, since the meshes are in them). A body whose entity has no
+// MassSpec, or no geometry, is listed with the reason and left out of
+// the assembly rather than counted as zero.
+FAerotelicMassReport ComputeAerotelicMassReport(const TArray<FAerotelicBooleanOperand>& Bodies, double Tolerance,
+	const aerotelic::UnitSystem& Units);
 
 // The report as a table in the project's units (which the integrals were
 // done in): one row per component, the assembly under a rule. What the

@@ -2,7 +2,7 @@
 #include "Widgets/MessageBox.h"
 #include "AerotelicDesignDock.h"
 #include "AerotelicTransformDialog.h"
-#include "AerotelicMassSpecDialog.h"
+#include "AerotelicMaterialDialog.h"
 
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Layout/SBox.h"
@@ -452,12 +452,12 @@ TSharedPtr<SWidget> SAerotelicSceneTree::MakeEntityMenu(FItem Item)
 	}
 
 	// On every row, derived ones included: a boolean result or a lattice
-	// has a density as much as a wing does, and Analysis > Mass Properties
-	// weighs whatever is chosen by this setting.
-	Menu.AddMenuEntry(LOCTEXT("MassProperties", "Mass Properties..."),
-		LOCTEXT("MassPropertiesTip", "How this parameterisation weighs: assert its mass, or give a density for the volume it encloses. Analysis > Mass Properties then reports mass, centre and inertia."),
+	// is made of something as much as a wing is. Analysis > Mass
+	// Properties weighs by it; Analysis > Structural analyses with it.
+	Menu.AddMenuEntry(LOCTEXT("MaterialProperties", "Material Properties..."),
+		LOCTEXT("MaterialPropertiesTip", "What this parameterisation is made of -- a material (density, Young's modulus, Poisson's ratio, allowable stress) from a preset or typed -- or an asserted total mass. Analysis > Mass Properties weighs by it; Analysis > Structural analyses with it."),
 		FSlateIcon(),
-		FUIAction(FExecuteAction::CreateLambda([Entity]() { if (Entity.IsValid()) OpenAerotelicMassSpecDialog(Entity.Get()); })));
+		FUIAction(FExecuteAction::CreateLambda([Entity]() { if (Entity.IsValid()) OpenAerotelicMaterialDialog(Entity.Get()); })));
 
 	Menu.AddMenuEntry(LOCTEXT("Color", "Color"), LOCTEXT("ColorTip", "Pick the colour every body of this entity is drawn in (the mirrored ones included)"), FSlateIcon(),
 		FUIAction(FExecuteAction::CreateLambda([this, Entity]() { if (Entity.IsValid()) PickEntityColor(Entity.Get()); })));

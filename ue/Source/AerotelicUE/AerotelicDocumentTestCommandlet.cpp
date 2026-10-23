@@ -11,7 +11,9 @@
 #include "Entity/AerotelicMeshLib.h"
 #include "Entity/AerotelicPotentialFlow.h"
 #include "Entity/AerotelicMassProperties.h"
+#include "Entity/AerotelicStructuralFea.h"
 
+#include "aerotelic/materials.hpp"
 #include "aerotelic/primitive_model.hpp"
 #include "aerotelic/wing_model.hpp"
 
@@ -164,8 +166,9 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 	if (Wing != nullptr && Fuselage != nullptr && Primitive != nullptr)
 	{
 		aerotelic::MassSpec ByDensity;
-		ByDensity.mode = aerotelic::MassMode::Density;
-		ByDensity.density = 2.0;
+		ByDensity.mode = aerotelic::MassMode::Material;
+		ByDensity.material.name = "Custom";
+		ByDensity.material.density = 2.0;   // SI; the project is metres and kilograms here
 		Primitive->SetMassSpec(ByDensity);
 		aerotelic::MassSpec Asserted;
 		Asserted.mode = aerotelic::MassMode::Asserted;
@@ -179,7 +182,7 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 		W.Entity = Wing;
 		FM.Entity = Fuselage;
 		FM.bMirror = true;
-		const FAerotelicMassReport Report = ComputeAerotelicMassReport({ P, F, W, FM }, 2e-3);
+		const FAerotelicMassReport Report = ComputeAerotelicMassReport({ P, F, W, FM }, 2e-3, Doc->GetUnits());
 
 		auto Find = [&Report](const FString& Label) -> const FAerotelicMassLine*
 		{
@@ -219,7 +222,7 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 		}
 		if (WingLine != nullptr)
 		{
-			Check(!WingLine->bIncluded && WingLine->Note.Contains(TEXT("no mass properties")),
+			Check(!WingLine->bIncluded && WingLine->Note.Contains(TEXT("no material")),
 				"mass: an entity with no setting is left out and says why");
 		}
 		Check(Report.IncludedCount == 3, FString::Printf(TEXT("mass: three bodies weighed (got %d)"), Report.IncludedCount));
@@ -251,7 +254,7 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 		int32 WingRows = 0;
 		for (const FString& L : Lines)
 		{
-			if (L.StartsWith(Wing->EntityName) && L.Contains(TEXT("left out: no mass properties"))) ++WingRows;
+			if (L.StartsWith(Wing->EntityName) && L.Contains(TEXT("left out: no material"))) ++WingRows;
 		}
 		Check(WingRows == 1, "mass: the unset wing keeps its row, with the reason in place of numbers");
 	}
@@ -366,6 +369,81 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 
 	// The viewport's OCCT-free meshes: every entity's model builds its
 	// bodies straight from its curves, closed and outward.
+	// Structural analysis (Analysis -> Structural (Kratos FEA)...) of the
+	// lattice-filled sphere: an aluminium skin 0.05 thick on a unit sphere
+	// over a very soft core, stood on its bottom under its own weight and
+	// an external pressure. Closed forms to hold it to: the reactions carry
+	// the weight exactly (the pressure's resultant over a closed surface is
+	// zero), the surface moves inward under an external pressure, and the
+	// skin's hoop stress is Lame's thick-shell value, ~1.05 p for a/b =
+	// 0.95 -- the core being too soft to share the load.
+	UE_LOG(LogAerotelicDocumentTest, Display, TEXT("step: structural fea"));
+	if (AerotelicStructuralFea::FindScript().IsEmpty() || AerotelicMeshLib::FindPython().IsEmpty())
+	{
+		UE_LOG(LogAerotelicDocumentTest, Display, TEXT("skipped: tools\\structural_fea.py or the WingDesigner environment is not here"));
+	}
+	else
+	{
+		AAerotelicEntityActor* FeaLattice = nullptr;
+		for (auto& Weak : Doc->GetEntities())
+		{
+			if (Weak.IsValid() && Weak->GetEntityType() == aerotelic::project_yaml::EntityType::Lattice) FeaLattice = Weak.Get();
+		}
+		const FAerotelicLatticeModel* FeaModel = FeaLattice ? FeaLattice->GetModelAs<FAerotelicLatticeModel>() : nullptr;
+		aerotelic::TetMesh FeaMesh = FeaModel ? FeaModel->MergedTets(-1) : aerotelic::TetMesh();
+		Check(!FeaMesh.tets.empty(), "fea: the lattice's skin and core tetrahedra are the model");
+		if (!FeaMesh.tets.empty())
+		{
+			AerotelicStructuralFea::FRequest Request;
+			Request.Mesh = &FeaMesh;
+			Request.LengthToSI = 1.0;
+			aerotelic::Material Soft;
+			Soft.name = "soft core";
+			Soft.density = 50.0;
+			Soft.youngs_modulus = 1.0e5;
+			Soft.poisson_ratio = 0.3;
+			Request.Materials.Add({ 1, TEXT("skin"), *aerotelic::FindMaterialPreset("Aluminium 2024-T3") });
+			Request.Materials.Add({ 2, TEXT("core"), Soft });
+			Request.bSecondOrder = true;
+			Request.SupportAxis = TEXT('z');
+			Request.bSupportAtMin = true;
+			Request.SupportTolerance = 0.15;
+			Request.LoadFactor = 1.0;
+			Request.Pressure = 1.0e5;
+			Request.VtkPath = FPaths::Combine(FPlatformProcess::UserTempDir(), TEXT("aerotelic_document_test_fea.vtk"));
+			IFileManager::Get().Delete(*Request.VtkPath, false, true, true);
+			AerotelicStructuralFea::FResult R;
+			FString Error;
+			const bool bSolved = AerotelicStructuralFea::Run(Request, R, Error);
+			Check(bSolved, FString::Printf(TEXT("fea: the sphere solved (%s)"), bSolved ? *FString::Printf(TEXT("%d nodes, %d elements, %d dof, %.1f s"), R.Nodes, R.Elements, R.Dofs, R.Seconds) : *Error));
+			if (bSolved)
+			{
+				const AerotelicTetGmsh::FResult& S = FeaModel->GetTetMeshes()[0].Result;
+				const double ExpectedMass = 2780.0 * S.SkinVolume + 50.0 * S.CoreVolume;
+				Check(R.bSecondOrder && R.Nodes > static_cast<int32>(FeaMesh.nodes.size()), "fea: solved on 10-node tetrahedra (mid-edge nodes added)");
+				Check(FMath::IsNearlyEqual(R.Mass, ExpectedMass, 1e-6 * ExpectedMass),
+					FString::Printf(TEXT("fea: the mass is the material densities over the regions' volumes (%.6g vs %.6g)"), R.Mass, ExpectedMass));
+				const double Weight = ExpectedMass * 9.80665;
+				Check(FMath::Abs(R.Reaction[2] - Weight) <= 0.02 * Weight && FMath::Abs(R.Reaction[0]) <= 0.02 * Weight && FMath::Abs(R.Reaction[1]) <= 0.02 * Weight,
+					FString::Printf(TEXT("fea: the support carries the weight, %.4g N, and nothing else (reactions %.4g, %.4g, %.4g)"), Weight, R.Reaction[0], R.Reaction[1], R.Reaction[2]));
+				Check(FMath::Abs(R.AppliedPressure[2]) <= 1e-3 * 1.0e5 * 4.0 * PI,
+					FString::Printf(TEXT("fea: a uniform pressure over a closed surface has no resultant (%.3g N)"), R.AppliedPressure[2]));
+				Check(R.MeanNormalDisplacement < 0.0, FString::Printf(TEXT("fea: an external pressure moves the surface inward (mean u.n = %.3g m)"), R.MeanNormalDisplacement));
+				Check(R.MaxVonMisesByMaterial.Num() == 2 && R.MaxVonMisesByMaterial[0] > 0.6e6 && R.MaxVonMisesByMaterial[0] < 1.6e6,
+					FString::Printf(TEXT("fea: the skin's peak von Mises is Lame's hoop stress for the shell, ~1.05e6 Pa (got %.4g)"), R.MaxVonMisesByMaterial.Num() ? R.MaxVonMisesByMaterial[0] : 0.0));
+				Check(R.MaxVonMisesByMaterial.Num() == 2 && R.MaxVonMisesByMaterial[1] < 0.1 * R.MaxVonMisesByMaterial[0],
+					"fea: the soft core carries almost nothing");
+				Check(R.MarginByMaterial.Num() == 2 && R.MarginByMaterial[0] > 100.0, "fea: 2024-T3 at 1 bar has a margin in the hundreds");
+				// The largest displacement is the soft core sagging under its
+				// own weight (rho g L^2 / E, a few millimetres at E = 1e5 Pa);
+				// the aluminium skin moves microns.
+				Check(R.MaxDisplacement > 0.0 && R.MaxDisplacement < 2e-2, FString::Printf(TEXT("fea: the displacement is small and finite (%.3g m)"), R.MaxDisplacement));
+				Check(IFileManager::Get().FileSize(*Request.VtkPath) > 0, FString::Printf(TEXT("fea: the solution was written to %s"), *Request.VtkPath));
+				IFileManager::Get().Delete(*Request.VtkPath, false, true, true);
+			}
+		}
+	}
+
 	UE_LOG(LogAerotelicDocumentTest, Display, TEXT("step: meshes"));
 	for (auto& WeakEntity : Doc->GetEntities())
 	{
@@ -571,8 +649,8 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 	if (ReopenedPrimitive != nullptr)
 	{
 		const aerotelic::MassSpec& M = ReopenedPrimitive->GetMassSpec();
-		Check(M.mode == aerotelic::MassMode::Density && FMath::IsNearlyEqual(M.density, 2.0, 1e-12),
-			"mass: the primitive's density round-tripped through the project file");
+		Check(M.mode == aerotelic::MassMode::Material && FMath::IsNearlyEqual(M.material.density, 2.0, 1e-12) && M.material.name == "Custom",
+			"mass: the primitive's material round-tripped through the project file");
 	}
 
 	if (ReopenedFuselage != nullptr)

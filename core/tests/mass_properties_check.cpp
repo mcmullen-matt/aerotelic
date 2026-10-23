@@ -219,9 +219,22 @@ void CheckCombine() {
 }
 
 void CheckModeNames() {
-	Check(ParseMassMode("asserted") == MassMode::Asserted && ParseMassMode("Density") == MassMode::Density
-		&& ParseMassMode("") == MassMode::Unset, "mass mode names parse, case-insensitively");
-	Check(std::string(MassModeName(MassMode::Asserted)) == "asserted", "mass mode name");
+	Check(ParseMassMode("asserted") == MassMode::Asserted && ParseMassMode("Material") == MassMode::Material
+		&& ParseMassMode("density") == MassMode::Material && ParseMassMode("") == MassMode::Unset,
+		"mass mode names parse, case-insensitively, the old 'density' as material");
+	Check(std::string(MassModeName(MassMode::Asserted)) == "asserted" && std::string(MassModeName(MassMode::Material)) == "material", "mass mode name");
+
+	// The presets are materials: SI, structural, and found by name.
+	Check(MaterialPresets().size() >= 5, "there are material presets");
+	const Material* al = FindMaterialPreset("Aluminium 2024-T3");
+	Check(al != nullptr && al->IsStructural() && al->density == 2780.0 && al->youngs_modulus == 73.1e9, "2024-T3 is a preset with handbook figures");
+	Check(FindMaterialPreset("Unobtainium") == nullptr, "an unknown preset is null");
+	Material edited = *al;
+	Check(IsMaterialPreset(edited), "a copy of a preset is still the preset");
+	edited.youngs_modulus *= 1.1;
+	Check(!IsMaterialPreset(edited), "...until a number is edited");
+	Material bare;
+	Check(!bare.IsStructural() && !bare.HasDensity(), "a blank material can neither weigh nor be analysed");
 	bool threw = false;
 	try { ParseMassMode("heavy"); } catch (const std::invalid_argument&) { threw = true; }
 	Check(threw, "an unknown mass mode is refused");

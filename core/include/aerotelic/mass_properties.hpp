@@ -23,6 +23,7 @@
 #include <string>
 #include <vector>
 
+#include "aerotelic/materials.hpp"
 #include "aerotelic/mesh.hpp"
 
 namespace aerotelic {
@@ -30,15 +31,18 @@ namespace aerotelic {
 enum class MassMode {
 	Unset,     // nothing assigned: the analysis leaves the entity out, and says so
 	Asserted,  // the user's total mass, spread uniformly over the surface
-	Density,   // mass per length unit cubed, times the enclosed volume
+	Material,  // made of a material: its density times the enclosed volume
 };
 
 // Per parameterisation, not per body: a propeller's blades and spinner
 // share one setting (an asserted mass is shared between them by area).
+// The asserted mass is in the PROJECT's mass unit, as typed; the material
+// is SI, as every material is (materials.hpp) -- a preset is a property of
+// the stuff, not of the units the project happens to be drawn in.
 struct MassSpec {
 	MassMode mode = MassMode::Unset;
-	double mass = 0.0;     // Asserted: the total, in mass units
-	double density = 0.0;  // Density: mass units per length unit cubed
+	double mass = 0.0;   // Asserted: the total, in the project's mass unit
+	Material material;   // Material: density (and the structural properties), SI
 };
 
 const char* MassModeName(MassMode m);

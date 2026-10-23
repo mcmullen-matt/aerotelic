@@ -275,17 +275,26 @@ void CheckMassSpecRoundTrip() {
 	Check(asserted.mass.mode == MassMode::Asserted, "mass round trip: asserted mode survives");
 	CheckClose(asserted.mass.mass, 12.5, 1e-12, "mass round trip: the asserted mass");
 
-	e.mass.mode = MassMode::Density;
-	e.mass.density = 2700.0;
-	ProjectEntity by_density = RoundTripThroughText(e);
-	Check(by_density.mass.mode == MassMode::Density, "mass round trip: density mode survives");
-	CheckClose(by_density.mass.density, 2700.0, 1e-12, "mass round trip: the density");
+	e.mass.mode = MassMode::Material;
+	e.mass.material = *FindMaterialPreset("Titanium Ti-6Al-4V");
+	ProjectEntity by_material = RoundTripThroughText(e);
+	Check(by_material.mass.mode == MassMode::Material, "mass round trip: material mode survives");
+	Check(by_material.mass.material.name == "Titanium Ti-6Al-4V", "mass round trip: the material's name");
+	CheckClose(by_material.mass.material.density, 4430.0, 1e-12, "mass round trip: the density");
+	CheckClose(by_material.mass.material.youngs_modulus, 113.8e9, 1e-3, "mass round trip: Young's modulus");
+	CheckClose(by_material.mass.material.poisson_ratio, 0.342, 1e-12, "mass round trip: Poisson's ratio");
+	CheckClose(by_material.mass.material.allowable_stress, 880.0e6, 1e-3, "mass round trip: the allowable");
+	Check(IsMaterialPreset(by_material.mass.material), "mass round trip: it is still the preset");
 
-	// The two flat forms the file is meant to read as.
+	// The forms the file is meant to read as, the pre-material one included.
 	MassSpec from_text = DecodeMassSpec(YAML::Load("{asserted: 3.5}"));
 	Check(from_text.mode == MassMode::Asserted && from_text.mass == 3.5, "mass: `{asserted: 3.5}` decodes");
+	from_text = DecodeMassSpec(YAML::Load("{material: {name: Custom, density: 1200, youngs_modulus: 3.0e9, poisson_ratio: 0.35, allowable_stress: 5.0e7}}"));
+	Check(from_text.mode == MassMode::Material && from_text.material.density == 1200.0 && from_text.material.youngs_modulus == 3.0e9
+		&& from_text.material.name == "Custom", "mass: a custom material decodes");
 	from_text = DecodeMassSpec(YAML::Load("{density: 1200}"));
-	Check(from_text.mode == MassMode::Density && from_text.density == 1200.0, "mass: `{density: 1200}` decodes");
+	Check(from_text.mode == MassMode::Material && from_text.material.density == 1200.0 && from_text.material.name == "Custom"
+		&& from_text.material.youngs_modulus == 0.0, "mass: the old `{density: 1200}` reads as a custom material with only a density");
 }
 
 // `units:` is always written -- the defaults too -- and read back; a file
@@ -305,8 +314,9 @@ void CheckUnitsRoundTrip() {
 		std::ifstream in(path);
 		std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
 		Check(text.find("units:") != std::string::npos && text.find("length: m") != std::string::npos
-			&& text.find("mass: kg") != std::string::npos && text.find("time: s") != std::string::npos,
-			"units: the defaults are written out, time included");
+			&& text.find("mass: kg") != std::string::npos && text.find("time: s") != std::string::npos
+			&& text.find("stress: Pa") != std::string::npos,
+			"units: the defaults are written out, time and stress included");
 		Check(text.find("units:") < text.find("entities:"), "units: comes first in the file");
 	}
 	ProjectFile back = LoadProjectYaml(path);
@@ -314,9 +324,11 @@ void CheckUnitsRoundTrip() {
 
 	pf.units.length = LengthUnit::Foot;
 	pf.units.mass = MassUnit::PoundMass;
+	pf.units.stress = StressUnit::Psi;
 	SaveProjectYaml(pf, path);
 	back = LoadProjectYaml(path);
-	Check(back.units.length == LengthUnit::Foot && back.units.mass == MassUnit::PoundMass, "units: feet and pounds round-trip");
+	Check(back.units.length == LengthUnit::Foot && back.units.mass == MassUnit::PoundMass && back.units.stress == StressUnit::Psi,
+		"units: feet, pounds and psi round-trip");
 
 	// A file from before the key existed.
 	{
