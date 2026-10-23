@@ -4,6 +4,7 @@
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Layout/SBox.h"
 #include "Widgets/Text/STextBlock.h"
+#include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SComboBox.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Styling/CoreStyle.h"
@@ -22,6 +23,29 @@ using aerotelic::Placement;
 namespace
 {
 	TMap<TWeakObjectPtr<AAerotelicEntityActor>, TWeakPtr<SWindow>> GOpenTransformDialogs;
+
+	// What the dialog edits: a DRAFT of the entity's placement. Every field
+	// reads and writes this, never the entity; Apply hands it over
+	// (ApplyPlacement, which is when the entity moves, the booleans over
+	// it rebuild and the lattices over it regenerate) and Revert re-reads
+	// the entity's. The dialog is modeless, so this lives in a shared
+	// object the widgets' lambdas own, not on the stack of the function
+	// that opened the window.
+	struct FTransformDraft
+	{
+		Placement P;
+		bool bDirty = false;
+	};
+
+	// After any edit: keep the axis and angle the geometry would use in
+	// step with the Euler triple (when that is the authored form), exactly
+	// as ApplyPlacement does on the entity, so the "Composes to" read-out
+	// and a later switch of approach see what Apply will see.
+	void Touched(FTransformDraft& D)
+	{
+		aerotelic::SyncPlacementRotation(D.P);
+		D.bDirty = true;
+	}
 
 	enum EPlacementField : int32 { TX = 0, TY, TZ, AX, AY, AZ, Angle };
 
@@ -53,18 +77,17 @@ namespace
 		return FText::Format(LOCTEXT("AngleRow", "{0} ({1}):"), kOrdinals[Index], kAxes[AxisIndex]);
 	}
 
-	// Which approach the Rotation tab is showing. This is not dialog state:
-	// it is the entity's own record of how its rotation was authored, so
-	// re-opening the dialog (or the project) comes back to the same tab.
-	bool UsingEuler(AAerotelicEntityActor* Entity)
+	// Which approach the Rotation tab is showing. Not a separate dialog
+	// setting: it is the placement's own record of how its rotation was
+	// authored (applied with the rest, saved with the project), so
+	// re-opening the dialog comes back to the same tab.
+	bool UsingEuler(const Placement& P)
 	{
-		return Entity != nullptr && Entity->GetPlacement().euler.used;
+		return P.euler.used;
 	}
 
-	double GetPlacementValue(AAerotelicEntityActor* Entity, int32 Field)
+	double GetPlacementValue(const Placement& P, int32 Field)
 	{
-		if (Entity == nullptr) return 0.0;
-		const Placement P = Entity->GetPlacement();
 		switch (Field)
 		{
 		case TX: return P.translation[0];
@@ -78,25 +101,23 @@ namespace
 		return 0.0;
 	}
 
-	void SetPlacementValue(AAerotelicEntityActor* Entity, int32 Field, double Value)
+	void SetPlacementValue(FTransformDraft& D, int32 Field, double Value)
 	{
-		if (Entity == nullptr) return;
-		Placement P = Entity->GetPlacement();
 		// Belt and braces: under the Euler approach the axis and angle are
 		// derived, so a write here would be overwritten by the next sync.
 		// The fields are not on screen in that mode, so this cannot fire.
-		if (Field >= AX && P.euler.used) return;
+		if (Field >= AX && D.P.euler.used) return;
 		switch (Field)
 		{
-		case TX: P.translation[0] = Value; break;
-		case TY: P.translation[1] = Value; break;
-		case TZ: P.translation[2] = Value; break;
-		case AX: P.rotation_axis[0] = Value; break;
-		case AY: P.rotation_axis[1] = Value; break;
-		case AZ: P.rotation_axis[2] = Value; break;
-		case Angle: P.rotation_deg = Value; break;
+		case TX: D.P.translation[0] = Value; break;
+		case TY: D.P.translation[1] = Value; break;
+		case TZ: D.P.translation[2] = Value; break;
+		case AX: D.P.rotation_axis[0] = Value; break;
+		case AY: D.P.rotation_axis[1] = Value; break;
+		case AZ: D.P.rotation_axis[2] = Value; break;
+		case Angle: D.P.rotation_deg = Value; break;
 		}
-		Entity->ApplyPlacement(P);
+		Touched(D);
 	}
 
 	// What the Euler rows show. Once the triple is the authored rotation it
@@ -104,22 +125,18 @@ namespace
 	// actually in effect, decomposed into the chosen order -- switching
 	// approach and finding three zeros beside a live rotation would be the
 	// same kind of lie the axis fields used to tell.
-	std::array<double, 3> DisplayedEulerAngles(AAerotelicEntityActor* Entity)
+	std::array<double, 3> DisplayedEulerAngles(const Placement& P)
 	{
-		if (Entity == nullptr) return {0.0, 0.0, 0.0};
-		const Placement P = Entity->GetPlacement();
 		if (P.euler.used) return P.euler.angles_deg;
 		return aerotelic::EulerAnglesFromMatrix(
 			aerotelic::RotationMatrix(P.rotation_axis, P.rotation_deg), P.euler.order, P.euler.intrinsic);
 	}
 
-	void SetEulerAngle(AAerotelicEntityActor* Entity, int32 Index, double Value)
+	void SetEulerAngle(FTransformDraft& D, int32 Index, double Value)
 	{
-		if (Entity == nullptr) return;
-		Placement P = Entity->GetPlacement();
-		P.euler.angles_deg = DisplayedEulerAngles(Entity);
-		P.euler.angles_deg[Index] = Value;
-		Entity->ApplyPlacement(P);
+		D.P.euler.angles_deg = DisplayedEulerAngles(D.P);
+		D.P.euler.angles_deg[Index] = Value;
+		Touched(D);
 	}
 
 	// Changing the order or the frame keeps the three angles and turns the
@@ -127,26 +144,22 @@ namespace
 	// numbers are in, not re-reading the same orientation. (Under the
 	// axis/angle approach there is nothing to keep -- the rotation stays
 	// put and the Euler rows, if the user switches, re-derive.)
-	void SetEulerConvention(AAerotelicEntityActor* Entity, EulerOrder Order, bool bIntrinsic)
+	void SetEulerConvention(FTransformDraft& D, EulerOrder Order, bool bIntrinsic)
 	{
-		if (Entity == nullptr) return;
-		Placement P = Entity->GetPlacement();
-		P.euler.order = Order;
-		P.euler.intrinsic = bIntrinsic;
-		Entity->ApplyPlacement(P);
+		D.P.euler.order = Order;
+		D.P.euler.intrinsic = bIntrinsic;
+		Touched(D);
 	}
 
 	// Switching approach never moves the entity. To Euler: adopt the three
 	// angles the rows are already showing. To axis/angle: keep the axis and
 	// angle those composed to, which the placement already holds.
-	void SetApproach(AAerotelicEntityActor* Entity, bool bEuler)
+	void SetApproach(FTransformDraft& D, bool bEuler)
 	{
-		if (Entity == nullptr) return;
-		Placement P = Entity->GetPlacement();
-		if (P.euler.used == bEuler) return;
-		if (bEuler) P.euler.angles_deg = DisplayedEulerAngles(Entity);
-		P.euler.used = bEuler;
-		Entity->ApplyPlacement(P);
+		if (D.P.euler.used == bEuler) return;
+		if (bEuler) D.P.euler.angles_deg = DisplayedEulerAngles(D.P);
+		D.P.euler.used = bEuler;
+		Touched(D);
 	}
 
 	TSharedRef<SWidget> Heading(const FText& Label)
@@ -170,7 +183,7 @@ namespace
 	}
 
 	// A combo over a fixed list of labels whose selection lives in the
-	// entity, not in the widget: the displayed text is read back every
+	// draft, not in the widget: the displayed text is read back every
 	// frame, so nothing can drift out of step with the placement.
 	//
 	// The options array is owned HERE and captured into the lambdas the
@@ -205,7 +218,9 @@ namespace
 
 	const FText kHelp = LOCTEXT("Help",
 		"WHERE THE ENTITY SITS\n"
-		"Translation is where the entity's origin goes. The rotation is applied first, about the origin, and the translation after it, so an entity turns in place and then moves. The two have a tab each; edits apply when a field is committed.\n\n"
+		"Translation is where the entity's origin goes. The rotation is applied first, about the origin, and the translation after it, so an entity turns in place and then moves. The two have a tab each.\n\n"
+		"APPLY AND REVERT\n"
+		"The fields edit a copy of the placement held by this dialog: nothing moves until Apply, which hands the copy to the entity -- the entity moves, every boolean over it rebuilds and every lattice over it regenerates. Revert puts the fields back to the placement the entity has. Closing the dialog with edits unapplied discards them.\n\n"
 		"APPROACH\n"
 		"The Rotation tab offers two ways to say the same thing, and the entity remembers which one you used -- the project file stores it, so the tab comes back the way you left it. Switching approach never moves the entity: each one opens on the rotation already in effect, expressed its way.\n\n"
 		"AXIS AND ANGLE\n"
@@ -234,6 +249,8 @@ void OpenAerotelicTransformDialog(AAerotelicEntityActor* Entity)
 	}
 
 	TWeakObjectPtr<AAerotelicEntityActor> Weak = Entity;
+	TSharedRef<FTransformDraft> Draft = MakeShared<FTransformDraft>();
+	Draft->P = Entity->GetPlacement();
 
 	const TArray<FText> ApproachLabels = {
 		LOCTEXT("ApproachAxis", "Axis and angle"), LOCTEXT("ApproachEuler", "Euler angles") };
@@ -247,13 +264,13 @@ void OpenAerotelicTransformDialog(AAerotelicEntityActor* Entity)
 
 	// A placement field. Wide bounds throughout: an axis is a direction, so
 	// the old -1..1 clamp only stopped honest ones being typed.
-	auto Field = [Weak](int32 Index, double Delta, double Min, double Max)
+	auto Field = [Draft](int32 Index, double Delta, double Min, double Max)
 	{
 		return SNew(SAerotelicNumericEntry)
-			.Value_Lambda([Weak, Index]() { return GetPlacementValue(Weak.Get(), Index); })
+			.Value_Lambda([Draft, Index]() { return GetPlacementValue(Draft->P, Index); })
 			.MinValue(Min).MaxValue(Max).Delta(Delta)
 			.LiveUpdate(false)
-			.OnValueCommitted_Lambda([Weak, Index](double V, ETextCommit::Type) { SetPlacementValue(Weak.Get(), Index, V); });
+			.OnValueCommitted_Lambda([Draft, Index](double V, ETextCommit::Type) { SetPlacementValue(*Draft, Index, V); });
 	};
 
 	// --------------------------------------------------------- translation
@@ -285,18 +302,18 @@ void OpenAerotelicTransformDialog(AAerotelicEntityActor* Entity)
 		];
 
 	// --------------------------------------------------- rotation: euler
-	auto CurrentOrder = [Weak]()
+	auto CurrentOrder = [Draft]()
 	{
-		return Weak.IsValid() ? Weak->GetPlacement().euler.order : EulerOrder::ZYX;
+		return Draft->P.euler.order;
 	};
-	auto AngleRow = [Weak, CurrentOrder](int32 Index)
+	auto AngleRow = [Draft, CurrentOrder](int32 Index)
 	{
 		return FormRow(TAttribute<FText>::CreateLambda([CurrentOrder, Index]() { return AngleRowLabel(CurrentOrder(), Index); }),
 			SNew(SAerotelicNumericEntry)
-			.Value_Lambda([Weak, Index]() { return DisplayedEulerAngles(Weak.Get())[Index]; })
+			.Value_Lambda([Draft, Index]() { return DisplayedEulerAngles(Draft->P)[Index]; })
 			.MinValue(-360.0).MaxValue(360.0).Delta(1.0)
 			.LiveUpdate(false)
-			.OnValueCommitted_Lambda([Weak, Index](double V, ETextCommit::Type) { SetEulerAngle(Weak.Get(), Index, V); }));
+			.OnValueCommitted_Lambda([Draft, Index](double V, ETextCommit::Type) { SetEulerAngle(*Draft, Index, V); }));
 	};
 
 	TSharedRef<SWidget> EulerPanel =
@@ -310,17 +327,16 @@ void OpenAerotelicTransformDialog(AAerotelicEntityActor* Entity)
 					for (int32 i = 0; i < 6; ++i) { if (kOrders[i] == CurrentOrder()) return i; }
 					return 0;
 				},
-				[Weak](int32 Index)
+				[Draft](int32 Index)
 				{
-					const bool bIntrinsic = !Weak.IsValid() || Weak->GetPlacement().euler.intrinsic;
-					SetEulerConvention(Weak.Get(), kOrders[Index], bIntrinsic);
+					SetEulerConvention(*Draft, kOrders[Index], Draft->P.euler.intrinsic);
 				}))
 		]
 		+ SVerticalBox::Slot().AutoHeight()
 		[
 			FormRow(LOCTEXT("Frame", "Axes:"), ChoiceCombo(FrameLabels,
-				[Weak]() { return (!Weak.IsValid() || Weak->GetPlacement().euler.intrinsic) ? 0 : 1; },
-				[Weak, CurrentOrder](int32 Index) { SetEulerConvention(Weak.Get(), CurrentOrder(), Index == 0); }))
+				[Draft]() { return Draft->P.euler.intrinsic ? 0 : 1; },
+				[Draft, CurrentOrder](int32 Index) { SetEulerConvention(*Draft, CurrentOrder(), Index == 0); }))
 		]
 		+ SVerticalBox::Slot().AutoHeight().Padding(0, 12, 0, 4) [ Heading(LOCTEXT("Angles", "Angles (degrees)")) ]
 		+ SVerticalBox::Slot().AutoHeight() [ AngleRow(0) ]
@@ -328,15 +344,14 @@ void OpenAerotelicTransformDialog(AAerotelicEntityActor* Entity)
 		+ SVerticalBox::Slot().AutoHeight() [ AngleRow(2) ]
 		+ SVerticalBox::Slot().AutoHeight().Padding(0, 12, 0, 0)
 		[
-			MakeMetricRow(LOCTEXT("Equivalent", "Composes to:"), TAttribute<FText>::CreateLambda([Weak]()
+			MakeMetricRow(LOCTEXT("Equivalent", "Composes to:"), TAttribute<FText>::CreateLambda([Draft]()
 			{
-				if (!Weak.IsValid()) return DashText();
-				const Placement P = Weak->GetPlacement();
+				const Placement& P = Draft->P;
 				aerotelic::EulerRotation E;
 				E.used = true;
 				E.intrinsic = P.euler.intrinsic;
 				E.order = P.euler.order;
-				E.angles_deg = DisplayedEulerAngles(Weak.Get());
+				E.angles_deg = DisplayedEulerAngles(P);
 				const std::pair<std::array<double, 3>, double> AxisAngle = aerotelic::AxisAngleFromEuler(E);
 				return FText::Format(LOCTEXT("EquivalentValue", "{0}° about ({1}, {2}, {3})"),
 					FormatG(AxisAngle.second, 5), FormatG(AxisAngle.first[0], 4),
@@ -355,8 +370,8 @@ void OpenAerotelicTransformDialog(AAerotelicEntityActor* Entity)
 		+ SVerticalBox::Slot().AutoHeight()
 		[
 			FormRow(LOCTEXT("Approach", "Approach:"), ChoiceCombo(ApproachLabels,
-				[Weak]() { return UsingEuler(Weak.Get()) ? 1 : 0; },
-				[Weak](int32 Index) { SetApproach(Weak.Get(), Index == 1); }))
+				[Draft]() { return UsingEuler(Draft->P) ? 1 : 0; },
+				[Draft](int32 Index) { SetApproach(*Draft, Index == 1); }))
 		]
 		+ SVerticalBox::Slot().AutoHeight().Padding(0, 4, 0, 0)
 		[
@@ -365,13 +380,13 @@ void OpenAerotelicTransformDialog(AAerotelicEntityActor* Entity)
 		]
 		+ SVerticalBox::Slot().AutoHeight().Padding(0, 12, 0, 0)
 		[
-			OnlyWhen(TAttribute<EVisibility>::CreateLambda([Weak]()
-				{ return UsingEuler(Weak.Get()) ? EVisibility::Collapsed : EVisibility::Visible; }), AxisAnglePanel)
+			OnlyWhen(TAttribute<EVisibility>::CreateLambda([Draft]()
+				{ return UsingEuler(Draft->P) ? EVisibility::Collapsed : EVisibility::Visible; }), AxisAnglePanel)
 		]
 		+ SVerticalBox::Slot().AutoHeight().Padding(0, 12, 0, 0)
 		[
-			OnlyWhen(TAttribute<EVisibility>::CreateLambda([Weak]()
-				{ return UsingEuler(Weak.Get()) ? EVisibility::Visible : EVisibility::Collapsed; }), EulerPanel)
+			OnlyWhen(TAttribute<EVisibility>::CreateLambda([Draft]()
+				{ return UsingEuler(Draft->P) ? EVisibility::Visible : EVisibility::Collapsed; }), EulerPanel)
 		];
 
 	TArray<FAerotelicTab> Tabs;
@@ -379,7 +394,56 @@ void OpenAerotelicTransformDialog(AAerotelicEntityActor* Entity)
 	Tabs.Add({ LOCTEXT("RotationTab", "Rotation"), RotationTab });
 	Tabs.Add({ LOCTEXT("HelpTab", "Help"), MakeHelpTab(kHelp) });
 
-	const FVector2D Size(430, 470);
+	// ------------------------------------------------- Apply / Revert
+	// The only way the draft reaches the entity. Apply re-reads the
+	// placement afterwards: ApplyPlacement stores it as given, so this is
+	// a no-op today, but the dialog must show what the entity holds.
+	auto IsDirty = [Draft]() { return Draft->bDirty; };
+	TSharedRef<SWidget> Footer =
+		SNew(SHorizontalBox)
+		+ SHorizontalBox::Slot().FillWidth(1.0f).VAlign(VAlign_Center).Padding(0, 0, 8, 0)
+		[
+			SNew(STextBlock)
+			.AutoWrapText(true)
+			.ColorAndOpacity(FSlateColor(FLinearColor(0.6f, 0.6f, 0.6f)))
+			.Text_Lambda([IsDirty, Weak]()
+			{
+				if (!Weak.IsValid()) return LOCTEXT("Gone", "The entity is no longer in the scene.");
+				return IsDirty()
+					? LOCTEXT("Edited", "Edited here only -- press Apply to move the entity.")
+					: LOCTEXT("Clean", "As the entity is placed.");
+			})
+		]
+		+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 0, 6, 0)
+		[
+			SNew(SButton)
+			.Text(LOCTEXT("Revert", "Revert"))
+			.ToolTipText(LOCTEXT("RevertTip", "Put the fields back to the placement the entity has."))
+			.IsEnabled_Lambda([IsDirty, Weak]() { return IsDirty() && Weak.IsValid(); })
+			.OnClicked_Lambda([Draft, Weak]()
+			{
+				if (Weak.IsValid()) Draft->P = Weak->GetPlacement();
+				Draft->bDirty = false;
+				return FReply::Handled();
+			})
+		]
+		+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
+		[
+			SNew(SButton)
+			.Text(LOCTEXT("Apply", "Apply"))
+			.ToolTipText(LOCTEXT("ApplyTip", "Move the entity to this placement: every boolean over it rebuilds and every lattice over it regenerates."))
+			.IsEnabled_Lambda([IsDirty, Weak]() { return IsDirty() && Weak.IsValid(); })
+			.OnClicked_Lambda([Draft, Weak]()
+			{
+				if (!Weak.IsValid()) return FReply::Handled();
+				Weak->ApplyPlacement(Draft->P);
+				Draft->P = Weak->GetPlacement();
+				Draft->bDirty = false;
+				return FReply::Handled();
+			})
+		];
+
+	const FVector2D Size(430, 520);
 	TSharedRef<SWindow> Window = SNew(SWindow)
 		.Title(FText::Format(LOCTEXT("Title", "Transform -- {0}"), FText::FromString(Entity->EntityName)))
 		.ClientSize(Size)
@@ -387,7 +451,15 @@ void OpenAerotelicTransformDialog(AAerotelicEntityActor* Entity)
 		[
 			SNew(SBorder).Padding(12)
 			[
-				SNew(SAerotelicTabStrip, Tabs)
+				SNew(SVerticalBox)
+				+ SVerticalBox::Slot().FillHeight(1.0f)
+				[
+					SNew(SAerotelicTabStrip, Tabs)
+				]
+				+ SVerticalBox::Slot().AutoHeight().Padding(0, 10, 0, 0)
+				[
+					Footer
+				]
 			]
 		];
 

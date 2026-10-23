@@ -42,28 +42,28 @@ namespace
 	// built FROM other entities rather than parameterisations of their own
 	// (hence no entry in EntityModelSpec, and hence `booleans:` and
 	// `lattices:` being separate sections of the project file).
-	bool SpecFromEntityModel(const AAerotelicEntityActor& Entity, EntityModelSpec& OutSpec)
+	bool SpecFromModel(EntityType Type, const ISolidModel& Model, EntityModelSpec& OutSpec)
 	{
-		switch (Entity.GetEntityType())
+		switch (Type)
 		{
 		case EntityType::Wing:
-			OutSpec = Entity.GetModelAs<WingModel>()->Serialize();
+			OutSpec = static_cast<const WingModel&>(Model).Serialize();
 			return true;
 		case EntityType::Fuselage:
-			OutSpec = Entity.GetModelAs<FuselageModel>()->Serialize();
+			OutSpec = static_cast<const FuselageModel&>(Model).Serialize();
 			return true;
 		case EntityType::Nacelle:
-			OutSpec = Entity.GetModelAs<NacelleModel>()->Serialize();
+			OutSpec = static_cast<const NacelleModel&>(Model).Serialize();
 			return true;
 		case EntityType::LoftedNacelle:
-			OutSpec = Entity.GetModelAs<LoftedNacelleModel>()->Serialize();
+			OutSpec = static_cast<const LoftedNacelleModel&>(Model).Serialize();
 			return true;
 		case EntityType::Propeller:
-			OutSpec = Entity.GetModelAs<PropellerModel>()->Serialize();
+			OutSpec = static_cast<const PropellerModel&>(Model).Serialize();
 			return true;
 		case EntityType::Primitive:
 		{
-			const PrimitiveModel* Pm = Entity.GetModelAs<PrimitiveModel>();
+			const PrimitiveModel* Pm = static_cast<const PrimitiveModel*>(&Model);
 			PrimitiveSpec Ps;
 			Ps.shape = Pm->shape;
 			Ps.name = Pm->name;
@@ -80,6 +80,11 @@ namespace
 			return false;
 		}
 		return false;
+	}
+
+	bool SpecFromEntityModel(const AAerotelicEntityActor& Entity, EntityModelSpec& OutSpec)
+	{
+		return Entity.GetModel() != nullptr && SpecFromModel(Entity.GetEntityType(), *Entity.GetModel(), OutSpec);
 	}
 
 	std::unique_ptr<ISolidModel> ModelFromEntitySpec(EntityType Type, const EntityModelSpec& Spec)
@@ -127,6 +132,234 @@ namespace
 UAerotelicDocumentSubsystem* UAerotelicDocumentSubsystem::Get()
 {
 	return GEngine ? GEngine->GetEngineSubsystem<UAerotelicDocumentSubsystem>() : nullptr;
+}
+
+void UAerotelicDocumentSubsystem::Initialize(FSubsystemCollectionBase& Collection)
+{
+	Super::Initialize(Collection);
+	GeometryChangedHandle = AAerotelicEntityActor::OnGeometryChanged.AddUObject(this, &UAerotelicDocumentSubsystem::OnEntityGeometryChanged);
+}
+
+void UAerotelicDocumentSubsystem::Deinitialize()
+{
+	AAerotelicEntityActor::OnGeometryChanged.Remove(GeometryChangedHandle);
+	if (RebuildTick.IsValid())
+	{
+		FTSTicker::GetCoreTicker().RemoveTicker(RebuildTick);
+		RebuildTick.Reset();
+	}
+	Super::Deinitialize();
+}
+
+// ---------------------------------------------------- the panels' Apply
+
+std::unique_ptr<ISolidModel> UAerotelicDocumentSubsystem::CloneEntityModel(const AAerotelicEntityActor* Entity) const
+{
+	EntityModelSpec Spec;
+	if (Entity == nullptr || !SpecFromEntityModel(*Entity, Spec))
+	{
+		return nullptr;
+	}
+	try
+	{
+		return ModelFromEntitySpec(Entity->GetEntityType(), Spec);
+	}
+	catch (const std::exception& e)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("AerotelicDocument: could not clone '%s' for editing: %s"), *Entity->EntityName, UTF8_TO_TCHAR(e.what()));
+		return nullptr;
+	}
+}
+
+bool UAerotelicDocumentSubsystem::ApplyEntityModel(AAerotelicEntityActor* Entity, const ISolidModel& Draft, FString& OutError)
+{
+	if (Entity == nullptr)
+	{
+		OutError = TEXT("The entity is no longer in the scene.");
+		return false;
+	}
+	EntityModelSpec Spec;
+	if (!SpecFromModel(Entity->GetEntityType(), Draft, Spec))
+	{
+		OutError = TEXT("This kind of entity has no parameterisation to apply.");
+		return false;
+	}
+	// The draft was cloned under the name the entity had then; a Rename in
+	// the scene tree since must not be undone by applying it.
+	SetSpecName(Spec, Entity->EntityName);
+	std::unique_ptr<ISolidModel> Model;
+	try
+	{
+		Model = ModelFromEntitySpec(Entity->GetEntityType(), Spec);
+	}
+	catch (const std::exception& e)
+	{
+		OutError = UTF8_TO_TCHAR(e.what());
+		return false;
+	}
+	if (!Entity->ReplaceModel(std::move(Model), OutError))
+	{
+		return false;
+	}
+	// The entity itself is one parameterisation rebuilt, for the progress
+	// bar. Its rebuild broadcast OnGeometryChanged, which queued everything
+	// over it; queued again here in case it did not (a commandlet's
+	// RefreshProxy builds nothing and broadcasts nothing).
+	++RebuildTotal;
+	++RebuildDone;
+	QueueDependentRebuilds(Entity);
+	if (RebuildQueue.Num() == 0)
+	{
+		FinishRebuilds();
+	}
+	return true;
+}
+
+// ------------------------------------ rebuilds downstream of an Apply
+
+void UAerotelicDocumentSubsystem::OnEntityGeometryChanged(AAerotelicEntityActor* Entity)
+{
+	QueueDependentRebuilds(Entity);
+}
+
+void UAerotelicDocumentSubsystem::QueueDependentRebuilds(const AAerotelicEntityActor* Entity)
+{
+	if (Entity == nullptr)
+	{
+		return;
+	}
+	// Entities is in build order -- a boolean result comes after its
+	// operands, a lattice after the bodies it fills -- so walking it gives
+	// the queue its dependency order for free: a boolean over a boolean
+	// rebuilds second, and a lattice over a boolean after the boolean.
+	for (auto& Weak : Entities)
+	{
+		if (!Weak.IsValid() || Weak.Get() == Entity)
+		{
+			continue;
+		}
+		const EntityType Type = Weak->GetEntityType();
+		if (Type != EntityType::Boolean && Type != EntityType::Lattice)
+		{
+			continue;
+		}
+		if (DependsOn(Weak.Get(), Entity) && !RebuildQueue.Contains(Weak))
+		{
+			RebuildQueue.Add(Weak);
+			++RebuildTotal;
+		}
+	}
+	LastQueueTime = FPlatformTime::Seconds();
+	if (RebuildQueue.Num() > 0 && !RebuildTick.IsValid() && !IsRunningCommandlet())
+	{
+		RebuildTick = FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateWeakLambda(this, [this](float)
+		{
+			// One item per tick, so the window repaints -- and the status
+			// bar's progress moves -- between them.
+			const int32 Index = NextRebuild(true);
+			if (Index != INDEX_NONE)
+			{
+				RebuildAt(Index);
+			}
+			if (RebuildQueue.Num() > 0)
+			{
+				return true;
+			}
+			RebuildTick.Reset();
+			FinishRebuilds();
+			return false;
+		}));
+	}
+}
+
+int32 UAerotelicDocumentSubsystem::NextRebuild(bool bRespectSettle)
+{
+	RebuildQueue.RemoveAll([](const TWeakObjectPtr<AAerotelicEntityActor>& W) { return !W.IsValid(); });
+	// A boolean goes as soon as its turn comes. A lattice (seconds of
+	// work) waits for the scene to settle: one Apply changes an entity and
+	// then every boolean over it, each broadcasting in turn, and an Editor
+	// gizmo drag changes a transform every frame -- the lattice is to
+	// regenerate once, after all of that.
+	const bool bSettled = !bRespectSettle || FPlatformTime::Seconds() - LastQueueTime >= kLatticeSettleSeconds;
+	for (int32 i = 0; i < RebuildQueue.Num(); ++i)
+	{
+		if (bSettled || RebuildQueue[i]->GetEntityType() != EntityType::Lattice)
+		{
+			return i;
+		}
+	}
+	return INDEX_NONE;
+}
+
+void UAerotelicDocumentSubsystem::RebuildAt(int32 Index)
+{
+	const TWeakObjectPtr<AAerotelicEntityActor> Weak = RebuildQueue[Index];
+	RebuildQueue.RemoveAt(Index);
+	++RebuildDone;
+	if (!Weak.IsValid())
+	{
+		return;
+	}
+	if (Weak->GetEntityType() == EntityType::Lattice)
+	{
+		FString Error;
+		if (!RegenerateLattice(Weak.Get(), Error))
+		{
+			RebuildErrors.Add(FString::Printf(TEXT("%s: %s"), *Weak->EntityName, *Error));
+		}
+	}
+	else
+	{
+		// A boolean result over its operands as they now stand. One that
+		// cannot be built shows nothing and says why in GetBuildError(),
+		// as it always has; its own broadcast queues whatever is over it.
+		Weak->RefreshProxy();
+	}
+}
+
+void UAerotelicDocumentSubsystem::FinishRebuilds()
+{
+	RebuildTotal = 0;
+	RebuildDone = 0;
+	if (RebuildErrors.Num() > 0)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("AerotelicDocument: lattices could not follow their bodies: %s"), *FString::Join(RebuildErrors, TEXT("; ")));
+		if (!IsRunningCommandlet() && !FApp::IsUnattended())
+		{
+			AerotelicMessageBox(EAppMsgType::Ok,
+				FText::FromString(TEXT("Some lattices could not be regenerated over their bodies as they now stand, and were left as they were:\n") + FString::Join(RebuildErrors, TEXT("\n"))),
+				NSLOCTEXT("AerotelicDocument", "LatticeFollowFailed", "Regenerate Lattices"));
+		}
+		RebuildErrors.Reset();
+	}
+}
+
+bool UAerotelicDocumentSubsystem::HasPendingRebuilds() const
+{
+	for (const auto& Weak : RebuildQueue)
+	{
+		if (Weak.IsValid()) return true;
+	}
+	return false;
+}
+
+float UAerotelicDocumentSubsystem::GetRebuildProgress() const
+{
+	return RebuildTotal <= 0 ? 1.0f : FMath::Clamp(static_cast<float>(RebuildDone) / static_cast<float>(RebuildTotal), 0.0f, 1.0f);
+}
+
+void UAerotelicDocumentSubsystem::FlushPendingRebuilds()
+{
+	for (int32 Index = NextRebuild(false); Index != INDEX_NONE; Index = NextRebuild(false))
+	{
+		RebuildAt(Index);
+	}
+	if (RebuildTick.IsValid())
+	{
+		FTSTicker::GetCoreTicker().RemoveTicker(RebuildTick);
+		RebuildTick.Reset();
+	}
+	FinishRebuilds();
 }
 
 UWorld* UAerotelicDocumentSubsystem::GetTargetWorld() const
@@ -582,26 +815,47 @@ bool UAerotelicDocumentSubsystem::UpdateLattice(AAerotelicEntityActor* Lattice, 
 	return true;
 }
 
+bool UAerotelicDocumentSubsystem::RegenerateLattice(AAerotelicEntityActor* Lattice, FString& OutError)
+{
+	if (Lattice == nullptr || Lattice->GetEntityType() != EntityType::Lattice)
+	{
+		OutError = TEXT("Not a lattice.");
+		return false;
+	}
+	FAerotelicLatticeModel* Model = Lattice->GetModelAs<FAerotelicLatticeModel>();
+	Model->Invalidate();
+	try
+	{
+		Model->BuildMeshes(0.0);
+	}
+	catch (const std::exception& e)
+	{
+		OutError = UTF8_TO_TCHAR(e.what());
+		return false;
+	}
+	Lattice->RefreshProxy();
+	return true;
+}
+
 int32 UAerotelicDocumentSubsystem::RegenerateLattices(TArray<FString>& OutErrors)
 {
 	int32 Count = 0;
+	// A manual regeneration covers every lattice waiting its turn.
+	RebuildQueue.RemoveAll([](const TWeakObjectPtr<AAerotelicEntityActor>& W) { return !W.IsValid() || W->GetEntityType() == EntityType::Lattice; });
 	for (auto& Weak : Entities)
 	{
 		if (!Weak.IsValid() || Weak->GetEntityType() != EntityType::Lattice)
 		{
 			continue;
 		}
-		FAerotelicLatticeModel* Model = Weak->GetModelAs<FAerotelicLatticeModel>();
-		Model->Invalidate();
-		try
+		FString Error;
+		if (RegenerateLattice(Weak.Get(), Error))
 		{
-			Model->BuildMeshes(0.0);
-			Weak->RefreshProxy();
 			++Count;
 		}
-		catch (const std::exception& e)
+		else
 		{
-			OutErrors.Add(FString::Printf(TEXT("%s: %s"), *Weak->EntityName, UTF8_TO_TCHAR(e.what())));
+			OutErrors.Add(FString::Printf(TEXT("%s: %s"), *Weak->EntityName, *Error));
 		}
 	}
 	return Count;

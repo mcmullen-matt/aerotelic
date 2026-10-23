@@ -221,12 +221,29 @@ void AAerotelicEntityActor::InitializeFrom(aerotelic::project_yaml::EntityType I
 	{
 		TransformHandle = ProxyRoot->TransformUpdated.AddUObject(this, &AAerotelicEntityActor::OnRootTransformed);
 	}
-	// A boolean result follows its operands.
-	if (EntityType == aerotelic::project_yaml::EntityType::Boolean && !GeometryHandle.IsValid())
-	{
-		GeometryHandle = OnGeometryChanged.AddUObject(this, &AAerotelicEntityActor::OnOtherGeometryChanged);
-	}
 	RefreshProxy();
+}
+
+bool AAerotelicEntityActor::ReplaceModel(std::unique_ptr<aerotelic::ISolidModel> NewModel, FString& OutError)
+{
+	if (NewModel == nullptr)
+	{
+		OutError = TEXT("No model to apply.");
+		return false;
+	}
+	std::unique_ptr<aerotelic::ISolidModel> Previous = std::move(Model);
+	Model = std::move(NewModel);
+	RefreshProxy();
+	if (LastBuildError.IsEmpty())
+	{
+		return true;
+	}
+	// The draft refused to build: back to the model the scene had, rebuilt
+	// so the viewport shows it again (the failed attempt hid everything).
+	OutError = LastBuildError;
+	Model = std::move(Previous);
+	RefreshProxy();
+	return false;
 }
 
 void AAerotelicEntityActor::OnRootTransformed(USceneComponent*, EUpdateTransformFlags, ETeleportType)
@@ -238,17 +255,6 @@ void AAerotelicEntityActor::OnRootTransformed(USceneComponent*, EUpdateTransform
 	OnGeometryChanged.Broadcast(this);
 }
 
-void AAerotelicEntityActor::OnOtherGeometryChanged(AAerotelicEntityActor* Other)
-{
-	if (Other == this || Model == nullptr || EntityType != aerotelic::project_yaml::EntityType::Boolean)
-	{
-		return;
-	}
-	if (static_cast<const FAerotelicBooleanModel*>(Model.get())->DependsOn(Other))
-	{
-		RefreshProxy();
-	}
-}
 
 TopoDS_Shape AAerotelicEntityActor::GetPlacedShape(bool bMirror) const
 {

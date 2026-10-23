@@ -30,6 +30,7 @@
 #include "Widgets/Text/STextBlock.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SComboButton.h"
+#include "Widgets/Notifications/SProgressBar.h"
 #include "Widgets/SBoxPanel.h"
 #include "Framework/Commands/UICommandList.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
@@ -875,6 +876,31 @@ TSharedRef<SWidget> SAerotelicMainShell::BuildStatusBar()
 		.Padding(FMargin(8, 3))
 		[
 			SNew(SHorizontalBox)
+			// The rebuild bar sits directly under the scene tree: past the
+			// view toolbar's column (less this border's own padding) and as
+			// wide as the tree. Full while nothing is waiting; after an
+			// Apply it drops to the share of the queued parameterisations
+			// rebuilt so far and fills back as the document's queue drains,
+			// one per frame (UAerotelicDocumentSubsystem::GetRebuildProgress).
+			// A count, not a timing: every parameterisation is one step.
+			+ SHorizontalBox::Slot().AutoWidth()
+			[
+				SNew(SBox).WidthOverride(kViewToolbarWidth - 8.0f)
+			]
+			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 0, 16, 0)
+			[
+				SNew(SBox).WidthOverride(kSceneTreeWidth).HeightOverride(8)
+				.ToolTipText(LOCTEXT("RebuildBarTip", "Parameterisations rebuilt since the last Apply: the entity applied, then every boolean and lattice over it, one per frame. Full when nothing is waiting."))
+				[
+					SNew(SProgressBar)
+					.Percent_Lambda([this]()
+					{
+						UAerotelicDocumentSubsystem* Doc = GetDocument();
+						return TOptional<float>(Doc != nullptr ? Doc->GetRebuildProgress() : 1.0f);
+					})
+					.FillColorAndOpacity_Lambda([]() { return FSlateColor(AerotelicTheme::Current().Accent); })
+				]
+			]
 			+ SHorizontalBox::Slot().FillWidth(1.0f).VAlign(VAlign_Center)
 			[
 				SNew(STextBlock).Text(this, &SAerotelicMainShell::GetStatusText)

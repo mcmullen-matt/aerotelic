@@ -76,19 +76,15 @@ namespace
 		"The wheel zooms about the cursor; the right-click menu's Fit view to contents fits everything; nothing else moves the view.");
 }
 
-void BuildNacelleDesignContent(AAerotelicEntityActor* Entity, FAerotelicDesignContent& Out)
+void BuildNacelleDesignContent(AAerotelicEntityActor* Entity, NacelleModel* Model, FSimpleDelegate OnChanged, FAerotelicDesignContent& Out)
 {
-	if (Entity == nullptr || Entity->GetEntityType() != project_yaml::EntityType::Nacelle)
+	if (Entity == nullptr || Model == nullptr || Entity->GetEntityType() != project_yaml::EntityType::Nacelle)
 	{
 		return;
 	}
 
-	NacelleModel* Model = Entity->GetModelAs<NacelleModel>();
-	TWeakObjectPtr<AAerotelicEntityActor> WeakEntity = Entity;
-	FSimpleDelegate Rebuild = FSimpleDelegate::CreateLambda([WeakEntity]()
-	{
-		if (WeakEntity.IsValid()) WeakEntity->RefreshProxy();
-	});
+	// Every edit marks the draft; nothing in the scene changes until Apply.
+	FSimpleDelegate Rebuild = OnChanged;
 
 	const double InvLength = 1.0 / FMath::Max(Model->length, 1e-9);
 

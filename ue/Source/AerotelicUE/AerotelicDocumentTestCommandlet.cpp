@@ -364,6 +364,89 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 		Check(Bad == nullptr && !Error.IsEmpty(), "a duplicate lattice name is refused");
 	}
 
+	// A design panel's Apply: the panel edits a DRAFT, an independent copy
+	// of the entity's model, and nothing in the scene changes until the
+	// draft is applied -- at which point the entity gets a fresh model of
+	// its own and the lattice over it follows.
+	UE_LOG(LogAerotelicDocumentTest, Display, TEXT("step: apply"));
+	if (Primitive != nullptr && Wing != nullptr)
+	{
+		AAerotelicEntityActor* Lattice = nullptr;
+		AAerotelicEntityActor* Boolean = nullptr;
+		for (auto& Weak : Doc->GetEntities())
+		{
+			if (!Weak.IsValid()) continue;
+			if (Weak->GetEntityType() == aerotelic::project_yaml::EntityType::Lattice) Lattice = Weak.Get();
+			if (Weak->GetEntityType() == aerotelic::project_yaml::EntityType::Boolean) Boolean = Weak.Get();
+		}
+		Check(Doc->CloneEntityModel(Boolean) == nullptr, "apply: a boolean result has no draft to edit (its operands have)");
+		Check(Doc->CloneEntityModel(Lattice) == nullptr, "apply: a lattice has no draft to edit (its own dialog applies)");
+
+		std::unique_ptr<aerotelic::ISolidModel> Draft = Doc->CloneEntityModel(Primitive);
+		Check(Draft != nullptr, "apply: the sphere clones for editing");
+		if (Draft != nullptr)
+		{
+			const aerotelic::PrimitiveModel* Live = Primitive->GetModelAs<aerotelic::PrimitiveModel>();
+			aerotelic::PrimitiveModel* D = static_cast<aerotelic::PrimitiveModel*>(Draft.get());
+			const double R0 = Live->radius;
+			Check(D != Live && FMath::IsNearlyEqual(D->radius, R0, 1e-12), "apply: the draft is a model of its own carrying the entity's numbers");
+			D->radius = R0 * 1.5;
+			Check(FMath::IsNearlyEqual(Live->radius, R0, 1e-12), "apply: editing the draft leaves the entity alone");
+			Check(!Doc->HasPendingRebuilds() && Doc->GetRebuildProgress() == 1.0f, "apply: nothing is waiting to rebuild before anything is applied, and the progress bar is full");
+
+			FString Error;
+			Check(Doc->ApplyEntityModel(Primitive, *Draft, Error), FString::Printf(TEXT("apply: the draft applies (%s)"), *Error));
+			const aerotelic::PrimitiveModel* Applied = Primitive->GetModelAs<aerotelic::PrimitiveModel>();
+			Check(Applied != Live && Applied != D, "apply: the entity has a fresh model, neither the old one nor the draft");
+			Check(FMath::IsNearlyEqual(Applied->radius, R0 * 1.5, 1e-12), "apply: the entity now carries the draft's numbers");
+			D->radius = R0 * 1.25;
+			Check(FMath::IsNearlyEqual(Primitive->GetModelAs<aerotelic::PrimitiveModel>()->radius, R0 * 1.5, 1e-12),
+				"apply: editing the draft after Apply still leaves the entity alone until the next Apply");
+
+			// The boolean and the lattice over the sphere follow: queued by
+			// the Apply, rebuilt by the flush (the ticker's job in the
+			// application). Three parameterisations in all -- the sphere,
+			// done, then those two -- so the bar stands at a third.
+			Check(Doc->HasPendingRebuilds(), "apply: the boolean and the lattice over the sphere are queued to follow");
+			Check(FMath::IsNearlyEqual(Doc->GetRebuildProgress(), 1.0f / 3.0f, 1e-6f), FString::Printf(TEXT("apply: the progress bar shows one of three rebuilt (%.3f)"), Doc->GetRebuildProgress()));
+			Doc->FlushPendingRebuilds();
+			Check(!Doc->HasPendingRebuilds() && Doc->GetRebuildProgress() == 1.0f, "apply: the flush rebuilt what was queued and the bar is full again");
+			if (Lattice != nullptr)
+			{
+				const FAerotelicLatticeModel* M = Lattice->GetModelAs<FAerotelicLatticeModel>();
+				Check(M->IsValid() && M->GetStats().Triangles > 0, "apply: the lattice is generated again");
+				std::vector<aerotelic::NamedMesh> Meshes = Lattice->GetPlacedMeshes(false, 1e-3);
+				double Reach = 0.0;
+				for (const aerotelic::NamedMesh& NM : Meshes)
+					for (const aerotelic::Vec3& V : NM.mesh.vertices) Reach = FMath::Max(Reach, aerotelic::Length(V));
+				Check(Reach > 1.3 * R0 && Reach < 1.6 * R0, FString::Printf(TEXT("apply: the lattice now fills the larger sphere (reaches %.3f of a %.3f radius)"), Reach, 1.5 * R0));
+			}
+
+			// Back to the unit sphere for the rest of the run.
+			D->radius = R0;
+			Check(Doc->ApplyEntityModel(Primitive, *Draft, Error), FString::Printf(TEXT("apply: restoring applies (%s)"), *Error));
+			Doc->FlushPendingRebuilds();
+		}
+
+		// A lofted model takes the spec round trip the clone is made by.
+		std::unique_ptr<aerotelic::ISolidModel> WingDraft = Doc->CloneEntityModel(Wing);
+		Check(WingDraft != nullptr, "apply: the wing clones for editing");
+		if (WingDraft != nullptr)
+		{
+			aerotelic::WingModel* WD = static_cast<aerotelic::WingModel*>(WingDraft.get());
+			const double Span = Wing->GetModelAs<aerotelic::WingModel>()->planform().SemiSpan();
+			Check(FMath::IsNearlyEqual(WD->planform().SemiSpan(), Span, 1e-12), "apply: the wing's draft starts on the wing's parameters");
+			WD->planform().SetSemiSpan(Span * 2.0);
+			Check(FMath::IsNearlyEqual(Wing->GetModelAs<aerotelic::WingModel>()->planform().SemiSpan(), Span, 1e-12), "apply: the wing is untouched until Apply");
+			FString Error;
+			Check(Doc->ApplyEntityModel(Wing, *WingDraft, Error), FString::Printf(TEXT("apply: the wing's draft applies (%s)"), *Error));
+			Check(FMath::IsNearlyEqual(Wing->GetModelAs<aerotelic::WingModel>()->planform().SemiSpan(), Span * 2.0, 1e-12), "apply: the wing took the draft's span");
+			CheckBuildsSolid(Wing, TEXT("Wing after Apply"));
+			WD->planform().SetSemiSpan(Span);
+			Check(Doc->ApplyEntityModel(Wing, *WingDraft, Error), "apply: restoring the wing applies");
+		}
+	}
+
 	// The viewport's OCCT-free meshes: every entity's model builds its
 	// bodies straight from its curves, closed and outward.
 	UE_LOG(LogAerotelicDocumentTest, Display, TEXT("step: meshes"));

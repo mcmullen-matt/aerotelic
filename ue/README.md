@@ -408,7 +408,10 @@ The layout follows the Python/Qt version's main window (`aerotelic/ui/main_windo
   Default / Circle...), a Help tab with the WingDesigner text, and
   read-only derived metrics. Editing tabs hold only controls: every
   descriptive paragraph lives in the panel's Help tab (the wing has one of
-  its own; the propeller's Help includes the blade tabs' text).
+  its own; the propeller's Help includes the blade tabs' text). Every
+  panel edits a *draft* of its entity and ends in an Apply / Revert
+  footer: nothing in the scene changes until Apply (see *Apply in the
+  design panels and the Transform dialog* below).
 * **Curve editors** draw a titled, framed plot with the x-axis label
   centred below it and the y-axis label rotated along its left edge, in
   non-dimensional units (x/L, y/L, z/L; x/R and r/R on the propeller
@@ -626,10 +629,12 @@ The layout follows the Python/Qt version's main window (`aerotelic/ui/main_windo
   so generation is refused naming the body; and each body's field is
   clamped positive outside the body's own bounding box as a second line of
   defence. Edit (double-click or the row menu) reopens the dialog and
-  regenerates; *Regenerate Lattices* rebuilds every lattice over its bodies
-  as they now stand -- a lattice does NOT follow edits to its bodies by
-  itself (generation takes seconds, which would make every keystroke in a
-  wing panel wait). Deleting a filled body deletes the lattice. Lattices
+  regenerates; a lattice follows an *Apply* on any body it fills (or on an
+  operand of a boolean it fills): the document subsystem marks it stale
+  and regenerates it a moment later, once per Apply however many bodies
+  changed (see *Apply in the design panels* below). *Regenerate Lattices*
+  rebuilds every lattice by hand, for one that failed to follow or was
+  left as it was. Deleting a filled body deletes the lattice. Lattices
   carry no collision (click-select them in the tree). Measured on p38: the
   default cell (a tenth of the largest extent) generates in 0.2 s; a
   0.4-unit cell (19.5 M samples) in well under a minute.
@@ -1176,6 +1181,9 @@ The dialog kept no state of its own: every edit read the placement back
 out of the actor's `FQuat`, changed one field and wrote the quaternion
 again. A quaternion holds a rotation, not the parameters that describe
 one, so two things the dialog had to keep did not survive the trip.
+(The dialog has since gained state of a different kind: a draft
+placement, held until Apply -- see *Apply in the design panels and the
+Transform dialog* below.)
 
 * **An axis set while the angle was zero was lost.** `ApplyPlacement`
   stored `FQuat::Identity` for a zero angle, and reading that back gave
@@ -1241,6 +1249,80 @@ gimbal-locked sets. `project_yaml_check` covers the `rotation_euler`
 round trip and that an axis survives storage un-normalised at zero
 angle; the document commandlet covers the same three promises through
 `ApplyPlacement`/`GetPlacement` on a real entity.
+
+## Apply in the design panels and the Transform dialog (2026-10-22)
+
+Until now every design panel wrote straight into the entity's live model
+and called `RefreshProxy()` on each edit -- per keystroke on the wing
+tabs, per commit on the others -- and the Transform dialog applied each
+field as it was committed. Every edit therefore rebuilt the entity, then
+every boolean over it; and the lattice over those was deliberately
+excluded from that chain, because a generation that takes seconds cannot
+run on every keystroke. The visible symptom was the one that prompted
+the change: edit the fuselage's ρ-upper curve, and the boolean over it
+follows but the lattice filling that boolean does not.
+
+The paradigm is now **edit a draft, Apply on a button**, in both places.
+
+* **Design panels edit a draft.** `MakeEntityDesignContent` clones the
+  entity's model (`UAerotelicDocumentSubsystem::CloneEntityModel`: the
+  spec round-trip copy/paste and save/load take, so the copy is
+  independent and the panel's curve editors can hold pointers into it)
+  into a `FAerotelicDesignDraft` owned by the panel, and every
+  `Build*DesignContent` is handed that draft and an `OnChanged` that
+  only marks it dirty. Nothing in the scene changes as fields are typed
+  into or poles dragged. The panel ends in a footer -- a status line,
+  **Revert** and **Apply**, both enabled only while the draft is dirty.
+  Apply (`ApplyEntityModel`) builds a fresh model from the draft's spec
+  and swaps it in with `AAerotelicEntityActor::ReplaceModel`, which
+  keeps each body's display state by role and, if the draft refuses to
+  build (a wing with a negative chord), puts the old model back and
+  reports why; the draft stays as typed so it can be fixed. Revert drops
+  the draft and rebuilds the panel on a fresh clone. A Rename in the
+  scene tree after the clone is kept: Apply writes the entity's current
+  name into the spec. Switching selection keeps each panel's draft (the
+  panels were already kept per entity); deleting the entity drops it.
+* **The Transform dialog edits a draft placement** the same way: its
+  fields read and write a `Placement` owned by the dialog's widgets (it
+  is modeless, so the state lives in the widget tree), kept in step with
+  `SyncPlacementRotation` so the Euler rows, the axis fields and the
+  "Composes to" read-out agree as they did when every edit was applied;
+  Apply calls `ApplyPlacement`, Revert re-reads the entity's placement.
+* **What follows an Apply is one queue, drained one item per frame.**
+  Boolean results used to subscribe to `OnGeometryChanged` themselves and
+  rebuild synchronously inside the broadcast -- so a chain of booleans
+  rebuilt the second one twice (once from the first's nested broadcast,
+  once from the entity's outer one), and the whole chain ran inside the
+  Apply click with no repaint. Lattices were excluded from that chain
+  altogether. Now the document subsystem alone subscribes: it queues
+  every boolean result and lattice that `DependsOn` the changed entity
+  (directly, or through a boolean target), walking `Entities` so the
+  queue is in build order, and a core ticker rebuilds one item per tick.
+  A boolean goes as soon as its turn comes; a lattice (seconds of work)
+  waits until 0.3 s have passed since the last queueing, so one Apply
+  that changes an entity and then the booleans over it regenerates the
+  lattice over those once, and an Editor gizmo drag does not regenerate
+  it every frame. `ApplyEntityModel` queues explicitly as well, since a
+  commandlet's `RefreshProxy` builds and broadcasts nothing;
+  `FlushPendingRebuilds` drains at once, which is what the test uses.
+  Lattice failures are reported in one message box and the lattice left
+  as it was; *Regenerate Lattices* remains for that case.
+* **The status bar's rebuild bar** (`SAerotelicMainShell::BuildStatusBar`)
+  is a thin progress bar at the left of the bottom border, directly under
+  the scene tree (the status text sits to its right), full while nothing
+  is waiting. An Apply counts the entity itself as one parameterisation
+  rebuilt and each queued boolean or lattice as one more, so the bar
+  drops to `done / total` and fills back as the queue drains, one step
+  per frame. It is a count, not a timing: every parameterisation is one
+  step whatever it costs, nothing is measured, and the only cost is one
+  float read per paint (`GetRebuildProgress`).
+
+The document commandlet covers the draft's independence before and after
+Apply, that Apply gives the entity a fresh model (neither the old one nor
+the draft), the wing's parameters surviving the spec round trip, that a
+boolean result has no draft, the boolean and the lattice over the sphere
+being queued (the bar at one third) and rebuilt by the flush (the bar
+full), and the lattice regenerated over the sphere as changed.
 
 ## Mass properties (2026-10-22)
 

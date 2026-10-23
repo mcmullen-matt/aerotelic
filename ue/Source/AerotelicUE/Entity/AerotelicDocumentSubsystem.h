@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "Subsystems/EngineSubsystem.h"
+#include "Containers/Ticker.h"
 #include <memory>
 
 #include "aerotelic/project_yaml.hpp"
@@ -39,6 +40,9 @@ public:
 	// The one document, wherever this module is hosted. Null only before
 	// the engine has initialised its subsystems.
 	static UAerotelicDocumentSubsystem* Get();
+
+	virtual void Initialize(FSubsystemCollectionBase& Collection) override;
+	virtual void Deinitialize() override;
 
 	// Returns false (and leaves the scene alone) if the user cancels the
 	// "replace the scene?" confirmation.
@@ -104,10 +108,49 @@ public:
 	// OutError (and the lattice unchanged) if the new one cannot be built.
 	bool UpdateLattice(AAerotelicEntityActor* Lattice, const aerotelic::LatticeSpec& Spec, const TArray<struct FAerotelicBooleanOperand>& Targets,
 		const TArray<struct FAerotelicBooleanOperand>& Exclusions, FString& OutError);
+	// Regenerates one lattice over its targets as they now stand. False
+	// with OutError (and the lattice as it was) if it cannot be built.
+	bool RegenerateLattice(AAerotelicEntityActor* Lattice, FString& OutError);
 	// Lattice -> Regenerate Lattices: rebuilds every lattice over its
 	// targets as they now stand. Returns how many; OutErrors lists any that
 	// failed (left as they were).
 	int32 RegenerateLattices(TArray<FString>& OutErrors);
+	// ---- What follows an Apply ----
+	// Every boolean result and lattice over an entity that changed (a
+	// design panel's Apply, the Transform dialog's Apply) is queued here,
+	// in build order, and rebuilt one per tick: a boolean as soon as its
+	// turn comes, a lattice (seconds of work) once the scene has settled
+	// for kLatticeSettleSeconds, so one Apply that changes an entity and
+	// then the booleans over it regenerates the lattice over those once.
+	// One per tick so the window repaints between them, which is what the
+	// status bar's progress shows: GetRebuildProgress() is the share of the
+	// parameterisations queued by the last Apply (the entity itself
+	// included) that have been rebuilt -- 1 when nothing is waiting. A
+	// rough measure on purpose: every item counts one whatever it costs,
+	// and nothing is timed.
+	//
+	// FlushPendingRebuilds() drains the queue at once (a commandlet has no
+	// tick), reporting failures as the tick would.
+	bool HasPendingRebuilds() const;
+	float GetRebuildProgress() const;
+	void FlushPendingRebuilds();
+
+	// ---- The design panels' and the Transform dialog's Apply ----
+	// A design panel edits a DRAFT of the entity's parameterisation, not
+	// the entity: nothing in the scene changes until Apply. The draft is an
+	// independent copy made the way a copy/paste is (the model's spec
+	// handed to a fresh model's constructor), so the panel's curve editors
+	// can hold pointers into it for as long as the panel lives.
+	//
+	// Null for a boolean result or a lattice, which have no spec of their
+	// own (they are edited through their own dialogs).
+	std::unique_ptr<aerotelic::ISolidModel> CloneEntityModel(const AAerotelicEntityActor* Entity) const;
+	// Apply: a fresh model built from Draft's spec replaces Entity's and the
+	// entity rebuilds; boolean results over it rebuild at once and lattices
+	// over it regenerate on the next tick. Draft itself is left alone (the
+	// panel keeps editing it). False with OutError, and the entity as it
+	// was, if the draft cannot be built.
+	bool ApplyEntityModel(AAerotelicEntityActor* Entity, const aerotelic::ISolidModel& Draft, FString& OutError);
 	// A default "Lattice n".
 	FString NextLatticeName() const;
 	// The solid skin thickness a new lattice over Targets starts with: one
@@ -228,4 +271,22 @@ private:
 	FAerotelicSectionPlane SectionPlane;
 
 	void ApplySectionPlaneToEntities();
+
+	// The rebuild queue (see HasPendingRebuilds).
+	FDelegateHandle GeometryChangedHandle;
+	TArray<TWeakObjectPtr<AAerotelicEntityActor>> RebuildQueue;
+	TArray<FString> RebuildErrors;
+	FTSTicker::FDelegateHandle RebuildTick;
+	double LastQueueTime = 0.0;
+	int32 RebuildTotal = 0;
+	int32 RebuildDone = 0;
+	static constexpr double kLatticeSettleSeconds = 0.3;
+	void OnEntityGeometryChanged(AAerotelicEntityActor* Entity);
+	void QueueDependentRebuilds(const AAerotelicEntityActor* Entity);
+	// The next queued item ready to rebuild (dropping dead entries), or
+	// INDEX_NONE; with bRespectSettle a lattice is not ready until the
+	// scene has settled.
+	int32 NextRebuild(bool bRespectSettle);
+	void RebuildAt(int32 Index);
+	void FinishRebuilds();
 };

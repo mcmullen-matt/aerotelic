@@ -6,11 +6,14 @@
 
 class AAerotelicEntityActor;
 struct FAerotelicDesignContent;
+namespace aerotelic { class PrimitiveModel; }
 
 // Slate port of ui/primitive_panel.py's Shape tab: the shape selector plus
 // the dimension rows for whichever shape is current (the others are hidden,
 // never rebuilt, and the model keeps every shape's numbers), with Volume /
-// Surface area / Extents read-outs underneath.
+// Surface area / Extents read-outs underneath. Edits the panel's DRAFT
+// model (see FAerotelicDesignDraft), firing OnChanged on every edit;
+// nothing reaches the entity until Apply.
 class SPrimitiveDialog : public SCompoundWidget
 {
 public:
@@ -18,10 +21,10 @@ public:
 		SLATE_EVENT(FSimpleDelegate, OnChanged)
 	SLATE_END_ARGS()
 
-	void Construct(const FArguments& InArgs, AAerotelicEntityActor* InEntity);
+	void Construct(const FArguments& InArgs, aerotelic::PrimitiveModel* InModel);
 
 private:
-	AAerotelicEntityActor* Entity = nullptr;
+	aerotelic::PrimitiveModel* DraftModel = nullptr;
 	FSimpleDelegate OnChangedDelegate;
 
 	TArray<TSharedPtr<FString>> ShapeOptions;
@@ -32,5 +35,6 @@ private:
 	void Changed();
 };
 
-// Builds this entity's Primitive design panel (Shape + Help tabs).
-void BuildPrimitiveDesignContent(AAerotelicEntityActor* Entity, FAerotelicDesignContent& Out);
+// Builds this entity's Primitive design panel (Shape + Help tabs) over
+// Model, the panel's draft of the entity's primitive.
+void BuildPrimitiveDesignContent(AAerotelicEntityActor* Entity, aerotelic::PrimitiveModel* Model, FSimpleDelegate OnChanged, FAerotelicDesignContent& Out);
