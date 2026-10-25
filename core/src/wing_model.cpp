@@ -908,6 +908,12 @@ double WingModel::HingeFraction(const FlapSpec& flap, double eta) const {
 	return (dx2 * ry - rx * dy2) / det;
 }
 
+std::pair<double, double> WingModel::PocketExtent(const FlapSpec& flap) const {
+	const double semi = planform_->SemiSpan();
+	const double d = semi > 0.0 ? flap.side_gap / semi : 0.0;
+	return {std::max(0.0, flap.eta_root - d), std::min(1.0, flap.eta_tip + d)};
+}
+
 void WingModel::ValidateFlaps() const {
 	std::vector<const FlapSpec*> sorted;
 	for (const FlapSpec& f : flaps) sorted.push_back(&f);
@@ -921,8 +927,9 @@ void WingModel::ValidateFlaps() const {
 			throw std::invalid_argument("flap '" + f.name + "': the hinge must lie strictly between the leading and trailing edges");
 		}
 		if (!(f.gap >= 0.0)) throw std::invalid_argument("flap '" + f.name + "': the gap must not be negative");
-		if (i > 0 && f.eta_root <= sorted[i - 1]->eta_tip + 1e-9) {
-			throw std::invalid_argument("flaps '" + sorted[i - 1]->name + "' and '" + f.name + "' overlap or share an edge station; leave a stretch of plain wing between them");
+		if (!(f.side_gap >= 0.0)) throw std::invalid_argument("flap '" + f.name + "': the side gap must not be negative");
+		if (i > 0 && PocketExtent(f).first <= PocketExtent(*sorted[i - 1]).second + 1e-9) {
+			throw std::invalid_argument("flaps '" + sorted[i - 1]->name + "' and '" + f.name + "' overlap or share an edge station once their side gaps are allowed for; leave a stretch of plain wing between them");
 		}
 	}
 }
@@ -1024,19 +1031,23 @@ std::vector<NamedMesh> WingModel::BuildFlappedMeshes(double tolerance) const {
 		br.b_to_a = [loop](double t) { return loop->ParameterAtAirfoil(t); };
 		return br;
 	};
+	// The pocket is the flap's span widened by the side gap at each end (the
+	// flap body itself keeps its own extent), so the flap's end caps stand
+	// that far clear of the pocket faces.
 	std::vector<LoftSource> segments;
 	std::vector<LoftBreak> breaks;
 	const double eps = 1e-9;
 	double prev = 0.0;
 	for (int fi = 0; fi < n; ++fi) {
 		const FlapSpec& f = sorted[fi];
-		if (f.eta_root > prev + eps) {
+		const auto [lo, hi] = PocketExtent(f);
+		if (lo > prev + eps) {
 			if (!segments.empty()) breaks.push_back(break_notched_to_full(fi - 1, prev));
-			segments.push_back(full_segment(prev, f.eta_root));
-			breaks.push_back(break_full_to_notched(fi, f.eta_root));
+			segments.push_back(full_segment(prev, lo));
+			breaks.push_back(break_full_to_notched(fi, lo));
 		}
-		segments.push_back(notched_segment(fi, f.eta_root, f.eta_tip));
-		prev = f.eta_tip;
+		segments.push_back(notched_segment(fi, lo, hi));
+		prev = hi;
 	}
 	if (prev < 1.0 - eps) {
 		breaks.push_back(break_notched_to_full(n - 1, prev));

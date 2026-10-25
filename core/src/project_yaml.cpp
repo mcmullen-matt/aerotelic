@@ -221,6 +221,7 @@ YAML::Node Encode(const WingModelSpec& spec) {
 			fn["hinge_root"] = f.hinge_root;
 			fn["hinge_tip"] = f.hinge_tip;
 			fn["gap"] = f.gap;
+			fn["side_gap"] = f.side_gap;
 			flaps.push_back(fn);
 		}
 		n["flaps"] = flaps;
@@ -242,6 +243,7 @@ WingModelSpec DecodeWingModelSpec(const YAML::Node& node) {
 			if (fn["hinge_root"]) f.hinge_root = fn["hinge_root"].as<double>();
 			if (fn["hinge_tip"]) f.hinge_tip = fn["hinge_tip"].as<double>();
 			if (fn["gap"]) f.gap = fn["gap"].as<double>();
+			if (fn["side_gap"]) f.side_gap = fn["side_gap"].as<double>();
 			spec.flaps.push_back(f);
 		}
 	}

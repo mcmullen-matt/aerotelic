@@ -1498,13 +1498,13 @@ pounds, saves, reopens, and reads the file's `units:` line.
   capping (see above), and the engine cannot rasterise SVG reference
   images.
 * The wing Control Surfaces tab carries trailing-edge flaps only (a table
-  of span extent, hinge chord fraction at each end and gap, drawn on a plan
-  view). The cut is made in every section plane with no boolean operations
-  (`core/src/section_cut.cpp`; the main element stays one closed body with a
-  pocket per flap, `TriangulateLoftChain` in `mesh.cpp`). Not yet: dragging
-  the hinge on the plan view, a spanwise side gap (a flap's end caps sit in
-  the pocket faces), deflection, slats, and a flapped wing's STEP export
-  (still the one-piece wing).
+  of span extent, hinge chord fraction at each end, gap and side gap, drawn
+  on a plan view). The cut is made in every section plane with no boolean
+  operations (`core/src/section_cut.cpp`; the main element stays one closed
+  body with a pocket per flap, `TriangulateLoftChain` in `mesh.cpp`); the
+  pocket is the flap's span widened by the side gap at each end. Not yet:
+  dragging the hinge on the plan view, deflection, slats, and a flapped
+  wing's STEP export (still the one-piece wing).
 * Lattices: the paper gives pictures, not node tables, for its strut
   cells; G7 (BCC with a vertical pillar), Vintiles (the cuboctahedral
   frame on the edge midpoints) and Re-entrant (vertical edges bowed a

@@ -58,26 +58,52 @@ void CheckBodies(const std::string& label, const WingModel& wing, double tol, do
 		sum += v;
 	}
 	Check(sum < v_full && sum > 0.97 * v_full, F(label + ": bodies hold a little less than the plain wing (%.5f vs %.5f)", sum, v_full));
-	// Each flap clears the main element: no flap vertex is inside it, and
-	// away from the flap's end stations -- where its end caps lie in the
-	// main element's pocket faces, there being no side gap -- the nearest
-	// approach is about the gap (within the chordal tolerance of both).
+	// Each flap clears the main element: no flap vertex is inside it; across
+	// the flap's span the nearest approach is about the (chordwise) gap,
+	// within the chordal tolerance of both bodies; at its end caps it is the
+	// side gap, exactly (both faces are planar) -- or, with no side gap, the
+	// caps lie in the pocket faces and touch.
 	if (meshes.size() > 1) {
 		MeshSdf main_sdf(meshes[0].mesh);
 		std::vector<FlapSpec> sorted = wing.flaps;
 		std::sort(sorted.begin(), sorted.end(), [](const FlapSpec& a, const FlapSpec& b) { return a.eta_root < b.eta_root; });
+		const double semi = wing.planform().SemiSpan();
 		for (size_t k = 1; k < meshes.size(); ++k) {
 			const FlapSpec& f = sorted[k - 1];
-			const double semi = wing.planform().SemiSpan();
-			double nearest = 1e30, deepest = 0.0;
+			double nearest_mid = 1e30, nearest_cap = 1e30, deepest = 0.0, y_min = 1e30, y_max = -1e30;
 			for (const Vec3& p : meshes[k].mesh.vertices) {
 				double d = main_sdf.Distance(p);
 				deepest = std::min(deepest, d);
-				bool interior = p.y > f.eta_root * semi + 2.0 * tol && p.y < f.eta_tip * semi - 2.0 * tol;
-				if (interior) nearest = std::min(nearest, d);
+				y_min = std::min(y_min, p.y);
+				y_max = std::max(y_max, p.y);
+				bool at_cap = p.y < f.eta_root * semi + 1e-6 || p.y > f.eta_tip * semi - 1e-6;
+				(at_cap ? nearest_cap : nearest_mid) = std::min(at_cap ? nearest_cap : nearest_mid, d);
 			}
 			Check(deepest > -1e-9, F(label + " " + meshes[k].name + ": no vertex inside the main element (deepest %.3g)", deepest));
-			Check(nearest > f.gap - 2.5 * tol && nearest < f.gap + 2.5 * tol + 1e-9, F(label + " " + meshes[k].name + ": nearest approach %.4f vs gap %.4f", nearest, f.gap));
+			Check(nearest_mid > f.gap - 2.5 * tol && nearest_mid < f.gap + 2.5 * tol + 1e-9, F(label + " " + meshes[k].name + ": nearest approach across the span %.4f vs gap %.4f", nearest_mid, f.gap));
+			// The flap keeps its own extent; the pocket is wider.
+			Check(std::fabs(y_min - f.eta_root * semi) < 1e-6 && std::fabs(y_max - f.eta_tip * semi) < 1e-6, F(label + " " + meshes[k].name + ": spans its own extent (y %.4f to %.4f)", y_min, y_max));
+			// The end caps: no closer than the smaller of the two clearances
+			// (a cap vertex on the nose arc is a gap from the cavity, the cap
+			// itself a side gap from the pocket face).
+			const double least = std::min(f.gap, f.side_gap);
+			Check(nearest_cap > least - 2.5 * tol - 1e-9, F(label + " " + meshes[k].name + ": end caps no closer than the smaller clearance (%.4f vs %.4f)", nearest_cap, least));
+			// The pocket runs from eta_root - side_gap to eta_tip + side_gap:
+			// its faces (which carry the aft skin) sit exactly there, and
+			// between them the main element has nothing aft of the hinge.
+			const auto [lo, hi] = wing.PocketExtent(f);
+			auto hinge_x = [&](double eta) { return wing.planform().AirfoilCoordsToXyz(eta, Mat::FromRows({{wing.HingeFraction(f, eta), 0.0}}))(0, 0); };
+			bool face_lo = false, face_hi = false, band_clear = true;
+			for (const Vec3& p : meshes[0].mesh.vertices) {
+				const double eta = p.y / semi;
+				if (eta < lo - 1e-9 || eta > hi + 1e-9) continue;
+				const bool aft = p.x > hinge_x(eta) + 1e-6;
+				if (std::fabs(eta - lo) < 1e-9) { face_lo = face_lo || aft; continue; }
+				if (std::fabs(eta - hi) < 1e-9) { face_hi = face_hi || aft; continue; }
+				band_clear = band_clear && !aft;
+			}
+			Check(band_clear, label + " " + meshes[k].name + ": nothing of the main element aft of the hinge inside the pocket");
+			Check((lo <= 1e-9 || face_lo) && (hi >= 1.0 - 1e-9 || face_hi), F(label + " " + meshes[k].name + ": pocket faces at eta %.4f and %.4f carry the aft skin", lo, hi));
 		}
 	}
 }
@@ -92,14 +118,25 @@ int main() {
 		double v_full = wing.BuildMesh(tol).SignedVolume();
 		Check(wing.BuildMeshes(tol).size() == 1, "no flaps: one body");
 
-		// One outboard flap.
+		// One outboard flap, with and without a side gap.
 		FlapSpec f;
 		f.name = "Aileron";
 		f.eta_root = 0.55; f.eta_tip = 0.95;
 		f.hinge_root = 0.70; f.hinge_tip = 0.70;
 		f.gap = 0.004;
+		f.side_gap = 0.012;
 		wing.flaps = {f};
 		CheckBodies("one flap", wing, tol, v_full, 1);
+		{
+			auto [lo, hi] = wing.PocketExtent(f);
+			double semi = wing.planform().SemiSpan();
+			Check(std::fabs(lo - (f.eta_root - f.side_gap / semi)) < 1e-12 && std::fabs(hi - (f.eta_tip + f.side_gap / semi)) < 1e-12, "pocket extent: the flap's span widened by the side gap at each end");
+		}
+		FlapSpec touching = f;
+		touching.side_gap = 0.0;
+		wing.flaps = {touching};
+		CheckBodies("one flap, no side gap", wing, tol, v_full, 1);
+		wing.flaps = {f};
 		Check(wing.flaps[0].name == "Aileron" && wing.BuildMeshes(tol)[1].name == "Aileron", "one flap: the flap body carries the flap's name");
 		// The hinge line is straight in plan view: the hinge points of
 		// stations across the flap are collinear in (x, y).
@@ -157,6 +194,10 @@ int main() {
 		refuses("overlapping flaps", {a, b});
 		b.eta_root = a.eta_tip;
 		refuses("flaps sharing an edge station", {a, b});
+		b.eta_root = a.eta_tip + 0.5 * (a.side_gap + b.side_gap) / wing.planform().SemiSpan();
+		refuses("flaps whose pockets overlap once the side gaps are allowed for", {a, b});
+		a = f; a.side_gap = -0.001;
+		refuses("a negative side gap", {a});
 		a.eta_tip = a.eta_root;
 		refuses("a flap of zero span", {a});
 		a = f; a.hinge_root = 0.0;
@@ -175,7 +216,7 @@ int main() {
 		for (size_t i = 0; same && i < 2; ++i) {
 			const FlapSpec& p = spec.flaps[i];
 			const FlapSpec& q = back.flaps[i];
-			same = p.name == q.name && p.eta_root == q.eta_root && p.eta_tip == q.eta_tip && p.hinge_root == q.hinge_root && p.hinge_tip == q.hinge_tip && p.gap == q.gap;
+			same = p.name == q.name && p.eta_root == q.eta_root && p.eta_tip == q.eta_tip && p.hinge_root == q.hinge_root && p.hinge_tip == q.hinge_tip && p.gap == q.gap && p.side_gap == q.side_gap;
 		}
 		Check(same, "yaml: flaps survive a round trip");
 		wing.flaps.clear();

@@ -51,6 +51,7 @@ void SFlapListWidget::Construct(const FArguments& InArgs, WingModel* InModel)
 			+ SHorizontalBox::Slot().AutoWidth() [ Header(LOCTEXT("ColHingeRoot", "Hinge root"), kNumWidth) ]
 			+ SHorizontalBox::Slot().AutoWidth() [ Header(LOCTEXT("ColHingeTip", "Hinge tip"), kNumWidth) ]
 			+ SHorizontalBox::Slot().AutoWidth() [ Header(LOCTEXT("ColGap", "Gap"), kNumWidth) ]
+			+ SHorizontalBox::Slot().AutoWidth() [ Header(LOCTEXT("ColSideGap", "Side gap"), kNumWidth) ]
 			+ SHorizontalBox::Slot().AutoWidth() [ SNew(SBox).WidthOverride(64) ]
 		]
 
@@ -127,6 +128,7 @@ void SFlapListWidget::RebuildRows()
 			+ SHorizontalBox::Slot().AutoWidth() [ Num(&FlapSpec::hinge_root, 0.02, 0.98, 0.01, LOCTEXT("HingeRootTip", "Hinge position at the inboard end, as a chord fraction (0 = leading edge, 1 = trailing edge). The hinge line is straight in plan view between the two ends.")) ]
 			+ SHorizontalBox::Slot().AutoWidth() [ Num(&FlapSpec::hinge_tip, 0.02, 0.98, 0.01, LOCTEXT("HingeTipTip", "Hinge position at the outboard end, as a chord fraction.")) ]
 			+ SHorizontalBox::Slot().AutoWidth() [ Num(&FlapSpec::gap, 0.0, 1.0e9, 0.001, LOCTEXT("GapTip", "Clearance between the flap's nose and the main element's cavity, in model units; constant along the span.")) ]
+			+ SHorizontalBox::Slot().AutoWidth() [ Num(&FlapSpec::side_gap, 0.0, 1.0e9, 0.001, LOCTEXT("SideGapTip", "Spanwise clearance between each end cap of the flap and the main element's pocket face, in model units. The flap keeps its extent; the pocket is cut this much wider at each end.")) ]
 			+ SHorizontalBox::Slot().AutoWidth()
 			[
 				SNew(SBox).WidthOverride(64)

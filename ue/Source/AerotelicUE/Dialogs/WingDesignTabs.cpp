@@ -119,9 +119,10 @@ FText FWingDesignTabs::GetHelpText() const
 	}
 	const FText ControlSurfaces = LOCTEXT("HelpControlSurfaces",
 		"CONTROL SURFACES\nTrailing-edge flaps, one row each: the span extent (η at the inboard and outboard ends), the hinge as a chord fraction at each end -- the hinge line runs straight in plan view between them -- "
-		"and the gap. The plan view above the table draws each flap's hinge line and planform. On Apply the wing is parted in every section plane, with no boolean operations: "
+		"the gap and the side gap. The plan view above the table draws each flap's hinge line and planform, with the pocket's faces a side gap outboard of each end. On Apply the wing is parted in every section plane, with no boolean operations: "
 		"the flap's nose is the circle about the hinge tangent to the upper and lower skin, and the main element ends on the concentric circle one gap larger, so the nose clears the main element at any deflection. "
-		"The main element stays one closed body with a pocket where each flap sits; each flap is its own closed body, named as in its row. Flaps may not overlap or share an end station. "
+		"The side gap is the spanwise clearance between each end cap of the flap and the pocket face: the flap keeps its extent and the pocket is cut that much wider. "
+		"The main element stays one closed body with a pocket where each flap sits; each flap is its own closed body, named as in its row. Pockets may not overlap or share an end station. "
 		"Deflection is not modelled yet; the wing's STEP export is still the one-piece wing.");
 	return FText::Join(FText::FromString(TEXT("\n\n")), PlanformHelp, Dihedral, Twist, Sections, ControlSurfaces, Axes);
 }
@@ -591,6 +592,18 @@ TSharedRef<SWidget> FWingDesignTabs::BuildFlapOutlineView()
 				Flap.Color = kFlapColors[k % UE_ARRAY_COUNT(kFlapColors)];
 				Flap.Label = FText::FromString(StdToFString(F.name));
 				Paths.Add(Flap);
+				// The pocket's faces, the side gap outboard of each end of the
+				// flap: thin chords from the hinge line to the trailing edge.
+				const auto [Lo, Hi] = M->PocketExtent(F);
+				for (double Eta : { Lo, Hi })
+				{
+					if (FMath::IsNearlyEqual(Eta, F.eta_root, 1e-9) || FMath::IsNearlyEqual(Eta, F.eta_tip, 1e-9)) continue;
+					FCurveEditorOutlinePath Face;
+					Face.Points = { FVector2D(Eta, PlanX(Eta, M->HingeFraction(F, Eta))), FVector2D(Eta, PlanX(Eta, 1.0)) };
+					Face.Color = Flap.Color;
+					Face.LineWidth = 1.0f;
+					Paths.Add(Face);
+				}
 			}
 		}
 		catch (const std::exception&) {}
@@ -607,8 +620,8 @@ TSharedRef<SWidget> FWingDesignTabs::BuildControlSurfacesTab()
 		+ SVerticalBox::Slot().AutoHeight().Padding(0, 8, 0, 6)
 		[
 			MakeInfoLabel(LOCTEXT("FlapsInfo",
-				"Trailing-edge flaps. Each row is one flap: its span extent, the hinge chord fraction at each end (straight in plan view between them) and the nose-to-cavity gap. "
-				"Flaps may not overlap or share an end station. Apply parts the wing: the main element keeps one closed body with a pocket per flap; each flap is its own body."))
+				"Trailing-edge flaps. Each row is one flap: its span extent, the hinge chord fraction at each end (straight in plan view between them), the nose-to-cavity gap and the spanwise side gap at its end caps. "
+				"Pockets may not overlap or share an end station. Apply parts the wing: the main element keeps one closed body with a pocket per flap; each flap is its own body."))
 		]
 		+ SVerticalBox::Slot().AutoHeight()
 		[
