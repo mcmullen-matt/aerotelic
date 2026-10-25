@@ -141,6 +141,34 @@ struct LoftSource {
 	//     one ring parameter set. NaN: none.
 	std::function<double(double u, double v)> mirror_v;
 	double mirror_u = std::numeric_limits<double>::quiet_NaN();
+
+	// Parameters the first / last ring must contain in addition to its own
+	// refined set (added after the mirror closure, not mirrored themselves):
+	// how TriangulateLoftChain gives the two rings that meet at a break the
+	// same vertices along their shared stretch. Ignored for periodic_u.
+	std::vector<double> v_extra_start, v_extra_end;
+};
+
+// The first and last rings of a loft: the mesh's vertex indices, in ring
+// order (ascending v), and their along-curve parameters.
+struct LoftEndRings {
+	std::vector<int> start, end;
+	std::vector<double> v_start, v_end;
+};
+
+// A break between two consecutive segments of a chain (TriangulateLoftChain):
+// the section changes shape at one station -- a wing's full section
+// becoming the notched main element where a flap begins -- and the two
+// rings there, the previous segment's last and the next's first, share a
+// stretch (the skin forward of the cut) and differ elsewhere. The shared
+// stretch is [va0, va1] on the previous ring and [vb0, vb1] on the next
+// (inclusive, in each ring's own parameter), and a_to_b / b_to_a map one
+// parameter onto the other (exact inverses). The two rings' remaining
+// stretches, together, bound a planar polygon -- the pocket -- which closes
+// the body across the break.
+struct LoftBreak {
+	double va0 = 0.0, va1 = 1.0, vb0 = 0.0, vb1 = 1.0;
+	std::function<double(double)> a_to_b, b_to_a;
 };
 
 struct LoftOptions {
@@ -162,6 +190,11 @@ struct LoftOptions {
 	double max_aspect = 6.0;
 	// Below this, a section is treated as collapsed to an apex.
 	double apex_tolerance = 1e-9;
+	// Reverse the triangles if the result's signed volume is negative. Off
+	// for the segments of a chain, which are open (their signed volume
+	// means nothing) and must keep the one winding their shared
+	// parametrisation gives them; the assembled body is oriented once.
+	bool orient_outward = true;
 };
 
 struct LoftStats {
@@ -173,7 +206,19 @@ struct LoftStats {
 
 // Triangulates the loft. Throws std::invalid_argument on a malformed
 // source (fewer than two stations, no section points).
-TriMesh TriangulateLoft(const LoftSource& source, const LoftOptions& options, LoftStats* stats = nullptr);
+TriMesh TriangulateLoft(const LoftSource& source, const LoftOptions& options, LoftStats* stats = nullptr, LoftEndRings* ends = nullptr);
+
+// Triangulates a chain of segments (consecutive in u, each its own
+// LoftSource with its own section) joined at breaks, as ONE closed body:
+// each segment is lofted without caps at the breaks, the two rings at a
+// break are given the same vertices along their shared stretch (by
+// parameter correspondence, not by position), and the pocket between
+// their remaining stretches is capped. The outer ends are capped as the
+// first / last segment's cap_start / cap_end say. breaks.size() must be
+// segments.size() - 1; no segment may be periodic_u. Throws
+// std::runtime_error if a ring lacks the counterpart of a shared point
+// (which the extra-parameter mechanism is meant to make impossible).
+TriMesh TriangulateLoftChain(std::vector<LoftSource> segments, const std::vector<LoftBreak>& breaks, const LoftOptions& options, std::vector<LoftStats>* stats = nullptr);
 
 // The ruled strip between two rings sharing their point count (and
 // correspondence), without refinement: quads split along the shorter

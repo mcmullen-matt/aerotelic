@@ -578,7 +578,7 @@ int RefineChordal(std::vector<double>& params, double tol, int max_points,
 // The loft
 // ---------------------------------------------------------------------------
 
-TriMesh TriangulateLoft(const LoftSource& src, const LoftOptions& opt, LoftStats* stats) {
+TriMesh TriangulateLoft(const LoftSource& src, const LoftOptions& opt, LoftStats* stats, LoftEndRings* ends) {
 	if (!src.section) throw std::invalid_argument("TriangulateLoft: no section function");
 	if (!(src.u_max > src.u_min)) throw std::invalid_argument("TriangulateLoft: empty station range");
 	const double tol = std::max(opt.tolerance, 1e-12);
@@ -749,6 +749,30 @@ TriMesh TriangulateLoft(const LoftSource& src, const LoftOptions& opt, LoftStats
 				if (!crowded) added.push_back(m);
 			}
 			work.insert(work.end(), added.begin(), added.end());
+			r = SortedUnique(work, 1e-9);
+		}
+		// Parameters the caller requires on an end ring (LoftSource::v_extra_*):
+		// after the closure, and not mirrored -- they are the other side of a
+		// chain break's shared stretch, which must match exactly, not a
+		// thin-shell twin.
+		const std::vector<double>* extra = nullptr;
+		if (!src.periodic_u) {
+			if (!src.v_extra_start.empty() && std::fabs(u - src.u_min) <= 1e-12) extra = &src.v_extra_start;
+			else if (!src.v_extra_end.empty() && std::fabs(u - src.u_max) <= 1e-12) extra = &src.v_extra_end;
+		}
+		if (extra) {
+			std::vector<double> work = r;
+			for (double v : *extra) {
+				if (!std::isfinite(v)) continue;
+				if (src.closed_curve) {
+					v = std::fmod(v, 1.0);
+					if (v < 0.0) v += 1.0;
+					if (v >= 1.0 - 1e-12) v = 0.0;
+				} else {
+					v = std::clamp(v, 0.0, 1.0);
+				}
+				work.push_back(v);
+			}
 			r = SortedUnique(work, 1e-9);
 		}
 		return ring_vs_cache.emplace(u, std::move(r)).first->second;
@@ -970,9 +994,124 @@ TriMesh TriangulateLoft(const LoftSource& src, const LoftOptions& opt, LoftStats
 		}
 		if (src.cap_end && !is_apex[nu - 1]) AppendPolygonCap(mesh, rings[nu - 1]);
 	}
+	if (ends) {
+		ends->start = rings[0];
+		ends->v_start = ring_v[0];
+		ends->end = rings[nu - 1];
+		ends->v_end = ring_v[nu - 1];
+	}
 	mesh.RemoveDegenerateTriangles();
-	mesh.FlipIfInsideOut();
+	if (opt.orient_outward) mesh.FlipIfInsideOut();
 	return mesh;
+}
+
+// ---------------------------------------------------------------------------
+// Chains
+// ---------------------------------------------------------------------------
+
+TriMesh TriangulateLoftChain(std::vector<LoftSource> segments, const std::vector<LoftBreak>& breaks, const LoftOptions& opt, std::vector<LoftStats>* stats) {
+	const int n = static_cast<int>(segments.size());
+	if (n == 0) throw std::invalid_argument("TriangulateLoftChain: no segments");
+	if (static_cast<int>(breaks.size()) != n - 1) throw std::invalid_argument("TriangulateLoftChain: breaks.size() must be segments.size() - 1");
+	if (stats) stats->assign(n, LoftStats{});
+	if (n == 1) return TriangulateLoft(segments[0], opt, stats ? &(*stats)[0] : nullptr);
+	for (int i = 0; i < n; ++i) {
+		if (segments[i].periodic_u) throw std::invalid_argument("TriangulateLoftChain: a segment may not be periodic in u");
+		if (i > 0) segments[i].cap_start = false;
+		if (i + 1 < n) segments[i].cap_end = false;
+	}
+	for (const LoftBreak& br : breaks) {
+		if (!br.a_to_b || !br.b_to_a) throw std::invalid_argument("TriangulateLoftChain: a break lacks its parameter maps");
+	}
+	LoftOptions seg_opt = opt;
+	seg_opt.orient_outward = false; // one winding for all, oriented at the end
+
+	auto in_range = [](double v, double lo, double hi) { return v >= lo - 1e-9 && v <= hi + 1e-9; };
+	// Index of the ring point at parameter v, or -1.
+	auto find_v = [](const std::vector<double>& vs, double v) {
+		int best = -1;
+		double best_d = 1e-8;
+		for (size_t i = 0; i < vs.size(); ++i) {
+			double d = std::fabs(vs[i] - v);
+			if (d <= best_d) { best_d = d; best = static_cast<int>(i); }
+		}
+		return best;
+	};
+
+	// Pass 1: each segment's natural end rings, to tell each break's two
+	// rings what the other has on the shared stretch.
+	std::vector<LoftEndRings> natural(n);
+	for (int i = 0; i < n; ++i) TriangulateLoft(segments[i], seg_opt, nullptr, &natural[i]);
+	for (int k = 0; k + 1 < n; ++k) {
+		const LoftBreak& br = breaks[k];
+		for (double v : natural[k].v_end) if (in_range(v, br.va0, br.va1)) segments[k + 1].v_extra_start.push_back(br.a_to_b(v));
+		for (double v : natural[k + 1].v_start) if (in_range(v, br.vb0, br.vb1)) segments[k].v_extra_end.push_back(br.b_to_a(v));
+	}
+
+	// Pass 2: the meshes, with the end rings complete.
+	std::vector<TriMesh> meshes(n);
+	std::vector<LoftEndRings> ends(n);
+	for (int i = 0; i < n; ++i) meshes[i] = TriangulateLoft(segments[i], seg_opt, stats ? &(*stats)[i] : nullptr, &ends[i]);
+
+	// Assemble: append each segment, its first ring's shared points taking
+	// the previous segment's last-ring vertices, then cap the pocket.
+	TriMesh out = meshes[0];
+	std::vector<int> prev_ring = ends[0].end;
+	std::vector<double> prev_v = ends[0].v_end;
+	for (int k = 0; k + 1 < n; ++k) {
+		const LoftBreak& br = breaks[k];
+		const TriMesh& m = meshes[k + 1];
+		const std::vector<int>& bring = ends[k + 1].start;
+		const std::vector<double>& bv = ends[k + 1].v_start;
+		const int base = static_cast<int>(out.vertices.size());
+		std::vector<int> remap(m.vertices.size());
+		for (size_t j = 0; j < remap.size(); ++j) remap[j] = base + static_cast<int>(j);
+		for (size_t j = 0; j < bring.size(); ++j) {
+			if (!in_range(bv[j], br.vb0, br.vb1)) continue;
+			int i = find_v(prev_v, br.b_to_a(bv[j]));
+			if (i < 0) throw std::runtime_error("TriangulateLoftChain: the previous ring has no counterpart of a shared point at v = " + std::to_string(bv[j]));
+			remap[bring[j]] = prev_ring[i];
+		}
+		out.vertices.insert(out.vertices.end(), m.vertices.begin(), m.vertices.end());
+		for (const auto& t : m.triangles) out.triangles.push_back({remap[t[0]], remap[t[1]], remap[t[2]]});
+
+		// The pocket: the end cap of the previous segment (its last ring in
+		// ring order) with the start cap of the next (its first ring
+		// reversed), the shared stretch cancelling between them -- so the
+		// previous ring's other stretch from va1 round to va0, then the next
+		// ring's other stretch backwards from vb0 round to vb1.
+		const int na = static_cast<int>(prev_ring.size()), nb = static_cast<int>(bring.size());
+		int ia0 = find_v(prev_v, br.va0), ia1 = find_v(prev_v, br.va1);
+		int ib0 = find_v(bv, br.vb0), ib1 = find_v(bv, br.vb1);
+		if (ia0 < 0 || ia1 < 0 || ib0 < 0 || ib1 < 0) throw std::runtime_error("TriangulateLoftChain: a break's shared stretch does not end on a ring point");
+		std::vector<int> poly;
+		for (int i = ia1;; i = (i + 1) % na) {
+			poly.push_back(prev_ring[i]);
+			if (i == ia0) break;
+		}
+		for (int j = (ib0 - 1 + nb) % nb; j != ib1; j = (j - 1 + nb) % nb) poly.push_back(remap[bring[j]]);
+		AppendPolygonCap(out, poly);
+
+		prev_ring = ends[k + 1].end;
+		for (int& idx : prev_ring) idx = remap[idx];
+		prev_v = ends[k + 1].v_end;
+	}
+
+	// Drop the vertices the welding orphaned.
+	std::vector<int> used(out.vertices.size(), -1);
+	for (const auto& t : out.triangles) for (int idx : t) used[idx] = 1;
+	std::vector<Vec3> kept;
+	kept.reserve(out.vertices.size());
+	for (size_t i = 0; i < used.size(); ++i) {
+		if (used[i] < 0) continue;
+		used[i] = static_cast<int>(kept.size());
+		kept.push_back(out.vertices[i]);
+	}
+	for (auto& t : out.triangles) t = {used[t[0]], used[t[1]], used[t[2]]};
+	out.vertices = std::move(kept);
+	out.RemoveDegenerateTriangles();
+	if (opt.orient_outward) out.FlipIfInsideOut();
+	return out;
 }
 
 // ---------------------------------------------------------------------------

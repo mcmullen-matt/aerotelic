@@ -1,6 +1,8 @@
 #include "aerotelic/wing_model.hpp"
 
 #include <algorithm>
+#include <array>
+#include <map>
 #include <cmath>
 #include <limits>
 #include <stdexcept>
@@ -14,6 +16,8 @@
 #include <TColStd_Array1OfReal.hxx>
 #include <TColgp_Array1OfPnt.hxx>
 #include <gp_Pnt.hxx>
+
+#include "aerotelic/section_cut.hpp"
 
 namespace aerotelic {
 
@@ -420,6 +424,7 @@ WingModel::WingModel(const WingModelSpec& spec) : name(spec.name) {
 		AddSection(Airfoil::FromCurve(sec.airfoil_curve, sec.airfoil_name), sec.s);
 	}
 	reference_images = spec.reference_images;
+	flaps = spec.flaps;
 }
 
 WingModelSpec WingModel::Serialize() const {
@@ -427,6 +432,7 @@ WingModelSpec WingModel::Serialize() const {
 	spec.name = name;
 	spec.planform = planform_->Serialize();
 	spec.reference_images = reference_images;
+	spec.flaps = flaps;
 	for (const auto& sec : user_sections_) {
 		WingSectionSpec ss;
 		ss.s = sec.s;
@@ -756,6 +762,14 @@ std::shared_ptr<Airfoil> WingModel::AirfoilAt(double eta) const {
 	}
 
 	double w = (eta - lo->s) / (hi->s - lo->s);
+	// The exact blend in B-spline form (common knots, blended poles): one
+	// parameterisation for every station between the two sections, so the
+	// loft between them is a true ruled surface and a chordwise parameter
+	// means the same point along the whole span. See Airfoil::Blend.
+	if (auto blended = Airfoil::Blend(*lo->airfoil, *hi->airfoil, w)) return std::shared_ptr<Airfoil>(std::move(blended));
+
+	// Fallback for curves that cannot share knots (different degrees, a
+	// periodic curve): a fit through blended sample points.
 	const int n = 200;
 	Mat lo_pts = lo->airfoil->ContourPoints(n);
 	Mat hi_pts = hi->airfoil->ContourPoints(n);
@@ -865,7 +879,188 @@ TriMesh WingModel::BuildMesh(double tolerance, double s_min, double s_max) const
 }
 
 std::vector<NamedMesh> WingModel::BuildMeshes(double tolerance) const {
-	return {{"Main", BuildMesh(tolerance)}};
+	if (flaps.empty()) return {{"Main", BuildMesh(tolerance)}};
+	return BuildFlappedMeshes(tolerance);
+}
+
+// ---------------------------------------------------------------------
+// Flaps
+// ---------------------------------------------------------------------
+
+double WingModel::HingeFraction(const FlapSpec& flap, double eta) const {
+	// Plan view (x, y) of a chord fraction at a station.
+	auto plan = [&](double e, double frac) {
+		Mat p = planform_->AirfoilCoordsToXyz(e, Mat::FromRows({{frac, 0.0}}));
+		return std::array<double, 2>{p(0, 0), p(0, 1)};
+	};
+	const auto r = plan(flap.eta_root, flap.hinge_root), t = plan(flap.eta_tip, flap.hinge_tip);
+	const auto a = plan(eta, 0.0), b = plan(eta, 1.0);
+	// The station's chord line a + s (b - a) meets the hinge line r + w (t - r).
+	const double dx1 = b[0] - a[0], dy1 = b[1] - a[1], dx2 = t[0] - r[0], dy2 = t[1] - r[1];
+	const double det = dx2 * dy1 - dx1 * dy2;
+	if (std::fabs(det) <= 1e-12 * std::max(1.0, std::hypot(dx1, dy1) * std::hypot(dx2, dy2))) {
+		// Parallel (a flap of zero span, or a hinge line along the chord):
+		// fall back to interpolating the fractions.
+		double w = flap.eta_tip > flap.eta_root ? (eta - flap.eta_root) / (flap.eta_tip - flap.eta_root) : 0.0;
+		return flap.hinge_root + (flap.hinge_tip - flap.hinge_root) * std::clamp(w, 0.0, 1.0);
+	}
+	const double rx = r[0] - a[0], ry = r[1] - a[1];
+	return (dx2 * ry - rx * dy2) / det;
+}
+
+void WingModel::ValidateFlaps() const {
+	std::vector<const FlapSpec*> sorted;
+	for (const FlapSpec& f : flaps) sorted.push_back(&f);
+	std::sort(sorted.begin(), sorted.end(), [](const FlapSpec* a, const FlapSpec* b) { return a->eta_root < b->eta_root; });
+	for (size_t i = 0; i < sorted.size(); ++i) {
+		const FlapSpec& f = *sorted[i];
+		if (!(f.eta_root >= 0.0 && f.eta_tip <= 1.0 && f.eta_tip > f.eta_root)) {
+			throw std::invalid_argument("flap '" + f.name + "': the span extent must run 0 <= root < tip <= 1");
+		}
+		if (!(f.hinge_root > 0.0 && f.hinge_root < 1.0 && f.hinge_tip > 0.0 && f.hinge_tip < 1.0)) {
+			throw std::invalid_argument("flap '" + f.name + "': the hinge must lie strictly between the leading and trailing edges");
+		}
+		if (!(f.gap >= 0.0)) throw std::invalid_argument("flap '" + f.name + "': the gap must not be negative");
+		if (i > 0 && f.eta_root <= sorted[i - 1]->eta_tip + 1e-9) {
+			throw std::invalid_argument("flaps '" + sorted[i - 1]->name + "' and '" + f.name + "' overlap or share an edge station; leave a stretch of plain wing between them");
+		}
+	}
+}
+
+std::vector<NamedMesh> WingModel::BuildFlappedMeshes(double tolerance) const {
+	if (user_sections_.empty()) throw std::invalid_argument("No airfoil sections provided to the wing loft");
+	RequirePositiveChord();
+	ValidateFlaps();
+	std::vector<FlapSpec> sorted = flaps;
+	std::sort(sorted.begin(), sorted.end(), [](const FlapSpec& a, const FlapSpec& b) { return a.eta_root < b.eta_root; });
+	const int n = static_cast<int>(sorted.size());
+
+	const std::vector<double> stations = LoftStations(60, tolerance);
+	auto seeds_in = [&](double a, double b) {
+		std::vector<double> out = {a, b};
+		for (double s : stations) if (s > a && s < b) out.push_back(s);
+		return out;
+	};
+
+	// One blended airfoil, and per flap one section cut, per station asked
+	// for.
+	std::map<double, std::shared_ptr<Airfoil>> airfoils;
+	auto airfoil_at = [&](double s) -> const std::shared_ptr<Airfoil>& {
+		double key = RoundKey(s);
+		auto it = airfoils.find(key);
+		if (it == airfoils.end()) it = airfoils.emplace(key, AirfoilAt(s)).first;
+		return it->second;
+	};
+	struct StationCut {
+		std::shared_ptr<Airfoil> airfoil;
+		FlapCut cut;
+		std::shared_ptr<SectionLoop> main_loop, flap_loop;
+	};
+	std::map<std::pair<int, double>, StationCut> cuts;
+	auto cut_at = [&](int fi, double s) -> const StationCut& {
+		auto key = std::make_pair(fi, RoundKey(s));
+		auto it = cuts.find(key);
+		if (it != cuts.end()) return it->second;
+		const FlapSpec& f = sorted[fi];
+		StationCut sc;
+		sc.airfoil = airfoil_at(s);
+		double chord = planform_->ChordAt(s);
+		double gap = chord > 0.0 ? f.gap / chord : 0.0;
+		try {
+			sc.cut = SolveFlapCut(*sc.airfoil, HingeFraction(f, s), gap);
+		} catch (const std::invalid_argument& e) {
+			throw std::invalid_argument("flap '" + f.name + "' at eta = " + std::to_string(s) + ": " + e.what());
+		}
+		sc.main_loop = std::make_shared<SectionLoop>(SectionLoop::MainElement(*sc.airfoil, sc.cut));
+		sc.flap_loop = std::make_shared<SectionLoop>(SectionLoop::Flap(*sc.airfoil, sc.cut));
+		return cuts.emplace(key, std::move(sc)).first->second;
+	};
+
+	LoftOptions opt;
+	opt.tolerance = tolerance;
+	opt.min_v = 24;
+
+	// The main element: full sections outside the flaps, the notched
+	// section (SectionLoop::MainElement) across each, one closed body.
+	auto full_segment = [&](double a, double b) {
+		LoftSource src;
+		src.u_min = a;
+		src.u_max = b;
+		src.u_seeds = seeds_in(a, b);
+		src.closed_curve = false;
+		src.section = [&](double s, const std::vector<double>& v) { return planform_->AirfoilCoordsToXyz(s, airfoil_at(s)->nurbs_curve().Evaluate(v)); };
+		src.mirror_v = [&](double s, double v) { return airfoil_at(s)->MirrorParameter(v); };
+		return src;
+	};
+	auto notched_segment = [&](int fi, double a, double b) {
+		LoftSource src;
+		src.u_min = a;
+		src.u_max = b;
+		src.u_seeds = seeds_in(a, b);
+		src.closed_curve = true;
+		src.v_seeds = {0.25, 0.5, 0.75};
+		src.section = [&, fi](double s, const std::vector<double>& v) { return planform_->AirfoilCoordsToXyz(s, cut_at(fi, s).main_loop->Points(v)); };
+		src.mirror_v = [&, fi](double s, double v) { return cut_at(fi, s).main_loop->Mirror(v); };
+		return src;
+	};
+	// At a flap's edge station the full ring (parameter t) and the notched
+	// ring share the skin between the lips: t in [t_lower_lip, t_upper_lip]
+	// against v in [0, 0.5].
+	auto break_full_to_notched = [&](int fi, double e) {
+		const StationCut& sc = cut_at(fi, e);
+		std::shared_ptr<SectionLoop> loop = sc.main_loop;
+		LoftBreak br;
+		br.va0 = sc.cut.t_lower_lip; br.va1 = sc.cut.t_upper_lip; br.vb0 = 0.0; br.vb1 = 0.5;
+		br.a_to_b = [loop](double t) { return loop->ParameterAtAirfoil(t); };
+		br.b_to_a = [loop](double v) { return loop->AirfoilParameter(v); };
+		return br;
+	};
+	auto break_notched_to_full = [&](int fi, double e) {
+		const StationCut& sc = cut_at(fi, e);
+		std::shared_ptr<SectionLoop> loop = sc.main_loop;
+		LoftBreak br;
+		br.va0 = 0.0; br.va1 = 0.5; br.vb0 = sc.cut.t_lower_lip; br.vb1 = sc.cut.t_upper_lip;
+		br.a_to_b = [loop](double v) { return loop->AirfoilParameter(v); };
+		br.b_to_a = [loop](double t) { return loop->ParameterAtAirfoil(t); };
+		return br;
+	};
+	std::vector<LoftSource> segments;
+	std::vector<LoftBreak> breaks;
+	const double eps = 1e-9;
+	double prev = 0.0;
+	for (int fi = 0; fi < n; ++fi) {
+		const FlapSpec& f = sorted[fi];
+		if (f.eta_root > prev + eps) {
+			if (!segments.empty()) breaks.push_back(break_notched_to_full(fi - 1, prev));
+			segments.push_back(full_segment(prev, f.eta_root));
+			breaks.push_back(break_full_to_notched(fi, f.eta_root));
+		}
+		segments.push_back(notched_segment(fi, f.eta_root, f.eta_tip));
+		prev = f.eta_tip;
+	}
+	if (prev < 1.0 - eps) {
+		breaks.push_back(break_notched_to_full(n - 1, prev));
+		segments.push_back(full_segment(prev, 1.0));
+	}
+
+	std::vector<NamedMesh> out;
+	out.push_back({"Main", TriangulateLoftChain(segments, breaks, opt)});
+
+	// The flaps: the skin aft of the tangency points and the nose arc
+	// (SectionLoop::Flap), capped at both ends.
+	for (int fi = 0; fi < n; ++fi) {
+		const FlapSpec& f = sorted[fi];
+		LoftSource src;
+		src.u_min = f.eta_root;
+		src.u_max = f.eta_tip;
+		src.u_seeds = seeds_in(f.eta_root, f.eta_tip);
+		src.closed_curve = false;
+		src.v_seeds = {0.35, 0.5, 0.65};
+		src.section = [&, fi](double s, const std::vector<double>& v) { return planform_->AirfoilCoordsToXyz(s, cut_at(fi, s).flap_loop->Points(v)); };
+		src.mirror_v = [&, fi](double s, double v) { return cut_at(fi, s).flap_loop->Mirror(v); };
+		out.push_back({f.name, TriangulateLoft(src, opt)});
+	}
+	return out;
 }
 
 // WingModel::ExportStep() is defined in step_export.cpp, deliberately its

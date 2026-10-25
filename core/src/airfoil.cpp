@@ -65,6 +65,26 @@ std::vector<double> Linspace(double a, double b, int n) {
 	return out;
 }
 
+// The parameter of minimum x within [t0 - half_width, t0 + half_width]
+// (clipped to [0, 1]), by golden-section search: the bracket is one sample
+// step either side of the sampled minimum, over which x is unimodal.
+double RefineLeadingEdge(const NurbsCurve& curve, double t0, double half_width) {
+	double lo = std::max(0.0, t0 - half_width), hi = std::min(1.0, t0 + half_width);
+	const double phi = 0.5 * (std::sqrt(5.0) - 1.0);
+	double c = hi - phi * (hi - lo), d = lo + phi * (hi - lo);
+	double fc = curve.Evaluate(c)[0], fd = curve.Evaluate(d)[0];
+	for (int it = 0; it < 100 && hi - lo > 1e-14; ++it) {
+		if (fc < fd) {
+			hi = d; d = c; fd = fc;
+			c = hi - phi * (hi - lo); fc = curve.Evaluate(c)[0];
+		} else {
+			lo = c; c = d; fc = fd;
+			d = lo + phi * (hi - lo); fd = curve.Evaluate(d)[0];
+		}
+	}
+	return 0.5 * (lo + hi);
+}
+
 } // namespace
 
 bool IsNaca4Code(const std::string& code_in) {
@@ -155,6 +175,39 @@ std::unique_ptr<Airfoil> Airfoil::FromCurve(const NurbsSpec& curve_spec, std::st
 	int le_idx = ArgMinCol0(af->pts_arr_);
 	af->t_le_ = static_cast<double>(le_idx) / (n_sample - 1);
 	af->BuildTeLine();
+	return af;
+}
+
+std::unique_ptr<Airfoil> Airfoil::Blend(const Airfoil& a, const Airfoil& b, double w, std::string name) {
+	const NurbsCurve& ca0 = a.nurbs_curve();
+	const NurbsCurve& cb0 = b.nurbs_curve();
+	if (ca0.periodic() || cb0.periodic() || ca0.degree() != cb0.degree() || ca0.poles().cols() != cb0.poles().cols()) return nullptr;
+	ClampedNurbsCurve ca(ca0.Serialize()), cb(cb0.Serialize());
+	if (!MakeCommonKnots(ca, cb)) return nullptr;
+
+	// Blend in homogeneous coordinates (the NURBS ruled surface's own
+	// construction); with unit weights, which fitted airfoils have, this is
+	// the plain blend of the poles.
+	Mat pa = ca.poles(), pb = cb.poles();
+	std::vector<double> wa = ca.weights(), wb = cb.weights();
+	const int n = pa.rows(), d = pa.cols();
+	Mat poles(n, d);
+	std::vector<double> weights(n);
+	for (int i = 0; i < n; ++i) {
+		double W = (1.0 - w) * wa[i] + w * wb[i];
+		weights[i] = W;
+		for (int c = 0; c < d; ++c) poles(i, c) = ((1.0 - w) * wa[i] * pa(i, c) + w * wb[i] * pb(i, c)) / W;
+	}
+	NurbsSpec spec;
+	spec.degree = ca.degree();
+	spec.poles = poles;
+	spec.weights = weights;
+	spec.interior_knots = ca.interior_knots();
+	if (name.empty()) name = a.name + " -> " + b.name;
+	auto af = FromCurve(spec, std::move(name));
+	// FromCurve's leading edge is the nearest of 400 samples; the loft and
+	// the section cuts want the true minimum of x.
+	af->t_le_ = RefineLeadingEdge(*af->curve_, af->t_le_, 1.0 / 399.0);
 	return af;
 }
 

@@ -1,5 +1,7 @@
 #include "WingDesignTabs.h"
 #include "SectionListDialog.h"
+#include "FlapListDialog.h"
+#include "Widgets/AerotelicDialogWindow.h"
 #include "Widgets/NumericEntry.h"
 #include "Widgets/CurveEditor.h"
 #include "Widgets/CurveTabControls.h"
@@ -111,12 +113,23 @@ FText FWingDesignTabs::GetHelpText() const
 		"SECTIONS\nAirfoil sections at span stations s (0 = root, 1 = tip), blended between. Add at s inserts a station; pick each station's airfoil from the project's airfoils; Remove deletes the row.");
 	const FText Axes = LOCTEXT("HelpAxes",
 		"AXES\nEvery editor is non-dimensional: span fraction y/L across, with L the semi-span; chordwise x/L and height z/L up at the same scale; twist is in degrees.");
-	return FText::Join(FText::FromString(TEXT("\n\n")), PlanformHelp, Dihedral, Twist, Sections, Axes);
+	if (bBlade)
+	{
+		return FText::Join(FText::FromString(TEXT("\n\n")), PlanformHelp, Dihedral, Twist, Sections, Axes);
+	}
+	const FText ControlSurfaces = LOCTEXT("HelpControlSurfaces",
+		"CONTROL SURFACES\nTrailing-edge flaps, one row each: the span extent (η at the inboard and outboard ends), the hinge as a chord fraction at each end -- the hinge line runs straight in plan view between them -- "
+		"and the gap. The plan view above the table draws each flap's hinge line and planform. On Apply the wing is parted in every section plane, with no boolean operations: "
+		"the flap's nose is the circle about the hinge tangent to the upper and lower skin, and the main element ends on the concentric circle one gap larger, so the nose clears the main element at any deflection. "
+		"The main element stays one closed body with a pocket where each flap sits; each flap is its own closed body, named as in its row. Flaps may not overlap or share an end station. "
+		"Deflection is not modelled yet; the wing's STEP export is still the one-piece wing.");
+	return FText::Join(FText::FromString(TEXT("\n\n")), PlanformHelp, Dihedral, Twist, Sections, ControlSurfaces, Axes);
 }
 
 void FWingDesignTabs::NotifyChanged()
 {
 	if (OutlineView.IsValid()) OutlineView->RequestRedraw();
+	if (FlapOutlineView.IsValid()) FlapOutlineView->RequestRedraw();
 	OnChangedDelegate.ExecuteIfBound();
 }
 
@@ -130,6 +143,11 @@ void FWingDesignTabs::SpanChanged()
 	{
 		OutlineView->SetScales(1.0, 1.0 / FMath::Max(Model->planform().SemiSpan(), 1e-9));
 		OutlineView->RequestRedraw();
+	}
+	if (FlapOutlineView.IsValid())
+	{
+		FlapOutlineView->SetScales(1.0, 1.0 / FMath::Max(Model->planform().SemiSpan(), 1e-9));
+		FlapOutlineView->RequestRedraw();
 	}
 }
 
@@ -506,18 +524,97 @@ TSharedRef<SWidget> FWingDesignTabs::BuildSectionsTab()
 		.OnChanged(FSimpleDelegate::CreateLambda([this]() { NotifyChanged(); }));
 }
 
+// The plan view for the Control Surfaces tab: leading and trailing edges
+// and the root/tip chords (from the planform's own placement, so every
+// planform type draws), with each flap's planform -- hinge line, its two
+// end chords and the trailing edge between -- filled in its own colour.
+TSharedRef<SWidget> FWingDesignTabs::BuildFlapOutlineView()
+{
+	WingModel* M = Model;
+	TSharedRef<SCurveEditor> View = SNew(SCurveEditor)
+		.XLabel(LOCTEXT("SpanLabel", "Span fraction (y/L)"))
+		.YLabel(LOCTEXT("ChordLabel", "Chordwise (x/L)"))
+		.Title(LOCTEXT("FlapPlanView", "Plan view"))
+		.DefaultYMax(0.5)
+		.XScale(1.0).YScale(1.0 / FMath::Max(M->planform().SemiSpan(), 1e-9)).EqualAspect(true);
+	View->SetSlots({});
+	View->SetOutlineProvider(FOnGetOutlinePaths::CreateLambda([M]()
+	{
+		static const FLinearColor kFlapColors[] = {
+			FLinearColor(0.94f, 0.63f, 0.19f), FLinearColor(0.42f, 0.78f, 0.47f), FLinearColor(0.78f, 0.45f, 0.85f), FLinearColor(0.30f, 0.75f, 0.80f),
+		};
+		TArray<FCurveEditorOutlinePath> Paths;
+		try
+		{
+			const Planform& P = M->planform();
+			// Plan-view x (metres) of a chord fraction at a station.
+			auto PlanX = [&P](double Eta, double Frac) { return P.AirfoilCoordsToXyz(Eta, Mat::FromRows({{Frac, 0.0}}))(0, 0); };
+			const int N = 33;
+			FCurveEditorOutlinePath Le, Te;
+			for (int i = 0; i < N; ++i)
+			{
+				const double Eta = static_cast<double>(i) / (N - 1);
+				Le.Points.Add(FVector2D(Eta, PlanX(Eta, 0.0)));
+				Te.Points.Add(FVector2D(Eta, PlanX(Eta, 1.0)));
+			}
+			Le.Color = kLeColor; Le.Label = LOCTEXT("LeadingEdge", "Leading edge"); Le.LineWidth = 1.8f;
+			Te.Color = kTeColor; Te.Label = LOCTEXT("TrailingEdge", "Trailing edge"); Te.LineWidth = 1.8f;
+			Paths.Add(Le);
+			Paths.Add(Te);
+			for (double Eta : { 0.0, 1.0 })
+			{
+				FCurveEditorOutlinePath Chord;
+				Chord.Points = { FVector2D(Eta, PlanX(Eta, 0.0)), FVector2D(Eta, PlanX(Eta, 1.0)) };
+				Chord.Color = kChordColor; Chord.LineWidth = 1.4f;
+				Paths.Add(Chord);
+			}
+			for (int32 k = 0; k < static_cast<int32>(M->flaps.size()); ++k)
+			{
+				const FlapSpec& F = M->flaps[k];
+				if (!(F.eta_tip > F.eta_root)) continue;
+				FCurveEditorOutlinePath Flap;
+				const int Nf = 9;
+				for (int i = 0; i < Nf; ++i)
+				{
+					const double Eta = F.eta_root + (F.eta_tip - F.eta_root) * i / (Nf - 1);
+					Flap.Points.Add(FVector2D(Eta, PlanX(Eta, M->HingeFraction(F, Eta))));
+				}
+				for (int i = Nf - 1; i >= 0; --i)
+				{
+					const double Eta = F.eta_root + (F.eta_tip - F.eta_root) * i / (Nf - 1);
+					Flap.Points.Add(FVector2D(Eta, PlanX(Eta, 1.0)));
+				}
+				Flap.bClosed = true;
+				Flap.bFill = true;
+				Flap.FillAlpha = 0.18f;
+				Flap.LineWidth = 1.6f;
+				Flap.Color = kFlapColors[k % UE_ARRAY_COUNT(kFlapColors)];
+				Flap.Label = FText::FromString(StdToFString(F.name));
+				Paths.Add(Flap);
+			}
+		}
+		catch (const std::exception&) {}
+		return Paths;
+	}));
+	FlapOutlineView = View;
+	return SNew(SBox).MinDesiredHeight(220) [ View ];
+}
+
 TSharedRef<SWidget> FWingDesignTabs::BuildControlSurfacesTab()
 {
-	// The geometry backend of this port does not carry control surfaces yet
-	// (see wing_model.hpp's file header), so the tab is a placeholder.
-	return SNew(SBorder).Padding(12)
-	[
-		MakeInfoLabel(LOCTEXT("ControlSurfacesPlaceholder",
-			"Control surfaces are not available yet in this version.\n\n"
-			"In WingDesigner this tab places a hinge line in plan view (two handles setting the span station and chord fraction at each end), "
-			"with the hinge gap, edge gap, nose fill, deflection and deflection limit of the selected surface. "
-			"It will appear here once the geometry backend carries control surfaces."))
-	];
+	return SNew(SVerticalBox)
+		+ SVerticalBox::Slot().AutoHeight() [ BuildFlapOutlineView() ]
+		+ SVerticalBox::Slot().AutoHeight().Padding(0, 8, 0, 6)
+		[
+			MakeInfoLabel(LOCTEXT("FlapsInfo",
+				"Trailing-edge flaps. Each row is one flap: its span extent, the hinge chord fraction at each end (straight in plan view between them) and the nose-to-cavity gap. "
+				"Flaps may not overlap or share an end station. Apply parts the wing: the main element keeps one closed body with a pocket per flap; each flap is its own body."))
+		]
+		+ SVerticalBox::Slot().AutoHeight()
+		[
+			SNew(SFlapListWidget, Model)
+			.OnChanged(FSimpleDelegate::CreateLambda([this]() { NotifyChanged(); }))
+		];
 }
 
 #undef LOCTEXT_NAMESPACE

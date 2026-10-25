@@ -209,6 +209,22 @@ YAML::Node Encode(const WingModelSpec& spec) {
 	}
 	n["sections"] = secs;
 	EncodeReferenceImages(n, spec.reference_images);
+	// Written only when there are any, so a wing without flaps serialises
+	// exactly as before.
+	if (!spec.flaps.empty()) {
+		YAML::Node flaps(YAML::NodeType::Sequence);
+		for (const FlapSpec& f : spec.flaps) {
+			YAML::Node fn;
+			fn["name"] = f.name;
+			fn["eta_root"] = f.eta_root;
+			fn["eta_tip"] = f.eta_tip;
+			fn["hinge_root"] = f.hinge_root;
+			fn["hinge_tip"] = f.hinge_tip;
+			fn["gap"] = f.gap;
+			flaps.push_back(fn);
+		}
+		n["flaps"] = flaps;
+	}
 	return n;
 }
 
@@ -217,6 +233,18 @@ WingModelSpec DecodeWingModelSpec(const YAML::Node& node) {
 	spec.name = node["name"] ? node["name"].as<std::string>() : "Wing";
 	spec.planform = DecodePlanformSpec(node["planform"]);
 	spec.reference_images = DecodeReferenceImages(node, spec.planform.semi_span);
+	if (node["flaps"] && node["flaps"].IsSequence()) {
+		for (const auto& fn : node["flaps"]) {
+			FlapSpec f; // every key optional, defaults from FlapSpec
+			if (fn["name"]) f.name = fn["name"].as<std::string>();
+			if (fn["eta_root"]) f.eta_root = fn["eta_root"].as<double>();
+			if (fn["eta_tip"]) f.eta_tip = fn["eta_tip"].as<double>();
+			if (fn["hinge_root"]) f.hinge_root = fn["hinge_root"].as<double>();
+			if (fn["hinge_tip"]) f.hinge_tip = fn["hinge_tip"].as<double>();
+			if (fn["gap"]) f.gap = fn["gap"].as<double>();
+			spec.flaps.push_back(f);
+		}
+	}
 	if (node["sections"]) {
 		for (const auto& sn : node["sections"]) {
 			WingSectionSpec ss;

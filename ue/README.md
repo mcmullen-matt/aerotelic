@@ -1493,12 +1493,18 @@ pounds, saves, reopens, and reads the file's `units:` line.
 * Transform dialogs open just to the right of the scene tree, so they do not
   cover the 3D view's centre; a second, third and later dialog cascade down
   and to the right. Drag any of them wherever you like.
-* Not yet carried over from the Qt version: Show Intermediate Features,
-  the STL dialog's mesh preview in the viewport, and
-  the wing Control Surfaces tab (the C++ core has no control-surface model
-  yet; the tab is a placeholder note). A section plane cuts without
+* Not yet carried over from the Qt version: Show Intermediate Features and
+  the STL dialog's mesh preview in the viewport. A section plane cuts without
   capping (see above), and the engine cannot rasterise SVG reference
   images.
+* The wing Control Surfaces tab carries trailing-edge flaps only (a table
+  of span extent, hinge chord fraction at each end and gap, drawn on a plan
+  view). The cut is made in every section plane with no boolean operations
+  (`core/src/section_cut.cpp`; the main element stays one closed body with a
+  pocket per flap, `TriangulateLoftChain` in `mesh.cpp`). Not yet: dragging
+  the hinge on the plan view, a spanwise side gap (a flap's end caps sit in
+  the pocket faces), deflection, slats, and a flapped wing's STEP export
+  (still the one-piece wing).
 * Lattices: the paper gives pictures, not node tables, for its strut
   cells; G7 (BCC with a vertical pillar), Vintiles (the cuboctahedral
   frame on the edge midpoints) and Re-entrant (vertical edges bowed a
