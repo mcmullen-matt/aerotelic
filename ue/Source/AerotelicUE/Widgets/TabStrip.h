@@ -24,6 +24,10 @@ public:
 
 	void Construct(const FArguments& InArgs, TArray<FAerotelicTab> InTabs);
 
+	// Shows tab Index (as clicking its header does); out of range is ignored.
+	void SetActiveTab(int32 Index);
+	int32 GetActiveTab() const;
+
 private:
 	TSharedPtr<class SWidgetSwitcher> Switcher;
 };

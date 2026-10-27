@@ -164,6 +164,23 @@ std::vector<NamedMesh> PrimitiveModel::BuildMeshes(double tolerance) const {
 	return {{"Main", BoxMesh(size[0], size[1], size[2])}};
 }
 
+std::vector<NamedLoft> PrimitiveModel::BuildLofts() const {
+	Validate();
+	NamedLoft loft;
+	loft.name = "Main";
+	if (shape == PrimitiveShape::Sphere) {
+		auto a = SemiAxes();
+		loft.source = EllipsoidLoft(a[0], a[1], a[2]);
+	} else if (shape == PrimitiveShape::Cylinder) {
+		loft.source = CylinderLoft(cyl_radius, cyl_length);
+		loft.flat = true; // the end caps meet the side at an edge
+	} else {
+		loft.source = BoxLoft(size[0], size[1], size[2]);
+		loft.flat = true;
+	}
+	return {loft};
+}
+
 TopoDS_Shape PrimitiveModel::BuildSolid() const {
 	Validate();
 	if (shape == PrimitiveShape::Sphere) {

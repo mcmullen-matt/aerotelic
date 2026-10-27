@@ -14,6 +14,10 @@
 
 #include "aerotelic/primitive_model.hpp"
 #include "aerotelic/wing_model.hpp"
+#include "aerotelic/wing_panels.hpp"
+#include "aerotelic/panel_loads.hpp"
+#include "aerotelic/colormaps.hpp"
+#include "Entity/AerotelicMeshing.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogAerotelicDocumentTest, Log, All);
 
@@ -98,6 +102,94 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 	CheckBuildsSolid(Wing, TEXT("Wing"));
 	CheckBuildsSolid(Fuselage, TEXT("Fuselage"));
 	CheckBuildsSolid(Primitive, TEXT("Primitive"));
+
+	// Analysis -> High Order Panel, minus the dialog: the scene's wing
+	// paneled, placed as it sits, and solved at 4 degrees -- it must lift.
+	if (Wing != nullptr)
+	{
+		try
+		{
+			aerotelic::WingModel* W = Wing->GetModelAs<aerotelic::WingModel>();
+			const double Alpha = 4.0 * 3.14159265358979323846 / 180.0;
+			const aerotelic::Vec3 Stream{std::cos(Alpha), 0.0, std::sin(Alpha)};
+			aerotelic::panel::WingPaneling Pan;
+			Pan.chordwise = 8;
+			Pan.spanwise = 6;
+			std::vector<aerotelic::panel::Network> Nets = aerotelic::panel::WingNetworks(*W, Pan, Stream);
+			const FTransform Transform = Wing->GetActorTransform();
+			for (aerotelic::panel::Network& N : Nets)
+			{
+				aerotelic::TriMesh M;
+				M.vertices = N.corners;
+				AerotelicMeshing::PlaceMesh(M, Transform);
+				N.corners = M.vertices;
+			}
+			aerotelic::panel::Options Opt;
+			Opt.symmetry_y = 0.0;
+			Opt.reference_area = W->planform().PlanformArea();
+			aerotelic::panel::Solution Sol = aerotelic::panel::Solve(Nets, Stream, Opt);
+			const double CL = Sol.force_coefficient.z * std::cos(Alpha) - Sol.force_coefficient.x * std::sin(Alpha);
+			Check(Sol.unknowns > 0 && Sol.lift_from_wake.has_value(), "panel method: the scene's wing panels into a body and a wake");
+			Check(*Sol.lift_from_wake > 0.1 && *Sol.lift_from_wake < 1.0, FString::Printf(TEXT("panel method: the wing lifts at 4 degrees (C_L from the wake %.4f)"), *Sol.lift_from_wake));
+			Check(FMath::Abs(CL / *Sol.lift_from_wake - 1.0) < 0.25, FString::Printf(TEXT("panel method: pressures and wake agree (%.4f vs %.4f)"), CL, *Sol.lift_from_wake));
+
+			// The Span Loading tab, minus the dialog: the strips of the placed
+			// wing along its placed span axis sum to the network's own force,
+			// and the elliptic distribution with that total integrates back
+			// to it.
+			{
+				aerotelic::panel::StripOptions SO;
+				const FVector Axis = Transform.TransformVectorNoScale(FVector(0, 1, 0)).GetSafeNormal();
+				SO.span_axis = { Axis.X, Axis.Y, Axis.Z };
+				SO.strips_are_columns = true;
+				std::vector<aerotelic::panel::StripLoad> Strips = aerotelic::panel::StripLoads(Nets[0], Sol.networks[0], SO);
+				aerotelic::Vec3 Sum;
+				double SMin = 1e300, SMax = -1e300;
+				for (const aerotelic::panel::StripLoad& St : Strips) { Sum += St.force; SMin = FMath::Min(SMin, St.s_min); SMax = FMath::Max(SMax, St.s_max); }
+				const aerotelic::Vec3 Want = Sol.networks[0].force_coefficient * Opt.reference_area; // the image doubled x and z
+				Check(Strips.size() == static_cast<size_t>(Sol.networks[0].panel_cols) && FMath::Abs(Sum.z - 0.5 * Want.z) < 1e-9 * (1.0 + FMath::Abs(Want.z)),
+					FString::Printf(TEXT("span loading: %d strips sum to the wing's force (%.5f vs %.5f)"), static_cast<int32>(Strips.size()), Sum.z, 0.5 * Want.z));
+				const aerotelic::Vec3 LiftDir{-std::sin(Alpha), 0.0, std::cos(Alpha)};
+				const double Total = 2.0 * aerotelic::Dot(Sum, LiftDir);
+				const double Half = FMath::Max(SMax, -SMin);
+				double Integral = 0.0;
+				for (int32 i = 0; i < 2000; ++i) { const double s = -Half + (i + 0.5) * 2.0 * Half / 2000; Integral += aerotelic::panel::EllipticLoad(Total, 0.0, Half, s) * 2.0 * Half / 2000; }
+				Check(FMath::Abs(Integral / Total - 1.0) < 1e-3, FString::Printf(TEXT("span loading: the elliptic distribution integrates to the lift (%.5f vs %.5f)"), Integral, Total));
+				Check(aerotelic::Colormaps().size() >= 15 && aerotelic::FindColormap("Turbo") != nullptr, "surface pressure: the colour map catalogue is there");
+			}
+
+			// With the fuselage as a source network (its loft cut at the
+			// symmetry plane, as the dialog does for a body on the centreline):
+			// one system, the body impermeable, the wing still lifting.
+			if (Fuselage != nullptr && Fuselage->GetModel() != nullptr)
+			{
+				aerotelic::panel::BodyPaneling BP;
+				BP.along = 10;
+				BP.around = 8;
+				BP.half_plane_y = 0.0;
+				std::vector<aerotelic::panel::Network> Body = aerotelic::panel::BodyNetworks(*Fuselage->GetModel(), "Fuselage", BP, Stream);
+				const FTransform FT = Fuselage->GetActorTransform();
+				for (aerotelic::panel::Network& N : Body)
+				{
+					aerotelic::TriMesh M;
+					M.vertices = N.corners;
+					AerotelicMeshing::PlaceMesh(M, FT);
+					N.corners = M.vertices;
+					Nets.push_back(N);
+				}
+				aerotelic::panel::Solution Both = aerotelic::panel::Solve(Nets, Stream, Opt);
+				double Vn = 0.0;
+				for (const aerotelic::panel::PanelResult& P : Both.networks.back().panels) Vn = FMath::Max(Vn, FMath::Abs(aerotelic::Dot(P.v_upper, P.normal)));
+				Check(Body.size() == 1 && Both.networks.size() == 3, "panel method: the fuselage panels into one source network beside the wing");
+				Check(Vn < 1e-6, FString::Printf(TEXT("panel method: the fuselage is impermeable (normal velocity %.2e)"), Vn));
+				Check(Both.lift_from_wake.has_value() && *Both.lift_from_wake > 0.1, FString::Printf(TEXT("panel method: the wing still lifts beside the fuselage (C_L %.4f)"), Both.lift_from_wake.value_or(0.0)));
+			}
+		}
+		catch (const std::exception& e)
+		{
+			Check(false, FString::Printf(TEXT("panel method threw: %s"), UTF8_TO_TCHAR(e.what())));
+		}
+	}
 	CheckBuildsSolid(Nacelle, TEXT("Nacelle"));
 	CheckBuildsSolid(LoftedNacelle, TEXT("LoftedNacelle"));
 	CheckBuildsSolid(Propeller, TEXT("Propeller"));

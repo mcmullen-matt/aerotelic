@@ -13,10 +13,13 @@
 #include "Licensing/AerotelicLicence.h"
 #include "Licensing/AerotelicLicenseInfo.h"
 #include "Licensing/AerotelicActivationDialog.h"
+#include "Dialogs/HighOrderPanelDialog.h"
 #include "Misc/App.h"
 #include "Misc/CommandLine.h"
 #include "Misc/Parse.h"
 #include "TimerManager.h"
+// Last: it pulls in OCCT, whose Handle() macro breaks engine headers after it.
+#include "Entity/AerotelicDocumentSubsystem.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogAerotelicFrame, Log, All);
 
@@ -83,6 +86,23 @@ void AAerotelicPlayerController::ShowStartupWelcome()
 {
 	// Skipped under automation (-unattended) so the screenshot tooling and
 	// tests are not blocked by a modal.
+	// -AerotelicPanelSmoke: a developer run of Analysis -> High Order Panel
+	// on the scene (the project from -AerotelicProject, or a default wing),
+	// which solves, screenshots its result tabs and quits. See the dialog.
+	// No welcome screen in that run, whatever else is on the command line.
+	if (FParse::Param(FCommandLine::Get(), TEXT("AerotelicPanelSmoke")))
+	{
+		if (UAerotelicDocumentSubsystem* Doc = UAerotelicDocumentSubsystem::Get())
+		{
+			if (Doc->GetEntities().Num() == 0) Doc->AddWing(TEXT("standard"));
+		}
+		TWeakPtr<SAerotelicMainShell> WeakShell = Shell;
+		ShowAerotelicHighOrderPanelDialog([WeakShell](const FText& T)
+		{
+			if (TSharedPtr<SAerotelicMainShell> P = WeakShell.Pin()) P->SetStatus(T);
+		});
+		return;
+	}
 	if (FApp::IsUnattended() || FParse::Param(FCommandLine::Get(), TEXT("NoWelcome")))
 	{
 		return;

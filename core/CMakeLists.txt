@@ -42,6 +42,11 @@ add_library(aerotelic_core STATIC
 	src/feature_tree.cpp
 	src/wing_model.cpp
 	src/section_cut.cpp
+	src/panel_integrals.cpp
+	src/panel_method.cpp
+	src/wing_panels.cpp
+	src/panel_loads.cpp
+	src/colormaps.cpp
 	src/nacelle_model.cpp
 	src/lofted_nacelle_model.cpp
 	src/propeller_model.cpp
@@ -118,6 +123,18 @@ target_link_libraries(section_cut_check PRIVATE aerotelic_core)
 
 add_executable(flap_mesh_check tests/flap_mesh_check.cpp)
 target_link_libraries(flap_mesh_check PRIVATE aerotelic_core)
+
+add_executable(panel_integrals_check tests/panel_integrals_check.cpp)
+target_link_libraries(panel_integrals_check PRIVATE aerotelic_core)
+
+add_executable(panel_method_check tests/panel_method_check.cpp)
+target_link_libraries(panel_method_check PRIVATE aerotelic_core)
+
+add_executable(wing_panels_check tests/wing_panels_check.cpp)
+target_link_libraries(wing_panels_check PRIVATE aerotelic_core)
+
+add_executable(panel_loads_check tests/panel_loads_check.cpp)
+target_link_libraries(panel_loads_check PRIVATE aerotelic_core)
 
 add_executable(nacelle_fixture_check tests/nacelle_fixture_check.cpp)
 target_link_libraries(nacelle_fixture_check PRIVATE aerotelic_core)

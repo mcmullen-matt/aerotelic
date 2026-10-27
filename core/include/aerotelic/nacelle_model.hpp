@@ -96,6 +96,9 @@ public:
 	// meeting at the lip and the trailing edge. Empty when chevrons are set
 	// (a boolean cut; the caller tessellates BuildSolid() then).
 	std::vector<NamedMesh> BuildMeshes(double tolerance) const override;
+	// The cowl as a loft (what BuildMeshes triangulates), for the panel
+	// method; empty with chevrons.
+	std::vector<NamedLoft> BuildLofts() const override;
 
 	static constexpr double kCutOverhang = 0.05;
 	static constexpr int kCutSections = 8;

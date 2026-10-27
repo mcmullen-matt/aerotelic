@@ -905,6 +905,118 @@ the core (the volume the lattice's orthotropic material card applies to).
   lattice fills conforms exactly in nested mode except the propeller
   blades, which degrade as they do in plain mode.
 
+## High order panel method (2026-10-25)
+
+**Analysis -> High Order Panel...** solves the incompressible flow about the
+lofted bodies of the scene with the higher-order panel method of Johnson
+(NASA CR-3079), which lives entirely in the core (`panel_integrals.cpp`,
+`panel_method.cpp`, `wing_panels.cpp`; see "Known limits" for what of the
+report is not there). It is independent of the Kratos route below, which
+is untouched.
+
+The dialog (`Dialogs/HighOrderPanelDialog.cpp`) opens with the two-list
+body picker the export dialogs use, offering every wing, fuselage, nacelle
+and primitive (one row per entity; a boolean result or lattice is a
+triangle mesh with no sections to spline, and a propeller is left out).
+A wing is paneled by `WingNetworks` -- the sections round as a thick
+surface with the interior potential held at zero and the sources
+prescribed, or the mean camber surface as a doublet sheet with no flow
+through it -- with a wake shed along the free stream, which is what
+carries the lift. Every other body is a closed source network built by
+`LoftNetwork` from the model's `BuildLofts()` -- the same section function
+its triangulation comes from, sampled on the loft's own stations and
+section corners plus the dialog's "along" and "around" counts, apexes as
+rows collapsed to a point (triangular panels), a periodic chain (a
+nacelle) closed on a seam, flat panels for a box. Networks are built in
+the body's frame and placed as it sits (`AerotelicMeshing::PlaceMesh`),
+or for a body with the plane on, built from the loft placed into the world
+first.
+
+**Symmetry plane at y = 0** is a checkbox, on by default when a chosen
+entity is mirrored or a wing root sits on the plane. On, every network is
+solved with its image (`Options::symmetry_y`): a mirrored entity appears
+once and the image is its other half; a wing root on the plane gets the
+∂μ/∂n = 0 condition there; a body that straddles the plane (a fuselage on
+the centreline) is cut at y = 0 and only its y >= 0 half paneled
+(`BodyPaneling::half_plane_y`), since paneling it whole would double it
+with its image. Off, a mirrored entity's reflected copy is paneled as well
+(`MirroredNetwork`: y -> -y, columns reversed to keep the normals
+outward). Bodies whose placed bounds overlap are flagged above the picker:
+they solve, but a wing root buried in a fuselage leaves panels inside the
+other body that are not a wetted surface, so pressures near the junction
+are not to be trusted.
+
+Nothing dimensional is asked for: a potential flow is similar at every
+speed and density, Cp = 1 - (V/V∞)² and C_F = -∮ Cp n dA / S_ref, so the
+dialog deals in coefficients only, on a reference area (default: the
+planform area of the chosen wings, both halves; with no wing the first
+body's frontal ellipse) and a reference length for the moments (the first
+root chord, or the body's length). A wing and a fuselage, a thousand
+unknowns, take a second or two per angle.
+
+**Post-processing (2026-10-26).** The dialog is modeless and tabbed:
+
+* *Set-up* -- the bodies, the paneling, the operating conditions and the
+  references. The angle of attack and the angle of sideslip each take one
+  value or a comma separated list (`0, 2, 4, 6`); a list in BOTH is
+  refused (it would be a grid of cases, not a sweep), and sideslip is
+  held at zero for now (the symmetry plane and the mirrored loads assume a
+  stream in the plane of symmetry; a non-zero value is refused with a
+  note). One case is paneled per angle -- the wake sheds along each
+  stream -- and the solves run on a worker thread one after another, the
+  status bar counting them; the dialog stays live. A solution-file path
+  writes one legacy VTK polydata file per case (`_aoa4` suffixes when
+  there are several; SI lengths, as the Kratos file) with `Cp_upper`,
+  `Cp_lower`, `doublet`, `source`, `curvature_delta`, `network` and
+  `velocity_upper` per panel. The tab's only read-out is a summary
+  (panels, unknowns, curvature measure, time); the coefficients live in
+  the fourth tab.
+* *Surface Pressure* -- the bodies coloured by Cp, rendered by the engine
+  itself with the scene's lighting rig through a scene capture
+  (`Widgets/SceneView`, `Standalone/AerotelicSceneViewActor`) into a
+  texture the tab shows, with the main view's mouse conventions
+  (left-drag orbits, right/middle-drag pans, wheel zooms, Home frames).
+  The mesh is `Standalone/AerotelicColoredMeshActor`: every non-wake
+  network's corner grid with the panel pressures averaged onto the
+  corners, both windings, a mean camber sheet as two copies a hair apart
+  coloured by its upper and lower sides, visible to captures only (never
+  in the main view), drawn with `M_AerotelicVertexColor` (lit, two sided,
+  base colour from the vertex colour, which the actor linearises --
+  vertex streams get no sRGB decode). The colour bar
+  (`Widgets/ColorBar`) on the right is clickable: a popup with the
+  minimum, the maximum, an "auto range" over every solution (the default,
+  so the colours mean the same from one case to the next) and the colour
+  map, from the core's catalogue (`core/include/aerotelic/colormaps.hpp`:
+  Turbo, Jet, Rainbow, Viridis, Plasma, Inferno, Magma, Cividis,
+  Cool-Warm, Spectral, Red-Blue, Red-Yellow-Blue, Blues,
+  Yellow-Orange-Red, Hot, Cool, Grey, Cubehelix, Twilight; all free
+  tables or formulae, subsampled to 33 stops). A stepper at the bottom
+  left moves between the solutions.
+* *Span Loading* -- for the chosen wing (a stepper picks it; another the
+  solution), the load per unit span against the span fraction: the
+  pressure integrated over each strip of panels (`core/.../panel_loads.hpp`
+  `StripLoads`, the very sum the solver makes for the network's force,
+  strip by strip along the wing's placed span axis), resolved normal to
+  the stream and to that axis -- lift for a wing, side load for a fin --
+  and divided by the strip width and the reference length, i.e. cl·c /
+  c_ref. With the symmetry plane on the image half is added; without it a
+  mirrored entity's reflected copy is already there. The dashed curve is
+  the elliptic distribution whose integral equals the pressure-integrated
+  total of that wing (`EllipticLoad`: 4 L / (π b) √(1 − (2s/b)²) over the
+  strips' own extent), plotted by `Widgets/LinePlot`.
+* *Forces and Moments* -- six small charts of the wind-axis coefficients
+  against the swept angle: C_L, C_D (induced), C_Y; C_l about the stream,
+  C_m about the side axis, C_n about the lift axis, about the origin on
+  the reference length. With a single solution a table replaces the
+  charts, with the lift from the wake doublet strength (the exact
+  circulation) and the force by body.
+
+`core/tests/panel_loads_check.cpp` checks the strips against the network
+force, their order, the elliptic integral and the colour maps; the
+document commandlet repeats the strip and elliptic checks on the scene's
+placed wing. Nothing in the repository can exercise the widgets (see
+"Known limits").
+
 ## Potential flow on Kratos (2026-10-15)
 
 **Analysis -> Potential Flow (Kratos)...** computes the potential flow
@@ -1461,6 +1573,19 @@ pounds, saves, reopens, and reads the file's `units:` line.
   buttons in a wrapping row, info label, metric row, group box, Help tab,
   `ResetCurveFromSpec` / `ResetCurveToLine`). `Widgets/PromptDialogs` has
   the modal string and circle-radius prompts.
+* `Widgets/SceneView` -- an engine-rendered 3D view inside a dialog: a scene
+  capture (`Standalone/AerotelicSceneViewActor`, with its own backdrop)
+  draws a chosen set of actors into a render target the widget shows,
+  orbit/pan/zoom as the main camera, overlays on top. The capture is on
+  demand -- for 1.5 s after any change (camera, size, content), nothing
+  while idle -- and deliberately not a single frame: a procedural mesh
+  created this frame reaches the capture before its vertex colour stream
+  does and comes out white for several frames (seen 2026-10-26; the main
+  view, redrawn every frame, never shows it). `-AerotelicSceneViewEveryFrame`
+  switches to continuous capture for comparison. `Widgets/ColorBar`
+  and `Widgets/LinePlot` are the colour scale and the x-y chart the
+  analysis dialogs draw results with; `Standalone/AerotelicColoredMeshActor`
+  is a vertex-coloured mesh (a field on a surface) seen by captures only.
 * `Widgets/InputSink` -- wraps each frame panel so unhandled mouse buttons
   and wheel turns stop there instead of bubbling to the game viewport (the
   frame is a viewport overlay, i.e. a child of the SViewport; without this a
@@ -1497,6 +1622,44 @@ pounds, saves, reopens, and reads the file's `units:` line.
   the STL dialog's mesh preview in the viewport. A section plane cuts without
   capping (see above), and the engine cannot rasterise SVG reference
   images.
+* The core carries a higher-order panel method (Johnson, NASA CR-3079:
+  curved panels, linear sources, quadratic doublets, closed-form influence
+  coefficients, wakes) in `core/src/panel_integrals.cpp`,
+  `panel_method.cpp` and `wing_panels.cpp`, checked against the report's
+  cylinder, sphere, circular and rectangular wing cases
+  (`tests/panel_method_check.cpp`, `wing_panels_check.cpp`), and drives
+  Analysis -> High Order Panel. Not implemented from the report: the design
+  networks (types 3-6) and the continuous doublet spline of its appendix
+  B.3, so surface pressures on coarse thin wings read a few percent high
+  (lift from the wake doublet strength is exact); a pointed tip paneled in
+  triangles over-carries doublet strength, so wing tips are paneled a
+  fraction short of the point. Bodies other than wings are source
+  networks built from their lofts, not from their triangulations (a
+  triangle mesh has no structured grid for the method's splines), so
+  boolean results, lattices and propellers cannot be paneled; bodies that
+  penetrate each other solve, with the junction panels inside the other
+  body left as they are. The edge control points are displaced inward by
+  `Options::edge_epsilon` = 1e-4 of the panel diameter (2026-10-26; it
+  was 1e-5): closer than that, the displaced point sits so near the edge
+  of the neighbouring curved panel -- the image across the symmetry plane
+  or an abutting half -- that its near-field influence loses all
+  precision and single columns of the solution oscillate (the default
+  wing at 12 x 10 gave Cp -300 on the root strip and a lift of the wrong
+  sign, with the wake lift still right); at 3e-3 and above the points no
+  longer register on the wake abutment and the lift is lost. 1e-4 to
+  3e-4 was clean for every paneling tried. Sideslip is accepted as an input but must be
+  zero for now: a non-zero angle would need the symmetry image dropped,
+  the solver's zeroing of the mirrored side force and roll/yaw moments
+  (`panel_method.cpp`, the `mirrored` branch of the loads) removed, and
+  the wake lift integrated along the real span rather than |dy|.
+* The post-processing widgets (the capture view, the colour bar, the
+  plots) cannot be exercised by the commandlets (no Slate there). The one
+  automated run is `run_aerotelic_dev.bat`'s switch
+  `-AerotelicPanelSmoke` (with or without a project; an empty scene gets a
+  default wing; no welcome screen): the High Order Panel dialog opens,
+  solves at 0 and 4 degrees, steps through its three result tabs saving
+  `Saved/Screenshots/panel_smoke_{surface,loads,polars}.png`, and quits.
+  Look at the pictures.
 * The wing Control Surfaces tab carries trailing-edge flaps only (a table
   of span extent, hinge chord fraction at each end, gap and side gap, drawn
   on a plan view). The cut is made in every section plane with no boolean

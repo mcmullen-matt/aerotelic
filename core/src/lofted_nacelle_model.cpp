@@ -686,6 +686,19 @@ std::vector<TopoDS_Shape> LoftedNacelleModel::ChevronCutters(double depth) const
 }
 
 std::vector<NamedMesh> LoftedNacelleModel::BuildMeshes(double tolerance) const {
+	std::vector<NamedLoft> lofts = BuildLofts(tolerance);
+	if (lofts.empty()) return {};
+	LoftOptions opt;
+	opt.tolerance = tolerance;
+	opt.min_v = 24;
+	opt.min_u = 8;
+	opt.apex_tolerance = 1e-5;
+	return {{"Main", TriangulateLoft(lofts[0].source, opt)}};
+}
+
+std::vector<NamedLoft> LoftedNacelleModel::BuildLofts() const { return BuildLofts(std::nullopt); }
+
+std::vector<NamedLoft> LoftedNacelleModel::BuildLofts(std::optional<double> tolerance) const {
 	Validate();
 	if (chevron_count > 0) return {};
 
@@ -711,7 +724,7 @@ std::vector<NamedMesh> LoftedNacelleModel::BuildMeshes(double tolerance) const {
 	// wall is sampled with matched vertex rows.
 	src.mirror_u = 3.0;
 	const double L = length;
-	src.section = [&](double u, const std::vector<double>& v) {
+	src.section = [this, table, L](double u, const std::vector<double>& v) {
 		double x_frac, w_inner; // w_inner: 0 on the outer skin, 1 on the inner
 		if (u <= 1.0) { x_frac = u; w_inner = 0.0; }
 		else if (u <= 2.0) { x_frac = 1.0; w_inner = u - 1.0; }
@@ -738,12 +751,10 @@ std::vector<NamedMesh> LoftedNacelleModel::BuildMeshes(double tolerance) const {
 		}
 		return out;
 	};
-	LoftOptions opt;
-	opt.tolerance = tolerance;
-	opt.min_v = 24;
-	opt.min_u = 8;
-	opt.apex_tolerance = 1e-5;
-	return {{"Main", TriangulateLoft(src, opt)}};
+	NamedLoft loft;
+	loft.name = "Main";
+	loft.source = std::move(src);
+	return {loft};
 }
 
 TopoDS_Shape LoftedNacelleModel::BuildSolid(int n_stations, int n_pts, std::optional<double> station_tol) const {

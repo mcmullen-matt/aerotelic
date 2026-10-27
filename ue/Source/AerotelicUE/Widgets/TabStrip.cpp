@@ -42,3 +42,16 @@ void SAerotelicTabStrip::Construct(const FArguments& InArgs, TArray<FAerotelicTa
 		+ SVerticalBox::Slot().FillHeight(1.0f) [ SwitcherRef ]
 	];
 }
+
+void SAerotelicTabStrip::SetActiveTab(int32 Index)
+{
+	if (Switcher.IsValid() && Index >= 0 && Index < Switcher->GetNumWidgets())
+	{
+		Switcher->SetActiveWidgetIndex(Index);
+	}
+}
+
+int32 SAerotelicTabStrip::GetActiveTab() const
+{
+	return Switcher.IsValid() ? Switcher->GetActiveWidgetIndex() : 0;
+}

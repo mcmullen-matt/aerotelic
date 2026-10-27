@@ -111,6 +111,9 @@ public:
 	// without OCCT (mesh.hpp): ruled between StationFracs(), refined to
 	// `tolerance`; a pointed nose/tail becomes a true apex.
 	std::vector<NamedMesh> BuildMeshes(double tolerance) const override;
+	// The body as a loft (the section function BuildMeshes triangulates),
+	// for the panel method.
+	std::vector<NamedLoft> BuildLofts() const override;
 
 	static constexpr double kStationTol = 2e-3;
 	static constexpr int kMaxStations = 200;

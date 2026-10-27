@@ -425,6 +425,12 @@ public:
 	// see tests/wing_fixture_check.cpp.
 	std::vector<double> LoftStations(int n_span, std::optional<double> tol = std::nullopt) const;
 
+	// The airfoil at span fraction eta: a user section where there is one,
+	// else the exact B-spline blend of the two sections around it
+	// (Airfoil::Blend). Public for the panel-method network builder
+	// (wing_panels.hpp).
+	std::shared_ptr<Airfoil> AirfoilAt(double eta) const;
+
 private:
 	std::unique_ptr<Planform> owned_planform_;
 	Planform* planform_; // = owned_planform_.get(), or external_planform
@@ -444,7 +450,6 @@ private:
 	std::vector<std::pair<double, bool>> RefineStations(std::vector<std::pair<double, bool>> stations, double tol, int budget, double merge_tol,
 		const Mat& probe_pts, std::map<double, Mat>& probe_cache) const;
 
-	std::shared_ptr<Airfoil> AirfoilAt(double eta) const;
 	std::vector<NamedMesh> BuildFlappedMeshes(double tolerance) const;
 	Handle(Geom_BSplineCurve) SectionCurve(const WingSection& section) const;
 	TopoDS_Wire SectionWire(const WingSection& section) const;

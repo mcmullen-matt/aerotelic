@@ -1141,9 +1141,9 @@ TriMesh BoxMesh(double lx, double ly, double lz) {
 	return m;
 }
 
-TriMesh EllipsoidMesh(double a, double b, double c, double tolerance) {
+LoftSource EllipsoidLoft(double a, double b, double c) {
 	LoftSource src;
-	src.section = [&](double u, const std::vector<double>& v) {
+	src.section = [a, b, c](double u, const std::vector<double>& v) {
 		double theta = -0.5 * kPi + kPi * u;
 		double ct = std::cos(theta), stt = std::sin(theta);
 		Mat out(static_cast<int>(v.size()), 3);
@@ -1158,19 +1158,15 @@ TriMesh EllipsoidMesh(double a, double b, double c, double tolerance) {
 	src.closed_curve = true;
 	src.u_seeds = {0.0, 0.5, 1.0};
 	src.v_seeds = {0.0, 0.25, 0.5, 0.75};
-	LoftOptions opt;
-	opt.tolerance = tolerance;
-	opt.min_v = 12;
-	opt.min_u = 5;
-	return TriangulateLoft(src, opt);
+	return src;
 }
 
-TriMesh CylinderMesh(double radius, double length, double tolerance) {
+LoftSource CylinderLoft(double radius, double length) {
 	LoftSource src;
 	const double hl = 0.5 * length;
 	src.u_min = 0.0;
 	src.u_max = 3.0;
-	src.section = [&](double u, const std::vector<double>& v) {
+	src.section = [radius, length, hl](double u, const std::vector<double>& v) {
 		double x, r;
 		if (u <= 1.0) { x = -hl; r = radius * u; }
 		else if (u <= 2.0) { x = -hl + (u - 1.0) * length; r = radius; }
@@ -1187,6 +1183,54 @@ TriMesh CylinderMesh(double radius, double length, double tolerance) {
 	src.closed_curve = true;
 	src.u_seeds = {0.0, 1.0, 2.0, 3.0};
 	src.v_seeds = {0.0, 0.25, 0.5, 0.75};
+	return src;
+}
+
+LoftSource BoxLoft(double lx, double ly, double lz) {
+	// A square ring in (y, z) scaled by the end-cap fraction, the ring's
+	// four sides over v in quarters: (+y) -> (+z) -> (-y) -> (-z) edges.
+	LoftSource src;
+	const double hx = 0.5 * lx, hy = 0.5 * ly, hz = 0.5 * lz;
+	src.u_min = 0.0;
+	src.u_max = 3.0;
+	src.section = [hx, hy, hz, lx](double u, const std::vector<double>& v) {
+		double x, s;
+		if (u <= 1.0) { x = -hx; s = u; }
+		else if (u <= 2.0) { x = -hx + (u - 1.0) * lx; s = 1.0; }
+		else { x = hx; s = 3.0 - u; }
+		Mat out(static_cast<int>(v.size()), 3);
+		for (size_t j = 0; j < v.size(); ++j) {
+			double t = std::fmod(v[j], 1.0);
+			if (t < 0.0) t += 1.0;
+			double y, z;
+			double f = 4.0 * t;
+			if (f < 1.0) { y = hy; z = -hz + 2.0 * hz * f; }
+			else if (f < 2.0) { y = hy - 2.0 * hy * (f - 1.0); z = hz; }
+			else if (f < 3.0) { y = -hy; z = hz - 2.0 * hz * (f - 2.0); }
+			else { y = -hy + 2.0 * hy * (f - 3.0); z = -hz; }
+			out(static_cast<int>(j), 0) = x;
+			out(static_cast<int>(j), 1) = s * y;
+			out(static_cast<int>(j), 2) = s * z;
+		}
+		return out;
+	};
+	src.closed_curve = true;
+	src.u_seeds = {0.0, 1.0, 2.0, 3.0};
+	src.v_seeds = {0.0, 0.25, 0.5, 0.75};
+	return src;
+}
+
+TriMesh EllipsoidMesh(double a, double b, double c, double tolerance) {
+	LoftSource src = EllipsoidLoft(a, b, c);
+	LoftOptions opt;
+	opt.tolerance = tolerance;
+	opt.min_v = 12;
+	opt.min_u = 5;
+	return TriangulateLoft(src, opt);
+}
+
+TriMesh CylinderMesh(double radius, double length, double tolerance) {
+	LoftSource src = CylinderLoft(radius, length);
 	LoftOptions opt;
 	opt.tolerance = tolerance;
 	opt.min_v = 12;

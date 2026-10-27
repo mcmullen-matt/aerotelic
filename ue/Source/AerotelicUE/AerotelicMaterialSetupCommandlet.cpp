@@ -16,6 +16,7 @@
 #include "Materials/MaterialExpressionIf.h"
 #include "Materials/MaterialExpressionTwoSidedSign.h"
 #include "Materials/MaterialExpressionFresnel.h"
+#include "Materials/MaterialExpressionVertexColor.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "UObject/SavePackage.h"
 #include "Misc/PackageName.h"
@@ -23,6 +24,7 @@
 #endif
 
 #include "Standalone/AerotelicSectionGizmo.h"
+#include "Standalone/AerotelicColoredMeshActor.h"
 // Last: it pulls in OCCT, whose Handle() macro breaks any engine header
 // (IoDispatcher.h has a member called Handle) included after it.
 #include "Entity/AerotelicEntityActor.h"
@@ -279,6 +281,41 @@ namespace
 		}
 		return SaveMaterial(Material, Package, PackageName);
 	}
+
+	// M_AerotelicVertexColor: a field painted on a surface (the panel
+	// method's Cp). Lit like the bodies, two sided, the base colour straight
+	// from the vertex colour (which AAerotelicColoredMeshActor stores
+	// linearised), a matte finish so the colours read as colours and not as
+	// highlights, and the same darker back faces as the surface material.
+	bool AuthorVertexColor()
+	{
+		const FString PackageName = AAerotelicColoredMeshActor::VertexColorMaterialPackage();
+		UPackage* Package = nullptr;
+		UMaterial* Material = NewMaterial(PackageName, Package);
+		if (Material == nullptr)
+		{
+			return false;
+		}
+		Material->TwoSided = true;
+
+		auto* Color = Node<UMaterialExpressionVertexColor>(Material, -700, -300);
+		auto* Inside = Node<UMaterialExpressionMultiply>(Material, -450, -200);
+		Link(Color, Inside, TEXT("A"));
+		Inside->ConstB = 0.55f;
+		auto* Facing = Node<UMaterialExpressionTwoSidedSign>(Material, -700, -100);
+		auto* Pick = Node<UMaterialExpressionIf>(Material, -250, -250);
+		Pick->ConstB = 0.0f;
+		Link(Facing, Pick, TEXT("A"));
+		Link(Color, Pick, TEXT("A > B"));
+		Link(Color, Pick, TEXT("A == B"));
+		Link(Inside, Pick, TEXT("A < B"));
+		UMaterialEditingLibrary::ConnectMaterialProperty(Pick, TEXT(""), MP_BaseColor);
+
+		UMaterialEditingLibrary::ConnectMaterialProperty(Constant(Material, 0.0f, -400, 0), TEXT(""), MP_Metallic);
+		UMaterialEditingLibrary::ConnectMaterialProperty(Constant(Material, 0.25f, -400, 150), TEXT(""), MP_Specular);
+		UMaterialEditingLibrary::ConnectMaterialProperty(Constant(Material, 0.7f, -400, 300), TEXT(""), MP_Roughness);
+		return SaveMaterial(Material, Package, PackageName);
+	}
 }
 #endif
 
@@ -287,6 +324,7 @@ int32 UAerotelicMaterialSetupCommandlet::Main(const FString& Params)
 #if WITH_EDITOR
 	bool bOk = AuthorSurface();
 	bOk = AuthorWire() && bOk;
+	bOk = AuthorVertexColor() && bOk;
 	bOk = AuthorGizmo(AAerotelicSectionGizmo::FrameMaterialPackage(), false) && bOk;
 	bOk = AuthorGizmo(AAerotelicSectionGizmo::HandleMaterialPackage(), true) && bOk;
 	return bOk ? 0 : 1;

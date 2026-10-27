@@ -119,6 +119,11 @@ public:
 	// chain of ruled strips. Empty when chevrons are set (they need a
 	// boolean cut; the caller tessellates BuildSolid() then).
 	std::vector<NamedMesh> BuildMeshes(double tolerance) const override;
+	// The cowl as a loft (what BuildMeshes triangulates), for the panel
+	// method; empty with chevrons.
+	std::vector<NamedLoft> BuildLofts() const override;
+	// The same with the station seeds refined to a tolerance (BuildMeshes' own).
+	std::vector<NamedLoft> BuildLofts(std::optional<double> tolerance) const;
 
 	static constexpr double kStationTol = 2e-3;
 	static constexpr int kMaxStations = 200;

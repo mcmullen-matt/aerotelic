@@ -449,6 +449,17 @@ std::vector<TopoDS_Shape> NacelleModel::ChevronCutters(double depth) const {
 }
 
 std::vector<NamedMesh> NacelleModel::BuildMeshes(double tolerance) const {
+	std::vector<NamedLoft> lofts = BuildLofts();
+	if (lofts.empty()) return {};
+	LoftOptions opt;
+	opt.tolerance = tolerance;
+	opt.min_v = 24;
+	opt.min_u = 8;
+	opt.apex_tolerance = 1e-5;
+	return {{"Main", TriangulateLoft(lofts[0].source, opt)}};
+}
+
+std::vector<NamedLoft> NacelleModel::BuildLofts() const {
 	Validate();
 	if (chevron_count > 0) return {};
 
@@ -479,7 +490,7 @@ std::vector<NamedMesh> NacelleModel::BuildMeshes(double tolerance) const {
 		}
 		return side.Evaluate(0.5 * (lo + hi));
 	};
-	src.section = [&](double u, const std::vector<double>& v) {
+	src.section = [this, L, y_lip, side_at_x](double u, const std::vector<double>& v) {
 		const NurbsCurve& side = u <= 1.0 ? *upper_curve_ : *lower_curve_;
 		double x_frac = std::clamp(u <= 1.0 ? u : 2.0 - u, 0.0, 1.0);
 		std::vector<double> sp = side_at_x(side, x_frac);
@@ -494,12 +505,10 @@ std::vector<NamedMesh> NacelleModel::BuildMeshes(double tolerance) const {
 		}
 		return out;
 	};
-	LoftOptions opt;
-	opt.tolerance = tolerance;
-	opt.min_v = 24;
-	opt.min_u = 8;
-	opt.apex_tolerance = 1e-5;
-	return {{"Main", TriangulateLoft(src, opt)}};
+	NamedLoft loft;
+	loft.name = "Main";
+	loft.source = std::move(src);
+	return {loft};
 }
 
 TopoDS_Shape NacelleModel::BuildSolid() const {

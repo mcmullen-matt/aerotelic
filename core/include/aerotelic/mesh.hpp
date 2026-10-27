@@ -251,4 +251,13 @@ TriMesh BoxMesh(double lx, double ly, double lz);
 TriMesh EllipsoidMesh(double a, double b, double c, double tolerance);
 TriMesh CylinderMesh(double radius, double length, double tolerance);
 
+// The primitives' section functions on their own (self-contained
+// closures), for the panel method: an ellipsoid from pole to pole, a
+// cylinder as end cap -> side -> end cap (u in [0, 3]), and a box as end
+// face -> four sides -> end face over a square ring (u in [0, 3], the ring's
+// corners at v = 0, 1/4, 1/2, 3/4).
+LoftSource EllipsoidLoft(double a, double b, double c);
+LoftSource CylinderLoft(double radius, double length);
+LoftSource BoxLoft(double lx, double ly, double lz);
+
 } // namespace aerotelic
