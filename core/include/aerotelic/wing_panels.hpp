@@ -26,10 +26,28 @@ struct WingPaneling {
 	// mean camber surface (a doublet/analysis sheet with the velocity
 	// condition of the thin-wing cases).
 	bool thick = true;
-	// Pointed tips get their last station this fraction short of the tip,
-	// since a collapsed row paneled in triangles over-carries doublet
-	// strength with the spline-based edge conditions (see panel_method.hpp).
+	// A tip (or root) station whose chord is under this fraction of the root
+	// chord is collapsed to the midpoint of its chord: one apex unknown and
+	// a column of triangular panels, the solver's collapsed-edge case. Paneled
+	// as a ring instead, the sliver's two dozen corner unknowns sit a
+	// millimetre apart and no condition tells them apart (the P-38 tip, 0.6%
+	// of the root chord, gave Cp of -260 and a negative tip load at 16 x 16).
+	// Zero disables the collapse; a pointed tip is then pulled in by
+	// tip_margin instead -- which leaves the tube open at a finite chord,
+	// where the ending doublet sheet acts as a bound vortex, so prefer the
+	// collapse.
+	double collapse_tip_fraction = 0.02;
+	// With the collapse off, pointed tips get their last station this
+	// fraction short of the tip.
 	double tip_margin = 0.01;
+	// The root station (eta_min = 0) is laid in the plane y = 0 exactly: a
+	// section is placed normal to the dihedral curve, so a dihedral slope at
+	// the root tilts the root section and its corners stick ± thickness ·
+	// sin(dihedral) through the plane (0.017 on the P-38 wing). Left there,
+	// the root edge is not on the symmetry plane -- it gets no symmetry
+	// condition and the network's image crosses it, which blew the root
+	// column's pressures up to Cp -30 and more.
+	bool pin_root_to_plane = true;
 };
 
 // The body network (semi-span, y >= 0) and its wake; solve them with

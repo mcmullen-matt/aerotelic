@@ -136,6 +136,12 @@ target_link_libraries(wing_panels_check PRIVATE aerotelic_core)
 add_executable(panel_loads_check tests/panel_loads_check.cpp)
 target_link_libraries(panel_loads_check PRIVATE aerotelic_core)
 
+add_executable(panel_p38_check tests/panel_p38_check.cpp)
+target_link_libraries(panel_p38_check PRIVATE aerotelic_core)
+
+add_executable(panel_p38_config_check tests/panel_p38_config_check.cpp)
+target_link_libraries(panel_p38_config_check PRIVATE aerotelic_core)
+
 add_executable(nacelle_fixture_check tests/nacelle_fixture_check.cpp)
 target_link_libraries(nacelle_fixture_check PRIVATE aerotelic_core)
 

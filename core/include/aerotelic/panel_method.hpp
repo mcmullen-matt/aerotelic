@@ -129,6 +129,42 @@ struct Options {
 	// with the wake lift still right); at 3e-3 and above the displaced
 	// points no longer register on the wake abutment and the lift is lost.
 	double edge_epsilon = 1e-4;
+	// On a network under the potential condition (InteriorPotentialZero),
+	// the corner and edge-midpoint control points are moved this fraction
+	// of the way from their lattice point to the owning panel's centre
+	// instead -- they only collocate the potential condition (a wake-
+	// shedding edge's points take the gradient condition at the lattice
+	// point itself), and a hair from the edge that condition loses
+	// precision in a way the centre strengths hide but the spline gradient,
+	// hence the surface velocity, does not: the end columns of a wing came
+	// out with |∇μ| ten times their neighbours' and Cp of -30 at the leading
+	// edge while μ itself was smooth; on narrower columns the strengths
+	// themselves oscillated. Zero keeps edge_epsilon for them.
+	double potential_edge_inset = 0.5;
+	// On the same networks, the points of an edge on the symmetry plane or
+	// abutting another doublet network take that edge's own condition --
+	// zero normal gradient, continuity -- instead of the potential one.
+	// Both are exact and involve the splines alone, where the potential
+	// condition had to pin the edge strengths by a point a fraction of a
+	// panel from the centre's own, which is ill-conditioned: the P-38 root
+	// column's μ oscillated at 12 x 16 (Cp -800). Off, every non-wake edge
+	// point takes the potential condition.
+	bool potential_edge_conditions = true;
+	// On the same networks the interior side carries the free stream
+	// exactly (the perturbation potential vanishes throughout the
+	// interior), so the lower velocity the influence sum (F) gives, V_A -
+	// V_D / 2, measures that sum's error at the panel. Where it misses V∞
+	// by more than this fraction of V∞ the panel's velocities are taken
+	// from the identity instead: V_lower = V∞, V_upper = V∞ + σ n + ∇μ. The
+	// sum is the more accurate of the two where it is sound (the pressure
+	// lift of the default wing lands 2% from the wake lift against 7% by
+	// the identity throughout, and a thin section's interior side misses
+	// V∞ by a few tenths on every healthy panel), but at panel centres
+	// sitting by the edges of tiny neighbours -- a near-pointed tip -- the
+	// B.2 spline's jumps across panel edges act as vortex lines and the sum
+	// is several V∞ while μ is perfectly smooth. Zero takes the identity
+	// everywhere; a huge value never.
+	double interior_velocity_tolerance = 1.0;
 };
 
 struct PanelResult {

@@ -1,6 +1,7 @@
 #include "AerotelicSceneViewActor.h"
 
 #include "Components/SceneCaptureComponent2D.h"
+#include "Components/DirectionalLightComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/TextureRenderTarget2D.h"
@@ -33,6 +34,41 @@ AAerotelicSceneViewActor::AAerotelicSceneViewActor()
 	Capture->ShowFlags.SetAtmosphere(false);
 	Capture->ShowFlags.SetFog(false);
 	Capture->ShowFlags.SetMotionBlur(false);
+
+	// The eye-fixed rig (see the header): a directional light's direction
+	// is its forward axis, so a child of the capture with no relative
+	// rotation shines along the line of sight, and the fills are turned
+	// off it by their relative pitch and yaw. All on the capture's own
+	// lighting channel, none casting shadows (a shadow from the eye's
+	// direction is never visible anyway) and none the atmosphere's sun.
+	struct FRigLight { const TCHAR* Name; float Pitch, Yaw, Intensity; };
+	static const FRigLight Rig[] = {
+		{ TEXT("KeyLight"), 0.0f, 0.0f, 2.0f },
+		{ TEXT("FillLeft"), 0.0f, -70.0f, 0.8f },
+		{ TEXT("FillRight"), 0.0f, 70.0f, 0.8f },
+		{ TEXT("FillAbove"), -70.0f, 0.0f, 0.8f },
+		{ TEXT("FillBelow"), 70.0f, 0.0f, 0.8f },
+	};
+	for (const FRigLight& L : Rig)
+	{
+		UDirectionalLightComponent* Light = CreateDefaultSubobject<UDirectionalLightComponent>(L.Name);
+		Light->SetupAttachment(Capture);
+		Light->SetRelativeRotation(FRotator(L.Pitch, L.Yaw, 0.0f));
+		Light->SetMobility(EComponentMobility::Movable);
+		Light->Intensity = L.Intensity;
+		Light->LightColor = FColor::White;
+		Light->CastShadows = false;
+		Light->CastStaticShadows = false;
+		Light->CastDynamicShadows = false;
+		Light->bAffectsWorld = true;
+		Light->bAtmosphereSunLight = false;
+		Light->ForwardShadingPriority = 0;
+		static_assert(LightingChannel == 2, "the rig and AAerotelicColoredMeshActor are on channel 2");
+		Light->LightingChannels.bChannel0 = false;
+		Light->LightingChannels.bChannel1 = false;
+		Light->LightingChannels.bChannel2 = true;
+		Lights.Add(Light);
+	}
 
 	// The backdrop: the main view's inside-out grey sphere (see
 	// AerotelicGameMode::SpawnBackdrop), seen by captures only. Its mesh

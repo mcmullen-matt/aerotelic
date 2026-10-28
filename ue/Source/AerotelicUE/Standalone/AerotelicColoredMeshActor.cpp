@@ -43,9 +43,14 @@ AAerotelicColoredMeshActor::AAerotelicColoredMeshActor()
 	RootComponent = Mesh;
 	Mesh->SetMobility(EComponentMobility::Movable);
 	Mesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
-	Mesh->SetCastShadow(true);
+	// No shadows: a result is lit by the result view's eye-fixed rig, which
+	// casts none, and must never shadow the scene it is not part of.
+	Mesh->SetCastShadow(false);
 	Mesh->bUseAsyncCooking = false;
 	Mesh->SetVisibleInSceneCaptureOnly(true);
+	// The result view's lighting channel alone (AAerotelicSceneViewActor):
+	// lit by its eye-fixed rig, unlit by the scene's studio rig.
+	Mesh->SetLightingChannels(false, false, true);
 }
 
 FString AAerotelicColoredMeshActor::VertexColorMaterialPackage()

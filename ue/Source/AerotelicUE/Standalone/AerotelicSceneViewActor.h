@@ -6,6 +6,7 @@
 #include "AerotelicSceneViewActor.generated.h"
 
 class USceneCaptureComponent2D;
+class UDirectionalLightComponent;
 class UStaticMeshComponent;
 class UMaterialInstanceDynamic;
 class UTextureRenderTarget2D;
@@ -14,8 +15,16 @@ class UTextureRenderTarget2D;
 // a chosen set of actors -- and only those -- into a texture the widget
 // shows, with its own backdrop (the main view's grey sphere again, seen by
 // captures only) so the picture has the same ground as the 3D view rather
-// than a black void. The capture lives in the one game world, so the
-// studio lighting rig lights the result exactly as it lights the scene.
+// than a black void.
+//
+// Lighting: the capture carries its own rig, fixed to the eye -- a key
+// light along the line of sight and four fills from either side, above and
+// below it -- so every surface the picture shows is lit whichever way the
+// result is turned; the main view's studio rig, fixed in the world, left
+// the far side of a body in shadow. The rig lives on lighting channel 2
+// alone (see LightingChannel) and so lights nothing in the main scene,
+// whose bodies are on channel 0; a result mesh is put on channel 2 alone
+// (AAerotelicColoredMeshActor does) and so sees nothing of the studio rig.
 // Transient; spawned and destroyed by the widget.
 UCLASS()
 class AAerotelicSceneViewActor : public AActor
@@ -29,6 +38,10 @@ public:
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 
 	USceneCaptureComponent2D* GetCapture() const { return Capture; }
+
+	// The lighting channel the eye-fixed rig lights and a shown mesh must
+	// be on (0 is the scene's, 1 is left free).
+	static constexpr int32 LightingChannel = 2;
 
 	// The actors the capture draws (plus its own backdrop). Everything else
 	// in the world -- the scene's bodies, the ground grid, the gizmos -- is
@@ -60,6 +73,10 @@ private:
 
 	UPROPERTY()
 	TObjectPtr<UMaterialInstanceDynamic> BackdropMaterial;
+
+	// The eye-fixed rig: children of the capture, so they turn with it.
+	UPROPERTY()
+	TArray<TObjectPtr<UDirectionalLightComponent>> Lights;
 
 	FDelegateHandle ThemeHandle;
 	TOptional<FLinearColor> FixedBackdrop;

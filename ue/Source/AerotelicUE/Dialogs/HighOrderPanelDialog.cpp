@@ -226,8 +226,7 @@ namespace
 			for (const NetworkResult& NR : Sol.networks)
 				for (const PanelResult& P : NR.panels) S += FString::Printf(TEXT("%.9g\n"), Get(P));
 		};
-		Field(TEXT("Cp_upper"), [](const PanelResult& P) { return P.cp_upper; });
-		Field(TEXT("Cp_lower"), [](const PanelResult& P) { return P.cp_lower; });
+		Field(TEXT("Cp"), [](const PanelResult& P) { return P.cp_upper; });
 		Field(TEXT("doublet"), [](const PanelResult& P) { return P.mu; });
 		Field(TEXT("source"), [](const PanelResult& P) { return P.sigma; });
 		Field(TEXT("curvature_delta"), [](const PanelResult& P) { return P.delta; });
@@ -257,8 +256,26 @@ namespace
 		bool bWing = false;
 		// The wing's span axis in the world: its local +y, as placed.
 		FVector SpanAxis = FVector(0, 1, 0);
+		// The root and tip stations of its own network as placed (the mean
+		// of each station's corners), between which the span loading is
+		// cut, and the planform's own chord at every cut station, eta = k /
+		// (CutChords.Num() - 1): the geometry queried, not a projection of
+		// the twisted section.
+		FVector RootPoint = FVector::ZeroVector, TipPoint = FVector::ZeroVector;
+		TArray<double> CutChords;
 		// Solved with its image about y = 0.
 		bool bImaged = false;
+	};
+
+	// The span loading is cut every 5% of the semi-span.
+	constexpr int32 kLoadCuts = 20;
+
+	// Wind-axis coefficients: lift, drag, side force; roll about the
+	// stream, pitch about the side axis, yaw about the lift axis, on the
+	// reference length.
+	struct FCoefs
+	{
+		double CL = 0.0, CD = 0.0, CY = 0.0, Cl = 0.0, Cm = 0.0, Cn = 0.0;
 	};
 
 	// One operating condition: the networks (the wake sheds along this
@@ -269,16 +286,14 @@ namespace
 	{
 		double AlphaDeg = 0.0, BetaDeg = 0.0;
 		aerotelic::Vec3 Stream, LiftDir, SideDir;
-		bool bThick = true;
 		std::vector<Network> Nets;
 		TArray<FShare> Shares;
 		TArray<FString> Skipped;
 		Solution Sol;
 		bool bSolved = false;
-		// Wind-axis coefficients: lift, drag, side force; roll about the
-		// stream, pitch about the side axis, yaw about the lift axis, on the
-		// reference length.
+		// Wind-axis coefficients (FCoefs) of the whole, and of each share.
 		double CL = 0.0, CD = 0.0, CY = 0.0, Cl = 0.0, Cm = 0.0, Cn = 0.0;
+		TArray<FCoefs> ByBody;
 		double CpMin = 1.0, CpMax = -1e9;
 		int32 NBody = 0, NWake = 0;
 	};
@@ -291,23 +306,11 @@ namespace
 		FString Error;
 	};
 
-	// The pressure coefficient a network's panels show on the surface
-	// picture: the outer side of a closed body or a thick wing, both sides
-	// of a mean camber sheet.
-	bool IsSheet(const FCase& C, int32 NetIndex)
-	{
-		if (C.bThick || C.Sol.networks[NetIndex].type != NetworkType::DoubletAnalysis) return false;
-		for (const FShare& Sh : C.Shares)
-			if (Sh.bWing && NetIndex >= Sh.First && NetIndex < Sh.First + Sh.Count) return true;
-		return false;
-	}
-
 	// The coloured mesh of a case: every non-wake network as its corner grid
-	// with the pressure averaged onto the corners (so the colour is smooth
-	// across the panels), both windings of every quad (the engine's two-
-	// sided convention, as the bodies are drawn), and a sheet as two
-	// copies a hair apart, the upper side coloured by Cp_upper and the
-	// lower by Cp_lower.
+	// with the panel pressures (the outer side of the faceted surface)
+	// averaged onto the corners, so the colour is smooth across the panels,
+	// and both windings of every quad (the engine's two-sided convention,
+	// as the bodies are drawn).
 	struct FCpMesh
 	{
 		TArray<FVector> Vertices;
@@ -319,11 +322,6 @@ namespace
 	FCpMesh BuildCpMesh(const FCase& C)
 	{
 		FCpMesh M;
-		FBox Bounds(ForceInit);
-		for (const Network& N : C.Nets)
-			for (const aerotelic::Vec3& P : N.corners) Bounds += FVector(P.x, P.y, P.z);
-		const double Gap = Bounds.IsValid ? Bounds.GetSize().GetMax() * 5e-4 : 1e-3;
-
 		for (size_t k = 0; k < C.Sol.networks.size(); ++k)
 		{
 			const NetworkResult& NR = C.Sol.networks[k];
@@ -331,50 +329,38 @@ namespace
 			if (NR.type == NetworkType::DoubletWake || NR.type == NetworkType::DoubletWakeConstant) continue;
 			const int32 Rows = NR.panel_rows, Cols = NR.panel_cols;
 			if (Rows <= 0 || Cols <= 0 || Net.rows != Rows + 1 || Net.cols != Cols + 1) continue;
-			const bool bSheet = IsSheet(C, static_cast<int32>(k));
-			const int32 Sides = bSheet ? 2 : 1;
-			for (int32 Side = 0; Side < Sides; ++Side)
+			const int32 Base = M.Vertices.Num();
+			for (int32 I = 0; I <= Rows; ++I)
 			{
-				const int32 Base = M.Vertices.Num();
-				for (int32 I = 0; I <= Rows; ++I)
+				for (int32 J = 0; J <= Cols; ++J)
 				{
-					for (int32 J = 0; J <= Cols; ++J)
+					double CpSum = 0.0;
+					FVector NSum = FVector::ZeroVector;
+					int32 Count = 0;
+					for (int32 i = I - 1; i <= I; ++i)
 					{
-						double CpSum = 0.0;
-						FVector NSum = FVector::ZeroVector;
-						int32 Count = 0;
-						for (int32 i = I - 1; i <= I; ++i)
+						for (int32 j = J - 1; j <= J; ++j)
 						{
-							for (int32 j = J - 1; j <= J; ++j)
-							{
-								if (i < 0 || j < 0 || i >= Rows || j >= Cols) continue;
-								const PanelResult& P = NR.panels[static_cast<size_t>(i) * Cols + j];
-								CpSum += (bSheet && Side == 1) ? P.cp_lower : P.cp_upper;
-								NSum += FVector(P.normal.x, P.normal.y, P.normal.z);
-								++Count;
-							}
+							if (i < 0 || j < 0 || i >= Rows || j >= Cols) continue;
+							const PanelResult& P = NR.panels[static_cast<size_t>(i) * Cols + j];
+							CpSum += P.cp_upper;
+							NSum += FVector(P.normal.x, P.normal.y, P.normal.z);
+							++Count;
 						}
-						const aerotelic::Vec3 Q = Net.Corner(I + 1, J + 1);
-						FVector N = NSum.GetSafeNormal();
-						FVector V(Q.x, Q.y, Q.z);
-						if (bSheet)
-						{
-							V += N * (Side == 0 ? Gap : -Gap);
-							if (Side == 1) N = -N;
-						}
-						M.Vertices.Add(V);
-						M.Normals.Add(N);
-						M.Cp.Add(Count > 0 ? CpSum / Count : 0.0);
 					}
+					const aerotelic::Vec3 Q = Net.Corner(I + 1, J + 1);
+					M.Vertices.Add(FVector(Q.x, Q.y, Q.z));
+					M.Normals.Add(NSum.GetSafeNormal());
+					M.Cp.Add(Count > 0 ? CpSum / Count : 0.0);
 				}
-				auto Idx = [&](int32 I, int32 J) { return Base + I * (Cols + 1) + J; };
-				for (int32 i = 0; i < Rows; ++i)
+			}
+			auto Idx = [&](int32 I, int32 J) { return Base + I * (Cols + 1) + J; };
+			for (int32 i = 0; i < Rows; ++i)
+			{
+				for (int32 j = 0; j < Cols; ++j)
 				{
-					for (int32 j = 0; j < Cols; ++j)
-					{
-						const int32 A = Idx(i, j), B = Idx(i, j + 1), Cc = Idx(i + 1, j + 1), D = Idx(i + 1, j);
-						M.Triangles.Append({ A, B, Cc, A, Cc, D, A, Cc, B, A, D, Cc });
-					}
+					const int32 A = Idx(i, j), B = Idx(i, j + 1), Cc = Idx(i + 1, j + 1), D = Idx(i + 1, j);
+					M.Triangles.Append({ A, B, Cc, A, Cc, D, A, Cc, B, A, D, Cc });
 				}
 			}
 		}
@@ -429,8 +415,6 @@ namespace
 		TSharedPtr<SAerotelicBodyPicker> Picker;
 		TSharedPtr<SCheckBox> SymmetryCheck;
 		bool bSymmetryTouched = false;
-		TSharedRef<TArray<TSharedPtr<FString>>> Formulations = MakeShared<TArray<TSharedPtr<FString>>>();
-		TSharedPtr<FString> Formulation;
 		double Chordwise = 12.0, Spanwise = 10.0, WakeChords = 20.0;
 		double Along = 16.0, Around = 12.0;
 		double ReferenceArea = 1.0, ReferenceLength = 1.0;
@@ -455,9 +439,9 @@ namespace
 		FCpMesh Mesh; // of the current case
 		TSharedRef<TArray<TSharedPtr<FString>>> MapNames = MakeShared<TArray<TSharedPtr<FString>>>();
 
-		// Span loading (tab 3).
+		// Span loading (tab 3): the view shown, an index into LoadViews().
 		TSharedPtr<SAerotelicLinePlot> LoadPlot;
-		int32 CurrentWing = 0;
+		int32 CurrentLoadView = 0;
 
 		// Forces and moments (tab 4).
 		TArray<TSharedPtr<SAerotelicLinePlot>> Polars;
@@ -480,17 +464,24 @@ namespace
 			return Out;
 		}
 
-		bool IsThick() const { return Formulation.IsValid() && Formulations->Num() > 0 && *Formulation == *(*Formulations)[0]; }
-
 		const FCase* CurrentCase() const { return Cases.IsValidIndex(Current) ? Cases[Current].Get() : nullptr; }
 
-		// The wings among the current case's shares, for the span loading.
-		TArray<int32> WingShares() const
+		// The span loading views of the current case: one per wing (its
+		// strips along its own span axis) and, with more than one body, the
+		// total of every body along the lateral axis.
+		struct FLoadView
 		{
-			TArray<int32> Out;
-			if (const FCase* C = CurrentCase())
-				for (int32 i = 0; i < C->Shares.Num(); ++i)
-					if (C->Shares[i].bWing) Out.Add(i);
+			int32 Share = -1; // -1: all bodies
+			FString Name;
+		};
+		TArray<FLoadView> LoadViews() const
+		{
+			TArray<FLoadView> Out;
+			const FCase* C = CurrentCase();
+			if (C == nullptr) return Out;
+			for (int32 i = 0; i < C->Shares.Num(); ++i)
+				if (C->Shares[i].bWing) Out.Add({ i, C->Shares[i].Name });
+			if (C->Shares.Num() > 1) Out.Add({ -1, TEXT("All bodies") });
 			return Out;
 		}
 
@@ -594,7 +585,6 @@ namespace
 			TSharedPtr<FCase> C = MakeShared<FCase>();
 			C->AlphaDeg = AlphaDeg;
 			C->BetaDeg = BetaDeg;
-			C->bThick = IsThick();
 			const double Alpha = AlphaDeg * kPi / 180.0, Beta = BetaDeg * kPi / 180.0;
 			// The flow along +x, tilted towards +z by alpha and towards +y by
 			// beta (unit, world frame). Wind axes: lift normal to the stream in
@@ -619,10 +609,10 @@ namespace
 					Share.bWing = true;
 					Share.SpanAxis = Transform.TransformVectorNoScale(FVector(0, 1, 0)).GetSafeNormal();
 					aerotelic::WingModel* W = E->GetModelAs<aerotelic::WingModel>();
+					for (int32 k = 0; k <= kLoadCuts; ++k) Share.CutChords.Add(W->planform().ChordAt(static_cast<double>(k) / kLoadCuts));
 					aerotelic::panel::WingPaneling Pan;
 					Pan.chordwise = FMath::Clamp(FMath::RoundToInt(Chordwise), 2, 200);
 					Pan.spanwise = FMath::Clamp(FMath::RoundToInt(Spanwise), 1, 200);
-					Pan.thick = C->bThick;
 					Pan.wake_length = WakeChords * W->planform().RootChord();
 					Pan.wake_direction = StreamModel; // the wake sheds along the world stream, in the wing's frame
 					Own = aerotelic::panel::WingNetworks(*W, Pan, StreamModel);
@@ -631,6 +621,19 @@ namespace
 						N.name = TCHAR_TO_UTF8(*E->EntityName) + std::string(N.name == W->name ? "" : " wake");
 						PlaceNetwork(N, Transform);
 						if (N.prescribed_source) N.prescribed_source = [Stream](const aerotelic::Vec3&, const aerotelic::Vec3& Nrm) { return -aerotelic::Dot(Stream, Nrm); };
+					}
+					// The placed root and tip stations: the first and last columns.
+					{
+						const Network& Body = Own[0];
+						FVector Root = FVector::ZeroVector, Tip = FVector::ZeroVector;
+						for (int32 I = 1; I <= Body.rows; ++I)
+						{
+							const aerotelic::Vec3 R = Body.Corner(I, 1), T = Body.Corner(I, Body.cols);
+							Root += FVector(R.x, R.y, R.z);
+							Tip += FVector(T.x, T.y, T.z);
+						}
+						Share.RootPoint = Root / Body.rows;
+						Share.TipPoint = Tip / Body.rows;
 					}
 				}
 				else
@@ -672,31 +675,58 @@ namespace
 		// What is read off a solved case.
 		void Derive(FCase& C, double RefLength) const
 		{
-			const aerotelic::Vec3& F = C.Sol.force_coefficient;
-			const aerotelic::Vec3& M = C.Sol.moment_coefficient;
 			const double Chord = RefLength > 0.0 ? RefLength : 1.0;
-			C.CL = aerotelic::Dot(F, C.LiftDir);
-			C.CD = aerotelic::Dot(F, C.Stream);
-			C.CY = aerotelic::Dot(F, C.SideDir);
-			C.Cl = aerotelic::Dot(M, C.Stream) / Chord;
-			C.Cm = aerotelic::Dot(M, C.SideDir) / Chord;
-			C.Cn = aerotelic::Dot(M, C.LiftDir) / Chord;
+			auto WindAxes = [&C, Chord](const aerotelic::Vec3& F, const aerotelic::Vec3& M)
+			{
+				FCoefs K;
+				K.CL = aerotelic::Dot(F, C.LiftDir);
+				K.CD = aerotelic::Dot(F, C.Stream);
+				K.CY = aerotelic::Dot(F, C.SideDir);
+				K.Cl = aerotelic::Dot(M, C.Stream) / Chord;
+				K.Cm = aerotelic::Dot(M, C.SideDir) / Chord;
+				K.Cn = aerotelic::Dot(M, C.LiftDir) / Chord;
+				return K;
+			};
+			const FCoefs Total = WindAxes(C.Sol.force_coefficient, C.Sol.moment_coefficient);
+			C.CL = Total.CL; C.CD = Total.CD; C.CY = Total.CY; C.Cl = Total.Cl; C.Cm = Total.Cm; C.Cn = Total.Cn;
+			// Each share's own networks (a mirrored entity's reflected copy
+			// included; the image side is already in the network sums).
+			C.ByBody.Reset();
+			for (const FShare& Sh : C.Shares)
+			{
+				aerotelic::Vec3 F{ 0, 0, 0 }, M{ 0, 0, 0 };
+				for (int32 k = Sh.First; k < Sh.First + Sh.Count; ++k)
+				{
+					F += C.Sol.networks[k].force_coefficient;
+					M += C.Sol.networks[k].moment_coefficient;
+				}
+				C.ByBody.Add(WindAxes(F, M));
+			}
 			C.CpMin = 1.0;
 			C.CpMax = -1e9;
 			C.NBody = 0;
 			C.NWake = 0;
+			TArray<double> Cps;
 			for (size_t k = 0; k < C.Sol.networks.size(); ++k)
 			{
 				const NetworkResult& NR = C.Sol.networks[k];
 				const bool bWake = NR.type == NetworkType::DoubletWake || NR.type == NetworkType::DoubletWakeConstant;
 				if (bWake) { C.NWake += static_cast<int32>(NR.panels.size()); continue; }
-				const bool bSheet = IsSheet(C, static_cast<int32>(k));
 				for (const PanelResult& P : NR.panels)
 				{
-					C.CpMin = FMath::Min(C.CpMin, bSheet ? FMath::Min(P.cp_upper, P.cp_lower) : P.cp_upper);
-					C.CpMax = FMath::Max(C.CpMax, bSheet ? FMath::Max(P.cp_upper, P.cp_lower) : P.cp_upper);
+					if (FMath::IsFinite(P.cp_upper)) Cps.Add(P.cp_upper);
 					++C.NBody;
 				}
+			}
+			// The colour range: the 2nd to 98th percentile of the pressures,
+			// so the few panels of a junction buried in another body (Cp of
+			// -100 where a fin's root sits inside a boom) do not swamp the
+			// scale for the whole configuration.
+			if (Cps.Num() > 0)
+			{
+				Cps.Sort();
+				C.CpMin = Cps[FMath::Clamp(FMath::FloorToInt32(0.02 * (Cps.Num() - 1)), 0, Cps.Num() - 1)];
+				C.CpMax = Cps[FMath::Clamp(FMath::CeilToInt32(0.98 * (Cps.Num() - 1)), 0, Cps.Num() - 1)];
 			}
 		}
 
@@ -848,7 +878,7 @@ namespace
 			}
 			Cases = Done->Cases;
 			Current = 0;
-			CurrentWing = 0;
+			CurrentLoadView = 0;
 			if (bRangeAuto && Lo < Hi)
 			{
 				CpLo = Lo;
@@ -1098,7 +1128,7 @@ namespace
 						+ SVerticalBox::Slot().AutoHeight().Padding(0, 6, 0, 0).HAlign(HAlign_Left)
 						[ Button(LOCTEXT("AutoRange", "Auto range (all solutions)"), [Self]() { Self->AutoRange(); }) ]
 						+ SVerticalBox::Slot().AutoHeight().Padding(0, 6, 0, 0)
-						[ MakeInfoLabel(LOCTEXT("PopupHint", "The range defaults to the pressures of every solution together, so the colours mean the same from one to the next. Click outside to close.")) ]
+						[ MakeInfoLabel(LOCTEXT("PopupHint", "The range defaults to the 2nd to 98th percentile of the pressures of every solution together, so the colours mean the same from one solution to the next and a spike at a junction does not swamp the scale. Click outside to close.")) ]
 					]
 				];
 			FSlateApplication::Get().PushMenu(ColorBar.ToSharedRef(), FWidgetPath(), Content, Event.GetScreenSpacePosition(), FPopupTransitionEffect(FPopupTransitionEffect::ContextMenu));
@@ -1110,44 +1140,108 @@ namespace
 		{
 			if (!LoadPlot.IsValid()) return;
 			const FCase* C = CurrentCase();
-			TArray<int32> Wings = WingShares();
-			if (C == nullptr || Wings.Num() == 0)
+			const TArray<FLoadView> Views = LoadViews();
+			if (C == nullptr || Views.Num() == 0)
 			{
 				LoadPlot->SetSeries({});
 				LoadPlot->SetMessage(C == nullptr ? LOCTEXT("NoSolution", "Solve first (Set-up tab).") : LOCTEXT("NoWing", "No wing among the bodies: the span loading is a wing's."));
 				LoadPlot->SetTitle(LOCTEXT("LoadTitle", "Span loading"));
 				return;
 			}
-			CurrentWing = FMath::Clamp(CurrentWing, 0, Wings.Num() - 1);
-			const FShare& Sh = C->Shares[Wings[CurrentWing]];
-			const aerotelic::Vec3 Axis{ Sh.SpanAxis.X, Sh.SpanAxis.Y, Sh.SpanAxis.Z };
-			// The load per unit span normal to both the stream and the span:
-			// lift for a wing, side force for a fin.
-			const aerotelic::Vec3 LoadDir = aerotelic::Normalized(aerotelic::Cross(C->Stream, Axis));
-			const double Chord = ReferenceLength > 0.0 ? ReferenceLength : 1.0;
+			CurrentLoadView = FMath::Clamp(CurrentLoadView, 0, Views.Num() - 1);
+			const FLoadView& LoadView = Views[CurrentLoadView];
+			const bool bWing = LoadView.Share >= 0;
+			const double Area = ReferenceArea > 0.0 ? ReferenceArea : 1.0;
 
-			aerotelic::panel::StripOptions SO;
-			SO.span_axis = Axis;
-			SO.strips_are_columns = C->bThick;
-			SO.two_sided = !C->bThick;
-			std::vector<aerotelic::panel::StripLoad> Strips;
+			// The computed load, one point per cut (a wing) or per bin (all
+			// bodies): its station along the span axis, the extent it
+			// stands for (a bin's width; a cut has none), the load per unit
+			// span resolved along the load direction (/ q), and the local
+			// chord (a wing's cuts only).
+			struct FPoint { double S, SMin, SMax, LoadPerSpan, Chord; };
+			TArray<FPoint> Points;
+			aerotelic::Vec3 LoadDir;
+			bool bSideLoad = false;
 			try
 			{
-				for (int32 k = Sh.First; k < Sh.First + Sh.Count; ++k)
+				if (bWing)
 				{
-					const NetworkResult& NR = C->Sol.networks[k];
-					if (NR.type != NetworkType::DoubletAnalysis) continue; // the wakes
-					// The entity's own network, and (without the plane) its
-					// reflected copy: each pairs with its own corners, so the
-					// copy's reversed columns are no concern.
-					std::vector<aerotelic::panel::StripLoad> S = aerotelic::panel::StripLoads(C->Nets[k], NR, SO);
-					Strips.insert(Strips.end(), S.begin(), S.end());
-					if (Sh.bImaged && k < Sh.First + Sh.OwnCount)
+					// Plane cuts normal to the span every 5% of the semi-span
+					// (kLoadCuts), root to tip: the pressure on the section's
+					// closed outline integrated along it (CutSection) is the
+					// force per unit span itself -- no strip, no width, zero
+					// where the chord has vanished.
+					const FShare& Sh = C->Shares[LoadView.Share];
+					const aerotelic::Vec3 Axis{ Sh.SpanAxis.X, Sh.SpanAxis.Y, Sh.SpanAxis.Z };
+					// The load per unit span normal to both the stream and the
+					// span: lift for a wing, side force for a fin.
+					LoadDir = aerotelic::Normalized(aerotelic::Cross(C->Stream, Axis));
+					bSideLoad = FMath::Abs(Sh.SpanAxis.Z) > 0.9;
+					auto CutNetwork = [&](const Network& Net, const NetworkResult& NR, const FVector& Root, const FVector& Tip)
 					{
+						const double SRoot = FVector::DotProduct(Root, Sh.SpanAxis), STip = FVector::DotProduct(Tip, Sh.SpanAxis);
+						const int32 NCuts = Sh.CutChords.Num() - 1;
+						for (int32 k = 0; k <= NCuts; ++k)
+						{
+							const double S = SRoot + (STip - SRoot) * k / NCuts;
+							const aerotelic::panel::SectionCut Cut = aerotelic::panel::CutSection(Net, NR, Axis, S);
+							if (!Cut.found) continue;
+							Points.Add({ S, S, S, aerotelic::Dot(Cut.force_per_span, LoadDir), Sh.CutChords[k] });
+						}
+					};
+					auto Reflect = [](const FVector& P) { return FVector(P.X, -P.Y, P.Z); };
+					for (int32 k = Sh.First; k < Sh.First + Sh.Count; ++k)
+					{
+						const NetworkResult& NR = C->Sol.networks[k];
+						if (NR.type != NetworkType::DoubletAnalysis) continue; // the wakes
+						const bool bOwn = k < Sh.First + Sh.OwnCount;
+						// The entity's own network, or (without the plane) its
+						// reflected copy, whose root and tip are the reflections.
+						CutNetwork(C->Nets[k], NR, bOwn ? Sh.RootPoint : Reflect(Sh.RootPoint), bOwn ? Sh.TipPoint : Reflect(Sh.TipPoint));
 						// The image about y = 0: the other half of the loading.
-						std::vector<aerotelic::panel::StripLoad> Im = aerotelic::panel::StripLoads(ReflectedNetwork(C->Nets[k]), ReflectedResult(NR), SO);
-						Strips.insert(Strips.end(), Im.begin(), Im.end());
+						if (Sh.bImaged && bOwn) CutNetwork(ReflectedNetwork(C->Nets[k]), ReflectedResult(NR), Reflect(Sh.RootPoint), Reflect(Sh.TipPoint));
 					}
+				}
+				else
+				{
+					// Every body's panels -- wings, fuselages, nacelles, the
+					// images and reflected copies -- summed into uniform bins
+					// along the lateral axis y, resolved along the lift: the
+					// lift per unit span of the whole configuration.
+					LoadDir = C->LiftDir;
+					std::vector<aerotelic::panel::LoadSource> Sources;
+					double Lo = 1e300, Hi = -1e300;
+					auto Extent = [&](const Network& N, bool bReflect)
+					{
+						for (const aerotelic::Vec3& P : N.corners)
+						{
+							const double Y = bReflect ? -P.y : P.y;
+							Lo = FMath::Min(Lo, Y);
+							Hi = FMath::Max(Hi, Y);
+						}
+					};
+					for (const FShare& Sh : C->Shares)
+					{
+						for (int32 k = Sh.First; k < Sh.First + Sh.Count; ++k)
+						{
+							const NetworkResult& NR = C->Sol.networks[k];
+							if (NR.type == NetworkType::DoubletWake || NR.type == NetworkType::DoubletWakeConstant) continue;
+							Sources.push_back({ &C->Nets[k], &NR, false });
+							Extent(C->Nets[k], false);
+							if (Sh.bImaged && k < Sh.First + Sh.OwnCount)
+							{
+								Sources.push_back({ &C->Nets[k], &NR, true });
+								Extent(C->Nets[k], true);
+							}
+						}
+					}
+					if (Sources.empty() || !(Hi > Lo)) throw std::runtime_error("no body panels to sum");
+					// Twice the spanwise count: about the wings' own strip density over both halves.
+					const int32 NBins = FMath::Clamp(2 * FMath::RoundToInt(Spanwise), 16, 400);
+					std::vector<double> Edges;
+					for (int32 b = 0; b <= NBins; ++b) Edges.push_back(Lo + (Hi - Lo) * b / NBins);
+					const std::vector<aerotelic::Vec3> Bins = aerotelic::panel::BinnedLoads(Sources, aerotelic::Vec3{ 0.0, 1.0, 0.0 }, Edges);
+					for (int32 b = 0; b < NBins; ++b) Points.Add({ 0.5 * (Edges[b] + Edges[b + 1]), Edges[b], Edges[b + 1], aerotelic::Dot(Bins[b], LoadDir) / (Edges[b + 1] - Edges[b]), 0.0 });
 				}
 			}
 			catch (const std::exception& E)
@@ -1156,48 +1250,78 @@ namespace
 				LoadPlot->SetMessage(FText::FromString(UTF8_TO_TCHAR(E.what())));
 				return;
 			}
-			if (Strips.empty())
+			if (Points.Num() == 0)
 			{
 				LoadPlot->SetSeries({});
 				LoadPlot->SetMessage(LOCTEXT("NoStrips", "No lifting network for this wing."));
 				return;
 			}
-			std::sort(Strips.begin(), Strips.end(), [](const aerotelic::panel::StripLoad& a, const aerotelic::panel::StripLoad& b) { return a.s < b.s; });
-			// The total: the strip forces summed (an area, force / q), as a
-			// coefficient on the reference area, and as the integral of the
-			// plotted load (on the reference length) over the span.
+			Points.Sort([](const FPoint& A, const FPoint& B) { return A.S < B.S; });
+			// The total: the integral of the plotted load per unit span over
+			// the span (force / q, an area) -- the trapezoid rule over the
+			// cuts, the bins' sum -- and as a coefficient on the reference
+			// area.
 			double SMin = 1e300, SMax = -1e300, TotalForce = 0.0;
-			for (const aerotelic::panel::StripLoad& St : Strips)
+			for (int32 i = 0; i < Points.Num(); ++i)
 			{
-				SMin = FMath::Min(SMin, St.s_min);
-				SMax = FMath::Max(SMax, St.s_max);
-				TotalForce += aerotelic::Dot(St.force, LoadDir);
+				const FPoint& P = Points[i];
+				SMin = FMath::Min(SMin, P.SMin);
+				SMax = FMath::Max(SMax, P.SMax);
+				if (bWing) { if (i > 0) TotalForce += 0.5 * (P.LoadPerSpan + Points[i - 1].LoadPerSpan) * (P.S - Points[i - 1].S); }
+				else TotalForce += P.LoadPerSpan * (P.SMax - P.SMin);
 			}
-			const double Total = TotalForce / Chord;
-			const double TotalCoefficient = TotalForce / (ReferenceArea > 0.0 ? ReferenceArea : 1.0);
+			const double TotalCoefficient = TotalForce / Area;
 			const double S0 = 0.5 * (SMin + SMax), Half = FMath::Max(0.5 * (SMax - SMin), 1e-9);
+			const FString LengthUnit = UTF8_TO_TCHAR(Units.LengthName());
 
+			// Left axis: the lift per unit span over the dynamic pressure,
+			// l / q = cl · c, a length in the project's units -- the
+			// distribution itself, not a surrogate scaled by a reference
+			// chord -- and the elliptic distribution of the same integral.
+			// Right axis: the section lift coefficient, the same load on the
+			// local chord, which says how hard each section works.
+			TArray<FAerotelicPlotSeries> Series;
 			FAerotelicPlotSeries Computed;
-			Computed.Label = TEXT("Panel method (pressures)");
+			Computed.Label = bWing ? TEXT("l / q  (panel method, pressures)") : TEXT("l / q  (all bodies, pressures)");
 			Computed.Color = FLinearColor(FColor::FromHex(TEXT("#d56b3a")));
-			for (const aerotelic::panel::StripLoad& St : Strips)
-			{
-				if (St.width <= 0.0) continue;
-				Computed.Points.Add(FVector2D((St.s - S0) / Half, aerotelic::Dot(St.force, LoadDir) / St.width / Chord));
-			}
+			for (const FPoint& P : Points) Computed.Points.Add(FVector2D((P.S - S0) / Half, P.LoadPerSpan));
+			Series.Add(Computed);
 			FAerotelicPlotSeries Elliptic;
-			Elliptic.Label = TEXT("Elliptic, same total");
+			Elliptic.Label = TEXT("l / q  elliptic, same integral");
 			Elliptic.Color = FLinearColor(FColor::FromHex(TEXT("#3a7bd5")));
 			Elliptic.bMarkers = false;
 			Elliptic.bDashed = true;
 			for (int32 i = 0; i <= 100; ++i)
 			{
 				const double S = S0 - Half + (2.0 * Half) * i / 100.0;
-				Elliptic.Points.Add(FVector2D((S - S0) / Half, aerotelic::panel::EllipticLoad(Total, S0, Half, S)));
+				Elliptic.Points.Add(FVector2D((S - S0) / Half, aerotelic::panel::EllipticLoad(TotalForce, S0, Half, S)));
 			}
-			LoadPlot->SetSeries({ Computed, Elliptic });
-			LoadPlot->SetTitle(FText::FromString(FString::Printf(TEXT("%s: span loading, α = %g°  (integrated %s = %.4f over %d strips)"), *Sh.Name, C->AlphaDeg, FMath::Abs(Sh.SpanAxis.Z) > 0.9 ? TEXT("C_Y") : TEXT("C_L"), TotalCoefficient, static_cast<int32>(Strips.size()))));
-			LoadPlot->SetAxisLabels(LOCTEXT("SpanAxis", "span fraction 2s / b"), LOCTEXT("LoadAxis", "cl · c / c_ref  (load per unit span on the reference length)"));
+			Series.Add(Elliptic);
+			if (bWing)
+			{
+				FAerotelicPlotSeries Cl;
+				Cl.Label = TEXT("cl  (section lift coefficient, right axis)");
+				Cl.Color = FLinearColor(FColor::FromHex(TEXT("#c8d53a")));
+				Cl.bRightAxis = true;
+				for (const FPoint& P : Points)
+				{
+					if (P.Chord <= 1e-12) continue;
+					Cl.Points.Add(FVector2D((P.S - S0) / Half, P.LoadPerSpan / P.Chord));
+				}
+				Series.Add(Cl);
+			}
+			LoadPlot->SetSeries(Series);
+			const FText LeftLabel = FText::FromString(FString::Printf(TEXT("l / q  lift per unit span over the dynamic pressure, %s"), *LengthUnit));
+			if (bWing)
+			{
+				LoadPlot->SetTitle(FText::FromString(FString::Printf(TEXT("%s: span loading, α = %g°  (L / q = %.4f %s², %s = %.4f; cuts every %d%% of the semi-span)"), *LoadView.Name, C->AlphaDeg, TotalForce, *LengthUnit, bSideLoad ? TEXT("C_Y") : TEXT("C_L"), TotalCoefficient, 100 / kLoadCuts)));
+				LoadPlot->SetAxisLabels(LOCTEXT("SpanAxis", "span fraction 2s / b"), LeftLabel, LOCTEXT("ClAxis", "cl  section lift coefficient"));
+			}
+			else
+			{
+				LoadPlot->SetTitle(FText::FromString(FString::Printf(TEXT("All bodies: lift per unit span along y, α = %g°  (L / q = %.4f %s², C_L = %.4f, %d bins)"), C->AlphaDeg, TotalForce, *LengthUnit, TotalCoefficient, Points.Num())));
+				LoadPlot->SetAxisLabels(LOCTEXT("SpanAxisY", "lateral fraction 2y / b"), LeftLabel);
+			}
 		}
 
 		// ---- tab 4: forces and moments against the swept angle ----
@@ -1205,15 +1329,18 @@ namespace
 		void UpdatePolars()
 		{
 			if (Polars.Num() < 6 || !PolarSwitch.IsValid() || !PolarTable.IsValid()) return;
-			struct FCoef { const TCHAR* Name; double FCase::*Member; FLinearColor Color; };
+			struct FCoef { const TCHAR* Name; double FCase::*Member; double FCoefs::*Body; FLinearColor Color; };
 			const FCoef Coefs[6] = {
-				{ TEXT("C_L  lift"), &FCase::CL, FLinearColor(FColor::FromHex(TEXT("#d56b3a"))) },
-				{ TEXT("C_D  induced drag"), &FCase::CD, FLinearColor(FColor::FromHex(TEXT("#c8d53a"))) },
-				{ TEXT("C_Y  side force"), &FCase::CY, FLinearColor(FColor::FromHex(TEXT("#30f05a"))) },
-				{ TEXT("C_l  roll (about the stream)"), &FCase::Cl, FLinearColor(FColor::FromHex(TEXT("#3a7bd5"))) },
-				{ TEXT("C_m  pitch"), &FCase::Cm, FLinearColor(FColor::FromHex(TEXT("#b07bd5"))) },
-				{ TEXT("C_n  yaw (about the lift)"), &FCase::Cn, FLinearColor(FColor::FromHex(TEXT("#5ad5c8"))) },
+				{ TEXT("C_L  lift"), &FCase::CL, &FCoefs::CL, FLinearColor(FColor::FromHex(TEXT("#d56b3a"))) },
+				{ TEXT("C_D  induced drag"), &FCase::CD, &FCoefs::CD, FLinearColor(FColor::FromHex(TEXT("#c8d53a"))) },
+				{ TEXT("C_Y  side force"), &FCase::CY, &FCoefs::CY, FLinearColor(FColor::FromHex(TEXT("#30f05a"))) },
+				{ TEXT("C_l  roll (about the stream)"), &FCase::Cl, &FCoefs::Cl, FLinearColor(FColor::FromHex(TEXT("#3a7bd5"))) },
+				{ TEXT("C_m  pitch"), &FCase::Cm, &FCoefs::Cm, FLinearColor(FColor::FromHex(TEXT("#b07bd5"))) },
+				{ TEXT("C_n  yaw (about the lift)"), &FCase::Cn, &FCoefs::Cn, FLinearColor(FColor::FromHex(TEXT("#5ad5c8"))) },
 			};
+			// One colour per body when there are several, the total white.
+			static const TCHAR* BodyHex[] = { TEXT("#d56b3a"), TEXT("#3a7bd5"), TEXT("#c8d53a"), TEXT("#b07bd5"), TEXT("#5ad5c8"), TEXT("#30f05a"), TEXT("#d53a7b"), TEXT("#7bd53a") };
+			auto BodyColor = [](int32 Index) { return FLinearColor(FColor::FromHex(BodyHex[Index % UE_ARRAY_COUNT(BodyHex)])); };
 			if (Cases.Num() == 0)
 			{
 				for (int32 i = 0; i < 6; ++i)
@@ -1231,41 +1358,79 @@ namespace
 				// One operating point: a table says it better than six dots.
 				PolarTable->ClearChildren();
 				const FCase& C = *Cases[0];
+				const bool bMany = C.Shares.Num() > 1;
 				PolarTable->AddSlot().AutoHeight().Padding(0, 0, 0, 8)
 				[
-					SNew(STextBlock).Text(FText::FromString(FString::Printf(TEXT("One solution, α = %g°, β = %g°. Wind axes: lift normal to the stream in the plane of symmetry, drag along it, side force along the third axis; moments about the origin on the reference length %.4g %s, roll about the stream, pitch about the side axis, yaw about the lift axis."), C.AlphaDeg, C.BetaDeg, ReferenceLength, UTF8_TO_TCHAR(Units.LengthName())))).AutoWrapText(true)
+					SNew(STextBlock).Text(FText::FromString(FString::Printf(TEXT("One solution, α = %g°, β = %g°. Wind axes: lift normal to the stream in the plane of symmetry, drag along it, side force along the third axis; moments about the origin on the reference length %.4g %s, roll about the stream, pitch about the side axis, yaw about the lift axis.%s"), C.AlphaDeg, C.BetaDeg, ReferenceLength, UTF8_TO_TCHAR(Units.LengthName()),
+						bMany ? TEXT(" One column per body (a mirrored body with both halves) and the total of them all.") : TEXT("")))).AutoWrapText(true)
 				];
+				// A table: a column per body when there are several, then the total.
+				const float LabelW = 220.0f, CellW = 110.0f;
+				auto Cell = [&](const FString& Text, bool bBold)
+				{
+					return SNew(SBox).WidthOverride(CellW).HAlign(HAlign_Right).Padding(FMargin(0, 0, 10, 0))
+						[ SNew(STextBlock).Text(FText::FromString(Text)).Font(FCoreStyle::GetDefaultFontStyle(bBold ? "Bold" : "Regular", 9)) ];
+				};
+				if (bMany)
+				{
+					TSharedRef<SHorizontalBox> Head = SNew(SHorizontalBox);
+					Head->AddSlot().AutoWidth() [ SNew(SBox).WidthOverride(LabelW) [ SNew(STextBlock).Text(LOCTEXT("CoefHead", "Coefficient")).Font(FCoreStyle::GetDefaultFontStyle("Bold", 9)) ] ];
+					for (const FShare& Sh : C.Shares) Head->AddSlot().AutoWidth() [ Cell(Sh.Name, false) ];
+					Head->AddSlot().AutoWidth() [ Cell(TEXT("Total"), true) ];
+					PolarTable->AddSlot().AutoHeight().Padding(0, 2, 0, 4) [ Head ];
+				}
 				for (int32 i = 0; i < 6; ++i)
 				{
-					PolarTable->AddSlot().AutoHeight().Padding(0, 2)
-					[ FormRow(FText::FromString(Coefs[i].Name), SNew(STextBlock).Text(FText::FromString(FString::Printf(TEXT("%.5f"), C.*(Coefs[i].Member)))), 220.0f) ];
+					TSharedRef<SHorizontalBox> Row = SNew(SHorizontalBox);
+					Row->AddSlot().AutoWidth().VAlign(VAlign_Center) [ SNew(SBox).WidthOverride(LabelW) [ SNew(STextBlock).Text(FText::FromString(Coefs[i].Name)) ] ];
+					if (bMany)
+					{
+						for (const FCoefs& K : C.ByBody) Row->AddSlot().AutoWidth() [ Cell(FString::Printf(TEXT("%.5f"), K.*(Coefs[i].Body)), false) ];
+					}
+					Row->AddSlot().AutoWidth() [ Cell(FString::Printf(TEXT("%.5f"), C.*(Coefs[i].Member)), bMany) ];
+					PolarTable->AddSlot().AutoHeight().Padding(0, 2) [ Row ];
 				}
 				if (C.Sol.lift_from_wake)
 				{
 					PolarTable->AddSlot().AutoHeight().Padding(0, 8, 0, 0)
-					[ MakeInfoLabel(FText::FromString(FString::Printf(TEXT("C_L from the wake doublet strength (the exact circulation of the solution): %.5f. The pressure-integrated value above leans on the panel splines and reads a little high when the paneling is sparse."), *C.Sol.lift_from_wake))) ];
+					[ MakeInfoLabel(FText::FromString(FString::Printf(TEXT("C_L from the wake doublet strength (the exact circulation of the solution): %.5f. The pressure-integrated total above leans on the panel splines and reads a little high when the paneling is sparse."), *C.Sol.lift_from_wake))) ];
 				}
-				// Per body.
-				FString Lines;
-				for (const FShare& Sh : C.Shares)
-				{
-					aerotelic::Vec3 F{ 0, 0, 0 };
-					for (int32 k = Sh.First; k < Sh.First + Sh.Count; ++k) F += C.Sol.networks[k].force_coefficient;
-					Lines += FString::Printf(TEXT("%s%s: C_L %.4f, C_D %.4f, C_Y %.4f"), Lines.IsEmpty() ? TEXT("") : TEXT("\n"), *Sh.Name, aerotelic::Dot(F, C.LiftDir), aerotelic::Dot(F, C.Stream), aerotelic::Dot(F, C.SideDir));
-				}
-				PolarTable->AddSlot().AutoHeight().Padding(0, 8, 0, 0) [ FormRow(LOCTEXT("ByBody", "By body:"), SNew(STextBlock).Text(FText::FromString(Lines)).AutoWrapText(true), 220.0f) ];
 				PolarSwitch->SetActiveWidgetIndex(1);
 				return;
 			}
+			// A sweep: each body's curve (thin, dashed) and the total (bold)
+			// when there are several bodies; just the total otherwise.
+			const bool bMany = Cases[0]->Shares.Num() > 1;
 			for (int32 i = 0; i < 6; ++i)
 			{
+				TArray<FAerotelicPlotSeries> Series;
+				if (bMany)
+				{
+					const int32 NBodies = Cases[0]->Shares.Num();
+					for (int32 b = 0; b < NBodies; ++b)
+					{
+						FAerotelicPlotSeries S;
+						S.Label = Cases[0]->Shares[b].Name;
+						S.Color = BodyColor(b);
+						S.LineWidth = 1.0f;
+						S.bMarkers = false;
+						S.bDashed = true;
+						for (const TSharedPtr<FCase>& C : Cases)
+							if (C->ByBody.IsValidIndex(b)) S.Points.Add(FVector2D(bSweepAlpha ? C->AlphaDeg : C->BetaDeg, C->ByBody[b].*(Coefs[i].Body)));
+						S.Points.Sort([](const FVector2D& A, const FVector2D& B) { return A.X < B.X; });
+						Series.Add(S);
+					}
+				}
 				FAerotelicPlotSeries S;
-				S.Label = Coefs[i].Name;
-				S.Color = Coefs[i].Color;
+				S.Label = bMany ? TEXT("Total") : Coefs[i].Name;
+				S.Color = bMany ? FLinearColor::White : Coefs[i].Color;
+				S.LineWidth = bMany ? 2.0f : 1.5f;
 				for (const TSharedPtr<FCase>& C : Cases)
 					S.Points.Add(FVector2D(bSweepAlpha ? C->AlphaDeg : C->BetaDeg, (*C).*(Coefs[i].Member)));
 				S.Points.Sort([](const FVector2D& A, const FVector2D& B) { return A.X < B.X; });
-				Polars[i]->SetSeries({ S });
+				Series.Add(S);
+				Polars[i]->SetSeries(Series);
+				Polars[i]->SetMessage(LOCTEXT("NoFinite", "No finite values: the solution failed."));
 				Polars[i]->SetTitle(FText::FromString(Coefs[i].Name));
 				Polars[i]->SetAxisLabels(XLabel, FText::GetEmpty());
 			}
@@ -1327,14 +1492,16 @@ namespace
 		"Choose the bodies, the paneling, the angles and the references, then Solve. The angle of attack and the angle of sideslip each take one value or a comma separated list, but only one of them may be a list: the solutions are a sweep of that angle with the other fixed. "
 		"Sideslip is held at zero for now. The solves run in the background, one per angle; the dialog stays usable.\n\n"
 		"SURFACE PRESSURE\n"
-		"The bodies coloured by the pressure coefficient on their outer side (a mean camber surface by its upper and lower sides). Left-drag orbits, right- or middle-drag pans, the wheel zooms, Home frames the bodies. "
-		"Click the colour bar to set the minimum, the maximum and the colour map; the range defaults to the pressures of every solution together. The arrows step between solutions.\n\n"
+		"The bodies coloured by the pressure coefficient on their outer side, lit from the eye -- a key light along the line of sight and fills from either side, above and below -- so no side of a body is in shadow whichever way it is turned. "
+		"Left-drag orbits, right- or middle-drag pans, the wheel zooms, Home frames the bodies. "
+		"Click the colour bar to set the minimum, the maximum and the colour map; the range defaults to the 2nd to 98th percentile of the pressures of every solution together (so a junction buried in another body does not swamp the scale). The arrows step between solutions.\n\n"
 		"SPAN LOADING\n"
-		"The lift per unit span of a wing along its span -- the pressure integrated over each strip of panels, resolved normal to the stream and to the span axis (the wing's own, so a fin shows its side load), on the reference length: cl · c / c_ref against the span fraction. "
-		"The dashed curve is the elliptic distribution with the same integral, the loading of least induced drag for that lift. With the symmetry plane on, the image half is drawn as well. The arrows step between solutions and between wings.\n\n"
+		"For a wing, on the left axis: the lift per unit span over the dynamic pressure, l / q (a length in the project's units), against the span fraction. The wing is cut by a plane normal to its span every 5% of the semi-span; the pressure on the section's closed outline is integrated along it, resolved normal to the stream and to the span axis (the wing's own, so a fin shows its side load) -- the force per unit span itself, no strip and no width, zero where the chord has vanished. "
+		"The elliptic distribution of the same integral is dashed beside it: the two enclose the same total lift, and the elliptic one is the loading of least induced drag for it. On the right axis: the section lift coefficient cl, the same load on the chord the planform defines at that station (the geometry queried, not the twisted section's projection) -- how hard each section works, to be read against the airfoil's stall. With the symmetry plane on, the image half is drawn as well. "
+		"With more than one body, the last view, All bodies, is l / q of the whole configuration along the lateral axis y: every body's panels -- wings, fuselages, nacelles, images and reflected copies -- summed into uniform bins, each panel's load spread over the bins it spans, with its own elliptic curve. The arrows step between solutions and between views.\n\n"
 		"FORCES AND MOMENTS\n"
 		"The wind-axis coefficients against the swept angle: lift, induced drag (a potential flow has no friction) and side force; roll about the stream, pitch about the side axis and yaw about the lift axis, about the origin on the reference length. "
-		"With a single solution the values are tabulated instead, with the lift from the wake doublet strength and the force by body.");
+		"With more than one body each chart shows a dashed curve per body and the total in white. With a single solution the values are tabulated instead, one column per body and the total, with the lift from the wake doublet strength.");
 }
 
 void ShowAerotelicHighOrderPanelDialog(TFunction<void(const FText&)> Status)
@@ -1362,9 +1529,6 @@ void ShowAerotelicHighOrderPanelDialog(TFunction<void(const FText&)> Status)
 	S->Units = Doc != nullptr ? Doc->GetUnits() : aerotelic::UnitSystem{};
 	const FText AreaSuffix = FText::FromString(FString(TEXT(" ")) + UTF8_TO_TCHAR(S->Units.AreaName().c_str()));
 	const FText LengthSuffix = FText::FromString(FString(TEXT(" ")) + UTF8_TO_TCHAR(S->Units.LengthName()));
-	S->Formulations->Add(MakeShared<FString>(TEXT("Thick surface (interior potential)")));
-	S->Formulations->Add(MakeShared<FString>(TEXT("Mean camber surface")));
-	S->Formulation = (*S->Formulations)[0];
 	for (const aerotelic::Colormap& M : aerotelic::Colormaps()) S->MapNames->Add(MakeShared<FString>(UTF8_TO_TCHAR(M.name.c_str())));
 
 	auto Spin = [S](double FState::*Member, double Min, double Max, double Delta, const FText& Suffix)
@@ -1422,16 +1586,6 @@ void ShowAerotelicHighOrderPanelDialog(TFunction<void(const FText&)> Status)
 		[
 			MakeGroup(LOCTEXT("PanelingGroup", "Paneling"),
 				SNew(SVerticalBox)
-				+ SVerticalBox::Slot().AutoHeight().Padding(0, 2)
-				[
-					FormRow(LOCTEXT("FormRow", "Wing formulation:"),
-						SNew(SComboBox<TSharedPtr<FString>>)
-						.OptionsSource(&*S->Formulations)
-						.InitiallySelectedItem(S->Formulation)
-						.OnGenerateWidget_Lambda([](TSharedPtr<FString> F) { return SNew(STextBlock).Text(FText::FromString(*F)); })
-						.OnSelectionChanged_Lambda([S](TSharedPtr<FString> F, ESelectInfo::Type) { if (F.IsValid()) S->Formulation = F; })
-						[ SNew(STextBlock).Text_Lambda([S]() { return FText::FromString(S->Formulation.IsValid() ? *S->Formulation : FString()); }) ])
-				]
 				+ SVerticalBox::Slot().AutoHeight().Padding(0, 2) [ FormRow(LOCTEXT("Chordwise", "Wing: chordwise per surface:"), Spin(&FState::Chordwise, 2, 200, 1, FText::GetEmpty())) ]
 				+ SVerticalBox::Slot().AutoHeight().Padding(0, 2) [ FormRow(LOCTEXT("Spanwise", "Wing: spanwise panels:"), Spin(&FState::Spanwise, 1, 200, 1, FText::GetEmpty())) ]
 				+ SVerticalBox::Slot().AutoHeight().Padding(0, 2) [ FormRow(LOCTEXT("Wake", "Wing: wake length, root chords:"), Spin(&FState::WakeChords, 1, 1000, 5, FText::GetEmpty())) ]
@@ -1440,8 +1594,8 @@ void ShowAerotelicHighOrderPanelDialog(TFunction<void(const FText&)> Status)
 				+ SVerticalBox::Slot().AutoHeight().Padding(0, 4, 0, 0)
 				[
 					MakeInfoLabel(LOCTEXT("PanelingHint",
-						"Curved panels carrying linear sources and quadratic doublets, after Johnson (NASA CR-3079). Wing, thick surface: the sections paneled round, the interior potential held at zero and the sources prescribed; mean camber surface: a doublet sheet with no flow through it. "
-						"Both shed a wake along the free stream, which is what carries the lift. Cosine spacing both ways; a pointed tip is paneled a fraction short of the point. "
+						"Curved panels carrying linear sources and quadratic doublets, after Johnson (NASA CR-3079). A wing's sections are paneled round as a closed surface, the interior potential held at zero and the sources prescribed, with a wake shed from the trailing edge along the free stream, which is what carries the lift. "
+						"Cosine spacing both ways; a tip whose chord has all but vanished is collapsed to a point. "
 						"Bodies: the panel counts are added to each loft's own stations and section corners, so the total runs higher than the product."))
 				])
 		]
@@ -1520,20 +1674,19 @@ void ShowAerotelicHighOrderPanelDialog(TFunction<void(const FText&)> Status)
 			MakeStepper(
 				[S]()
 				{
-					TArray<int32> W = S->WingShares();
-					const FCase* C = S->CurrentCase();
-					if (C == nullptr || W.Num() == 0) return LOCTEXT("NoWingShort", "no wing");
-					const int32 i = FMath::Clamp(S->CurrentWing, 0, W.Num() - 1);
-					return FText::FromString(FString::Printf(TEXT("%s  (%d of %d)"), *C->Shares[W[i]].Name, i + 1, W.Num()));
+					const TArray<FState::FLoadView> V = S->LoadViews();
+					if (V.Num() == 0) return LOCTEXT("NoWingShort", "no wing");
+					const int32 i = FMath::Clamp(S->CurrentLoadView, 0, V.Num() - 1);
+					return FText::FromString(FString::Printf(TEXT("%s  (%d of %d)"), *V[i].Name, i + 1, V.Num()));
 				},
 				[S](int32 Delta)
 				{
-					const int32 N = S->WingShares().Num();
+					const int32 N = S->LoadViews().Num();
 					if (N == 0) return;
-					S->CurrentWing = FMath::Clamp(S->CurrentWing + Delta, 0, N - 1);
+					S->CurrentLoadView = FMath::Clamp(S->CurrentLoadView + Delta, 0, N - 1);
 					S->UpdateLoads();
 				},
-				[S]() { return S->WingShares().Num() > 1; })
+				[S]() { return S->LoadViews().Num() > 1; })
 		];
 
 	// ---- tab 4: forces and moments ----

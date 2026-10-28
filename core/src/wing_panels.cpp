@@ -11,12 +11,26 @@ std::vector<Network> WingNetworks(const WingModel& wing, const WingPaneling& pan
 	if (pan.chordwise < 2 || pan.spanwise < 1) throw std::invalid_argument("WingNetworks: need at least 2 chordwise and 1 spanwise panels");
 	const Planform& pf = wing.planform();
 
-	// Span stations, cosine in eta, the tip pulled in where the chord vanishes.
+	// Span stations, cosine in eta. A station whose chord has (all but)
+	// vanished is collapsed to a point -- one apex unknown, triangular
+	// panels -- rather than paneled as a ring of corners crowded into a
+	// sliver, which no condition can tell apart; failing that (the fraction
+	// set to zero) it is pulled in by the margin.
 	std::vector<double> etas = CosineSpacing(pan.spanwise);
 	for (double& e : etas) e = pan.eta_min + (pan.eta_max - pan.eta_min) * e;
-	if (pf.ChordAt(etas.back()) <= 1e-9 * std::max(pf.RootChord(), 1e-12)) etas.back() -= pan.tip_margin * (pan.eta_max - pan.eta_min);
-	if (pf.ChordAt(etas.front()) <= 1e-9 * std::max(pf.RootChord(), 1e-12)) etas.front() += pan.tip_margin * (pan.eta_max - pan.eta_min);
+	const double root_chord = std::max(pf.RootChord(), 1e-12);
+	auto pointed = [&](double eta) { return pf.ChordAt(eta) <= std::max(1e-9, pan.collapse_tip_fraction) * root_chord; };
+	const bool collapse_tip = pan.collapse_tip_fraction > 0.0 && pointed(etas.back());
+	const bool collapse_root = pan.collapse_tip_fraction > 0.0 && pointed(etas.front());
+	if (!collapse_tip && pointed(etas.back())) etas.back() -= pan.tip_margin * (pan.eta_max - pan.eta_min);
+	if (!collapse_root && pointed(etas.front())) etas.front() += pan.tip_margin * (pan.eta_max - pan.eta_min);
 	const int n_s = static_cast<int>(etas.size());
+	// Every corner of a collapsed station on its chord's midpoint.
+	auto collapse = [&](Mat& xyz, int j) {
+		if (!((j == n_s - 1 && collapse_tip) || (j == 0 && collapse_root))) return;
+		Mat c = pf.AirfoilCoordsToXyz(etas[j], Mat::FromRows({{0.5, 0.0}}));
+		for (int i = 0; i < xyz.rows(); ++i) { xyz(i, 0) = c(0, 0); xyz(i, 1) = c(0, 1); xyz(i, 2) = c(0, 2); }
+	};
 
 	// Chordwise parameters on the airfoil curve (lower TE -> LE -> upper TE,
 	// t in [0, 1]), cosine-spaced on each surface about the leading edge.
@@ -39,7 +53,9 @@ std::vector<Network> WingNetworks(const WingModel& wing, const WingPaneling& pan
 			for (int k = 1; k <= pan.chordwise; ++k) ts.push_back(t_le - t_le * cs[k]);          // lower: LE -> TE
 			Mat pts2 = af->nurbs_curve().Evaluate(ts);
 			Mat xyz = pf.AirfoilCoordsToXyz(etas[j], pts2);
-			for (int i = 0; i < body.rows; ++i) body.corners[static_cast<size_t>(i) * body.cols + j] = {xyz(i, 0), xyz(i, 1), xyz(i, 2)};
+			collapse(xyz, j);
+			const bool pin = pan.pin_root_to_plane && j == 0 && etas[0] == 0.0;
+			for (int i = 0; i < body.rows; ++i) body.corners[static_cast<size_t>(i) * body.cols + j] = {xyz(i, 0), pin ? 0.0 : xyz(i, 1), xyz(i, 2)};
 			Vec3 te_u = body.corners[static_cast<size_t>(0) * body.cols + j], te_l = body.corners[static_cast<size_t>(body.rows - 1) * body.cols + j];
 			te.push_back((te_u + te_l) * 0.5);
 		}
@@ -57,7 +73,9 @@ std::vector<Network> WingNetworks(const WingModel& wing, const WingPaneling& pan
 			Mat mean(body.cols, 2);
 			for (int k = 0; k < body.cols; ++k) { mean(k, 0) = 0.5 * (up(k, 0) + lo(k, 0)); mean(k, 1) = 0.5 * (up(k, 1) + lo(k, 1)); }
 			Mat xyz = pf.AirfoilCoordsToXyz(etas[i], mean);
-			for (int k = 0; k < body.cols; ++k) body.corners[static_cast<size_t>(i) * body.cols + k] = {xyz(k, 0), xyz(k, 1), xyz(k, 2)};
+			collapse(xyz, i);
+			const bool pin = pan.pin_root_to_plane && i == 0 && etas[0] == 0.0;
+			for (int k = 0; k < body.cols; ++k) body.corners[static_cast<size_t>(i) * body.cols + k] = {xyz(k, 0), pin ? 0.0 : xyz(k, 1), xyz(k, 2)};
 			te.push_back(body.corners[static_cast<size_t>(i) * body.cols + body.cols - 1]);
 		}
 		body.bc = BoundaryCondition::Impermeable();
@@ -116,6 +134,17 @@ Vec3 RowCentroid(const std::vector<Vec3>& row) {
 	size_t n = row.size() > 1 ? row.size() - 1 : row.size();
 	for (size_t j = 0; j < n; ++j) c = c + row[j];
 	return c * (1.0 / static_cast<double>(n));
+}
+
+// The area the ring encloses (Newell's vector, halved): zero for a ring
+// that has collapsed to a line -- a fuselage whose half-width vanishes at
+// the nose or the tail while its height does not.
+double RingArea(const std::vector<Vec3>& row) {
+	const Vec3 c = RowCentroid(row);
+	Vec3 a{0, 0, 0};
+	for (size_t j = 0; j + 1 < row.size(); ++j) a += Cross(row[j] - c, row[j + 1] - c);
+	if (row.size() > 1 && Distance(row.front(), row.back()) > 0.0) a += Cross(row.back() - c, row.front() - c);
+	return 0.5 * Length(a);
 }
 
 } // namespace
@@ -230,10 +259,16 @@ Network LoftNetwork(const NamedLoft& loft, const std::string& name, const BodyPa
 	// Caps: an open end that is not already an apex gets a row collapsed to
 	// its centroid, a fan of triangular panels (from the midpoint of the
 	// chord on the plane for a half ring, so the fan fills the half disc).
+	// An end ring that has collapsed to a line (a fuselage whose half-width
+	// vanishes at the tail while its height does not) encloses nothing and
+	// needs no cap: a fan on it would be a ring of panels of no area, whose
+	// frames are NaN and take the whole solution with them (the P-38 boom,
+	// 2026-10-27).
 	if (!src.periodic_u) {
 		auto apex_of = [half](const std::vector<Vec3>& r) { return half ? (r.front() + r.back()) * 0.5 : RowCentroid(r); };
-		if (src.cap_start && RowSpread(rows.front()) > coincide) rows.insert(rows.begin(), std::vector<Vec3>(rows.front().size(), apex_of(rows.front())));
-		if (src.cap_end && RowSpread(rows.back()) > coincide) rows.push_back(std::vector<Vec3>(rows.back().size(), apex_of(rows.back())));
+		auto open = [&](const std::vector<Vec3>& r) { return RowSpread(r) > coincide && RingArea(r) > 1e-9 * scale * scale; };
+		if (src.cap_start && open(rows.front())) rows.insert(rows.begin(), std::vector<Vec3>(rows.front().size(), apex_of(rows.front())));
+		if (src.cap_end && open(rows.back())) rows.push_back(std::vector<Vec3>(rows.back().size(), apex_of(rows.back())));
 	}
 	if (rows.size() < 2) throw std::invalid_argument("LoftNetwork: the loft '" + name + "' collapses to one station");
 

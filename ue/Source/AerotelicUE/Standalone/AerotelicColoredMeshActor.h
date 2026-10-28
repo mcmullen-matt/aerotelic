@@ -10,7 +10,9 @@ class UMaterialInstanceDynamic;
 
 // A triangle mesh with a colour at every vertex -- a scalar field painted
 // on a surface (a pressure coefficient, a stress, a Mach number), drawn by
-// the engine with the scene's own lights through M_AerotelicVertexColor.
+// the engine through M_AerotelicVertexColor and lit by the result view's
+// eye-fixed rig (lighting channel 2, AAerotelicSceneViewActor) rather than
+// the scene's studio rig, so no side of it is ever in shadow.
 // Nothing about it is specific to one analysis: the post-processing views
 // (SAerotelicSceneView) show one of these per result and recolour it when
 // the colour map or the range changes, without rebuilding the geometry.

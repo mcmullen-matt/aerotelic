@@ -793,11 +793,28 @@ Solution Solve(const std::vector<Network>& networks_in, const Vec3& free_stream,
 	for (NetworkData& nd : S->data) {
 		const Network& net = *nd.net;
 		const int M = net.rows, N = net.cols;
+		const bool potential_network = net.IsDoublet() && !net.IsWake() && net.bc.kind == BoundaryCondition::Kind::Potential;
 		auto displaced_edge_point = [&](const ParamPoint& p) {
 			// (C.1), (C.2): a hair inward along the owning panel's edge normals.
 			const PanelGeom& g = nd.geom(p.owner_i, p.owner_j);
 			Vec3 d{0, 0, 0};
-			if (p.kind == PointKind::Corner || p.kind == PointKind::Apex) {
+			if (potential_network && options.potential_edge_inset > 0.0) {
+				// Under the potential condition the displaced point is only a
+				// collocation point for that condition (the points of a wake-
+				// shedding edge take the gradient condition at the undisplaced
+				// point, and nothing registers an abutment by it), so it goes
+				// well inside the owning panel, towards its centre: a hair from
+				// the edge the condition loses precision -- the near-field
+				// potential of the neighbouring panel is evaluated at an in-plane
+				// point almost on its edge -- and the corner and edge-midpoint
+				// strengths come out wrong, which the centre strengths hardly
+				// feel but the spline GRADIENT does (seen 2026-10-27 on the P-38
+				// wing's root and tip columns: μ smooth, |∇μ| ten times its
+				// neighbours', Cp of -30 at the leading edge). A fraction of the
+				// way to the centre, not of the diameter: on a narrow panel the
+				// latter overshoots the centre and lands by the opposite edge.
+				d = (g.origin - p.pos) * options.potential_edge_inset;
+			} else if (p.kind == PointKind::Corner || p.kind == PointKind::Apex) {
 				// Towards the panel centre, by ε of the diameter.
 				d = Normalized(g.origin - p.pos) * (options.edge_epsilon * g.diameter);
 			} else {
@@ -935,26 +952,57 @@ Solution Solve(const std::vector<Network>& networks_in, const Vec3& free_stream,
 			return false;
 		};
 		int edge = on_edges[0];
-		if (net.bc.kind == BoundaryCondition::Kind::Potential) {
+		// Priority: free, symmetry, μ continuity, gradient continuity.
+		auto rank = [&](int e) {
+			switch (nd.edge_kind[e]) {
+				case EdgeKind::Free: return 0;
+				case EdgeKind::Symmetry: return 1;
+				default: return nd.takes_mu[e] ? 2 : 3;
+			}
+		};
+		const bool potential = net.bc.kind == BoundaryCondition::Kind::Potential;
+		if (potential) {
 			// With potential conditions at the centres the edges take them
 			// too (C.3, last paragraph) -- except where the edge sheds a wake.
 			// There the doublet gradient must match the wake's (the Kutta
 			// condition): tying the wake to the edge values alone would admit
 			// the non-lifting flow, whose potential is continuous round the
 			// trailing edge, so the wake would carry nothing.
+			// Nor on a symmetry plane or an abutment: there the edge strengths
+			// are the ONLY unknowns the potential condition has to pin by a
+			// point a fraction of a panel from the centre's own point, which
+			// is ill-conditioned -- the potential is smooth, the two
+			// conditions nearly the same, and the discretisation error of the
+			// near-field influence gets amplified into a root column whose μ
+			// oscillates (the P-38 wing at 12 x 16, Cp -800 at the root). The
+			// zero normal gradient on the plane (μ = φ_outer is symmetric) and
+			// the continuity across an abutment are exact and involve the
+			// splines alone, so they take over. A free edge keeps the
+			// potential condition: there is nothing exact to put in its place
+			// (μ = 0 is wrong on a thick body, whose μ is the outer potential).
+			// An apex (a pointed tip: the whole edge one unknown) lies on the
+			// wake-shedding edges too, but a gradient condition at a point
+			// where the surface pinches to nothing is meaningless; it takes
+			// the potential condition, and the wake column it heads carries
+			// the apex's own jump, zero, as a pointed tip should.
 			int wake_edge = -1;
-			for (int e : on_edges) if (abuts_wake(e)) { wake_edge = e; break; }
-			if (wake_edge < 0) { centre_condition(); continue; }
-			edge = wake_edge;
-		} else {
-			// Priority: free, symmetry, μ continuity, gradient continuity.
-			auto rank = [&](int e) {
-				switch (nd.edge_kind[e]) {
-					case EdgeKind::Free: return 0;
-					case EdgeKind::Symmetry: return 1;
-					default: return nd.takes_mu[e] ? 2 : 3;
+			if (c.kind != PointKind::Apex) for (int e : on_edges) if (abuts_wake(e)) { wake_edge = e; break; }
+			if (wake_edge >= 0) {
+				edge = wake_edge;
+			} else if (c.kind == PointKind::Apex) {
+				centre_condition();
+				continue;
+			} else {
+				int best = -1;
+				for (int e : on_edges) {
+					if (!options.potential_edge_conditions) break;
+					if (nd.edge_kind[e] != EdgeKind::Symmetry && nd.edge_kind[e] != EdgeKind::Abut) continue;
+					if (best < 0 || rank(e) < rank(best)) best = e;
 				}
-			};
+				if (best < 0) { centre_condition(); continue; }
+				edge = best;
+			}
+		} else {
 			for (int e : on_edges) if (rank(e) < rank(edge)) edge = e;
 		}
 		const Vec3 p = nd.params[nd.lattice_to_param[static_cast<size_t>(c.li) * nd.lattice_cols + c.lj]].pos; // the undisplaced point
@@ -982,7 +1030,13 @@ Solution Solve(const std::vector<Network>& networks_in, const Vec3& free_stream,
 						if (DistanceToPolyline(opts, p) < 1e-3 * g.diameter + tol) { partner = &ab; break; }
 					}
 				}
-				if (!partner) { AddRow(row, own, local_value, 1.0); break; } // past the partner's end: a free edge there
+				if (!partner) {
+					// Past the partner's end: a free edge there -- μ = 0 under a
+					// velocity condition, the potential condition otherwise.
+					if (potential) { centre_condition(); goto next_point; }
+					AddRow(row, own, local_value, 1.0);
+					break;
+				}
 				const NetworkData& other = S->data[partner->network];
 				Vec3 dir = EdgeOutwardNormal(nd, edge, c.pi, c.pj, p);
 				std::vector<double> value, grad; Vec3 on;
@@ -1001,6 +1055,7 @@ Solution Solve(const std::vector<Network>& networks_in, const Vec3& free_stream,
 		}
 		for (int k = 0; k < n_unknowns; ++k) A(r, k) = row[k];
 		rhs[r] = 0.0;
+	next_point:;
 	}
 	Solution sol;
 	sol.seconds_influence = std::chrono::duration<double>(clock::now() - t0).count();
@@ -1025,6 +1080,12 @@ Solution Solve(const std::vector<Network>& networks_in, const Vec3& free_stream,
 		nr.panel_rows = nd.prows;
 		nr.panel_cols = nd.pcols;
 		const bool one_sided = net.type == NetworkType::SourceAnalysis || net.bc.kind == BoundaryCondition::Kind::Potential;
+		// The lower side is the interior with zero perturbation potential
+		// (InteriorPotentialZero: φ_lower = 0) -- the identity below holds
+		// for that side only.
+		const bool dirichlet_interior = net.IsDoublet() && !net.IsWake()
+			&& net.bc.kind == BoundaryCondition::Kind::Potential && net.bc.beta == 0.0
+			&& std::fabs(net.bc.c_average - 1.0) < 1e-12 && std::fabs(net.bc.c_difference + 0.5) < 1e-12;
 		for (int i = 0; i < nd.prows; ++i) {
 			for (int j = 0; j < nd.pcols; ++j) {
 				const PanelGeom& g = nd.geom(i, j);
@@ -1051,13 +1112,20 @@ Solution Solve(const std::vector<Network>& networks_in, const Vec3& free_stream,
 					SplineRows(g, ps, g.origin, &pv, nullptr, nullptr);
 					for (size_t k = 0; k < ps.params.size(); ++k) pr.sigma += pv[k] * nd.prescribed_values[ps.params[k]];
 				}
+				Vec3 vd = g.ez * pr.sigma + pr.grad_mu; // (C.10)
 				AccumulateInfluence(*S, g.origin, rows, true);
 				Vec3 va = free_stream + rows.vel_known;
 				for (int k = 0; k < n_unknowns; ++k) va += Vec3{rows.vel[0][k], rows.vel[1][k], rows.vel[2][k]} * sol.parameters[k];
-				Vec3 vd = g.ez * pr.sigma + pr.grad_mu; // (C.10)
 				pr.v_average = va;
 				pr.v_upper = va + vd * 0.5;
 				pr.v_lower = va - vd * 0.5;
+				if (dirichlet_interior && Length(pr.v_lower - free_stream) > options.interior_velocity_tolerance * std::sqrt(vinf2)) {
+					// The sum has gone wrong here (the interior side should
+					// carry the free stream exactly): the identity instead.
+					pr.v_lower = free_stream;
+					pr.v_upper = free_stream + vd;
+					pr.v_average = (pr.v_upper + pr.v_lower) * 0.5;
+				}
 				pr.cp_upper = 1.0 - LengthSq(pr.v_upper) / vinf2;
 				pr.cp_lower = 1.0 - LengthSq(pr.v_lower) / vinf2;
 				// Loads: pressure times the outward normal; both sides of a sheet.

@@ -212,7 +212,7 @@ entities:
               - 0
             -
               - 1
-              - 0
+              - 1.0209031650409803
           weights:
             - 1
             - 1
@@ -5720,6 +5720,7 @@ entities:
       cyl_radius: 0.25
       cyl_length: 4
     color: [0.33333298563957214, 0.33333298563957214, 0.33333298563957214]
+    hidden: true
 booleans:
   - name: BoolOp 1
     operation: fuse
@@ -5735,37 +5736,4 @@ booleans:
       - {mirror: HT}
       - Nacelle 6
       - {mirror: Nacelle 6}
-    hidden: true
-lattices:
-  - name: Lattice 1
-    lattice:
-      family: honeycomb
-      type: Square
-      cell_aspect: 1
-      axis: z
-      wall_sizing: volume-fraction
-      cell_size: 0.69999999999999996
-      volume_fraction: 0.20000000000000001
-      wall_thickness: 0.02
-      resolution: 10
-      skin_thickness: 0.029364876643183564
-      origin: [0, 0, 0]
-    targets:
-      - Center
-      - Wing
-      - {mirror: Wing}
-      - Boom
-      - {mirror: Boom}
-      - VT
-      - {mirror: VT}
-      - HT
-      - {mirror: HT}
-      - Nacelle 6
-      - {mirror: Nacelle 6}
-      - Propeller 7
-      - {mirror: Propeller 7}
-      - BoolOp 1
-    exclusions:
-      - Cylinder 8
-      - {mirror: Cylinder 8}
     hidden: true

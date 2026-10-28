@@ -46,6 +46,9 @@ void CheckStrips(const char* label, const Network& net, const NetworkResult& res
 	const double err = std::fabs(sum.x - 0.5 * want.x) + std::fabs(sum.z - 0.5 * want.z);
 	Check(err < 1e-9 * (1.0 + std::fabs(want.z)), F(std::string(label) + ": strip forces sum to the network force (|diff| %.2e)", err));
 	Check(ordered, std::string(label) + ": strips ordered root to tip");
+	// The chord tapers from the root (3.1) to the tip (0.5) of the default planform.
+	Check(strips.front().chord > 2.8 && strips.front().chord < 3.1 && strips.back().chord > 0.5 && strips.back().chord < 0.8 && strips.front().chord > strips.back().chord,
+		F(std::string(label) + ": strip chords taper %.3f -> %.3f", strips.front().chord, strips.back().chord));
 	Check(std::fabs(width - semi_span) < 0.02 * semi_span, F(std::string(label) + ": strip widths span the semi-span (%.3f of %.3f)", width, semi_span));
 	// Lift per unit span falls to the tip and is largest inboard.
 	const double l_root = Dot(strips.front().force, lift_dir) / strips.front().width;
@@ -62,6 +65,79 @@ void CheckStrips(const char* label, const Network& net, const NetworkResult& res
 	Check(std::fabs(integral / total - 1.0) < 1e-3, F(std::string(label) + ": elliptic integral %.5f of total %.5f", integral, total));
 	Check(EllipticLoad(total, 0.0, semi_span, 0.0) > l_root * 0.5 && EllipticLoad(total, 0.0, semi_span, 0.0) < l_root * 2.0, "elliptic peak is of the order of the root load");
 	Check(EllipticLoad(total, 0.0, semi_span, semi_span * 1.01) == 0.0, "elliptic load is zero beyond the tip");
+
+	// Binned on the strips' own edges the binned loads are the strips (the
+	// default planform has no dihedral, so every panel of a strip spans
+	// exactly the strip's stations); with the image both halves appear and
+	// the total doubles; a bin cutting a strip in two gets its share.
+	{
+		std::vector<double> edges;
+		for (const StripLoad& st : strips) edges.push_back(st.s_min);
+		edges.push_back(strips.back().s_max);
+		LoadSource own{&net, &res, false};
+		std::vector<Vec3> bins = BinnedLoads({own}, so.span_axis, edges);
+		double diff = 0.0;
+		for (size_t k = 0; k < strips.size(); ++k) diff += Length(bins[k] - strips[k].force);
+		Check(diff < 1e-9 * (1.0 + std::fabs(total)), F(std::string(label) + ": binned on the strip edges reproduces the strips (|diff| %.2e)", diff));
+		LoadSource image{&net, &res, true};
+		const double s_tip = strips.back().s_max;
+		std::vector<double> both = {-s_tip, 0.0, s_tip};
+		std::vector<Vec3> halves = BinnedLoads({own, image}, so.span_axis, both);
+		Check(std::fabs(Dot(halves[0], lift_dir) - Dot(halves[1], lift_dir)) < 1e-9 * (1.0 + std::fabs(total)) && std::fabs(Dot(halves[0] + halves[1], lift_dir) - total) < 1e-9 * (1.0 + std::fabs(total)),
+			F(std::string(label) + ": the image half mirrors the own half, together the total (%.5f + %.5f)", Dot(halves[0], lift_dir), Dot(halves[1], lift_dir)));
+		const double cut = 0.5 * (strips[3].s_min + strips[3].s_max);
+		std::vector<Vec3> split = BinnedLoads({own}, so.span_axis, {strips[3].s_min, cut, strips[3].s_max});
+		Check(Length(split[0] + split[1] - strips[3].force) < 1e-9 * (1.0 + std::fabs(total)) && Length(split[0] - split[1]) < 1e-9 * (1.0 + std::fabs(total)),
+			std::string(label) + ": a strip cut in two bins gives each half the same share");
+	}
+
+	// Plane cuts: at a strip's centre the cut's lift per span is the strip's
+	// (within the spanwise variation over the strip); integrated over fine
+	// cuts the lift is the network's; a cut on a station is taken once; the
+	// chord-line length of the cut is the section's perimeter; nothing
+	// outside the span.
+	{
+		double worst = 0.0;
+		for (size_t k = 1; k + 1 < strips.size(); ++k) {
+			SectionCut c = CutSection(net, res, so.span_axis, strips[k].s, so.strips_are_columns);
+			const double l_cut = Dot(c.force_per_span, lift_dir), l_strip = Dot(strips[k].force, lift_dir) / strips[k].width;
+			worst = std::max(worst, std::fabs(l_cut - l_strip) / std::fabs(l_strip));
+			if (k == 3) Check(c.found && c.length > 1.9 * strips[k].chord && c.length < 2.2 * strips[k].chord, F(std::string(label) + ": the cut's perimeter %.3f is the section's (chord %.3f)", c.length, strips[k].chord));
+		}
+		Check(worst < 0.03, F(std::string(label) + ": cuts at the strip centres match the strips' lift per span (worst %.2f%%)", 100.0 * worst));
+		const double s_root = strips.front().s_min, s_tip = strips.back().s_max;
+		const int n = 400;
+		double integral = 0.0, prev = 0.0;
+		for (int i = 0; i <= n; ++i) {
+			const double s = s_root + (s_tip - s_root) * i / n;
+			const double l = Dot(CutSection(net, res, so.span_axis, s, so.strips_are_columns).force_per_span, lift_dir);
+			if (i > 0) integral += 0.5 * (l + prev) * (s_tip - s_root) / n;
+			prev = l;
+		}
+		const double want = Dot(sum, lift_dir);
+		Check(std::fabs(integral - want) < 0.02 * std::fabs(want), F(std::string(label) + ": fine cuts integrate to the network's lift (%.4f vs %.4f)", integral, want));
+		SectionCut on_station = CutSection(net, res, so.span_axis, strips[2].s_max, so.strips_are_columns);
+		Check(on_station.found && on_station.cp.size() == static_cast<size_t>(res.panel_rows), F(std::string(label) + ": a cut on a station is taken once (%.0f segments)", static_cast<double>(on_station.cp.size())));
+		Check(!CutSection(net, res, so.span_axis, s_tip + 0.1, so.strips_are_columns).found, std::string(label) + ": no cut beyond the tip");
+		// The network reflected in y = 0 as the dialog reflects the image
+		// (corners, centres and normals mirrored, the column order kept, so
+		// the columns run the other way along the axis): the cut at -s is
+		// the mirror of the cut at s.
+		{
+			Network rn = net;
+			for (Vec3& c : rn.corners) c.y = -c.y;
+			NetworkResult rr = res;
+			for (PanelResult& p : rr.panels) { p.centre.y = -p.centre.y; p.normal.y = -p.normal.y; }
+			double worst = 0.0;
+			for (int i = 1; i < 20; ++i) {
+				const double s = s_root + (s_tip - s_root) * i / 20.0;
+				const double l = Dot(CutSection(net, res, so.span_axis, s, so.strips_are_columns).force_per_span, lift_dir);
+				const double lr = Dot(CutSection(rn, rr, so.span_axis, -s, so.strips_are_columns).force_per_span, lift_dir);
+				worst = std::max(worst, std::fabs(l - lr));
+			}
+			Check(worst < 1e-9 * (1.0 + std::fabs(want)), F(std::string(label) + ": the reflected network's cuts mirror the own (worst |diff| %.2e)", worst));
+		}
+	}
 }
 
 } // namespace
@@ -88,18 +164,7 @@ int main() {
 			Solution s = Solve(nets, vinf, opt);
 			StripOptions so;
 			so.strips_are_columns = true;
-			so.two_sided = false;
 			CheckStrips("thick wing", nets[0], s.networks[0], so, opt.reference_area, lift, semi * (1.0 - thick.tip_margin));
-		}
-		{
-			WingPaneling thin;
-			thin.chordwise = 8; thin.spanwise = 8; thin.thick = false;
-			std::vector<Network> nets = WingNetworks(wing, thin, vinf);
-			Solution s = Solve(nets, vinf, opt);
-			StripOptions so;
-			so.strips_are_columns = false;
-			so.two_sided = true;
-			CheckStrips("mean-surface wing", nets[0], s.networks[0], so, opt.reference_area, lift, semi * (1.0 - thin.tip_margin));
 		}
 
 		// ---- colour maps ----

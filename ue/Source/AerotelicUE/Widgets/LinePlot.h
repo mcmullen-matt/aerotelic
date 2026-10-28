@@ -13,12 +13,18 @@ struct FAerotelicPlotSeries
 	bool bMarkers = true;
 	bool bDashed = false;
 	float LineWidth = 1.5f;
+	// Plotted against the right-hand y axis (its own range and ticks) --
+	// a second quantity in other units against the same x, e.g. a section
+	// coefficient beside a load per unit span.
+	bool bRightAxis = false;
 };
 
 // A plain x-y chart painted with Slate: axes with "nice" ticks fitted to
 // the data, a grid, a zero line when zero is in range, the series as
-// polylines with optional markers (dashed for a reference curve), a legend
-// when there is more than one, a title and axis labels. Read-only; what an
+// polylines with optional markers (dashed for a reference curve), an
+// optional right-hand y axis for series in other units (its own range and
+// ticks, no grid, its zero on the same line as the left axis's zero), a
+// legend when there is more than one series, a title and axis labels. Read-only; what an
 // analysis dialog shows a result with (the span loading, a coefficient
 // against the angle of attack). Not the NURBS curve editor, which is an
 // editor; this is only a picture of numbers.
@@ -39,7 +45,8 @@ public:
 
 	void SetSeries(TArray<FAerotelicPlotSeries> InSeries);
 	void SetTitle(const FText& InTitle);
-	void SetAxisLabels(const FText& InX, const FText& InY);
+	// The right-hand label is drawn when any series is on the right axis.
+	void SetAxisLabels(const FText& InX, const FText& InY, const FText& InYRight = FText::GetEmpty());
 	// A note drawn in the plot area (e.g. why it is empty).
 	void SetMessage(const FText& InMessage);
 
@@ -49,7 +56,7 @@ public:
 
 private:
 	TArray<FAerotelicPlotSeries> Series;
-	FText Title, XLabel, YLabel, Message;
+	FText Title, XLabel, YLabel, YRightLabel, Message;
 	FVector2D DesiredSize;
 	bool bCompact = false;
 };
