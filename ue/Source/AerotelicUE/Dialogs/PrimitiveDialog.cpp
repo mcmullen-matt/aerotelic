@@ -34,11 +34,11 @@ namespace
 		"Volume is exact. Surface area is exact too except for an ellipsoid, which has no closed form and is integrated numerically well beyond the digits shown. Extents are the overall size along X, Y and Z before any rotation.");
 }
 
-void SPrimitiveDialog::Construct(const FArguments& InArgs, AAerotelicEntityActor* InEntity)
+void SPrimitiveDialog::Construct(const FArguments& InArgs, PrimitiveModel* InModel)
 {
-	Entity = InEntity;
+	DraftModel = InModel;
 	OnChangedDelegate = InArgs._OnChanged;
-	PrimitiveModel* Model = Entity->GetModelAs<PrimitiveModel>();
+	PrimitiveModel* Model = InModel; // captured by the rows below
 
 	ShapeOptions.Add(MakeShared<FString>(TEXT("Sphere")));
 	ShapeOptions.Add(MakeShared<FString>(TEXT("Box")));
@@ -147,18 +147,16 @@ void SPrimitiveDialog::Construct(const FArguments& InArgs, AAerotelicEntityActor
 
 EVisibility SPrimitiveDialog::ShapeRowVisibility(int32 ShapeIndex) const
 {
-	PrimitiveModel* Model = Entity->GetModelAs<PrimitiveModel>();
-	return static_cast<int32>(Model->shape) == ShapeIndex ? EVisibility::Visible : EVisibility::Collapsed;
+	return static_cast<int32>(DraftModel->shape) == ShapeIndex ? EVisibility::Visible : EVisibility::Collapsed;
 }
 
 void SPrimitiveDialog::RefreshReadouts()
 {
-	PrimitiveModel* Model = Entity->GetModelAs<PrimitiveModel>();
 	try
 	{
-		const std::array<double, 3> Extents = Model->Extents();
-		VolumeLabel->SetText(FormatG(Model->Volume(), 4));
-		AreaLabel->SetText(FormatG(Model->SurfaceArea(), 4));
+		const std::array<double, 3> Extents = DraftModel->Extents();
+		VolumeLabel->SetText(FormatG(DraftModel->Volume(), 4));
+		AreaLabel->SetText(FormatG(DraftModel->SurfaceArea(), 4));
 		ExtentsLabel->SetText(FText::FromString(FString::Printf(TEXT("%.4g × %.4g × %.4g"), Extents[0], Extents[1], Extents[2])));
 	}
 	catch (const std::exception&)
@@ -171,19 +169,19 @@ void SPrimitiveDialog::RefreshReadouts()
 
 void SPrimitiveDialog::Changed()
 {
+	// The draft is marked; nothing in the scene changes until Apply.
 	RefreshReadouts();
-	Entity->RefreshProxy();
 	OnChangedDelegate.ExecuteIfBound();
 }
 
-void BuildPrimitiveDesignContent(AAerotelicEntityActor* Entity, FAerotelicDesignContent& Out)
+void BuildPrimitiveDesignContent(AAerotelicEntityActor* Entity, PrimitiveModel* Model, FSimpleDelegate OnChanged, FAerotelicDesignContent& Out)
 {
-	if (Entity == nullptr || Entity->GetEntityType() != aerotelic::project_yaml::EntityType::Primitive)
+	if (Entity == nullptr || Model == nullptr || Entity->GetEntityType() != aerotelic::project_yaml::EntityType::Primitive)
 	{
 		return;
 	}
 	Out.Title = FText::FromString(FString::Printf(TEXT("Primitive -- %s"), *Entity->EntityName));
-	Out.Widget = SNew(SPrimitiveDialog, Entity);
+	Out.Widget = SNew(SPrimitiveDialog, Model).OnChanged(OnChanged);
 }
 
 #undef LOCTEXT_NAMESPACE

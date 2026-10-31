@@ -51,6 +51,7 @@ private:
 
 	TSharedPtr<SCurveEditor> PlanformEditor;  // NURBS planform: the editable LE/TE editor
 	TSharedPtr<SCurveEditor> OutlineView;     // Standard/Cranked: the read-only outline graph
+	TSharedPtr<SCurveEditor> FlapOutlineView; // Control Surfaces: the plan view with the flaps drawn on it
 
 	void NotifyChanged();
 	TSharedRef<SWidget> BuildPlanformTab();
@@ -63,4 +64,5 @@ private:
 	TSharedRef<SWidget> BuildTwistTab();
 	TSharedRef<SWidget> BuildSectionsTab();
 	TSharedRef<SWidget> BuildControlSurfacesTab();
+	TSharedRef<SWidget> BuildFlapOutlineView();
 };

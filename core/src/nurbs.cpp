@@ -710,6 +710,68 @@ void DihedralCurve::RebuildInteriorKnots() {
 }
 
 // ===========================================================================
+// MakeCommonKnots
+// ===========================================================================
+
+bool MakeCommonKnots(ClampedNurbsCurve& a, ClampedNurbsCurve& b) {
+	if (a.degree() != b.degree()) return false;
+	// InsertKnot's own coincidence test (np.isclose's defaults): two knots it
+	// cannot tell apart must not both end up in one knot vector.
+	auto same = [](double u, double v) { return std::abs(u - v) <= 1e-8 + 1e-5 * std::abs(v); };
+
+	// Work on copies; the arguments change only on success.
+	ClampedNurbsCurve ca(a.Serialize()), cb(b.Serialize());
+	try {
+		// 1. Snap b's knots that coincide with a knot of a onto a's value.
+		// ChangeKnot re-sorts, so restart the scan after each move.
+		for (bool moved = true; moved;) {
+			moved = false;
+			std::vector<double> ka = ca.interior_knots(), kb = cb.interior_knots();
+			for (size_t j = 0; j < kb.size() && !moved; ++j) {
+				for (double v : ka) {
+					if (kb[j] != v && same(kb[j], v)) {
+						cb.ChangeKnot(static_cast<int>(j), v);
+						moved = true;
+						break;
+					}
+				}
+			}
+		}
+		// 2. Insert into each curve the knots it lacks, up to the other's
+		// multiplicity.
+		auto insert_missing = [&](ClampedNurbsCurve& dst, const ClampedNurbsCurve& src) {
+			auto [ks, ms] = UniqueWithCounts(src.interior_knots());
+			auto [kd, md] = UniqueWithCounts(dst.interior_knots());
+			for (size_t i = 0; i < ks.size(); ++i) {
+				int have = 0;
+				for (size_t j = 0; j < kd.size(); ++j) if (kd[j] == ks[i]) have = md[j];
+				for (int r = have; r < ms[i]; ++r) dst.InsertKnot(ks[i]);
+			}
+		};
+		insert_missing(ca, cb);
+		insert_missing(cb, ca);
+	} catch (const std::invalid_argument&) {
+		return false; // a multiplicity would exceed the degree
+	}
+	if (ca.interior_knots() != cb.interior_knots() || ca.n_poles() != cb.n_poles()) return false;
+
+	// Neither curve may have changed shape beyond the snap in step 1 (a
+	// knot moved by at most ~1e-5, so a point by ~1e-5 of the curve's
+	// length). Anything larger means a near-coincident triple of knots
+	// defeated InsertKnot's multiplicity count; refuse rather than blend
+	// a corrupted curve.
+	const int n_check = 64;
+	for (int k = 0; k <= n_check; ++k) {
+		double u = static_cast<double>(k) / n_check;
+		std::vector<double> pa = a.Evaluate(u), qa = ca.Evaluate(u), pb = b.Evaluate(u), qb = cb.Evaluate(u);
+		if (VecNorm(VecSub(pa, qa)) > 1e-4 || VecNorm(VecSub(pb, qb)) > 1e-4) return false;
+	}
+	a = ca;
+	b = cb;
+	return true;
+}
+
+// ===========================================================================
 // SolveBanded
 // ===========================================================================
 

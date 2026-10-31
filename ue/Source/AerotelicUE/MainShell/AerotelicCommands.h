@@ -43,6 +43,7 @@ public:
 	TSharedPtr<FUICommandInfo> MassProperties;
 	TSharedPtr<FUICommandInfo> StructuralFea;
 	TSharedPtr<FUICommandInfo> PotentialFlow;
+	TSharedPtr<FUICommandInfo> HighOrderPanel;
 	TSharedPtr<FUICommandInfo> DustVpm;
 
 	// View

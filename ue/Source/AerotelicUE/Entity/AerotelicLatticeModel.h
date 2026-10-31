@@ -33,10 +33,14 @@ class AAerotelicEntityActor;
 // tetrahedral mesh (GetTetMeshes below), so the finite-element skin is
 // the viewport's.
 //
-// Unlike a boolean result it does NOT regenerate itself when a target is
-// edited: generation takes seconds, which would make every keystroke in a
-// wing's panel wait. Lattice -> Regenerate Lattices (or editing the
-// lattice) rebuilds it; the parameters are saved with the project and the
+// It follows the bodies it fills the way a boolean result follows its
+// operands, one step removed: a design panel's or the Transform dialog's
+// Apply on a target (or on an operand of a boolean target) marks the
+// lattice stale in the document subsystem, which regenerates it shortly
+// after, once, however many bodies that Apply changed. Generation takes
+// seconds, which is why the panels apply on a button rather than on every
+// keystroke. Lattice -> Regenerate Lattices (or editing the lattice)
+// rebuilds it by hand; the parameters are saved with the project and the
 // lattice is regenerated on load.
 class FAerotelicLatticeModel : public aerotelic::ISolidModel
 {

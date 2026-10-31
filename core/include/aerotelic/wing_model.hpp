@@ -289,6 +289,34 @@ struct WingSectionSpec {
 	std::string airfoil_name = "Unnamed";
 };
 
+// A trailing-edge flap: a stretch of the span parted from the wing along a
+// hinge line straight in plan view, worked out in each station's section
+// plane (section_cut.hpp) -- no booleans. The flap's nose is the circle
+// about the hinge tangent to both skins; the main element ends on the
+// concentric circle `gap` larger. The main element stays ONE closed body
+// with a pocket where the flap sits (mesh.hpp, TriangulateLoftChain); the
+// flap is its own closed body. Flaps' pockets (their spans widened by the
+// side gap) may not overlap or share an edge station: leave a stretch of
+// plain wing between two flaps.
+struct FlapSpec {
+	std::string name = "Flap";
+	// Spanwise extent, as fractions of the semi-span.
+	double eta_root = 0.55, eta_tip = 0.95;
+	// Hinge position as a chord fraction at each end of that extent; the
+	// hinge line is straight in plan view between them (so on a tapered or
+	// swept wing equal values do not mean a constant chord fraction).
+	double hinge_root = 0.70, hinge_tip = 0.70;
+	// Clearance between the flap nose and the main element's cavity, in the
+	// model's own units (divided by the local chord on the way into the
+	// section plane, so it is constant along the span).
+	double gap = 0.004;
+	// Spanwise clearance between each end cap of the flap and the main
+	// element's pocket face, in the model's own units: the flap keeps
+	// [eta_root, eta_tip]; the pocket is cut this much wider at each end
+	// (clamped to the root and tip).
+	double side_gap = 0.004;
+};
+
 // The full round-trip spec Save/Open needs: a PlanformSpec-only
 // constructor (below) leaves sections to be added via AddSection(), which
 // is fine for interactive construction but loses section edits on
@@ -299,6 +327,7 @@ struct WingModelSpec {
 	PlanformSpec planform;
 	std::vector<WingSectionSpec> sections;
 	ReferenceImageMap reference_images; // "planform", "dihedral"
+	std::vector<FlapSpec> flaps;
 };
 
 class WingModel : public ISolidModel {
@@ -326,6 +355,22 @@ public:
 	// Tracing underlays per editor (see reference_image.hpp); saved, never
 	// read by the geometry.
 	ReferenceImageMap reference_images;
+	// Trailing-edge flaps (see FlapSpec). With any, BuildMeshes() yields the
+	// notched main element plus one body per flap; BuildSolid()/ExportStep()
+	// still give the one-piece wing.
+	std::vector<FlapSpec> flaps;
+
+	// The hinge chord fraction of `flap` at span fraction eta (the straight
+	// plan-view hinge line's crossing of that station's chord line), and the
+	// section cut there. Throws std::invalid_argument (via SolveFlapCut)
+	// where the cut cannot be made.
+	double HingeFraction(const FlapSpec& flap, double eta) const;
+	// Checks the flaps' extents and ordering; throws std::invalid_argument
+	// naming the offending flap.
+	void ValidateFlaps() const;
+	// The span fractions of `flap`'s pocket in the main element: its extent
+	// widened by the side gap at each end, clamped to [0, 1].
+	std::pair<double, double> PocketExtent(const FlapSpec& flap) const;
 
 	Planform& planform() { return *planform_; }
 	const Planform& planform() const { return *planform_; }
@@ -369,6 +414,8 @@ public:
 	// restricts the span -- PropellerModel trims its blades at the hub this
 	// way instead of a boolean cut.
 	TriMesh BuildMesh(double tolerance, double s_min = 0.0, double s_max = 1.0) const;
+	// {"Main"} without flaps; with them, the main element (one closed body
+	// with a pocket per flap) followed by the flaps, each by its name.
 	std::vector<NamedMesh> BuildMeshes(double tolerance) const override;
 
 	// Sorted curve parameters to loft through: the user's sections, root,
@@ -377,6 +424,12 @@ public:
 	// internal detail) because it's the part most worth cross-checking --
 	// see tests/wing_fixture_check.cpp.
 	std::vector<double> LoftStations(int n_span, std::optional<double> tol = std::nullopt) const;
+
+	// The airfoil at span fraction eta: a user section where there is one,
+	// else the exact B-spline blend of the two sections around it
+	// (Airfoil::Blend). Public for the panel-method network builder
+	// (wing_panels.hpp).
+	std::shared_ptr<Airfoil> AirfoilAt(double eta) const;
 
 private:
 	std::unique_ptr<Planform> owned_planform_;
@@ -397,7 +450,7 @@ private:
 	std::vector<std::pair<double, bool>> RefineStations(std::vector<std::pair<double, bool>> stations, double tol, int budget, double merge_tol,
 		const Mat& probe_pts, std::map<double, Mat>& probe_cache) const;
 
-	std::shared_ptr<Airfoil> AirfoilAt(double eta) const;
+	std::vector<NamedMesh> BuildFlappedMeshes(double tolerance) const;
 	Handle(Geom_BSplineCurve) SectionCurve(const WingSection& section) const;
 	TopoDS_Wire SectionWire(const WingSection& section) const;
 };

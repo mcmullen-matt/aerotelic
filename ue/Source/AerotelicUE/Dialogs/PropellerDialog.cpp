@@ -85,19 +85,15 @@ namespace
 		"Without a spinner the blades only meet at the hub, so a fused export may come back as several solids rather than one.");
 }
 
-void BuildPropellerDesignContent(AAerotelicEntityActor* Entity, FAerotelicDesignContent& Out)
+void BuildPropellerDesignContent(AAerotelicEntityActor* Entity, PropellerModel* Model, FSimpleDelegate OnChanged, FAerotelicDesignContent& Out)
 {
-	if (Entity == nullptr || Entity->GetEntityType() != project_yaml::EntityType::Propeller)
+	if (Entity == nullptr || Model == nullptr || Entity->GetEntityType() != project_yaml::EntityType::Propeller)
 	{
 		return;
 	}
 
-	PropellerModel* Model = Entity->GetModelAs<PropellerModel>();
-	TWeakObjectPtr<AAerotelicEntityActor> WeakEntity = Entity;
-	FSimpleDelegate Rebuild = FSimpleDelegate::CreateLambda([WeakEntity]()
-	{
-		if (WeakEntity.IsValid()) WeakEntity->RefreshProxy();
-	});
+	// Every edit marks the draft; nothing in the scene changes until Apply.
+	FSimpleDelegate Rebuild = OnChanged;
 
 	TSharedRef<FDerived> Derived = MakeShared<FDerived>();
 	Derived->Refresh(Model);

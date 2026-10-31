@@ -198,25 +198,23 @@ namespace
 		"The view never moves on its own: it is framed once, then the wheel zooms about the cursor and the right-click menu's Fit view to contents fits everything back in.");
 }
 
-void BuildFuselageDesignContent(AAerotelicEntityActor* Entity, FAerotelicDesignContent& Out)
+void BuildFuselageDesignContent(AAerotelicEntityActor* Entity, FuselageModel* Model, FSimpleDelegate OnDraftChanged, FAerotelicDesignContent& Out)
 {
-	if (Entity == nullptr || Entity->GetEntityType() != project_yaml::EntityType::Fuselage)
+	if (Entity == nullptr || Model == nullptr || Entity->GetEntityType() != project_yaml::EntityType::Fuselage)
 	{
 		return;
 	}
-
-	FuselageModel* Model = Entity->GetModelAs<FuselageModel>();
-	TWeakObjectPtr<AAerotelicEntityActor> WeakEntity = Entity;
 
 	TSharedRef<FSectionCache> Cache = MakeShared<FSectionCache>();
 	Cache->Model = Model;
 	Cache->Refresh();
 
-	// Every edit: re-query the Sections tab, then rebuild the solid.
-	FSimpleDelegate OnChanged = FSimpleDelegate::CreateLambda([WeakEntity, Cache]()
+	// Every edit: re-query the Sections tab, then mark the draft (nothing
+	// in the scene changes until Apply).
+	FSimpleDelegate OnChanged = FSimpleDelegate::CreateLambda([OnDraftChanged, Cache]()
 	{
 		Cache->Refresh();
-		if (WeakEntity.IsValid()) WeakEntity->RefreshProxy();
+		OnDraftChanged.ExecuteIfBound();
 	});
 
 	const double InvLength = 1.0 / FMath::Max(Model->length, 1e-9);

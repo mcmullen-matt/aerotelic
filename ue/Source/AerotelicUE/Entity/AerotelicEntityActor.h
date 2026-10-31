@@ -71,9 +71,17 @@ public:
 	template <typename T>
 	T* GetModelAs() const { return static_cast<T*>(Model.get()); }
 
+	// Swaps in a new model -- a design panel's draft, applied -- and rebuilds
+	// from it. Each body's display state (hidden, colour) is kept by role
+	// name across the swap, as across any rebuild. If the new model cannot
+	// be built the old one is put back, rebuilt, and false returned with
+	// the reason: the scene never shows a model that refused to build.
+	bool ReplaceModel(std::unique_ptr<aerotelic::ISolidModel> NewModel, FString& OutError);
+
 	// Rebuilds the tessellated mesh (or the wireframe-box fallback) from the
-	// model's current BuildSolid() geometry. Called by a dialog's OnChanged
-	// after every edit.
+	// model's current BuildSolid() geometry. Called when a design panel's
+	// draft is applied (ReplaceModel), when a lattice is regenerated, and on
+	// load.
 	void RefreshProxy();
 	// Why the last RefreshProxy() could not build the model (its exception's
 	// message, e.g. a wing with a negative chord), empty after a successful
@@ -171,8 +179,9 @@ public:
 	static FOnAerotelicBodiesChanged OnBodiesChanged;
 
 	// Fired after an entity's placed geometry changed (a rebuild after an
-	// edit, or a move): boolean results that use it as an operand rebuild
-	// themselves (feature_tree.py's dirty propagation).
+	// applied edit, or a move). The document subsystem queues every boolean
+	// result and lattice over it and rebuilds them one per tick
+	// (feature_tree.py's dirty propagation, paced so the window repaints).
 	DECLARE_MULTICAST_DELEGATE_OneParam(FOnAerotelicGeometryChanged, AAerotelicEntityActor*);
 	static FOnAerotelicGeometryChanged OnGeometryChanged;
 
@@ -276,7 +285,6 @@ private:
 	TOptional<FLinearColor> ColorOverride;
 	aerotelic::MassSpec MassSpec;
 	FDelegateHandle TransformHandle;
-	FDelegateHandle GeometryHandle;
 	// The model's solid from the last build that needed OCCT (unplaced):
 	// a boolean result, or a body whose model has no mesh builder. Null
 	// while the viewport shows the model's own meshes; GetPlacedShape()
@@ -290,8 +298,6 @@ private:
 	FString LastBuildError;
 	// Local bounds of what was last shown, for the next build's tolerance.
 	FBox LastLocalBounds;
-
-	void OnOtherGeometryChanged(AAerotelicEntityActor* Other);
 
 	void EnsureProxyEdges();
 	void ApplyColors();

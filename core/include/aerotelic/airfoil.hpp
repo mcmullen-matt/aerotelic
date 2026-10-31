@@ -31,6 +31,20 @@ public:
 	// ordered lower TE -> LE -> upper TE.
 	static std::unique_ptr<Airfoil> Naca4(const std::string& code, int n = 61);
 
+	// The linear blend (1 - w) a + w b, in B-spline form: both curves are
+	// given a common knot vector by knot insertion (MakeCommonKnots) and the
+	// homogeneous poles are blended, so the result is EXACTLY the pointwise
+	// blend of the two curves at equal parameter -- the section of the ruled
+	// surface between them -- with the same knots at every w. (Re-fitting a
+	// curve through blended sample points, the previous approach, gave each
+	// station its own parameterisation, which the mesh builder saw as a
+	// surface that jumps at the user's sections.) The leading-edge parameter
+	// is found afresh on the blended curve. nullptr when the two cannot be
+	// put on common knots: different degrees, a periodic curve, or a knot
+	// whose multiplicity would exceed the degree -- the caller falls back to
+	// a fit. An empty name becomes "a.name -> b.name".
+	static std::unique_ptr<Airfoil> Blend(const Airfoil& a, const Airfoil& b, double w, std::string name = "");
+
 	std::string name;
 
 	NurbsSpec Serialize() const;

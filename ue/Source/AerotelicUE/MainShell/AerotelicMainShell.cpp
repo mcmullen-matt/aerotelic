@@ -14,6 +14,7 @@
 #include "Dialogs/ExportDialogs.h"
 #include "Dialogs/LatticeDialog.h"
 #include "Dialogs/PotentialFlowDialog.h"
+#include "Dialogs/HighOrderPanelDialog.h"
 #include "Dialogs/MassPropertiesDialog.h"
 #include "Dialogs/StructuralFeaDialog.h"
 #include "Dialogs/DustDialog.h"
@@ -31,6 +32,7 @@
 #include "Widgets/Text/STextBlock.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SComboButton.h"
+#include "Widgets/Notifications/SProgressBar.h"
 #include "Widgets/SBoxPanel.h"
 #include "Framework/Commands/UICommandList.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
@@ -470,6 +472,7 @@ void SAerotelicMainShell::BindCommands()
 	Commands->MapAction(C.MassProperties, FExecuteAction::CreateLambda([this]() { ShowAerotelicMassPropertiesDialog([this](const FText& T) { SetStatus(T); }); }));
 	Commands->MapAction(C.StructuralFea, FExecuteAction::CreateLambda([this]() { ShowAerotelicStructuralFeaDialog([this](const FText& T) { SetStatus(T); }); }));
 	Commands->MapAction(C.PotentialFlow, FExecuteAction::CreateLambda([this]() { ShowAerotelicPotentialFlowDialog([this](const FText& T) { SetStatus(T); }); }));
+	Commands->MapAction(C.HighOrderPanel, FExecuteAction::CreateLambda([this]() { ShowAerotelicHighOrderPanelDialog([this](const FText& T) { SetStatus(T); }); }));
 	Commands->MapAction(C.DustVpm, FExecuteAction::CreateLambda([this]() { ShowAerotelicDustDialog([this](const FText& T) { SetStatus(T); }); }));
 
 	// View
@@ -710,6 +713,7 @@ void SAerotelicMainShell::FillAnalysisMenu(FMenuBuilder& Menu)
 	Menu.AddMenuEntry(FAerotelicCommands::Get().MassProperties);
 	Menu.AddMenuEntry(FAerotelicCommands::Get().StructuralFea);
 	Menu.AddMenuEntry(FAerotelicCommands::Get().PotentialFlow);
+	Menu.AddMenuEntry(FAerotelicCommands::Get().HighOrderPanel);
 	Menu.AddMenuEntry(FAerotelicCommands::Get().DustVpm);
 }
 
@@ -893,6 +897,31 @@ TSharedRef<SWidget> SAerotelicMainShell::BuildStatusBar()
 		.Padding(FMargin(8, 3))
 		[
 			SNew(SHorizontalBox)
+			// The rebuild bar sits directly under the scene tree: past the
+			// view toolbar's column (less this border's own padding) and as
+			// wide as the tree. Full while nothing is waiting; after an
+			// Apply it drops to the share of the queued parameterisations
+			// rebuilt so far and fills back as the document's queue drains,
+			// one per frame (UAerotelicDocumentSubsystem::GetRebuildProgress).
+			// A count, not a timing: every parameterisation is one step.
+			+ SHorizontalBox::Slot().AutoWidth()
+			[
+				SNew(SBox).WidthOverride(kViewToolbarWidth - 8.0f)
+			]
+			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 0, 16, 0)
+			[
+				SNew(SBox).WidthOverride(kSceneTreeWidth).HeightOverride(8)
+				.ToolTipText(LOCTEXT("RebuildBarTip", "Parameterisations rebuilt since the last Apply: the entity applied, then every boolean and lattice over it, one per frame. Full when nothing is waiting."))
+				[
+					SNew(SProgressBar)
+					.Percent_Lambda([this]()
+					{
+						UAerotelicDocumentSubsystem* Doc = GetDocument();
+						return TOptional<float>(Doc != nullptr ? Doc->GetRebuildProgress() : 1.0f);
+					})
+					.FillColorAndOpacity_Lambda([]() { return FSlateColor(AerotelicTheme::Current().Accent); })
+				]
+			]
 			+ SHorizontalBox::Slot().FillWidth(1.0f).VAlign(VAlign_Center)
 			[
 				SNew(STextBlock).Text(this, &SAerotelicMainShell::GetStatusText)

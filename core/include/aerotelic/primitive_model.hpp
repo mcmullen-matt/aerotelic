@@ -45,6 +45,9 @@ public:
 	TopoDS_Shape BuildSolid() const override;
 	// The same solid as a closed triangle mesh, analytically (mesh.hpp).
 	std::vector<NamedMesh> BuildMeshes(double tolerance) const override;
+	// The same as a loft: the ellipsoid, cylinder and box section functions
+	// of mesh.hpp (the box flagged flat).
+	std::vector<NamedLoft> BuildLofts() const override;
 };
 
 PrimitiveShape ParseShape(const std::string& s);

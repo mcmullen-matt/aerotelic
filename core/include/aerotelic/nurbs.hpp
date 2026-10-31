@@ -257,6 +257,19 @@ protected:
 	void RebuildInteriorKnots() override;
 };
 
+// Gives two clamped curves of the same degree one knot vector, by knot
+// insertion (shape-preserving) so that afterwards a.interior_knots() ==
+// b.interior_knots() exactly and the curves have the same pole count. Poles
+// of the two then correspond, which is what a linear blend of the two in
+// B-spline form (a ruled surface between them) needs. Knots of the two that
+// lie within InsertKnot's own coincidence tolerance are treated as one knot
+// (b's is moved onto a's value, a change far below any geometric tolerance)
+// rather than inserted as a near-duplicate, which InsertKnot would mistake
+// for a repeated knot. Returns false, leaving both curves as they were, when
+// the degrees differ or a knot would have to exceed the degree's
+// multiplicity.
+bool MakeCommonKnots(ClampedNurbsCurve& a, ClampedNurbsCurve& b);
+
 // Solves A x = rhs for banded A (bandwidth kl=ku) given in the same
 // ab[ku+i-j, j] = A[i,j] storage FitCurve::CollocationBanded produces.
 // Doolittle banded LU, no pivoting: adequate for the Schoenberg-Whitney

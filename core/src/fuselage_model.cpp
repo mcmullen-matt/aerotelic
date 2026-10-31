@@ -268,12 +268,14 @@ TopoDS_Shape FuselageModel::BuildSolid(int n_stations, int n_pts, std::optional<
 	return loft.Shape();
 }
 
-std::vector<NamedMesh> FuselageModel::BuildMeshes(double tolerance) const {
-	LoftSource src;
-	src.u_seeds = StationFracs(30, tolerance);
+std::vector<NamedLoft> FuselageModel::BuildLofts() const {
+	NamedLoft loft;
+	loft.name = "Main";
+	LoftSource& src = loft.source;
+	src.u_seeds = StationFracs(30, std::nullopt);
 	src.v_seeds = {0.0, 0.25, 0.5, 0.75};
 	src.closed_curve = true;
-	src.section = [&](double x_frac, const std::vector<double>& v) {
+	src.section = [this](double x_frac, const std::vector<double>& v) {
 		auto [z_top, z_bot, y_half, rho_u, rho_l] = SectionParams(x_frac);
 		// SectionParams() floors y_half at 1e-6 so the loft never sees a zero
 		// width; the mesh wants the true apex instead.
@@ -288,6 +290,12 @@ std::vector<NamedMesh> FuselageModel::BuildMeshes(double tolerance) const {
 		}
 		return out;
 	};
+	return {loft};
+}
+
+std::vector<NamedMesh> FuselageModel::BuildMeshes(double tolerance) const {
+	LoftSource src = BuildLofts()[0].source;
+	src.u_seeds = StationFracs(30, tolerance);
 	LoftOptions opt;
 	opt.tolerance = tolerance;
 	opt.min_v = 16;

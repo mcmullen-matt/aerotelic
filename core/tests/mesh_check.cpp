@@ -238,6 +238,80 @@ int Run() {
 		Check(sdf.Distance({1.0, 0.0, 0.0}) < 0.0, "knife-edge loft: the axis is inside");
 	}
 
+	// ---- a chain with breaks: a cylinder whose middle third is notched ----
+	{
+		// Segment A: the unit circle, v the angle fraction. Segment B: the
+		// same circle over three quarters of its angle on v in [0, 0.6] (so
+		// the shared stretch is NOT the identity in parameter), closed by the
+		// chord back to the start. The pockets at the two breaks are the
+		// circular segment the chord cuts off.
+		static constexpr double pi = 3.14159265358979323846; // static: the nested lambdas need no capture
+		auto circle = [&](double x0, double x1) {
+			LoftSource s;
+			s.u_min = x0; s.u_max = x1;
+			s.closed_curve = true;
+			s.v_seeds = {0.25, 0.5, 0.75};
+			s.section = [](double u, const std::vector<double>& v) {
+				Mat out(static_cast<int>(v.size()), 3);
+				for (size_t j = 0; j < v.size(); ++j) {
+					double a = 2.0 * pi * v[j];
+					out(static_cast<int>(j), 0) = u;
+					out(static_cast<int>(j), 1) = std::cos(a);
+					out(static_cast<int>(j), 2) = std::sin(a);
+				}
+				return out;
+			};
+			return s;
+		};
+		auto notched = [&](double x0, double x1) {
+			LoftSource s;
+			s.u_min = x0; s.u_max = x1;
+			s.closed_curve = true;
+			s.v_seeds = {0.6};
+			s.section = [](double u, const std::vector<double>& v) {
+				Mat out(static_cast<int>(v.size()), 3);
+				for (size_t j = 0; j < v.size(); ++j) {
+					double y, z;
+					if (v[j] <= 0.6) {
+						double a = 2.0 * pi * 0.75 * (v[j] / 0.6);
+						y = std::cos(a); z = std::sin(a);
+					} else {
+						double f = (v[j] - 0.6) / 0.4; // chord from angle 1.5 pi (0, -1) back to angle 0 (1, 0)
+						y = f; z = -(1.0 - f);
+					}
+					out(static_cast<int>(j), 0) = u;
+					out(static_cast<int>(j), 1) = y;
+					out(static_cast<int>(j), 2) = z;
+				}
+				return out;
+			};
+			return s;
+		};
+		LoftBreak a_to_notched;
+		a_to_notched.va0 = 0.0; a_to_notched.va1 = 0.75; a_to_notched.vb0 = 0.0; a_to_notched.vb1 = 0.6;
+		a_to_notched.a_to_b = [](double v) { return v * 0.8; };
+		a_to_notched.b_to_a = [](double v) { return v / 0.8; };
+		LoftBreak notched_to_a;
+		notched_to_a.va0 = 0.0; notched_to_a.va1 = 0.6; notched_to_a.vb0 = 0.0; notched_to_a.vb1 = 0.75;
+		notched_to_a.a_to_b = [](double v) { return v / 0.8; };
+		notched_to_a.b_to_a = [](double v) { return v * 0.8; };
+		LoftOptions opt;
+		opt.tolerance = tol;
+		opt.min_v = 16;
+		TriMesh chain = TriangulateLoftChain({circle(0.0, 1.0), notched(1.0, 2.0), circle(2.0, 3.0)}, {a_to_notched, notched_to_a}, opt);
+		Check(!chain.IsEmpty(), "chain: has triangles (" + std::to_string(chain.triangles.size()) + ")");
+		Check(chain.IsClosedManifold(), "chain: closed manifold across two breaks (shared stretch welded, pockets capped)");
+		double v = chain.SignedVolume();
+		double segment_area = 0.5 * (1.5 * pi - std::sin(1.5 * pi)); // r = 1, angle 1.5 pi: the part the chord keeps
+		double expect = 2.0 * pi + segment_area;
+		char buf[160];
+		std::snprintf(buf, sizeof buf, "chain: volume %.5f vs two cylinders plus the notched third %.5f", v, expect);
+		Check(v > 0.0 && std::fabs(v - expect) / expect < 5e-3, buf);
+		// A one-segment chain is just the loft.
+		TriMesh single = TriangulateLoftChain({circle(0.0, 2.0)}, {}, opt);
+		Check(single.IsClosedManifold() && std::fabs(single.SignedVolume() - 2.0 * pi) / (2.0 * pi) < 5e-3, "chain: one segment is a plain capped loft");
+	}
+
 	// ---- wing ----
 	{
 		PlanformSpec ps;

@@ -16,6 +16,10 @@
 #include "aerotelic/materials.hpp"
 #include "aerotelic/primitive_model.hpp"
 #include "aerotelic/wing_model.hpp"
+#include "aerotelic/wing_panels.hpp"
+#include "aerotelic/panel_loads.hpp"
+#include "aerotelic/colormaps.hpp"
+#include "Entity/AerotelicMeshing.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogAerotelicDocumentTest, Log, All);
 
@@ -100,6 +104,94 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 	CheckBuildsSolid(Wing, TEXT("Wing"));
 	CheckBuildsSolid(Fuselage, TEXT("Fuselage"));
 	CheckBuildsSolid(Primitive, TEXT("Primitive"));
+
+	// Analysis -> High Order Panel, minus the dialog: the scene's wing
+	// paneled, placed as it sits, and solved at 4 degrees -- it must lift.
+	if (Wing != nullptr)
+	{
+		try
+		{
+			aerotelic::WingModel* W = Wing->GetModelAs<aerotelic::WingModel>();
+			const double Alpha = 4.0 * 3.14159265358979323846 / 180.0;
+			const aerotelic::Vec3 Stream{std::cos(Alpha), 0.0, std::sin(Alpha)};
+			aerotelic::panel::WingPaneling Pan;
+			Pan.chordwise = 8;
+			Pan.spanwise = 6;
+			std::vector<aerotelic::panel::Network> Nets = aerotelic::panel::WingNetworks(*W, Pan, Stream);
+			const FTransform Transform = Wing->GetActorTransform();
+			for (aerotelic::panel::Network& N : Nets)
+			{
+				aerotelic::TriMesh M;
+				M.vertices = N.corners;
+				AerotelicMeshing::PlaceMesh(M, Transform);
+				N.corners = M.vertices;
+			}
+			aerotelic::panel::Options Opt;
+			Opt.symmetry_y = 0.0;
+			Opt.reference_area = W->planform().PlanformArea();
+			aerotelic::panel::Solution Sol = aerotelic::panel::Solve(Nets, Stream, Opt);
+			const double CL = Sol.force_coefficient.z * std::cos(Alpha) - Sol.force_coefficient.x * std::sin(Alpha);
+			Check(Sol.unknowns > 0 && Sol.lift_from_wake.has_value(), "panel method: the scene's wing panels into a body and a wake");
+			Check(*Sol.lift_from_wake > 0.1 && *Sol.lift_from_wake < 1.0, FString::Printf(TEXT("panel method: the wing lifts at 4 degrees (C_L from the wake %.4f)"), *Sol.lift_from_wake));
+			Check(FMath::Abs(CL / *Sol.lift_from_wake - 1.0) < 0.25, FString::Printf(TEXT("panel method: pressures and wake agree (%.4f vs %.4f)"), CL, *Sol.lift_from_wake));
+
+			// The Span Loading tab, minus the dialog: the strips of the placed
+			// wing along its placed span axis sum to the network's own force,
+			// and the elliptic distribution with that total integrates back
+			// to it.
+			{
+				aerotelic::panel::StripOptions SO;
+				const FVector Axis = Transform.TransformVectorNoScale(FVector(0, 1, 0)).GetSafeNormal();
+				SO.span_axis = { Axis.X, Axis.Y, Axis.Z };
+				SO.strips_are_columns = true;
+				std::vector<aerotelic::panel::StripLoad> Strips = aerotelic::panel::StripLoads(Nets[0], Sol.networks[0], SO);
+				aerotelic::Vec3 Sum;
+				double SMin = 1e300, SMax = -1e300;
+				for (const aerotelic::panel::StripLoad& St : Strips) { Sum += St.force; SMin = FMath::Min(SMin, St.s_min); SMax = FMath::Max(SMax, St.s_max); }
+				const aerotelic::Vec3 Want = Sol.networks[0].force_coefficient * Opt.reference_area; // the image doubled x and z
+				Check(Strips.size() == static_cast<size_t>(Sol.networks[0].panel_cols) && FMath::Abs(Sum.z - 0.5 * Want.z) < 1e-9 * (1.0 + FMath::Abs(Want.z)),
+					FString::Printf(TEXT("span loading: %d strips sum to the wing's force (%.5f vs %.5f)"), static_cast<int32>(Strips.size()), Sum.z, 0.5 * Want.z));
+				const aerotelic::Vec3 LiftDir{-std::sin(Alpha), 0.0, std::cos(Alpha)};
+				const double Total = 2.0 * aerotelic::Dot(Sum, LiftDir);
+				const double Half = FMath::Max(SMax, -SMin);
+				double Integral = 0.0;
+				for (int32 i = 0; i < 2000; ++i) { const double s = -Half + (i + 0.5) * 2.0 * Half / 2000; Integral += aerotelic::panel::EllipticLoad(Total, 0.0, Half, s) * 2.0 * Half / 2000; }
+				Check(FMath::Abs(Integral / Total - 1.0) < 1e-3, FString::Printf(TEXT("span loading: the elliptic distribution integrates to the lift (%.5f vs %.5f)"), Integral, Total));
+				Check(aerotelic::Colormaps().size() >= 15 && aerotelic::FindColormap("Turbo") != nullptr, "surface pressure: the colour map catalogue is there");
+			}
+
+			// With the fuselage as a source network (its loft cut at the
+			// symmetry plane, as the dialog does for a body on the centreline):
+			// one system, the body impermeable, the wing still lifting.
+			if (Fuselage != nullptr && Fuselage->GetModel() != nullptr)
+			{
+				aerotelic::panel::BodyPaneling BP;
+				BP.along = 10;
+				BP.around = 8;
+				BP.half_plane_y = 0.0;
+				std::vector<aerotelic::panel::Network> Body = aerotelic::panel::BodyNetworks(*Fuselage->GetModel(), "Fuselage", BP, Stream);
+				const FTransform FT = Fuselage->GetActorTransform();
+				for (aerotelic::panel::Network& N : Body)
+				{
+					aerotelic::TriMesh M;
+					M.vertices = N.corners;
+					AerotelicMeshing::PlaceMesh(M, FT);
+					N.corners = M.vertices;
+					Nets.push_back(N);
+				}
+				aerotelic::panel::Solution Both = aerotelic::panel::Solve(Nets, Stream, Opt);
+				double Vn = 0.0;
+				for (const aerotelic::panel::PanelResult& P : Both.networks.back().panels) Vn = FMath::Max(Vn, FMath::Abs(aerotelic::Dot(P.v_upper, P.normal)));
+				Check(Body.size() == 1 && Both.networks.size() == 3, "panel method: the fuselage panels into one source network beside the wing");
+				Check(Vn < 1e-6, FString::Printf(TEXT("panel method: the fuselage is impermeable (normal velocity %.2e)"), Vn));
+				Check(Both.lift_from_wake.has_value() && *Both.lift_from_wake > 0.1, FString::Printf(TEXT("panel method: the wing still lifts beside the fuselage (C_L %.4f)"), Both.lift_from_wake.value_or(0.0)));
+			}
+		}
+		catch (const std::exception& e)
+		{
+			Check(false, FString::Printf(TEXT("panel method threw: %s"), UTF8_TO_TCHAR(e.what())));
+		}
+	}
 	CheckBuildsSolid(Nacelle, TEXT("Nacelle"));
 	CheckBuildsSolid(LoftedNacelle, TEXT("LoftedNacelle"));
 	CheckBuildsSolid(Propeller, TEXT("Propeller"));
@@ -365,6 +457,89 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 		}
 		AAerotelicEntityActor* Bad = Doc->AddLattice(TEXT("Lattice 1"), Spec, Targets, TArray<FAerotelicBooleanOperand>(), Error);
 		Check(Bad == nullptr && !Error.IsEmpty(), "a duplicate lattice name is refused");
+	}
+
+	// A design panel's Apply: the panel edits a DRAFT, an independent copy
+	// of the entity's model, and nothing in the scene changes until the
+	// draft is applied -- at which point the entity gets a fresh model of
+	// its own and the lattice over it follows.
+	UE_LOG(LogAerotelicDocumentTest, Display, TEXT("step: apply"));
+	if (Primitive != nullptr && Wing != nullptr)
+	{
+		AAerotelicEntityActor* Lattice = nullptr;
+		AAerotelicEntityActor* Boolean = nullptr;
+		for (auto& Weak : Doc->GetEntities())
+		{
+			if (!Weak.IsValid()) continue;
+			if (Weak->GetEntityType() == aerotelic::project_yaml::EntityType::Lattice) Lattice = Weak.Get();
+			if (Weak->GetEntityType() == aerotelic::project_yaml::EntityType::Boolean) Boolean = Weak.Get();
+		}
+		Check(Doc->CloneEntityModel(Boolean) == nullptr, "apply: a boolean result has no draft to edit (its operands have)");
+		Check(Doc->CloneEntityModel(Lattice) == nullptr, "apply: a lattice has no draft to edit (its own dialog applies)");
+
+		std::unique_ptr<aerotelic::ISolidModel> Draft = Doc->CloneEntityModel(Primitive);
+		Check(Draft != nullptr, "apply: the sphere clones for editing");
+		if (Draft != nullptr)
+		{
+			const aerotelic::PrimitiveModel* Live = Primitive->GetModelAs<aerotelic::PrimitiveModel>();
+			aerotelic::PrimitiveModel* D = static_cast<aerotelic::PrimitiveModel*>(Draft.get());
+			const double R0 = Live->radius;
+			Check(D != Live && FMath::IsNearlyEqual(D->radius, R0, 1e-12), "apply: the draft is a model of its own carrying the entity's numbers");
+			D->radius = R0 * 1.5;
+			Check(FMath::IsNearlyEqual(Live->radius, R0, 1e-12), "apply: editing the draft leaves the entity alone");
+			Check(!Doc->HasPendingRebuilds() && Doc->GetRebuildProgress() == 1.0f, "apply: nothing is waiting to rebuild before anything is applied, and the progress bar is full");
+
+			FString Error;
+			Check(Doc->ApplyEntityModel(Primitive, *Draft, Error), FString::Printf(TEXT("apply: the draft applies (%s)"), *Error));
+			const aerotelic::PrimitiveModel* Applied = Primitive->GetModelAs<aerotelic::PrimitiveModel>();
+			Check(Applied != Live && Applied != D, "apply: the entity has a fresh model, neither the old one nor the draft");
+			Check(FMath::IsNearlyEqual(Applied->radius, R0 * 1.5, 1e-12), "apply: the entity now carries the draft's numbers");
+			D->radius = R0 * 1.25;
+			Check(FMath::IsNearlyEqual(Primitive->GetModelAs<aerotelic::PrimitiveModel>()->radius, R0 * 1.5, 1e-12),
+				"apply: editing the draft after Apply still leaves the entity alone until the next Apply");
+
+			// The boolean and the lattice over the sphere follow: queued by
+			// the Apply, rebuilt by the flush (the ticker's job in the
+			// application). Three parameterisations in all -- the sphere,
+			// done, then those two -- so the bar stands at a third.
+			Check(Doc->HasPendingRebuilds(), "apply: the boolean and the lattice over the sphere are queued to follow");
+			Check(FMath::IsNearlyEqual(Doc->GetRebuildProgress(), 1.0f / 3.0f, 1e-6f), FString::Printf(TEXT("apply: the progress bar shows one of three rebuilt (%.3f)"), Doc->GetRebuildProgress()));
+			Doc->FlushPendingRebuilds();
+			Check(!Doc->HasPendingRebuilds() && Doc->GetRebuildProgress() == 1.0f, "apply: the flush rebuilt what was queued and the bar is full again");
+			if (Lattice != nullptr)
+			{
+				const FAerotelicLatticeModel* M = Lattice->GetModelAs<FAerotelicLatticeModel>();
+				Check(M->IsValid() && M->GetStats().Triangles > 0, "apply: the lattice is generated again");
+				std::vector<aerotelic::NamedMesh> Meshes = Lattice->GetPlacedMeshes(false, 1e-3);
+				double Reach = 0.0;
+				for (const aerotelic::NamedMesh& NM : Meshes)
+					for (const aerotelic::Vec3& V : NM.mesh.vertices) Reach = FMath::Max(Reach, aerotelic::Length(V));
+				Check(Reach > 1.3 * R0 && Reach < 1.6 * R0, FString::Printf(TEXT("apply: the lattice now fills the larger sphere (reaches %.3f of a %.3f radius)"), Reach, 1.5 * R0));
+			}
+
+			// Back to the unit sphere for the rest of the run.
+			D->radius = R0;
+			Check(Doc->ApplyEntityModel(Primitive, *Draft, Error), FString::Printf(TEXT("apply: restoring applies (%s)"), *Error));
+			Doc->FlushPendingRebuilds();
+		}
+
+		// A lofted model takes the spec round trip the clone is made by.
+		std::unique_ptr<aerotelic::ISolidModel> WingDraft = Doc->CloneEntityModel(Wing);
+		Check(WingDraft != nullptr, "apply: the wing clones for editing");
+		if (WingDraft != nullptr)
+		{
+			aerotelic::WingModel* WD = static_cast<aerotelic::WingModel*>(WingDraft.get());
+			const double Span = Wing->GetModelAs<aerotelic::WingModel>()->planform().SemiSpan();
+			Check(FMath::IsNearlyEqual(WD->planform().SemiSpan(), Span, 1e-12), "apply: the wing's draft starts on the wing's parameters");
+			WD->planform().SetSemiSpan(Span * 2.0);
+			Check(FMath::IsNearlyEqual(Wing->GetModelAs<aerotelic::WingModel>()->planform().SemiSpan(), Span, 1e-12), "apply: the wing is untouched until Apply");
+			FString Error;
+			Check(Doc->ApplyEntityModel(Wing, *WingDraft, Error), FString::Printf(TEXT("apply: the wing's draft applies (%s)"), *Error));
+			Check(FMath::IsNearlyEqual(Wing->GetModelAs<aerotelic::WingModel>()->planform().SemiSpan(), Span * 2.0, 1e-12), "apply: the wing took the draft's span");
+			CheckBuildsSolid(Wing, TEXT("Wing after Apply"));
+			WD->planform().SetSemiSpan(Span);
+			Check(Doc->ApplyEntityModel(Wing, *WingDraft, Error), "apply: restoring the wing applies");
+		}
 	}
 
 	// The viewport's OCCT-free meshes: every entity's model builds its
