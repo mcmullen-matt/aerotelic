@@ -760,6 +760,63 @@ double LatticeVoxelSize(const LatticeSpec& spec) {
 	return VoxelCell(spec) / std::max(spec.resolution, 2);
 }
 
+UnitCellSamples SampleUnitCell(const LatticeSpec& spec, int voxels) {
+	LatticeSpec s = spec;
+	s.skin_thickness = 0.0; // the skin is the body's, not the cell's
+	const LatticeField field(s); // validates the spec and calibrates the level
+	const int n = std::max(voxels, 4);
+
+	UnitCellSamples out;
+	out.origin = s.origin;
+	if (s.family == LatticeFamily::Honeycomb) {
+		// One period of the cross-section. The tilings are periodic on the
+		// lattice vectors a (along u) and b; Square and Rectangle have b
+		// along v, so the a x b box is a period; Hexagon and Triangle sit on
+		// the triangular lattice with b = (a/2, h), whose smallest
+		// rectangular period is a x 2h (the row above is shifted by half a
+		// step, the one above that is back in line).
+		const HoneycombCell cell = HoneycombCellFor(s);
+		const double period_u = cell.a[0];
+		const double period_v = std::fabs(cell.b[0]) > 1e-12 * period_u ? 2.0 * cell.b[1] : cell.b[1];
+		const double h = period_u / n;
+		const int nu = n;
+		const int nv = std::max(1, static_cast<int>(std::lround(period_v / h)));
+		const int nw = 2; // the field is the same at every height
+		// (u, v, w) -> (x, y, z) as PrismCoords reads them: Z -> (x, y, z),
+		// X -> (y, z, x), Y -> (z, x, y).
+		int iu = 0, iv = 1, iw = 2;
+		switch (s.axis) {
+			case PrismAxis::X: iu = 1; iv = 2; iw = 0; break;
+			case PrismAxis::Y: iu = 2; iv = 0; iw = 1; break;
+			case PrismAxis::Z: break;
+		}
+		int counts[3];
+		double periods[3];
+		counts[iu] = nu; periods[iu] = period_u;
+		counts[iv] = nv; periods[iv] = period_v;
+		counts[iw] = nw; periods[iw] = nw * h;
+		out.nx = counts[0]; out.ny = counts[1]; out.nz = counts[2];
+		out.period = Vec3{periods[0], periods[1], periods[2]};
+	} else {
+		out.nx = out.ny = out.nz = n;
+		out.period = Vec3{s.cell_size, s.cell_size, s.cell_size};
+	}
+
+	const Vec3 h{out.period.x / out.nx, out.period.y / out.ny, out.period.z / out.nz};
+	out.values.resize(static_cast<size_t>(out.nx) * out.ny * out.nz);
+	size_t solid = 0;
+	for (int k = 0; k < out.nz; ++k)
+		for (int j = 0; j < out.ny; ++j)
+			for (int i = 0; i < out.nx; ++i) {
+				const Vec3 p = out.origin + Vec3{(i + 0.5) * h.x, (j + 0.5) * h.y, (k + 0.5) * h.z};
+				const float v = static_cast<float>(field(p));
+				out.values[(static_cast<size_t>(k) * out.ny + j) * out.nx + i] = v;
+				if (v <= 0.0f) ++solid;
+			}
+	out.solid_fraction = static_cast<double>(solid) / out.values.size();
+	return out;
+}
+
 LatticeGrid PlanLatticeGrid(const LatticeSpec& spec, const Box3& bounds) {
 	if (bounds.IsEmpty()) throw std::invalid_argument("the lattice domain is empty");
 	LatticeGrid g;

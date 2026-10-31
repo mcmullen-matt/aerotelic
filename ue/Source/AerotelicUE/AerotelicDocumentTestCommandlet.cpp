@@ -395,8 +395,13 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 		if (!FeaMesh.tets.empty())
 		{
 			AerotelicStructuralFea::FRequest Request;
+			Request.Model = AerotelicStructuralFea::EModel::SolidTets;
 			Request.Mesh = &FeaMesh;
 			Request.LengthToSI = 1.0;
+			// A direct solve: the skin is 7e5 times stiffer than this core,
+			// which the iterative solver converges on poorly (its force
+			// balance closed to 1.7% and its peak stress wandered).
+			Request.LinearSolver = TEXT("sparse_lu");
 			aerotelic::Material Soft;
 			Soft.name = "soft core";
 			Soft.density = 50.0;
@@ -429,8 +434,11 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 				Check(FMath::Abs(R.AppliedPressure[2]) <= 1e-3 * 1.0e5 * 4.0 * PI,
 					FString::Printf(TEXT("fea: a uniform pressure over a closed surface has no resultant (%.3g N)"), R.AppliedPressure[2]));
 				Check(R.MeanNormalDisplacement < 0.0, FString::Printf(TEXT("fea: an external pressure moves the surface inward (mean u.n = %.3g m)"), R.MeanNormalDisplacement));
-				Check(R.MaxVonMisesByMaterial.Num() == 2 && R.MaxVonMisesByMaterial[0] > 0.6e6 && R.MaxVonMisesByMaterial[0] < 1.6e6,
-					FString::Printf(TEXT("fea: the skin's peak von Mises is Lame's hoop stress for the shell, ~1.05e6 Pa (got %.4g)"), R.MaxVonMisesByMaterial.Num() ? R.MaxVonMisesByMaterial[0] : 0.0));
+				// Lame's hoop stress is 1.05 MPa; the peak sits where the weight
+				// enters the fixed cap, 1.9 MPa with the direct solver (the
+				// iterative one, under-converged, used to report 1.27).
+				Check(R.MaxVonMisesByMaterial.Num() == 2 && R.MaxVonMisesByMaterial[0] > 0.8e6 && R.MaxVonMisesByMaterial[0] < 2.5e6,
+					FString::Printf(TEXT("fea: the skin's peak von Mises is Lame's hoop stress for the shell, ~1.05e6 Pa, up to the support's concentration (got %.4g)"), R.MaxVonMisesByMaterial.Num() ? R.MaxVonMisesByMaterial[0] : 0.0));
 				Check(R.MaxVonMisesByMaterial.Num() == 2 && R.MaxVonMisesByMaterial[1] < 0.1 * R.MaxVonMisesByMaterial[0],
 					"fea: the soft core carries almost nothing");
 				Check(R.MarginByMaterial.Num() == 2 && R.MarginByMaterial[0] > 100.0, "fea: 2024-T3 at 1 bar has a margin in the hundreds");
@@ -440,6 +448,98 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 				Check(R.MaxDisplacement > 0.0 && R.MaxDisplacement < 2e-2, FString::Printf(TEXT("fea: the displacement is small and finite (%.3g m)"), R.MaxDisplacement));
 				Check(IFileManager::Get().FileSize(*Request.VtkPath) > 0, FString::Printf(TEXT("fea: the solution was written to %s"), *Request.VtkPath));
 				IFileManager::Get().Delete(*Request.VtkPath, false, true, true);
+			}
+		}
+
+		// The same sphere as the shell / core model: shells of the 0.05 skin
+		// on the sphere's own triangles over tetrahedra at the cell size
+		// carrying the gyroid's homogenised stiffness, the gyroid made of
+		// PMI foam. Closed forms: the mass is rho t A of the skin plus the
+		// core's effective density, less the overlap, over the volume; the
+		// support carries the weight; the membrane stress of a thin shell
+		// under an external pressure is p a / 2t = 1.0 MPa in every
+		// direction; the surface moves inward.
+		UE_LOG(LogAerotelicDocumentTest, Display, TEXT("step: structural fea (shells over a homogenised core)"));
+		if (FeaModel != nullptr)
+		{
+			const std::vector<FAerotelicLatticeModel::FTetMesh>& Structural = FeaModel->GetStructuralTetMeshes();
+			Check(Structural.size() == 1 && !Structural[0].Result.Mesh.tets.empty(), FString::Printf(TEXT("fea (shells): the body alone meshes at the cell size (%s)"), *FString::Join(FeaModel->GetStructuralTetNotes(), TEXT("; "))));
+			if (Structural.size() == 1 && !Structural[0].Result.Mesh.tets.empty())
+			{
+				const AerotelicTetGmsh::FResult& S = Structural[0].Result;
+				const aerotelic::TriMesh& Outer = FeaModel->GetTetBodies()[0].Outer;
+				Check(S.VolumeError <= 1e-9, FString::Printf(TEXT("fea (shells): the core tetrahedra fill the body exactly (relative %.2e)"), S.VolumeError));
+				Check(S.SkinTets + S.CoreTets < static_cast<int32>(FeaMesh.tets.size()), FString::Printf(TEXT("fea (shells): fewer tetrahedra than the skin / core mesh (%d vs %d)"), S.SkinTets + S.CoreTets, (int32)FeaMesh.tets.size()));
+				aerotelic::TetMesh CoreMesh = S.Mesh;
+				CoreMesh.material.assign(CoreMesh.tets.size(), 1);
+				aerotelic::UnitCellSamples Cell;
+				bool bSampled = true;
+				try { Cell = aerotelic::SampleUnitCell(FeaModel->Spec, 24); } catch (const std::exception&) { bSampled = false; }
+				Check(bSampled && Cell.nx == 24 && FMath::Abs(Cell.solid_fraction - 0.35) < 0.05, FString::Printf(TEXT("fea (shells): the gyroid cell voxelises near its 0.35 fraction (%.3f)"), Cell.solid_fraction));
+				const aerotelic::Material Foam = *aerotelic::FindMaterialPreset("Foam, PMI 71 kg/m^3");
+				AerotelicStructuralFea::FRequest Request;
+				Request.Model = AerotelicStructuralFea::EModel::ShellCore;
+				Request.Mesh = &CoreMesh;
+				Request.LengthToSI = 1.0;
+				AerotelicStructuralFea::FRegion Region;
+				Region.Id = 1;
+				Region.Label = TEXT("sphere");
+				Region.Skin = *aerotelic::FindMaterialPreset("Aluminium 2024-T3");
+				Region.SkinThickness = 0.05;
+				Region.Core = Foam;
+				Region.Cell = &Cell;
+				Request.Regions.Add(Region);
+				Request.bHomogenizeCache = false;
+				Request.SupportAxis = TEXT('z');
+				Request.bSupportAtMin = true;
+				Request.SupportTolerance = 0.15;
+				Request.LoadFactor = 1.0;
+				Request.Pressure = 1.0e5;
+				Request.VtkPath = FPaths::Combine(FPlatformProcess::UserTempDir(), TEXT("aerotelic_document_test_fea_shells.vtk"));
+				IFileManager::Get().Delete(*Request.VtkPath, false, true, true);
+				AerotelicStructuralFea::FResult R;
+				FString Error;
+				const bool bSolved = bSampled && AerotelicStructuralFea::Run(Request, R, Error);
+				Check(bSolved, FString::Printf(TEXT("fea (shells): the sphere solved (%s)"), bSolved ? *FString::Printf(TEXT("%d nodes, %d tetrahedra + %d shells, %d dof, %.1f s"), R.Nodes, R.Tets, R.Shells, R.Dofs, R.Seconds) : *Error));
+				if (bSolved)
+				{
+					Check(R.Shells == static_cast<int32>(Outer.triangles.size()) && R.Tets == S.SkinTets + S.CoreTets, "fea (shells): a shell on each of the body's triangles, a tetrahedron for each of gmsh's");
+					Check(!R.bSecondOrder && R.Dofs > 3 * R.Nodes, "fea (shells): 4-node tetrahedra, with rotations on the shell nodes");
+					Check(R.Regions.Num() == 1 && R.Regions[0].RelativeDensity > 0.25 && R.Regions[0].RelativeDensity < 0.45,
+						FString::Printf(TEXT("fea (shells): the homogenised core has the gyroid's relative density (%.3f)"), R.Regions.Num() ? R.Regions[0].RelativeDensity : 0.0));
+					if (R.Regions.Num() == 1)
+					{
+						const AerotelicStructuralFea::FRegionResult& G = R.Regions[0];
+						const double Ratio = G.E[0] / Foam.youngs_modulus;
+						Check(Ratio > 0.05 && Ratio < G.RelativeDensity && FMath::Abs(G.E[0] - G.E[1]) < 0.05 * G.E[0] && FMath::Abs(G.E[0] - G.E[2]) < 0.05 * G.E[0],
+							FString::Printf(TEXT("fea (shells): the gyroid's effective modulus is cubic and between the bending and stretching bounds (E/E_s = %.3f, %.3f, %.3f)"), G.E[0] / Foam.youngs_modulus, G.E[1] / Foam.youngs_modulus, G.E[2] / Foam.youngs_modulus));
+						Check(G.Amplification >= 1.0 && G.CoreMaxMicroVonMises >= G.CoreMaxVonMises, FString::Printf(TEXT("fea (shells): the strut stress is estimated above the smeared core stress (%.3g vs %.3g Pa, bound x%.1f)"), G.CoreMaxMicroVonMises, G.CoreMaxVonMises, G.Amplification));
+						// Mass: the shells' rho t A over the sphere's triangles plus
+						// the core's effective density, less the skin's share, over
+						// the volume.
+						double Area = 0.0;
+						for (const auto& T : Outer.triangles)
+						{
+							Area += 0.5 * aerotelic::Length(aerotelic::Cross(Outer.vertices[T[1]] - Outer.vertices[T[0]], Outer.vertices[T[2]] - Outer.vertices[T[0]]));
+						}
+						const double Volume = Outer.SignedVolume();
+						const double ExpectedMass = 2780.0 * 0.05 * Area + Foam.density * G.RelativeDensity * (1.0 - Area * 0.05 / Volume) * Volume;
+						Check(FMath::IsNearlyEqual(R.Mass, ExpectedMass, 1e-4 * ExpectedMass),
+							FString::Printf(TEXT("fea (shells): the mass is the skin's rho t A plus the overlap-corrected core (%.6g vs %.6g)"), R.Mass, ExpectedMass));
+						const double Weight = R.Mass * 9.80665;
+						Check(FMath::Abs(R.Reaction[2] - Weight) <= 0.02 * Weight && FMath::Abs(R.Reaction[0]) <= 0.02 * Weight && FMath::Abs(R.Reaction[1]) <= 0.02 * Weight,
+							FString::Printf(TEXT("fea (shells): the support carries the weight, %.4g N, shells included (reactions %.4g, %.4g, %.4g)"), Weight, R.Reaction[0], R.Reaction[1], R.Reaction[2]));
+						Check(FMath::Abs(R.AppliedPressure[2]) <= 1e-3 * 1.0e5 * 4.0 * PI, FString::Printf(TEXT("fea (shells): a uniform pressure over a closed surface has no resultant (%.3g N)"), R.AppliedPressure[2]));
+						Check(R.MeanNormalDisplacement < 0.0, FString::Printf(TEXT("fea (shells): an external pressure moves the surface inward (mean u.n = %.3g m)"), R.MeanNormalDisplacement));
+						// p a / 2t = 1e5 / 0.1 = 1.0 MPa; the peak carries the
+						// support's and the weight's share on top.
+						Check(G.SkinMaxVonMises > 0.8e6 && G.SkinMaxVonMises < 2.0e6, FString::Printf(TEXT("fea (shells): the skin's peak von Mises is the membrane stress p a / 2t, 1.0e6 Pa, up to the support (got %.4g)"), G.SkinMaxVonMises));
+						Check(G.SkinMargin > 100.0 && G.CoreMargin != 0.0, FString::Printf(TEXT("fea (shells): margins against the skin's and the foam's allowables (%.1f, %.2f)"), G.SkinMargin, G.CoreMargin));
+					}
+					Check(R.MaxDisplacement > 0.0 && R.MaxDisplacement < 1e-3, FString::Printf(TEXT("fea (shells): the displacement is small and finite (%.3g m)"), R.MaxDisplacement));
+					Check(IFileManager::Get().FileSize(*Request.VtkPath) > 0, FString::Printf(TEXT("fea (shells): the solution was written to %s"), *Request.VtkPath));
+					IFileManager::Get().Delete(*Request.VtkPath, false, true, true);
+				}
 			}
 		}
 	}

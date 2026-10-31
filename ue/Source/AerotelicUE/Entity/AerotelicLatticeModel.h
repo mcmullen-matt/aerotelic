@@ -100,8 +100,28 @@ public:
 	// as one mesh holding only the nodes they use, for WriteTetMeshVtk.
 	aerotelic::TetMesh MergedTets(int Material) const;
 
+	// The STRUCTURAL mesh of each filled body, for Analysis > Structural's
+	// shell / core model (AerotelicStructuralFea.h): tetrahedra bounded by
+	// the body's OWN surface alone -- no offset, no skin region -- at the
+	// lattice cell size, since they carry the lattice's homogenised
+	// material rather than its geometry. gmsh adds interior nodes only, so
+	// the boundary faces of this mesh are the body's own triangles exactly,
+	// and the skin's shell elements sit on them. A fraction of the
+	// skin / core mesh above: on p38a's airframe the skin tetrahedra alone
+	// ran to hundreds of thousands, the body's triangles to tens of
+	// thousands. Built on first request and kept until Invalidate(); a
+	// body gmsh refuses is left out, with the reason in
+	// GetStructuralTetNotes().
+	const std::vector<FTetMesh>& GetStructuralTetMeshes() const;
+	const TArray<FString>& GetStructuralTetNotes() const { GetStructuralTetMeshes(); return StructuralTetNotes; }
+
 	// Drops the generated mesh so the next build regenerates.
-	void Invalidate() { bValid = false; TetMeshes.clear(); bTetMeshesBuilt = false; TetNotes.Reset(); }
+	void Invalidate()
+	{
+		bValid = false;
+		TetMeshes.clear(); bTetMeshesBuilt = false; TetNotes.Reset();
+		StructuralTetMeshes.clear(); bStructuralTetMeshesBuilt = false; StructuralTetNotes.Reset();
+	}
 	bool IsValid() const { return bValid; }
 
 	// True if this lattice fills or excludes Entity (directly, or a boolean
@@ -140,5 +160,8 @@ private:
 	mutable bool bTetMeshesBuilt = false;
 	mutable std::vector<FTetMesh> TetMeshes;
 	mutable TArray<FString> TetNotes;
+	mutable bool bStructuralTetMeshesBuilt = false;
+	mutable std::vector<FTetMesh> StructuralTetMeshes;
+	mutable TArray<FString> StructuralTetNotes;
 	mutable FStats Stats;
 };

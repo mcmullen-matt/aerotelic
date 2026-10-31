@@ -225,6 +225,36 @@ double CalibrateLevel(const LatticeSpec& spec, double* mean_gradient = nullptr, 
 // above; for tests and the dialog's read-out).
 double CellSolidFraction(const LatticeSpec& spec, double level, int samples = 40);
 
+// One period of the lattice, voxelised, for the numerical homogenization
+// of its effective stiffness (ue/tools/homogenize.py: a periodic
+// finite-element solve of the unit cell under the six unit macro strains,
+// whose averaged stresses are the columns of the lattice's 6 x 6
+// elasticity tensor). The field is sampled at the voxel CENTRES over a box
+// that tiles space with the lattice -- the cubic cell for the TPMS, strut
+// and auxetic families; for a honeycomb one period of the cross-section
+// (the a x b rectangle of a Square or Rectangle, the a x 2b' rectangular
+// supercell of the triangular lattice a Hexagon or Triangle sits on) by
+// two voxels along the prism axis, where the field does not change -- so
+// the samples are periodic in all three directions by construction.
+// A voxel is solid where F <= 0 at its centre.
+//
+// The effective tensor is independent of the cell SIZE (it depends on the
+// topology, the volume fraction and the base material alone), so the
+// samples are a shape, not a size: `period` is reported for the voxel
+// aspect ratios and nothing else needs the scale.
+struct UnitCellSamples {
+	int nx = 0, ny = 0, nz = 0;      // voxels along x, y, z
+	Vec3 period;                     // the box the samples tile, model units
+	Vec3 origin;                     // its minimum corner (spec.origin)
+	std::vector<float> values;       // F at (k * ny + j) * nx + i, <= 0 solid
+	double solid_fraction = 0.0;     // solid voxels / all voxels
+};
+
+// `voxels` across the cell (the first cross-section dimension for a
+// honeycomb), at least 4. Throws std::invalid_argument on a spec the
+// LatticeField refuses.
+UnitCellSamples SampleUnitCell(const LatticeSpec& spec, int voxels);
+
 struct LatticeDomain {
 	// Signed distance to the body (or bodies) to fill, negative inside.
 	// Must be 1-Lipschitz (a true distance, or the min of several), which

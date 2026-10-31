@@ -1381,24 +1381,115 @@ ksi; `stress:` in the file's `units:` line) that Young's modulus, the
 allowables and every reported stress use.
 
 **Analysis > Structural (Kratos FEA)...** (`Dialogs/StructuralFeaDialog`,
-`Entity/AerotelicStructuralFea`, `tools/structural_fea.py`) is a linear
-static analysis of a lattice-filled body's skin and core tetrahedra --
-the mesh Lattice > Export Tetrahedral Mesh writes, whose outer faces are
-the body's own surface triangles -- on KratosMultiphysics'
-StructuralMechanicsApplication, run as a separate process in the
-WingDesigner environment like the potential flow. The skin tetrahedra
-are made of their body's material, the core tetrahedra of the lattice's
-own (its EFFECTIVE density and stiffness, set on the lattice row); a
-region without a structural material stops the solve and says which.
-Everything the solver sees is SI: the mesh scaled by the length unit,
-the materials as they are, loads in newtons and pascals; the dialog
-converts the results back.
+`Entity/AerotelicStructuralFea`, `tools/structural_fea.py`,
+`tools/homogenize.py`) is a linear static analysis of a lattice-filled
+body on KratosMultiphysics' StructuralMechanicsApplication, run as a
+separate process in the WingDesigner environment like the potential flow
+(`pip install KratosMultiphysics KratosStructuralMechanicsApplication
+KratosLinearSolversApplication scipy`). Everything the solver sees is SI:
+the mesh scaled by the length unit, the materials as they are, loads in
+newtons and pascals; the dialog converts the results back. Two models of
+the same part, chosen in the dialog:
 
-Second-order (10-node) tetrahedra are the default and should stay on: a
-skin one tetrahedron thick is a bending problem, and first-order
-tetrahedra lock. The script adds the mid-edge nodes itself (straight
-edges; the corner nodes and so the surface are untouched), so the tet
-pipeline and its exports are unchanged.
+* **Shells over a homogenised lattice core (the default, 2026-10-30).**
+  The skin / core tetrahedra below ran to 609k on p38a's airframe --
+  millions of degrees of freedom at second order -- and the count was the
+  SKIN: one tetrahedron thick on an offset remeshed at two skin
+  thicknesses, promoted to 10 nodes so as not to lock. So the skin is now
+  shells and the core a homogenised continuum. The core is tetrahedra
+  bounded by the body's OWN surface at the lattice cell size
+  (`FAerotelicLatticeModel::GetStructuralTetMeshes`, gmsh with no offset
+  surface at all), carrying the lattice's homogenised 6 x 6 elasticity
+  tensor through Kratos's `UserProvidedLinearElastic3DLaw` and its
+  effective density; the skin is a shell element on every one of those
+  surface triangles with the skin thickness as a property
+  (`ShellThinElementCorotational3D3N`). The shells sit on the outer
+  surface and the core fills the whole body, so they overlap by the
+  skin's volume: the core is far softer than the skin, so the overlap's
+  stiffness is nothing, and the core density is reduced by the overlap's
+  share so the mass and the inertial load are the part's. First-order
+  tetrahedra are fine, the bending problem being the shells'. The pressure
+  still maps face for face, the shells being the wetted triangles. The
+  lattice row's material is the BASE material its struts or walls are
+  printed in, as Mass Properties already reads it (density times the
+  lattice body's actual volume); the effective figures are computed.
+
+  *Homogenisation* (`tools/homogenize.py`, after Andreassen & Andreasen
+  2014, extended to 3-D voxels of any aspect): one period of the lattice
+  field is voxelised at the voxel centres (`aerotelic::SampleUnitCell` --
+  the cubic cell for TPMS and struts; for a honeycomb one period of the
+  cross-section, a x 2h for the triangular lattice of a Hexagon or
+  Triangle, by two voxels along the prism axis where the field does not
+  vary), each solid voxel a trilinear hexahedron, the nodes numbered
+  periodically so the cell has no boundary, the six unit macro strains
+  applied as equivalent nodal forces, one sparse factorisation (scipy's
+  SuperLU) for the six right-hand sides, three translations pinned, and
+  the tensor read off as the strain energy of the corrected fields. The
+  result depends on the voxel pattern and the base material alone, not on
+  the cell size, so one homogenisation serves every body the lattice
+  fills (and is cached under the user's temp folder by the cell's bytes
+  and the material). 32 voxels across the cell by default: the gyroid
+  takes ~16 s there, the octet 3 s. Checked (`tools/homogenize_check.py`)
+  against what has a closed form: a solid cell returns the base tensor
+  to rounding; a prismatic cell attains the Voigt bound along the prisms,
+  E_z = rho* E, exactly; a square honeycomb's in-plane modulus is (t/l) E
+  within 8%; a grid of bars (a/l)^2 E within 10% and cubic; a regular
+  hexagonal honeycomb's in-plane modulus is Gibson & Ashby's 2.3 (t/l)^3 E
+  within 8%; the octet is stretch-dominated near rho*/9 (Deshpande, Fleck
+  & Ashby), the BCC bending-dominated at 5% of rho*, the gyroid network
+  between (E/E_s = 0.07 at rho* = 0.30) and cubic.
+
+  *Micro stress.* The von Mises a homogenised element reports is the
+  average over a cell; the struts carry more. The same six solves give
+  every voxel's stress per unit macro strain, from which come a
+  conservative scalar bound (the largest ratio of peak voxel von Mises to
+  the Frobenius norm of the macro stress over 2000 sampled strain
+  directions, 20-60 for the lattices here, 240 for a thin-walled
+  honeycomb in plane) and the influence tensors of the voxels that set
+  that peak in any direction, the *critical set*, against which the
+  solver evaluates each core element's OWN strain state. The core's
+  margin is the base material's allowable over that estimated strut
+  stress; the smeared figure is reported beside it. Homogenisation
+  assumes the core is several cells thick, which a trailing edge is not:
+  the error there is local.
+
+  *Which shell element*, measured rather than assumed
+  (`tools/structural_fea_check.py`, a sandwich box beam L x 0.1 x 0.1
+  clamped at one end under its own weight, against Timoshenko and against
+  the same box as 10-node tetrahedra): with a core of 1% of the skin's
+  modulus the thin corotational triangle (Kirchhoff bending, ANDES
+  membrane) deflects 1.002 of Timoshenko and the 10-node tetrahedra 1.06;
+  with a void core, where a hollow box really is softer than beam theory,
+  the tetrahedra give 1.19 and the thin shell 1.13. Kratos's THICK
+  (Reissner-Mindlin DSG) triangle gave 0.77 with the core and 0.91
+  without, and did not move with mesh refinement -- too stiff once a core
+  shares its nodes -- so the thin one is the default and the thick one a
+  `shell_element` option in the job only. The box's shell model is 5,877
+  degrees of freedom against 169,959 for the tetrahedra. Also checked
+  there: a shell on a unit sphere under 1 bar carries the membrane
+  stress p a / 2t within 3% (median away from the support) and moves
+  inward by p a^2 (1 - nu) / 2 E t within 8%; the mixed system (six
+  degrees of freedom on shell nodes, three on the rest -- Kratos builds
+  the system from what each element asks for) solves, the shells carry
+  `VOLUME_ACCELERATION` (the reactions balance the whole weight), and
+  the clamp fixes the rotations too (`ROTATION` constrained on the
+  Support alongside `DISPLACEMENT`). AMGCL needs
+  `use_block_matrices_if_possible: false` for that mixed system; a direct
+  solver (`sparse_lu`, Eigen's SparseLU from KratosLinearSolversApplication)
+  is offered for small models.
+
+* **Skin and core tetrahedra (full resolution).** The mesh Lattice >
+  Export Tetrahedral Mesh writes, whose outer faces are the body's own
+  surface triangles. The skin tetrahedra are made of their body's
+  material, the core tetrahedra of the lattice's row read as an EFFECTIVE
+  material. Second-order (10-node) tetrahedra are the default and should
+  stay on: a skin one tetrahedron thick is a bending problem, and
+  first-order tetrahedra lock. The script adds the mid-edge nodes itself
+  (straight edges; the corner nodes and so the surface are untouched), so
+  the tet pipeline and its exports are unchanged. This is the reference
+  the shell model is checked against on small bodies.
+
+A region without a structural material stops the solve and says which.
 
 Phase 1 is dummy loads. The support fixes every degree of freedom of the
 nodes on a coordinate plane -- y = 0 by default, the root of a mirrored
@@ -1413,15 +1504,19 @@ phase 2 -- the pressure field from the potential flow or DUST, at the
 same tolerance and so face for face -- is a file in place of a constant.
 Forces are newtons whatever the project's units.
 
-Reported: nodes, elements and DOF; the peak displacement and where;
-the peak von Mises overall and per material, with the margin
-allowable / peak - 1; the mass; the force balance -- the reactions at the
-support against gravity, the pressure's resultant and the point force,
-which must be equal and opposite; and the mean of u.n over the wetted
-nodes, so an inward pressure can be seen to move the surface inward.
-The VTK holds the displacement and the von Mises stress (element peaks
-over the integration points, averaged to the nodes) as 10-node
-tetrahedra, in SI, for ParaView.
+Reported: nodes, elements and DOF; the homogenised core's relative
+density, effective moduli and amplification bound; the peak displacement
+and where; the peak von Mises overall and per region (skin, and core by
+its estimated strut stress with the smeared figure beside it), with the
+margin allowable / peak - 1; the mass; the force balance -- the reactions
+at the support against gravity, the pressure's resultant and the point
+force, which must be equal and opposite; and the mean of u.n over the
+wetted nodes, so an inward pressure can be seen to move the surface
+inward. The VTK holds the displacement (and the shells' rotations), the
+von Mises stress (element peaks over the integration points -- a shell's
+over its top, middle and bottom surfaces -- averaged to the nodes) and
+the core's estimated micro stress, as triangles and tetrahedra, in SI,
+for ParaView.
 
 Two Kratos details worth knowing before touching the script: a load
 assigned with `assign_vector_by_direction_process` /
@@ -1431,18 +1526,30 @@ constraint process FREES the support's degrees of freedom again when
 the step ends, so reactions are read from the Support sub model part,
 not by asking which nodes are fixed.
 
-The document commandlet solves the lattice-filled sphere -- an aluminium
-skin 0.05 thick on a unit sphere over a very soft core, stood on its
-bottom under its own weight and 1 bar of external pressure (64,056 DOF,
-~18 s) -- and holds it to closed forms: the mass is the densities over
-the regions' volumes to 1e-6; the support carries the weight (to 2%:
-17.62 kN against 17.92 kN -- the iterative solve's residual, not chased
-yet) and nothing else, the pressure's resultant over a closed surface
+The document commandlet solves the lattice-filled sphere both ways. As
+skin / core tetrahedra -- an aluminium skin 0.05 thick on a unit sphere
+over a very soft core, stood on its bottom under its own weight and 1 bar
+of external pressure (64,056 DOF) -- it holds to closed forms: the mass is
+the densities over the regions' volumes to 1e-6; the support carries the
+weight and nothing else, the pressure's resultant over a closed surface
 being zero to 1e-11; the surface moves inward; the skin's peak von Mises
-(1.27 MPa) is Lame's thick-shell hoop stress for a/b = 0.95 (1.05 MPa)
-plus the weight on the support; the soft core carries under a tenth of
-that; and the displacement is the core sagging under its own weight,
-millimetres at E = 1e5 Pa, while the skin moves microns.
+(1.9 MPa) is Lame's thick-shell hoop stress for a/b = 0.95 (1.05 MPa)
+plus the concentration where the weight enters the fixed cap; the soft
+core carries under a tenth of that; and the displacement is the core
+sagging under its own weight, millimetres at E = 1e5 Pa, while the skin
+moves microns. This case runs on the direct solver (~2 min against 18 s):
+with a skin 7e5 times stiffer than its core AMGCL stopped short, closing
+the force balance to 1.7% only and reporting a peak of 1.27 MPa that the
+converged solve does not reproduce -- the "residual not chased" of the
+first cut was the iterative solver, not the model. As shells over the
+homogenised gyroid (made of PMI foam; 2,628 DOF, 0.7 s to solve):
+the body alone meshes at the cell size with fewer tetrahedra, the cell
+voxelises near its 0.35 fraction, the effective modulus is cubic and
+between the bounds, the strut stress estimate sits above the smeared
+one, the mass is rho t A of the skin plus the overlap-corrected core,
+the support carries the weight with the shells' share, the surface moves
+inward, and the skin's peak von Mises is the thin-shell membrane stress
+p a / 2t = 1.0 MPa up to the support's concentration.
 
 ## How the standalone build is put together
 

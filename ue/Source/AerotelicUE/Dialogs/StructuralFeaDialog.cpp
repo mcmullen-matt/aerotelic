@@ -20,6 +20,7 @@
 #include "Widgets/NumericEntry.h"
 #include "Entity/AerotelicStructuralFea.h"
 
+#include "aerotelic/lattice.hpp"
 #include "aerotelic/materials.hpp"
 #include "aerotelic/units.hpp"
 
@@ -79,6 +80,11 @@ namespace
 		}
 		return nullptr;
 	}
+
+	bool HasStructuralMaterial(const aerotelic::MassSpec& S)
+	{
+		return S.mode == aerotelic::MassMode::Material && S.material.IsStructural();
+	}
 }
 
 void ShowAerotelicStructuralFeaDialog(TFunction<void(const FText&)> Status)
@@ -95,7 +101,7 @@ void ShowAerotelicStructuralFeaDialog(TFunction<void(const FText&)> Status)
 	if (Lattices.Num() == 0)
 	{
 		AerotelicMessageBox(EAppMsgType::Ok,
-			LOCTEXT("NoLattice", "Nothing to analyse: the model is a lattice-filled body's skin and core tetrahedra, so generate a lattice first (Lattice > Generate Lattice...)."),
+			LOCTEXT("NoLattice", "Nothing to analyse: the model is a lattice-filled body -- its skin as shells over its homogenised lattice core -- so generate a lattice first (Lattice > Generate Lattice...)."),
 			LOCTEXT("Title", "Structural (Kratos FEA)"));
 		return;
 	}
@@ -112,37 +118,44 @@ void ShowAerotelicStructuralFeaDialog(TFunction<void(const FText&)> Status)
 
 	TSharedRef<SWindow> Window = SNew(SWindow)
 		.Title(LOCTEXT("Title", "Structural (Kratos FEA)"))
-		.ClientSize(FVector2D(640, 860))
+		.ClientSize(FVector2D(680, 940))
 		.SupportsMaximize(false)
 		.SupportsMinimize(false);
 
 	// Modal: every local below outlives the widgets that point at it.
 	TSharedPtr<SEditableTextBox> PathBox;
-	TSharedPtr<SCheckBox> SecondOrderCheck, PointCheck;
-	TSharedPtr<STextBlock> LblMaterials, LblMesh, LblDisp, LblStress, LblMargins, LblBalance, LblTime;
+	TSharedPtr<SCheckBox> SecondOrderCheck, CacheCheck, PointCheck;
+	TSharedPtr<STextBlock> LblMaterials, LblMesh, LblCore, LblDisp, LblStress, LblMargins, LblBalance, LblTime;
 
 	TArray<TSharedPtr<FString>> LatticeOptions;
 	for (const auto& L : Lattices) LatticeOptions.Add(MakeShared<FString>(L->EntityName));
 	int32 LatticeIndex = 0;
+	TArray<TSharedPtr<FString>> ModelOptions = {
+		MakeShared<FString>(TEXT("Shells over a homogenised lattice core (for a desktop)")),
+		MakeShared<FString>(TEXT("Skin and core tetrahedra (full resolution)")) };
+	int32 ModelIndex = 0;
+	TArray<TSharedPtr<FString>> SolverOptions = { MakeShared<FString>(TEXT("amgcl (iterative)")), MakeShared<FString>(TEXT("sparse_lu (direct)")) };
+	int32 SolverIndex = 0;
 	TArray<TSharedPtr<FString>> AxisOptions = { MakeShared<FString>(TEXT("x")), MakeShared<FString>(TEXT("y")), MakeShared<FString>(TEXT("z")) };
 	int32 AxisIndex = 1;
 	TArray<TSharedPtr<FString>> PlaneOptions = { MakeShared<FString>(TEXT("at the value below")), MakeShared<FString>(TEXT("at the mesh's minimum")), MakeShared<FString>(TEXT("at the mesh's maximum")) };
 	int32 PlaneIndex = 0;
 
+	double Voxels = 32.0;
 	double SupportValue = 0.0, SupportTolerance = 0.0;
 	double LoadFactor = 1.0, Pressure = 0.0;
 	double PointX = 0.0, PointY = 0.0, PointZ = 0.0, ForceX = 0.0, ForceY = 0.0, ForceZ = -1000.0;
 
-	auto Combo = [](TArray<TSharedPtr<FString>>& Options, int32& Index)
+	auto Combo = [](TArray<TSharedPtr<FString>>& Options, int32& Index, TFunction<void()> Changed = nullptr)
 	{
 		return SNew(SComboBox<TSharedPtr<FString>>)
 			.OptionsSource(&Options)
 			.InitiallySelectedItem(Options[Index])
 			.OnGenerateWidget_Lambda([](TSharedPtr<FString> S) { return SNew(STextBlock).Text(FText::FromString(*S)); })
-			.OnSelectionChanged_Lambda([&Options, &Index](TSharedPtr<FString> S, ESelectInfo::Type)
+			.OnSelectionChanged_Lambda([&Options, &Index, Changed](TSharedPtr<FString> S, ESelectInfo::Type)
 			{
 				const int32 I = Options.IndexOfByKey(S);
-				if (I != INDEX_NONE) Index = I;
+				if (I != INDEX_NONE) { Index = I; if (Changed) Changed(); }
 			})
 			[ SNew(STextBlock).Text_Lambda([&Options, &Index]() { return FText::FromString(*Options[Index]); }) ];
 	};
@@ -167,19 +180,35 @@ void ShowAerotelicStructuralFeaDialog(TFunction<void(const FText&)> Status)
 		if (!Lattices[LatticeIndex].IsValid()) { LblMaterials->SetText(LOCTEXT("Gone", "(the lattice is gone)")); return; }
 		AAerotelicEntityActor* L = Lattices[LatticeIndex].Get();
 		const FAerotelicLatticeModel* Model = L->GetModelAs<FAerotelicLatticeModel>();
+		const bool bShellCore = ModelIndex == 0;
 		TArray<FString> Lines;
 		for (const FAerotelicBooleanOperand& Op : Model->Targets)
 		{
 			if (!Op.Entity.IsValid()) continue;
 			const aerotelic::MassSpec& S = Op.Entity->GetMassSpec();
-			const bool bOk = S.mode == aerotelic::MassMode::Material && S.material.IsStructural();
-			Lines.Add(FString::Printf(TEXT("%s%s skin: %s"), *Op.Entity->EntityName, Op.bMirror ? TEXT(" (mirror)") : TEXT(""),
-				bOk ? UTF8_TO_TCHAR(S.material.name.c_str()) : TEXT("NO STRUCTURAL MATERIAL -- set one under Material Properties")));
+			const FString Material = HasStructuralMaterial(S) ? UTF8_TO_TCHAR(S.material.name.c_str()) : TEXT("NO STRUCTURAL MATERIAL -- set one under Material Properties");
+			if (bShellCore)
+			{
+				Lines.Add(FString::Printf(TEXT("%s%s skin: %s, shells %.4g %s thick"), *Op.Entity->EntityName, Op.bMirror ? TEXT(" (mirror)") : TEXT(""),
+					*Material, Model->Spec.skin_thickness, *UnitName(Units.LengthName())));
+			}
+			else
+			{
+				Lines.Add(FString::Printf(TEXT("%s%s skin: %s"), *Op.Entity->EntityName, Op.bMirror ? TEXT(" (mirror)") : TEXT(""), *Material));
+			}
 		}
 		const aerotelic::MassSpec& C = L->GetMassSpec();
-		const bool bCoreOk = C.mode == aerotelic::MassMode::Material && C.material.IsStructural();
-		Lines.Add(FString::Printf(TEXT("core (the lattice's effective material): %s"),
-			bCoreOk ? UTF8_TO_TCHAR(C.material.name.c_str()) : TEXT("NO STRUCTURAL MATERIAL -- set one on the lattice under Material Properties")));
+		const FString CoreMaterial = HasStructuralMaterial(C) ? UTF8_TO_TCHAR(C.material.name.c_str()) : TEXT("NO STRUCTURAL MATERIAL -- set one on the lattice under Material Properties");
+		if (bShellCore)
+		{
+			Lines.Add(FString::Printf(TEXT("core: %s %s lattice at %.0f%% (cell %.4g %s) of %s, homogenised from one cell at %d voxels across"),
+				UTF8_TO_TCHAR(aerotelic::LatticeFamilyName(Model->Spec.family)), UTF8_TO_TCHAR(Model->Spec.type.c_str()), 100.0 * Model->Spec.volume_fraction,
+				Model->Spec.cell_size, *UnitName(Units.LengthName()), *CoreMaterial, static_cast<int32>(Voxels)));
+		}
+		else
+		{
+			Lines.Add(FString::Printf(TEXT("core (the lattice's material read as an EFFECTIVE material): %s"), *CoreMaterial));
+		}
 		LblMaterials->SetText(FText::FromString(FString::Join(Lines, TEXT("\n"))));
 	};
 
@@ -198,62 +227,108 @@ void ShowAerotelicStructuralFeaDialog(TFunction<void(const FText&)> Status)
 		}
 		AAerotelicEntityActor* L = Lattices[LatticeIndex].Get();
 		const FAerotelicLatticeModel* Model = L->GetModelAs<FAerotelicLatticeModel>();
+		const bool bShellCore = ModelIndex == 0;
+		const aerotelic::MassSpec& C = L->GetMassSpec();
+		if (!HasStructuralMaterial(C))
+		{
+			const FString Why = bShellCore
+				? FString::Printf(TEXT("%s has no structural material: set the material its struts or walls are printed in on the lattice under Material Properties in the Scene tree. Its effective stiffness is computed from the cell."), *L->EntityName)
+				: FString::Printf(TEXT("%s has no structural material for its core: set one on the lattice under Material Properties in the Scene tree (read here as the lattice's EFFECTIVE density and stiffness)."), *L->EntityName);
+			AerotelicMessageBox(EAppMsgType::Ok, FText::FromString(Why), LOCTEXT("Title", "Structural (Kratos FEA)"));
+			return;
+		}
 
-		// The model: every filled body's skin and core tetrahedra as one
-		// mesh, each region its own material id (body i: skin 2i+1, core
-		// 2i+2). The bodies are not connected to one another -- a lattice
-		// over separate bodies is separate models solved at once.
-		Status(LOCTEXT("Meshing", "Building the skin and core tetrahedra..."));
-		const std::vector<FAerotelicLatticeModel::FTetMesh>& Meshes = Model->GetTetMeshes();
+		// The model: every filled body's tetrahedra as one mesh, each body
+		// its own region id. The bodies are not connected to one another --
+		// a lattice over separate bodies is separate models solved at once.
+		Status(bShellCore ? LOCTEXT("MeshingCore", "Building the core tetrahedra at the cell size...") : LOCTEXT("Meshing", "Building the skin and core tetrahedra..."));
 		aerotelic::TetMesh Mesh;
 		AerotelicStructuralFea::FRequest Request;
+		Request.Model = bShellCore ? AerotelicStructuralFea::EModel::ShellCore : AerotelicStructuralFea::EModel::SolidTets;
 		TArray<FString> Problems;
+		TArray<FString> EntryLabels;      // per per_material entry, for the margins
+		TArray<double> EntryAllowable;    // SI
+		aerotelic::UnitCellSamples Cell;
+		if (bShellCore)
+		{
+			try
+			{
+				Cell = aerotelic::SampleUnitCell(Model->Spec, static_cast<int32>(Voxels));
+			}
+			catch (const std::exception& E)
+			{
+				Status(LOCTEXT("Ready", "Ready"));
+				AerotelicMessageBox(EAppMsgType::Ok, FText::FromString(FString::Printf(TEXT("The lattice cell could not be voxelised: %s"), UTF8_TO_TCHAR(E.what()))), LOCTEXT("Title", "Structural (Kratos FEA)"));
+				return;
+			}
+		}
+		const std::vector<FAerotelicLatticeModel::FTetMesh>& Meshes = bShellCore ? Model->GetStructuralTetMeshes() : Model->GetTetMeshes();
 		int32 BodyIndex = 0;
 		for (const FAerotelicLatticeModel::FTetMesh& M : Meshes)
 		{
 			AAerotelicEntityActor* Body = EntityForTetLabel(Model, M.Label);
 			if (Body == nullptr) { Problems.Add(M.Label + TEXT(": its entity is gone")); continue; }
 			const aerotelic::MassSpec& S = Body->GetMassSpec();
-			if (S.mode != aerotelic::MassMode::Material || !S.material.IsStructural())
+			if (!HasStructuralMaterial(S))
 			{
 				Problems.Add(M.Label + TEXT(": no structural material (Material Properties in the Scene tree)"));
 				continue;
 			}
 			const int Offset = static_cast<int>(Mesh.nodes.size());
-			const int SkinId = 2 * BodyIndex + 1, CoreId = 2 * BodyIndex + 2;
 			Mesh.nodes.insert(Mesh.nodes.end(), M.Result.Mesh.nodes.begin(), M.Result.Mesh.nodes.end());
-			for (size_t t = 0; t < M.Result.Mesh.tets.size(); ++t)
+			if (bShellCore)
 			{
-				const auto& T = M.Result.Mesh.tets[t];
-				Mesh.tets.push_back({T[0] + Offset, T[1] + Offset, T[2] + Offset, T[3] + Offset});
-				const int Region = t < M.Result.Mesh.material.size() ? M.Result.Mesh.material[t] : 1;
-				Mesh.material.push_back(Region == 2 ? CoreId : SkinId);
+				const int RegionId = BodyIndex + 1;
+				for (const auto& T : M.Result.Mesh.tets)
+				{
+					Mesh.tets.push_back({T[0] + Offset, T[1] + Offset, T[2] + Offset, T[3] + Offset});
+					Mesh.material.push_back(RegionId);
+				}
+				AerotelicStructuralFea::FRegion R;
+				R.Id = RegionId;
+				R.Label = M.Label;
+				R.Skin = S.material;
+				R.SkinThickness = Model->Spec.skin_thickness;
+				R.Core = C.material;
+				R.Cell = &Cell;
+				Request.Regions.Add(R);
+				EntryLabels.Add(M.Label + TEXT(" skin"));
+				EntryAllowable.Add(S.material.allowable_stress);
+				EntryLabels.Add(M.Label + TEXT(" core (") + L->EntityName + TEXT(", struts of ") + UTF8_TO_TCHAR(C.material.name.c_str()) + TEXT(")"));
+				EntryAllowable.Add(C.material.allowable_stress);
 			}
-			Request.Materials.Add({ SkinId, M.Label + TEXT(" skin"), S.material });
-			const aerotelic::MassSpec& C = L->GetMassSpec();
-			Request.Materials.Add({ CoreId, M.Label + TEXT(" core (") + L->EntityName + TEXT(")"), C.material });
+			else
+			{
+				const int SkinId = 2 * BodyIndex + 1, CoreId = 2 * BodyIndex + 2;
+				for (size_t t = 0; t < M.Result.Mesh.tets.size(); ++t)
+				{
+					const auto& T = M.Result.Mesh.tets[t];
+					Mesh.tets.push_back({T[0] + Offset, T[1] + Offset, T[2] + Offset, T[3] + Offset});
+					const int Region = t < M.Result.Mesh.material.size() ? M.Result.Mesh.material[t] : 1;
+					Mesh.material.push_back(Region == 2 ? CoreId : SkinId);
+				}
+				Request.Materials.Add({ SkinId, M.Label + TEXT(" skin"), S.material });
+				Request.Materials.Add({ CoreId, M.Label + TEXT(" core (") + L->EntityName + TEXT(")"), C.material });
+				EntryLabels.Add(M.Label + TEXT(" skin"));
+				EntryAllowable.Add(S.material.allowable_stress);
+				EntryLabels.Add(M.Label + TEXT(" core (") + L->EntityName + TEXT(")"));
+				EntryAllowable.Add(C.material.allowable_stress);
+			}
 			++BodyIndex;
 		}
-		for (const FString& N : Model->GetTetNotes()) Problems.Add(N);
+		for (const FString& N : (bShellCore ? Model->GetStructuralTetNotes() : Model->GetTetNotes())) Problems.Add(N);
 		if (Mesh.tets.empty())
 		{
 			Status(LOCTEXT("Ready", "Ready"));
 			AerotelicMessageBox(EAppMsgType::Ok, FText::FromString(TEXT("No model could be built:\n") + FString::Join(Problems, TEXT("\n"))), LOCTEXT("Title", "Structural (Kratos FEA)"));
 			return;
 		}
-		{
-			const aerotelic::MassSpec& C = L->GetMassSpec();
-			if (C.mode != aerotelic::MassMode::Material || !C.material.IsStructural())
-			{
-				Status(LOCTEXT("Ready", "Ready"));
-				AerotelicMessageBox(EAppMsgType::Ok, FText::FromString(FString::Printf(TEXT("%s has no structural material for its core: set one on the lattice under Material Properties in the Scene tree (the lattice's EFFECTIVE density and stiffness)."), *L->EntityName)), LOCTEXT("Title", "Structural (Kratos FEA)"));
-				return;
-			}
-		}
 
 		Request.Mesh = &Mesh;
 		Request.LengthToSI = Units.LengthToSI();
 		Request.bSecondOrder = SecondOrderCheck->IsChecked();
+		Request.LinearSolver = SolverIndex == 1 ? TEXT("sparse_lu") : TEXT("amgcl");
+		Request.bHomogenizeCache = CacheCheck->IsChecked();
 		Request.SupportAxis = (*AxisOptions[AxisIndex])[0];
 		Request.SupportValue = SupportValue;
 		Request.bSupportAtMin = PlaneIndex == 1;
@@ -266,7 +341,9 @@ void ShowAerotelicStructuralFeaDialog(TFunction<void(const FText&)> Status)
 		Request.PointForce = aerotelic::Vec3{ForceX, ForceY, ForceZ};
 		Request.VtkPath = Path;
 
-		Status(FText::FromString(FString::Printf(TEXT("Solving %s tetrahedra on Kratos..."), *Thousands((int64)Mesh.tets.size()))));
+		Status(FText::FromString(bShellCore
+			? FString::Printf(TEXT("Homogenising the lattice cell and solving %s tetrahedra with shells on Kratos..."), *Thousands((int64)Mesh.tets.size()))
+			: FString::Printf(TEXT("Solving %s tetrahedra on Kratos..."), *Thousands((int64)Mesh.tets.size()))));
 		AerotelicStructuralFea::FResult R;
 		FString Error;
 		if (!AerotelicStructuralFea::Run(Request, R, Error))
@@ -277,26 +354,53 @@ void ShowAerotelicStructuralFeaDialog(TFunction<void(const FText&)> Status)
 		}
 
 		const double L2 = Units.LengthToSI(), S2 = Units.StressToSI(), M2 = Units.MassToSI();
-		LblMesh->SetText(FText::FromString(FString::Printf(TEXT("%s nodes, %s %s tetrahedra, %s DOF; %s wetted faces; %s nodes on the support"),
-			*Thousands(R.Nodes), *Thousands(R.Elements), R.bSecondOrder ? TEXT("10-node") : TEXT("4-node"), *Thousands(R.Dofs), *Thousands(R.WettedFaces), *Thousands(R.SupportNodes))));
+		if (bShellCore)
+		{
+			LblMesh->SetText(FText::FromString(FString::Printf(TEXT("%s nodes; %s 4-node tetrahedra (the core) + %s shells (the skin); %s DOF; %s nodes on the support"),
+				*Thousands(R.Nodes), *Thousands(R.Tets), *Thousands(R.Shells), *Thousands(R.Dofs), *Thousands(R.SupportNodes))));
+			FString Core;
+			for (const AerotelicStructuralFea::FRegionResult& G : R.Regions)
+			{
+				const double E = C.material.youngs_modulus;
+				Core += FString::Printf(TEXT("%s%s: relative density %.3f; E/E_s = (%.3f, %.3f, %.3f), G/E_s = (%.3f, %.3f, %.3f), nu_xy %.2f; strut stress amplification bound %.1f; core density used %.4g %s/%s^3; homogenised in %.1f s%s"),
+					Core.IsEmpty() ? TEXT("") : TEXT("\n"), *G.Label, G.RelativeDensity, G.E[0] / E, G.E[1] / E, G.E[2] / E, G.G[0] / E, G.G[1] / E, G.G[2] / E, G.NuXY,
+					G.Amplification, G.CoreDensityUsed / M2 * L2 * L2 * L2, *UnitName(Units.MassName()), *UnitName(Units.LengthName()),
+					G.HomogenizeSeconds, G.bHomogenizeCached ? TEXT(" (from the cache)") : TEXT(""));
+			}
+			LblCore->SetText(FText::FromString(Core));
+		}
+		else
+		{
+			LblMesh->SetText(FText::FromString(FString::Printf(TEXT("%s nodes, %s %s tetrahedra, %s DOF; %s wetted faces; %s nodes on the support"),
+				*Thousands(R.Nodes), *Thousands(R.Elements), R.bSecondOrder ? TEXT("10-node") : TEXT("4-node"), *Thousands(R.Dofs), *Thousands(R.WettedFaces), *Thousands(R.SupportNodes))));
+			LblCore->SetText(LOCTEXT("NoHomog", "(the core's material is taken as given, not homogenised)"));
+		}
 		LblDisp->SetText(FText::FromString(FString::Printf(TEXT("%.4g %s at (%.4g, %.4g, %.4g); mean surface displacement %s (u . n = %.3g %s)"),
 			R.MaxDisplacement / L2, *UnitName(Units.LengthName()), R.MaxDisplacementAt[0] / L2, R.MaxDisplacementAt[1] / L2, R.MaxDisplacementAt[2] / L2,
 			R.MeanNormalDisplacement < 0.0 ? TEXT("inward") : TEXT("outward"), R.MeanNormalDisplacement / L2, *UnitName(Units.LengthName()))));
 		FString Peaks;
-		for (int32 i = 0; i < Request.Materials.Num() && i < R.MaxVonMisesByMaterial.Num(); ++i)
+		for (int32 i = 0; i < EntryLabels.Num() && i < R.MaxVonMisesByMaterial.Num(); ++i)
 		{
-			const bool bHasAllowable = Request.Materials[i].Material.allowable_stress > 0.0;
-			Peaks += FString::Printf(TEXT("%s%s: %.4g %s%s"), i ? TEXT("\n") : TEXT(""), *Request.Materials[i].Label, R.MaxVonMisesByMaterial[i] / S2, *UnitName(Units.StressName()),
-				bHasAllowable ? *FString::Printf(TEXT(", margin %+.2f against %.4g"), R.MarginByMaterial[i], Request.Materials[i].Material.allowable_stress / S2) : TEXT(" (no allowable set)"));
+			const bool bHasAllowable = EntryAllowable[i] > 0.0;
+			const bool bCore = bShellCore && (i % 2 == 1);
+			FString Macro;
+			if (bCore && i / 2 < R.Regions.Num())
+			{
+				Macro = FString::Printf(TEXT(" (estimated in the struts; the smeared core stress is %.4g %s)"), R.Regions[i / 2].CoreMaxVonMises / S2, *UnitName(Units.StressName()));
+			}
+			Peaks += FString::Printf(TEXT("%s%s: %.4g %s%s%s"), i ? TEXT("\n") : TEXT(""), *EntryLabels[i], R.MaxVonMisesByMaterial[i] / S2, *UnitName(Units.StressName()), *Macro,
+				bHasAllowable ? *FString::Printf(TEXT(", margin %+.2f against %.4g"), R.MarginByMaterial[i], EntryAllowable[i] / S2) : TEXT(" (no allowable set)"));
 		}
-		LblStress->SetText(FText::FromString(FString::Printf(TEXT("%.4g %s, in material %d"), R.MaxVonMises / S2, *UnitName(Units.StressName()), R.MaxVonMisesMaterial)));
+		LblStress->SetText(FText::FromString(FString::Printf(TEXT("%.4g %s, in region %d"), R.MaxVonMises / S2, *UnitName(Units.StressName()), R.MaxVonMisesMaterial)));
 		LblMargins->SetText(FText::FromString(Peaks));
 		LblBalance->SetText(FText::FromString(FString::Printf(
 			TEXT("mass %.6g %s. Reactions (%.4g, %.4g, %.4g) N against gravity (%.4g, %.4g, %.4g) + pressure (%.4g, %.4g, %.4g) + point (%.4g, %.4g, %.4g) N"),
 			R.Mass / M2, *UnitName(Units.MassName()), R.Reaction[0], R.Reaction[1], R.Reaction[2],
 			R.AppliedGravity[0], R.AppliedGravity[1], R.AppliedGravity[2], R.AppliedPressure[0], R.AppliedPressure[1], R.AppliedPressure[2],
 			R.AppliedPoint[0], R.AppliedPoint[1], R.AppliedPoint[2])));
-		LblTime->SetText(FText::FromString(FString::Printf(TEXT("%.1f s (%.1f solving)"), R.Seconds, R.SecondsSolve)));
+		LblTime->SetText(FText::FromString(bShellCore
+			? FString::Printf(TEXT("%.1f s (%.1f homogenising, %.1f solving)"), R.Seconds, R.SecondsHomogenize, R.SecondsSolve)
+			: FString::Printf(TEXT("%.1f s (%.1f solving)"), R.Seconds, R.SecondsSolve)));
 		Status(FText::FromString(FString::Printf(TEXT("Structural analysis solved on %s DOF: max displacement %.4g %s, max von Mises %.4g %s -> %s"),
 			*Thousands(R.Dofs), R.MaxDisplacement / L2, *UnitName(Units.LengthName()), R.MaxVonMises / S2, *UnitName(Units.StressName()), *R.VtkPath)));
 		if (Problems.Num() > 0)
@@ -332,28 +436,35 @@ void ShowAerotelicStructuralFeaDialog(TFunction<void(const FText&)> Status)
 						SNew(SVerticalBox)
 						+ SVerticalBox::Slot().AutoHeight().Padding(0, 2)
 						[
-							FormRow(LOCTEXT("Lattice", "Lattice-filled body:"),
-								SNew(SComboBox<TSharedPtr<FString>>)
-								.OptionsSource(&LatticeOptions)
-								.InitiallySelectedItem(LatticeOptions[0])
-								.OnGenerateWidget_Lambda([](TSharedPtr<FString> S) { return SNew(STextBlock).Text(FText::FromString(*S)); })
-								.OnSelectionChanged_Lambda([&LatticeOptions, &LatticeIndex, &DescribeModel](TSharedPtr<FString> S, ESelectInfo::Type)
-								{
-									const int32 I = LatticeOptions.IndexOfByKey(S);
-									if (I != INDEX_NONE) { LatticeIndex = I; DescribeModel(); }
-								})
-								[ SNew(STextBlock).Text_Lambda([&LatticeOptions, &LatticeIndex]() { return FText::FromString(*LatticeOptions[LatticeIndex]); }) ])
+							FormRow(LOCTEXT("Lattice", "Lattice-filled body:"), Combo(LatticeOptions, LatticeIndex, [&DescribeModel]() { DescribeModel(); }))
+						]
+						+ SVerticalBox::Slot().AutoHeight().Padding(0, 2)
+						[
+							FormRow(LOCTEXT("Model", "Model:"), Combo(ModelOptions, ModelIndex, [&DescribeModel]() { DescribeModel(); }))
+						]
+						+ SVerticalBox::Slot().AutoHeight().Padding(0, 2)
+						[
+							FormRow(LOCTEXT("Voxels", "Voxels across the cell:"), Spin(Voxels, 8.0, 96.0, 4.0, FText::GetEmpty()))
 						]
 						+ SVerticalBox::Slot().AutoHeight().Padding(0, 4) [ Stat(LblMaterials) ]
 						+ SVerticalBox::Slot().AutoHeight().Padding(0, 2)
 						[
 							SAssignNew(SecondOrderCheck, SCheckBox).IsChecked(ECheckBoxState::Checked)
-							[ SNew(STextBlock).Text(LOCTEXT("SecondOrder", "Second-order (10-node) tetrahedra")) ]
+							[ SNew(STextBlock).Text(LOCTEXT("SecondOrder", "Second-order (10-node) tetrahedra (the full-resolution model)")) ]
+						]
+						+ SVerticalBox::Slot().AutoHeight().Padding(0, 2)
+						[
+							SAssignNew(CacheCheck, SCheckBox).IsChecked(ECheckBoxState::Checked)
+							[ SNew(STextBlock).Text(LOCTEXT("Cache", "Reuse an earlier homogenisation of the same cell and material")) ]
+						]
+						+ SVerticalBox::Slot().AutoHeight().Padding(0, 2)
+						[
+							FormRow(LOCTEXT("Solver", "Linear solver:"), Combo(SolverOptions, SolverIndex))
 						]
 						+ SVerticalBox::Slot().AutoHeight().Padding(0, 4, 0, 0)
 						[
 							MakeInfoLabel(LOCTEXT("ModelHint",
-								"The model is the lattice's skin and core tetrahedra (what Lattice > Export Tetrahedral Mesh writes): the skin made of each filled body's material, the core of the lattice's own -- its EFFECTIVE density and stiffness, set on the lattice under Material Properties. Keep second order on: a skin one tetrahedron thick is a bending problem, and first-order tetrahedra lock."))
+								"Shells over a homogenised core: the body's own surface triangles become shell elements of the skin thickness, made of the body's material, and the inside is tetrahedra at the lattice cell size carrying the lattice's homogenised stiffness -- one unit cell, voxelised at the resolution above, solved under the six unit strains -- made of the material set on the lattice (the stuff its struts or walls are printed in). A few hundred thousand degrees of freedom for an airframe. The full-resolution model is the skin and core tetrahedra Lattice > Export Tetrahedral Mesh writes, with the lattice's material read as an effective material; keep second order on for it, since a skin one tetrahedron thick is a bending problem. The direct solver is sure but slow past a few hundred thousand degrees of freedom."))
 						])
 				]
 				+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 8)
@@ -367,7 +478,7 @@ void ShowAerotelicStructuralFeaDialog(TFunction<void(const FText&)> Status)
 						+ SVerticalBox::Slot().AutoHeight().Padding(0, 4, 0, 0)
 						[
 							MakeInfoLabel(LOCTEXT("SupportHint",
-								"Every degree of freedom of the nodes on that plane is fixed. y = 0 is the root of a mirrored half -- the symmetry plane -- which is why it is the default; the mesh's minimum or maximum along an axis clamps a body by its end."))
+								"Every degree of freedom of the nodes on that plane is fixed (the shells' rotations too: a clamp). y = 0 is the root of a mirrored half -- the symmetry plane -- which is why it is the default; the mesh's minimum or maximum along an axis clamps a body by its end."))
 						])
 				]
 				+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 8)
@@ -408,15 +519,16 @@ void ShowAerotelicStructuralFeaDialog(TFunction<void(const FText&)> Status)
 					MakeGroup(LOCTEXT("Result", "Result"),
 						SNew(SVerticalBox)
 						+ SVerticalBox::Slot().AutoHeight() [ FormRow(LOCTEXT("MeshStat", "Mesh:"), Stat(LblMesh)) ]
+						+ SVerticalBox::Slot().AutoHeight() [ FormRow(LOCTEXT("CoreStat", "Homogenised core:"), Stat(LblCore)) ]
 						+ SVerticalBox::Slot().AutoHeight() [ FormRow(LOCTEXT("DispStat", "Max displacement:"), Stat(LblDisp)) ]
 						+ SVerticalBox::Slot().AutoHeight() [ FormRow(LOCTEXT("StressStat", "Max von Mises:"), Stat(LblStress)) ]
-						+ SVerticalBox::Slot().AutoHeight() [ FormRow(LOCTEXT("MarginStat", "Per material:"), Stat(LblMargins)) ]
+						+ SVerticalBox::Slot().AutoHeight() [ FormRow(LOCTEXT("MarginStat", "Per region:"), Stat(LblMargins)) ]
 						+ SVerticalBox::Slot().AutoHeight() [ FormRow(LOCTEXT("BalanceStat", "Force balance:"), Stat(LblBalance)) ]
 						+ SVerticalBox::Slot().AutoHeight() [ FormRow(LOCTEXT("TimeStat", "Took:"), Stat(LblTime)) ]
 						+ SVerticalBox::Slot().AutoHeight().Padding(0, 4, 0, 0)
 						[
 							MakeInfoLabel(LOCTEXT("ResultHint",
-								"Linear static, small displacement, linear elastic. The reactions at the support must balance what was applied -- gravity on the mass, the pressure's resultant (zero over a closed surface), the point force. Margin is allowable / peak von Mises - 1 per material. The VTK holds the displacement and the von Mises stress for ParaView, in SI."))
+								"Linear static, small displacement, linear elastic. The reactions at the support must balance what was applied -- gravity on the mass, the pressure's resultant (zero over a closed surface), the point force. Margin is allowable / peak von Mises - 1. The homogenised core's von Mises is a smeared average over a cell, so its margin is taken against the lattice material's allowable using the stress ESTIMATED IN THE STRUTS: the peak over the cell's critical voxels under each element's own strain. The VTK holds the displacement and the stresses for ParaView, in SI."))
 						])
 				]
 				+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 10)
@@ -440,7 +552,7 @@ void ShowAerotelicStructuralFeaDialog(TFunction<void(const FText&)> Status)
 		]);
 
 	DescribeModel();
-	Status(LOCTEXT("Ready", "Choose the lattice, the support and the loads, then Solve."));
+	Status(LOCTEXT("Ready", "Choose the lattice, the model, the support and the loads, then Solve."));
 	FSlateApplication::Get().AddModalWindow(Window, FSlateApplication::Get().GetActiveTopLevelWindow());
 }
 

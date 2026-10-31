@@ -2,33 +2,49 @@
 
 #include "CoreMinimal.h"
 
+#include "aerotelic/lattice.hpp"
 #include "aerotelic/materials.hpp"
 #include "aerotelic/tet.hpp"
 #include "aerotelic/vec3.hpp"
 
-// A linear static finite-element analysis of a lattice-filled body's
-// skin / core tetrahedra, on KratosMultiphysics' StructuralMechanics
-// application (tools/structural_fea.py, run as a separate process in the
-// WingDesigner micromamba environment -- the same bridge pattern as the
-// potential flow, AerotelicPotentialFlow.h).
+// A linear static finite-element analysis of a lattice-filled body on
+// KratosMultiphysics' StructuralMechanics application
+// (tools/structural_fea.py, run as a separate process in the WingDesigner
+// micromamba environment -- the same bridge pattern as the potential flow,
+// AerotelicPotentialFlow.h).
 //
-// The mesh is the one Lattice -> Export Tetrahedral Mesh writes: gmsh's
-// skin and core tetrahedra, whose outer faces are the body's own surface
-// triangles exactly. Each tetrahedron carries a material id; the request
-// says what each id is made of (the skin its body's material, the core
-// its lattice's, from the Scene tree's Material Properties). Everything
-// is handed to the solver in SI: the mesh scaled by LengthToSI, the
-// materials as they are (materials.hpp is SI), the loads in newtons and
-// pascals. What comes back is SI too; the dialog converts for display.
+// Two models of the same part:
 //
-// PHASE 1: dummy loads -- an inertial load factor, a uniform pressure on
-// the wetted surface, a point force -- and a support on a coordinate
-// plane. The job takes the pressure per wetted face already, so a
-// pressure field from the potential flow or DUST (phase 2) is a file in
-// place of a constant.
+//   ShellCore (the default, the one a desktop can carry). The core is
+//   tetrahedra bounded by the body's own surface at the lattice cell size
+//   (FAerotelicLatticeModel::GetStructuralTetMeshes), carrying the
+//   lattice's HOMOGENISED elasticity tensor and effective density: the
+//   script voxelises one unit cell (aerotelic::SampleUnitCell, handed over
+//   in the job) and solves it under the six unit strains
+//   (tools/homogenize.py). The skin is a shell element on every surface
+//   triangle with the skin thickness as a property. The skin's material is
+//   its body's; the lattice's material is the BASE material its struts or
+//   walls are made of -- not an effective figure -- and the core's margin
+//   is against that material's allowable using the estimated micro stress
+//   in the struts, not the smeared macro stress of the homogenised core.
+//
+//   SolidTets. The skin / core tetrahedra Lattice > Export Tetrahedral
+//   Mesh writes, each tetrahedron a material by id (the skin its body's,
+//   the core the lattice's, here read as an EFFECTIVE material). The
+//   full-resolution reference, for small bodies.
+//
+// Everything is handed to the solver in SI: the mesh scaled by LengthToSI,
+// the materials as they are (materials.hpp is SI), the loads in newtons
+// and pascals. What comes back is SI too; the dialog converts for display.
+//
+// Loads: an inertial load factor, a uniform pressure on the wetted
+// surface or a pressure per wetted face (the flow solvers' field), a point
+// force; and a support on a coordinate plane.
 namespace AerotelicStructuralFea
 {
-	// What the tetrahedra of one material id are made of.
+	enum class EModel { ShellCore, SolidTets };
+
+	// SolidTets: what the tetrahedra of one material id are made of.
 	struct FMaterialRegion
 	{
 		int32 Id = 0;
@@ -36,17 +52,44 @@ namespace AerotelicStructuralFea
 		aerotelic::Material Material;   // SI
 	};
 
+	// ShellCore: one filled body -- the region id its tetrahedra carry, its
+	// skin's material and thickness, and the lattice's base material with
+	// the voxelised unit cell the core is homogenised from.
+	struct FRegion
+	{
+		int32 Id = 0;
+		FString Label;
+		aerotelic::Material Skin;       // SI
+		double SkinThickness = 0.0;     // PROJECT units (scaled with the mesh)
+		aerotelic::Material Core;       // SI: the lattice's BASE material
+		const aerotelic::UnitCellSamples* Cell = nullptr;
+	};
+
 	struct FRequest
 	{
-		// Skin / core tetrahedra in PROJECT units, material id per tetrahedron.
+		EModel Model = EModel::ShellCore;
+
+		// The tetrahedra in PROJECT units, a region / material id per
+		// tetrahedron: SolidTets' skin and core tetrahedra, or ShellCore's
+		// body-only tetrahedra (whose boundary faces take the shells).
 		const aerotelic::TetMesh* Mesh = nullptr;
 		double LengthToSI = 1.0;
-		TArray<FMaterialRegion> Materials;
+		TArray<FMaterialRegion> Materials;   // SolidTets, one per material id
+		TArray<FRegion> Regions;             // ShellCore, one per region id
 
-		// Second-order (10-node) tetrahedra: mid-edge nodes added by the
-		// solver script. A skin one tetrahedron thick in bending needs them;
-		// first-order tetrahedra lock.
+		// SolidTets: second-order (10-node) tetrahedra, mid-edge nodes added
+		// by the solver script. A skin one tetrahedron thick in bending
+		// needs them; first-order tetrahedra lock. (ShellCore uses 4-node
+		// tetrahedra: the skin, the bending problem, is shells.)
 		bool bSecondOrder = true;
+
+		// The linear solver: "amgcl" (iterative, the default) or
+		// "sparse_lu" (direct; sure, and fine up to a few hundred thousand
+		// degrees of freedom).
+		FString LinearSolver = TEXT("amgcl");
+		// Reuse a homogenisation of the same cell and material from an
+		// earlier run (the script keeps them under the user's temp folder).
+		bool bHomogenizeCache = true;
 
 		// --- support: every DOF of the nodes within SupportTolerance of
 		// the plane SupportAxis = SupportValue (project units). "min" / "max"
@@ -62,8 +105,8 @@ namespace AerotelicStructuralFea
 		// along -z (1 is its weight; 0 switches gravity off).
 		double LoadFactor = 1.0;
 		// Uniform pressure on the wetted (outer) surface, pascals, positive
-		// pressing inwards. Or a pressure per wetted face (phase 2), which
-		// takes precedence when non-empty; the faces are the outer surface's
+		// pressing inwards. Or a pressure per wetted face, which takes
+		// precedence when non-empty; the faces are the outer surface's
 		// triangles in the order the script reports them.
 		double Pressure = 0.0;
 		TArray<double> PressurePerFace;
@@ -76,22 +119,50 @@ namespace AerotelicStructuralFea
 		FString VtkPath;
 	};
 
+	// ShellCore: what came of one region.
+	struct FRegionResult
+	{
+		int32 Id = 0;
+		FString Label;
+		// The homogenised core.
+		double RelativeDensity = 0.0;        // solid fraction of the cell's voxels
+		double E[3] = {0, 0, 0};             // effective Young's moduli, Pa
+		double G[3] = {0, 0, 0};             // effective shear moduli, Pa (xy, yz, xz)
+		double NuXY = 0.0, NuYZ = 0.0, NuXZ = 0.0;
+		double Amplification = 0.0;          // peak strut von Mises over |macro stress| bound
+		double HomogenizeSeconds = 0.0;
+		bool bHomogenizeCached = false;
+		// Masses, kg: the shells' rho t A and the core's (effective density
+		// less the skin overlap) over the volume.
+		double SkinMass = 0.0, CoreMass = 0.0;
+		double CoreDensityUsed = 0.0;        // kg/m^3, after the overlap correction
+		// Stresses, Pa, and margins allowable / peak - 1 (0 without an allowable).
+		double SkinMaxVonMises = 0.0, SkinMargin = 0.0;
+		double CoreMaxVonMises = 0.0;        // macro (smeared)
+		double CoreMaxMicroVonMises = 0.0;   // estimated in the struts
+		double CoreMargin = 0.0;             // base allowable / micro peak - 1
+	};
+
 	struct FResult
 	{
+		EModel Model = EModel::ShellCore;
 		int32 Nodes = 0, Elements = 0, Dofs = 0;
+		int32 Tets = 0, Shells = 0;
 		int32 SupportNodes = 0, WettedFaces = 0;
 		bool bSecondOrder = false;
 
 		double Mass = 0.0;                      // kg, over every element
 		double MaxDisplacement = 0.0;           // m
 		double MaxDisplacementAt[3] = {0, 0, 0};
-		double MaxVonMises = 0.0;               // Pa
+		double MaxVonMises = 0.0;               // Pa (ShellCore: shells, and cores by their micro stress)
 		int32 MaxVonMisesMaterial = 0;
-		// Per material id (index = position in FRequest::Materials): the
-		// peak von Mises, and the margin allowable / peak - 1 (0 when the
-		// material has no allowable).
+		// Per entry of the script's per_material list, in order: SolidTets
+		// one per FRequest::Materials; ShellCore two per region, the skin
+		// then the core (the core by its MICRO stress).
+		TArray<FString> PerMaterialLabel;
 		TArray<double> MaxVonMisesByMaterial;
 		TArray<double> MarginByMaterial;
+		TArray<FRegionResult> Regions;          // ShellCore
 
 		// The force balance: the reactions at the support against what
 		// was applied. Equal and opposite in a converged solution.
@@ -103,7 +174,7 @@ namespace AerotelicStructuralFea
 		// is what a positive pressure must do.
 		double MeanNormalDisplacement = 0.0;
 
-		double Seconds = 0.0, SecondsSolve = 0.0;
+		double Seconds = 0.0, SecondsSolve = 0.0, SecondsHomogenize = 0.0;
 		FString VtkPath;
 	};
 
@@ -112,7 +183,8 @@ namespace AerotelicStructuralFea
 	FString FindScript();
 
 	// Runs the analysis. False with the reason on failure (no interpreter,
-	// no Kratos, no element, a material without stiffness, no node on the
-	// support plane, a solve that did not converge).
+	// no Kratos, no element, a material without stiffness, a region without
+	// a cell or a skin thickness, no node on the support plane, a solve
+	// that did not converge).
 	bool Run(const FRequest& Request, FResult& Out, FString& OutError);
 }
