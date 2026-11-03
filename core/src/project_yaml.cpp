@@ -1,5 +1,6 @@
 #include "aerotelic/project_yaml.hpp"
 
+#include <algorithm>
 #include <fstream>
 #include <set>
 #include <stdexcept>
@@ -822,6 +823,7 @@ YAML::Node EncodeEntity(const ProjectEntity& e) {
 	}
 	if (e.hidden) n["hidden"] = true;
 	if (e.mass.mode != MassMode::Unset) n["mass"] = EncodeMassSpec(e.mass);
+	if (!e.mesh.IsDefault()) n["mesh"] = EncodeMeshSpec(e.mesh);
 	return n;
 }
 
@@ -854,10 +856,49 @@ ProjectEntity DecodeEntity(const YAML::Node& node) {
 	}
 	e.hidden = node["hidden"] ? node["hidden"].as<bool>() : false;
 	e.mass = DecodeMassSpec(node["mass"]);
+	e.mesh = DecodeMeshSpec(node["mesh"]);
 	return e;
 }
 
 } // namespace
+
+YAML::Node EncodeMeshSpec(const MeshSpec& m) {
+	YAML::Node n;
+	if (m.stations > 0) n["stations"] = m.stations;
+	if (m.around > 0) n["around"] = m.around;
+	if (!m.refine) n["refine"] = false;
+	if (m.tolerance > 0.0) n["tolerance"] = m.tolerance;
+	if (m.max_aspect != 0.0) n["max_aspect"] = m.max_aspect;
+	if (m.cells != std::array<int, 3>{0, 0, 0}) {
+		YAML::Node cells(YAML::NodeType::Sequence);
+		for (int c : m.cells) cells.push_back(c);
+		cells.SetStyle(YAML::EmitterStyle::Flow);
+		n["cells"] = cells;
+	}
+	if (m.cap_rings > 0) n["cap_rings"] = m.cap_rings;
+	if (m.chordwise > 0) n["chordwise"] = m.chordwise;
+	if (m.spanwise > 0) n["spanwise"] = m.spanwise;
+	n.SetStyle(YAML::EmitterStyle::Flow);
+	return n;
+}
+
+MeshSpec DecodeMeshSpec(const YAML::Node& node) {
+	MeshSpec m;
+	if (!node || !node.IsMap()) return m;
+	if (node["stations"]) m.stations = std::max(node["stations"].as<int>(), 0);
+	if (node["around"]) m.around = std::max(node["around"].as<int>(), 0);
+	if (node["refine"]) m.refine = node["refine"].as<bool>();
+	if (node["tolerance"]) m.tolerance = std::max(node["tolerance"].as<double>(), 0.0);
+	if (node["max_aspect"]) m.max_aspect = node["max_aspect"].as<double>();
+	if (node["cells"] && node["cells"].IsSequence()) {
+		int i = 0;
+		for (const auto& c : node["cells"]) { if (i < 3) m.cells[i++] = std::max(c.as<int>(), 0); }
+	}
+	if (node["cap_rings"]) m.cap_rings = std::max(node["cap_rings"].as<int>(), 0);
+	if (node["chordwise"]) m.chordwise = std::max(node["chordwise"].as<int>(), 0);
+	if (node["spanwise"]) m.spanwise = std::max(node["spanwise"].as<int>(), 0);
+	return m;
+}
 
 ProjectFile LoadProjectYaml(const std::string& path) {
 	YAML::Node root = YAML::LoadFile(path);

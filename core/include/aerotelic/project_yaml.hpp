@@ -108,7 +108,17 @@ struct ProjectEntity {
 	// How the entity weighs (Analysis -> Mass Properties): written only
 	// when set, as `mass: {asserted: <total>}` or `mass: {density: <rho>}`.
 	MassSpec mass;
+	// The density of its grid (the design panel's Mesh tab, mesh.hpp
+	// MeshSpec): written only when anything is set, as `mesh: {...}` with
+	// the non-default keys alone.
+	MeshSpec mesh;
 };
+
+// `mesh:` on an entity: stations, around, refine, tolerance, max_aspect,
+// cells [nx, ny, nz], cap_rings, chordwise, spanwise -- each only when it
+// differs from automatic.
+YAML::Node EncodeMeshSpec(const MeshSpec& m);
+MeshSpec DecodeMeshSpec(const YAML::Node& node);
 
 // One operand of a boolean operation, by scene name: an entity, the
 // mirrored half of a mirrored entity (`{mirror: <entity name>}` in the

@@ -1,6 +1,7 @@
 #include "LoftedNacelleDialog.h"
 #include "Widgets/MessageBox.h"
 #include "EntityDesignContent.h"
+#include "MeshTab.h"
 #include "Widgets/TabStrip.h"
 #include "Widgets/NumericEntry.h"
 #include "Widgets/CurveEditor.h"
@@ -711,7 +712,8 @@ void BuildLoftedNacelleDesignContent(AAerotelicEntityActor* Entity, LoftedNacell
 	Tabs.Add({ LOCTEXT("GuideTab", "Guide curves"), GuideTab.ToSharedRef() });
 	Tabs.Add({ LOCTEXT("SkinsTab", "Skins"), SkinsTab });
 	Tabs.Add({ LOCTEXT("ChevronsTab", "Chevrons"), ChevronsTab });
-	Tabs.Add({ LOCTEXT("HelpTab", "Help"), MakeHelpTab(kHelp) });
+	Tabs.Add({ LOCTEXT("MeshTab", "Mesh"), MakeMeshTab(Model, aerotelic::project_yaml::EntityType::LoftedNacelle, OnChanged) });
+	Tabs.Add({ LOCTEXT("HelpTab", "Help"), MakeHelpTab(FText::Join(FText::FromString(TEXT("\n\n")), kHelp, MeshTabHelpText(aerotelic::project_yaml::EntityType::LoftedNacelle))) });
 
 	Out.Title = FText::Format(LOCTEXT("Title", "Lofted Nacelle -- {0}"), FText::FromString(Entity->EntityName));
 	Out.Widget = SNew(SAerotelicTabStrip, Tabs);

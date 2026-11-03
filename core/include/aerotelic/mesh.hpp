@@ -39,6 +39,7 @@
 // tolerance by construction, and it is built in milliseconds rather than
 // seconds.
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <functional>
@@ -179,6 +180,15 @@ struct LoftOptions {
 	// sensible polygon).
 	int min_v = 8;
 	int min_u = 2;
+	// A structured grid to start from instead: this many uniform intervals
+	// along the loft (grid_u) and round a section (grid_v), merged with the
+	// loft's own seeds exactly as the panel method's LoftNetwork builds its
+	// rows and columns (GridParameters below), so that with the refinement
+	// off (tolerance huge, max_aspect 0) the triangles are the panel
+	// method's quads split in two -- one grid for every analysis. 0: none,
+	// the minimum rule alone.
+	int grid_u = 0;
+	int grid_v = 0;
 	// Hard caps on the shared sets (refinement stops when reached).
 	int max_v = 1200;
 	int max_u = 400;
@@ -202,6 +212,73 @@ struct LoftStats {
 	int n_ring_points = 0;
 	int v_rounds = 0, u_rounds = 0;
 	bool v_capped = false, u_capped = false;
+};
+
+// `intervals` uniform intervals over [lo, hi] (both ends included) merged
+// with the seeds that fall in the range, sorted, duplicates within a
+// billionth of the range dropped. The one construction of a structured
+// grid's parameters, shared by TriangulateLoft (LoftOptions::grid_u /
+// grid_v) and the panel method's LoftNetwork, so the two sample a loft at
+// the same stations and the same points round a section.
+std::vector<double> GridParameters(double lo, double hi, int intervals, const std::vector<double>& seeds);
+
+// The density of a body's grid: set per entity on its design panel's Mesh
+// tab and saved with it (`mesh:` in the project file, project_yaml.hpp),
+// held on the model (ISolidModel::mesh) and read by its BuildMeshes. ONE
+// grid serves the viewport, the finite-element shells and tetrahedra, the
+// flow solvers' wetted surface and -- through the same counts -- the panel
+// method's networks. Every field's zero means "automatic": what the model
+// did before the tab existed.
+struct MeshSpec {
+	// Panels along the loft (stations - 1) and round a section the grid
+	// starts from, on top of the loft's own seeds (LoftOptions::grid_u /
+	// grid_v; the panel method's `along` / `around`). 0: the model's own
+	// minimum rule. A cylinder: cells along its axis / points round it.
+	int stations = 0;
+	int around = 0;
+	// Error-driven refinement on top of the grid (the chordal rule, the
+	// strip aspect rule). Off, the grid is used as it stands: the panel
+	// method's quads, split -- the same mesh for the FEA and the flow.
+	bool refine = true;
+	// Chordal tolerance of the refinement, model units. 0: automatic (the
+	// caller's: 0.15% of the body's diagonal in the viewport).
+	double tolerance = 0.0;
+	// Strips longer than this times their rings' point spacing are split
+	// (LoftOptions::max_aspect). 0: the model's default (6); negative: off.
+	double max_aspect = 0.0;
+	// A box primitive: cells along x, y, z. 0: automatic -- cells about as
+	// long as the shortest side (so a 1 x 10 x 1 bar is 1 x 10 x 1 cells,
+	// not the 12-triangle box the FEA cannot use).
+	std::array<int, 3> cells = {0, 0, 0};
+	// A cylinder primitive: concentric rings of cells on each end cap. 0:
+	// automatic (about the side's cell length).
+	int cap_rings = 0;
+	// A wing's panel-method networks (wing_panels.hpp WingPaneling): panels
+	// per surface chordwise and over the semi-span. 0: the dialog's.
+	int chordwise = 0;
+	int spanwise = 0;
+
+	bool IsDefault() const {
+		return stations == 0 && around == 0 && refine && tolerance == 0.0 && max_aspect == 0.0 && cells == std::array<int, 3>{0, 0, 0}
+			&& cap_rings == 0 && chordwise == 0 && spanwise == 0;
+	}
+	// The loft options a model triangulates with: its own defaults in
+	// `base` (min_v, min_u, apex_tolerance, ...), the caller's tolerance,
+	// and this spec over them.
+	LoftOptions Apply(LoftOptions base, double caller_tolerance) const {
+		base.tolerance = tolerance > 0.0 ? tolerance : caller_tolerance;
+		base.grid_u = std::max(stations, 0);
+		base.grid_v = std::max(around, 0);
+		if (max_aspect > 0.0) base.max_aspect = max_aspect;
+		else if (max_aspect < 0.0) base.max_aspect = 0.0;
+		if (!refine) {
+			// No chordal refinement and no aspect refinement: the grid as it
+			// stands, its minimum counts those of the seeds and the grid.
+			base.tolerance = 1e30;
+			if (max_aspect <= 0.0) base.max_aspect = 0.0;
+		}
+		return base;
+	}
 };
 
 // Triangulates the loft. Throws std::invalid_argument on a malformed
@@ -247,9 +324,22 @@ int RefineChordal(std::vector<double>& params, double tol, int max_points,
 
 // The box, sphere/ellipsoid and cylinder primitives (centred on the origin,
 // cylinder axis +X, as PrimitiveModel::BuildSolid makes them).
+// BoxMesh: nx x ny x nz cells, each face a structured grid of quads split
+// along a diagonal, the nodes shared along the edges (the three-argument
+// form is one cell: 8 vertices, 12 triangles). CylinderMesh with counts:
+// `around` points round the axis, `along` cells along it, each end cap
+// `cap_rings` concentric rings of cells closing on the axis point (so its
+// nodes are the side's at the rim); the tolerance form picks the counts
+// from the chordal tolerance.
 TriMesh BoxMesh(double lx, double ly, double lz);
+TriMesh BoxMesh(double lx, double ly, double lz, int nx, int ny, int nz);
 TriMesh EllipsoidMesh(double a, double b, double c, double tolerance);
 TriMesh CylinderMesh(double radius, double length, double tolerance);
+TriMesh CylinderMesh(double radius, double length, int around, int along, int cap_rings);
+// The counts the tolerance form of CylinderMesh uses: points round the
+// axis for a chordal sag of `tolerance` (at least 12), cells along the axis
+// and rings on the caps about as long as the side's cells.
+void CylinderCounts(double radius, double length, double tolerance, int& around, int& along, int& cap_rings);
 
 // The primitives' section functions on their own (self-contained
 // closures), for the panel method: an ellipsoid from pole to pole, a

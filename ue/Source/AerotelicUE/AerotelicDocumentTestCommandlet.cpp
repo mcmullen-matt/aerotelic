@@ -683,7 +683,10 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 				if (bPre)
 				{
 					Check(Pre.WettedFaces.Num() == R.WettedFaces, FString::Printf(TEXT("fea (pre-processor): the wetted faces are the script's (%d vs %d)"), Pre.WettedFaces.Num(), R.WettedFaces));
-					Check(Pre.SupportNodes.Num() == R.SupportNodes, FString::Printf(TEXT("fea (pre-processor): the fixed nodes are the script's (%d vs %d)"), Pre.SupportNodes.Num(), R.SupportNodes));
+					Check(Pre.SupportNodes.Num() == R.SupportCornerNodes, FString::Printf(TEXT("fea (pre-processor): the fixed corner nodes are the script's (%d vs %d)"), Pre.SupportNodes.Num(), R.SupportCornerNodes));
+					// Second order: the mid-edge nodes on the plane are clamped too
+					// (left free until 2026-11-02, a compliant clamp).
+					Check(R.SupportNodes > R.SupportCornerNodes, FString::Printf(TEXT("fea (pre-processor): the solver clamped the mid-edge nodes on the plane as well (%d nodes, %d corners)"), R.SupportNodes, R.SupportCornerNodes));
 					bool bOnPlane = Pre.SupportNodes.Num() > 0 && Pre.SupportPlanes.Num() == 1 && Pre.SupportPlanes[0].Axis == 2;
 					for (int32 N : Pre.SupportNodes) bOnPlane = bOnPlane && FMath::Abs(FeaMesh.nodes[N].z - Pre.SupportPlanes[0].Value) <= Pre.SupportPlanes[0].Tolerance;
 					Check(bOnPlane && FMath::IsNearlyEqual(Pre.SupportPlanes[0].Value, Pre.Bounds.min.z, 1e-12), "fea (pre-processor): every fixed node lies within the tolerance of z = the mesh's minimum");
@@ -788,7 +791,7 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 					if (bPre)
 					{
 						Check(Pre.WettedFaces.Num() == R.Shells && Pre.WettedFaces.Num() == R.WettedFaces, FString::Printf(TEXT("fea (shells, pre-processor): a wetted face per shell (%d vs %d)"), Pre.WettedFaces.Num(), R.Shells));
-						Check(Pre.SupportNodes.Num() == R.SupportNodes, FString::Printf(TEXT("fea (shells, pre-processor): the fixed nodes are the script's (%d vs %d)"), Pre.SupportNodes.Num(), R.SupportNodes));
+						Check(Pre.SupportNodes.Num() == R.SupportCornerNodes, FString::Printf(TEXT("fea (shells, pre-processor): the fixed nodes are the script's (%d vs %d)"), Pre.SupportNodes.Num(), R.SupportCornerNodes));
 						Check(Pre.bMassEstimated && FMath::IsNearlyEqual(Pre.Mass, R.Mass, 0.05 * R.Mass), FString::Printf(TEXT("fea (shells, pre-processor): the estimated mass is near the script's (%.6g vs %.6g)"), Pre.Mass, R.Mass));
 						Check(Pre.Regions.Num() == 1 && Pre.Regions[0].Label == TEXT("sphere") && Pre.Regions[0].Kind.Contains(TEXT("homogenised")), "fea (shells, pre-processor): one region, the body, shells over a homogenised core");
 					}
@@ -851,8 +854,8 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 					AerotelicFeaPreprocess::FModel Pre;
 					FString PreError;
 					const bool bPre = AerotelicFeaPreprocess::Build(Request, Pre, PreError);
-					Check(bPre && Pre.Tets == 0 && Pre.WettedFaces.Num() == R.WettedFaces && Pre.SupportNodes.Num() == R.SupportNodes && Pre.Regions.Num() == 1 && Pre.Regions[0].Kind == TEXT("shells"),
-						FString::Printf(TEXT("fea (shells only, pre-processor): the faces and the fixed nodes are the script's (%d / %d faces, %d / %d nodes; %s)"), bPre ? Pre.WettedFaces.Num() : -1, R.WettedFaces, bPre ? Pre.SupportNodes.Num() : -1, R.SupportNodes, *PreError));
+					Check(bPre && Pre.Tets == 0 && Pre.WettedFaces.Num() == R.WettedFaces && Pre.SupportNodes.Num() == R.SupportCornerNodes && Pre.Regions.Num() == 1 && Pre.Regions[0].Kind == TEXT("shells"),
+						FString::Printf(TEXT("fea (shells only, pre-processor): the faces and the fixed nodes are the script's (%d / %d faces, %d / %d nodes; %s)"), bPre ? Pre.WettedFaces.Num() : -1, R.WettedFaces, bPre ? Pre.SupportNodes.Num() : -1, R.SupportCornerNodes, *PreError));
 					Check(bPre && FMath::IsNearlyEqual(Pre.Mass, R.Mass, 1e-6 * R.Mass), "fea (shells only, pre-processor): the mass is rho t A");
 				}
 			}
@@ -915,11 +918,128 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 						AerotelicFeaPreprocess::FModel Pre;
 						FString PreError;
 						const bool bPre = AerotelicFeaPreprocess::Build(Request, Pre, PreError);
-						Check(bPre && Pre.WettedFaces.Num() == R.WettedFaces && Pre.SupportNodes.Num() == R.SupportNodes && Pre.Regions.Num() == 1 && Pre.Regions[0].Kind == TEXT("solid") && FMath::IsNearlyEqual(Pre.Mass, R.Mass, 1e-6 * R.Mass),
+						Check(bPre && Pre.WettedFaces.Num() == R.WettedFaces && Pre.SupportNodes.Num() == R.SupportCornerNodes && R.SupportNodes > R.SupportCornerNodes && Pre.Regions.Num() == 1 && Pre.Regions[0].Kind == TEXT("solid") && FMath::IsNearlyEqual(Pre.Mass, R.Mass, 1e-6 * R.Mass),
 							FString::Printf(TEXT("fea (solid, pre-processor): the faces, the fixed nodes and the mass are the script's (%s)"), *PreError));
 					}
 				}
 			}
+		}
+	}
+
+	// (5) A box primitive as a thin-walled cantilever against beam theory
+	// (2026-11-02): the 1 x 10 x 1 m box of ue/Projects/simple_beam.yaml,
+	// 10 mm aluminium shells, its grid 2 x 20 x 2 cells from the Mesh tab,
+	// clamped at y = min, two 500 N loads at the tip on the webs' mid-height.
+	// Timoshenko with the shells' mid-surface on the outer surface, I =
+	// 2 (b t (h/2)^2 + t h^3 / 12), the two webs the shear area: the linear
+	// thin shell lands within 3% on this grid (the beam study that found the
+	// box was 12 triangles and the solid route ignored the element size).
+	UE_LOG(LogAerotelicDocumentTest, Display, TEXT("step: structural fea (a box beam)"));
+	if (!AerotelicStructuralFea::FindScript().IsEmpty() && !AerotelicMeshLib::FindPython().IsEmpty())
+	{
+		AAerotelicEntityActor* Beam = Doc->AddPrimitive(TEXT("Box"));
+		Check(Beam != nullptr, "fea (beam): a box primitive is added");
+		if (Beam != nullptr)
+		{
+			std::unique_ptr<aerotelic::ISolidModel> Draft = Doc->CloneEntityModel(Beam);
+			aerotelic::PrimitiveModel* D = static_cast<aerotelic::PrimitiveModel*>(Draft.get());
+			D->size = {1.0, 10.0, 1.0};
+			D->mesh.cells = {2, 20, 2};
+			FString Error;
+			Check(Doc->ApplyEntityModel(Beam, *Draft, Error), FString::Printf(TEXT("fea (beam): the box's size and grid apply (%s)"), *Error));
+			Doc->FlushPendingRebuilds();
+			Check(Beam->GetModel() != nullptr && Beam->GetModel()->mesh.cells == std::array<int, 3>{2, 20, 2}, "fea (beam): the entity took the draft's grid (the Mesh tab's cells travel with Apply)");
+			std::unique_ptr<aerotelic::ISolidModel> Again = Doc->CloneEntityModel(Beam);
+			Check(Again != nullptr && Again->mesh.cells == std::array<int, 3>{2, 20, 2}, "fea (beam): a fresh draft starts on the entity's grid");
+			const aerotelic::Material Al = *aerotelic::FindMaterialPreset("Aluminium 2024-T3");
+			aerotelic::MassSpec Skin;
+			Skin.mode = aerotelic::MassMode::Material;
+			Skin.material = Al;
+			Skin.skin_thickness = 0.01;
+			Beam->SetMassSpec(Skin);
+			const std::vector<aerotelic::NamedMesh> Placed = Beam->GetPlacedMeshes(false, 2e-3);
+			const int32 ExpectedTriangles = 2 * 2 * (2 * 20 + 20 * 2 + 2 * 2);
+			Check(Placed.size() == 1 && static_cast<int32>(Placed[0].mesh.triangles.size()) == ExpectedTriangles,
+				FString::Printf(TEXT("fea (beam): the box is its 2 x 20 x 2 cells, %d triangles (got %d)"), ExpectedTriangles, Placed.size() == 1 ? (int32)Placed[0].mesh.triangles.size() : -1));
+			if (Placed.size() == 1)
+			{
+				const aerotelic::TriMesh& Surface = Placed[0].mesh;
+				aerotelic::TetMesh ShellMesh;
+				ShellMesh.nodes = Surface.vertices;
+				AerotelicStructuralFea::FRequest Request;
+				Request.Mesh = &ShellMesh;
+				for (const auto& T : Surface.triangles)
+				{
+					AerotelicStructuralFea::FShellFace F;
+					F.N[0] = T[0]; F.N[1] = T[1]; F.N[2] = T[2];
+					F.Region = 1;
+					Request.ShellFaces.Add(F);
+				}
+				AerotelicStructuralFea::FRegion Region;
+				Region.Id = 1;
+				Region.Label = TEXT("beam");
+				Region.Skin = Al;
+				Region.SkinThickness = 0.01;
+				Request.Regions.Add(Region);
+				Request.LengthToSI = 1.0;
+				Request.LinearSolver = TEXT("sparse_lu");
+				AerotelicStructuralFea::FSupport Root;
+				Root.Axis = TEXT('y');
+				Root.bAtMin = true;
+				Request.Supports.Add(Root);
+				const double P = 1000.0;
+				for (double Side : { -0.5, 0.5 })
+				{
+					AerotelicStructuralFea::FPointForce F;
+					F.At = aerotelic::Vec3{ Side, 5.0, 0.0 };
+					F.Force = aerotelic::Vec3{ 0.0, 0.0, -0.5 * P };
+					Request.PointForces.Add(F);
+				}
+				Request.VtkPath = FPaths::Combine(FPlatformProcess::UserTempDir(), TEXT("aerotelic_document_test_fea_beam.vtk"));
+				IFileManager::Get().Delete(*Request.VtkPath, false, true, true);
+
+				// The pre-processor: the default tolerance takes the root face's
+				// 9 nodes and nothing more; a coarse one takes the next ring and
+				// is flagged.
+				AerotelicFeaPreprocess::FModel Pre;
+				FString PreError;
+				const bool bPre = AerotelicFeaPreprocess::Build(Request, Pre, PreError);
+				Check(bPre && Pre.SupportPlanes.Num() == 1 && Pre.SupportPlanes[0].Nodes == 9 && Pre.SupportPlanes[0].Furthest == 0.0 && !Pre.ToleranceIsCoarse(Pre.SupportPlanes[0]),
+					FString::Printf(TEXT("fea (beam, pre-processor): the default tolerance clamps the root face's 9 nodes and is not coarse (%d nodes, furthest %.3g, median edge %.3g; %s)"), bPre ? Pre.SupportPlanes[0].Nodes : -1, bPre ? Pre.SupportPlanes[0].Furthest : -1.0, bPre ? Pre.MedianEdge : -1.0, *PreError));
+				Check(bPre && Pre.PointLoads.Num() == 2 && Pre.PointLoads[0].At.Y == 5.0 && Pre.PointLoads[1].At.Y == 5.0 && Pre.PointLoads[0].At.Z == 0.0 && Pre.PointResultant.Z == -P,
+					"fea (beam, pre-processor): both loads land on the webs' mid-height nodes at the tip");
+				{
+					AerotelicStructuralFea::FRequest Coarse = Request;
+					Coarse.Supports[0].Tolerance = 0.6;
+					AerotelicFeaPreprocess::FModel PreCoarse;
+					const bool bCoarse = AerotelicFeaPreprocess::Build(Coarse, PreCoarse, PreError);
+					// The root face's 9 nodes plus the next ring's 8 (the cap centre has no counterpart there).
+					Check(bCoarse && PreCoarse.SupportPlanes[0].Nodes == 17 && PreCoarse.ToleranceIsCoarse(PreCoarse.SupportPlanes[0]) && FMath::IsNearlyEqual(PreCoarse.SupportPlanes[0].Furthest, 0.5, 1e-9),
+						FString::Printf(TEXT("fea (beam, pre-processor): a 0.6 tolerance takes the next ring too (%d nodes, furthest %.3g) and is flagged as coarse"), bCoarse ? PreCoarse.SupportPlanes[0].Nodes : -1, bCoarse ? PreCoarse.SupportPlanes[0].Furthest : -1.0));
+				}
+
+				AerotelicStructuralFea::FResult R;
+				const bool bSolved = AerotelicStructuralFea::Run(Request, R, Error);
+				Check(bSolved, FString::Printf(TEXT("fea (beam): the box beam solved (%s)"), bSolved ? *FString::Printf(TEXT("%d nodes, %d shells, %d dof, %.1f s"), R.Nodes, R.Shells, R.Dofs, R.Seconds) : *Error));
+				if (bSolved)
+				{
+					const double E = Al.youngs_modulus, G = E / (2.0 * (1.0 + Al.poisson_ratio));
+					const double I = 2.0 * (1.0 * 0.01 * 0.25 + 0.01 * 1.0 / 12.0);
+					const double Delta = P * 1000.0 / (3.0 * E * I) + P * 10.0 / (G * 2.0 * 1.0 * 0.01);
+					Check(R.bBalanced && FMath::Abs(R.Reaction[2] - P) <= 0.01 * P && FMath::Abs(R.Reaction[0]) <= 0.01 * P && FMath::Abs(R.Reaction[1]) <= 0.01 * P,
+						FString::Printf(TEXT("fea (beam): the clamp carries the two tip loads, %.4g N (reactions %.4g, %.4g, %.4g)"), P, R.Reaction[0], R.Reaction[1], R.Reaction[2]));
+					Check(R.Shells == ExpectedTriangles && R.SupportNodes == 9 && R.SupportCornerNodes == 9, FString::Printf(TEXT("fea (beam): a shell per triangle, the 9 root nodes clamped (%d shells, %d fixed)"), R.Shells, R.SupportNodes));
+					Check(FMath::Abs(R.MaxDisplacement / Delta - 1.0) < 0.03 && R.MaxDisplacementAt[1] > 4.9,
+						FString::Printf(TEXT("fea (beam): the tip deflects as Timoshenko's thin-walled box, %.4g m (got %.4g at y = %.2f, %.1f%%)"), Delta, R.MaxDisplacement, R.MaxDisplacementAt[1], 100.0 * (R.MaxDisplacement / Delta - 1.0)));
+					const double SigmaRoot = P * 10.0 * 0.5 / I;
+					Check(R.Entries.Num() == 1 && R.Entries[0].MaxVonMises > 0.9 * SigmaRoot && R.Entries[0].MaxVonMises < 2.0 * SigmaRoot,
+						FString::Printf(TEXT("fea (beam): the peak von Mises is the root bending stress M c / I, %.4g Pa, up to the clamp's concentration (got %.4g)"), SigmaRoot, R.Entries.Num() ? R.Entries[0].MaxVonMises : 0.0));
+					IFileManager::Get().Delete(*Request.VtkPath, false, true, true);
+				}
+			}
+			// The scene as the later steps expect it.
+			Doc->RemoveEntity(Beam);
+			Doc->FlushPendingRebuilds();
 		}
 	}
 

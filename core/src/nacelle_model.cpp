@@ -451,12 +451,11 @@ std::vector<TopoDS_Shape> NacelleModel::ChevronCutters(double depth) const {
 std::vector<NamedMesh> NacelleModel::BuildMeshes(double tolerance) const {
 	std::vector<NamedLoft> lofts = BuildLofts();
 	if (lofts.empty()) return {};
-	LoftOptions opt;
-	opt.tolerance = tolerance;
-	opt.min_v = 24;
-	opt.min_u = 8;
-	opt.apex_tolerance = 1e-5;
-	return {{"Main", TriangulateLoft(lofts[0].source, opt)}};
+	LoftOptions base;
+	base.min_v = 24;
+	base.min_u = 8;
+	base.apex_tolerance = 1e-5;
+	return {{"Main", TriangulateLoft(lofts[0].source, mesh.Apply(base, tolerance))}};
 }
 
 std::vector<NamedLoft> NacelleModel::BuildLofts() const {

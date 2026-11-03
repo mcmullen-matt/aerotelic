@@ -107,16 +107,12 @@ std::vector<Network> WingNetworks(const WingModel& wing, const WingPaneling& pan
 
 namespace {
 
-// n + 1 uniform values on [lo, hi] merged with the seeds inside it, sorted, no duplicates.
+// n + 1 uniform values on [lo, hi] merged with the seeds inside it, sorted,
+// no duplicates: mesh.hpp's GridParameters, the same construction the
+// triangulation uses for a structured grid (LoftOptions::grid_u / grid_v),
+// so a body's panels and its triangles sample the loft at the same places.
 std::vector<double> MergedValues(double lo, double hi, int n, const std::vector<double>& seeds) {
-	std::vector<double> v;
-	for (int i = 0; i <= n; ++i) v.push_back(lo + (hi - lo) * i / n);
-	for (double s : seeds) if (s >= lo - 1e-12 && s <= hi + 1e-12) v.push_back(std::clamp(s, lo, hi));
-	std::sort(v.begin(), v.end());
-	std::vector<double> out;
-	const double eps = 1e-9 * std::max(hi - lo, 1e-300);
-	for (double x : v) if (out.empty() || x - out.back() > eps) out.push_back(x);
-	return out;
+	return GridParameters(lo, hi, n, seeds);
 }
 
 double RowSpread(const std::vector<Vec3>& row) {

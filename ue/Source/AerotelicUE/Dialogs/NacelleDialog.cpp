@@ -1,6 +1,7 @@
 #include "NacelleDialog.h"
 #include "Widgets/MessageBox.h"
 #include "EntityDesignContent.h"
+#include "MeshTab.h"
 #include "Widgets/TabStrip.h"
 #include "Widgets/NumericEntry.h"
 #include "Widgets/CurveEditor.h"
@@ -335,7 +336,8 @@ void BuildNacelleDesignContent(AAerotelicEntityActor* Entity, NacelleModel* Mode
 	Tabs.Add({ LOCTEXT("SideTab", "Side view"), SideTab });
 	Tabs.Add({ LOCTEXT("FrontTab", "Front view"), FrontTab });
 	Tabs.Add({ LOCTEXT("ChevronsTab", "Chevrons"), ChevronsTab });
-	Tabs.Add({ LOCTEXT("HelpTab", "Help"), MakeHelpTab(kHelp) });
+	Tabs.Add({ LOCTEXT("MeshTab", "Mesh"), MakeMeshTab(Model, aerotelic::project_yaml::EntityType::Nacelle, OnChanged) });
+	Tabs.Add({ LOCTEXT("HelpTab", "Help"), MakeHelpTab(FText::Join(FText::FromString(TEXT("\n\n")), kHelp, MeshTabHelpText(aerotelic::project_yaml::EntityType::Nacelle))) });
 
 	Out.Title = FText::Format(LOCTEXT("Title", "Nacelle -- {0}"), FText::FromString(Entity->EntityName));
 	Out.Widget = SNew(SAerotelicTabStrip, Tabs);

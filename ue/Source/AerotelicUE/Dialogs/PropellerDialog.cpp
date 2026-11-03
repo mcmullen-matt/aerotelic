@@ -1,6 +1,7 @@
 #include "PropellerDialog.h"
 #include "WingDesignTabs.h"
 #include "EntityDesignContent.h"
+#include "MeshTab.h"
 #include "Widgets/TabStrip.h"
 #include "Widgets/NumericEntry.h"
 #include "Widgets/CurveEditor.h"
@@ -332,13 +333,15 @@ void BuildPropellerDesignContent(AAerotelicEntityActor* Entity, PropellerModel* 
 		Tabs.Add({ Tab.Key, Tab.Value });
 	}
 	Tabs.Add({ LOCTEXT("SpinnerTab", "Spinner"), SpinnerTab });
+	Tabs.Add({ LOCTEXT("MeshTab", "Mesh"), MakeMeshTab(Model, aerotelic::project_yaml::EntityType::Propeller, OnChanged) });
 	// The Propeller and Spinner tabs' descriptions and the blade tabs' help
 	// live here rather than above the controls.
 	const FText HelpText = FText::Join(FText::FromString(TEXT("\n\n")),
 		FText::Format(LOCTEXT("HelpPropellerTab", "PROPELLER TAB\n{0}"), kPropellerNote),
 		FText::Format(LOCTEXT("HelpSpinnerTab", "SPINNER TAB\n{0}"), kSpinnerInfo),
 		kHelp,
-		FText::Format(LOCTEXT("HelpBladeTabs", "BLADE TABS\n\n{0}"), BladeTabs->GetHelpText()));
+		FText::Format(LOCTEXT("HelpBladeTabs", "BLADE TABS\n\n{0}"), BladeTabs->GetHelpText()),
+		MeshTabHelpText(aerotelic::project_yaml::EntityType::Propeller));
 	Tabs.Add({ LOCTEXT("HelpTab", "Help"), MakeHelpTab(HelpText) });
 
 	Out.Title = FText::Format(LOCTEXT("Title", "Propeller -- {0}"), FText::FromString(Entity->EntityName));

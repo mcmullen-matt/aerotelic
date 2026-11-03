@@ -341,16 +341,17 @@ std::vector<NamedMesh> PropellerModel::BuildMeshes(double tolerance) const {
 			}
 			return m;
 		};
-		LoftOptions opt;
-		opt.tolerance = tolerance;
-		opt.min_v = 16;
-		opt.min_u = 6;
-		opt.apex_tolerance = 1e-5;
-		out.push_back({"Spinner", TriangulateLoft(src, opt)});
+		LoftOptions base;
+		base.min_v = 16;
+		base.min_u = 6;
+		base.apex_tolerance = 1e-5;
+		out.push_back({"Spinner", TriangulateLoft(src, mesh.Apply(base, tolerance))});
 	}
 
 	// Blades: the wing loft from the hub station, turned -90 degrees about
-	// Y, then each copy rotated about X and shifted along it.
+	// Y, then each copy rotated about X and shifted along it. The blade
+	// takes the propeller's grid (the entity's Mesh tab is the propeller's).
+	blade_->mesh = mesh;
 	TriMesh blade = blade_->BuildMesh(tolerance, hub_radius, 1.0);
 	std::array<double, 9> turn = {0, 0, -1, 0, 1, 0, 1, 0, 0}; // R_y(-pi/2)
 	// The turn carries the wing's chord onto local z, so reflecting z is

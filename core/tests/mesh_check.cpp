@@ -26,6 +26,7 @@
 #include "aerotelic/propeller_model.hpp"
 #include "aerotelic/sdf.hpp"
 #include "aerotelic/wing_model.hpp"
+#include "aerotelic/wing_panels.hpp"
 
 using namespace aerotelic;
 
@@ -477,6 +478,72 @@ int Run() {
 		box.shape = PrimitiveShape::Box;
 		box.size = {1.0, 2.0, 0.5};
 		CheckBody("box primitive", box.BuildMeshes(tol)[0].mesh, box.BuildSolid(), 1e-9);
+	}
+
+	// ---- the entity's grid (MeshSpec, the Mesh tab) ----
+	{
+		// A box: automatic cells are about the shortest side; set cells are
+		// taken as given; every face a grid of quads, closed, volume exact.
+		PrimitiveModel box;
+		box.shape = PrimitiveShape::Box;
+		box.size = {1.0, 10.0, 1.0};
+		TriMesh m = box.BuildMeshes(tol)[0].mesh;
+		Check(m.triangles.size() == 2 * 2 * (1 * 10 + 10 * 1 + 1 * 1) && m.vertices.size() == 2 * 2 * 11 + 0, "box grid: automatic cells are 1 x 10 x 1 on a 1 x 10 x 1 bar (84 triangles), not the 12-triangle box");
+		box.mesh.cells = {2, 20, 2};
+		m = box.BuildMeshes(tol)[0].mesh;
+		Check(m.triangles.size() == 2 * 2 * (2 * 20 + 20 * 2 + 2 * 2) && m.IsClosedManifold() && std::fabs(m.SignedVolume() - 10.0) < 1e-9,
+			"box grid: 2 x 20 x 2 cells is 336 triangles, closed and outward, the volume exact");
+
+		// A cylinder: points round, cells along, rings on the caps.
+		PrimitiveModel cyl;
+		cyl.shape = PrimitiveShape::Cylinder;
+		cyl.cyl_radius = 0.5;
+		cyl.cyl_length = 4.0;
+		cyl.mesh.around = 24;
+		cyl.mesh.stations = 8;
+		cyl.mesh.cap_rings = 3;
+		m = cyl.BuildMeshes(tol)[0].mesh;
+		Check(m.triangles.size() == 2 * 8 * 24 + 2 * (2 * 2 * 24 + 24) && m.IsClosedManifold() && m.SignedVolume() > 0.0,
+			"cylinder grid: 24 round x 8 along, 3 cap rings: 624 triangles, closed and outward");
+		const double polygon = 0.5 * 24 * 0.5 * 0.5 * std::sin(2.0 * 3.14159265358979323846 / 24);
+		Check(std::fabs(m.SignedVolume() - polygon * 4.0) < 1e-9, "cylinder grid: the volume is the 24-gon's area times the length");
+		// Automatic counts follow the tolerance (finer tolerance, more points).
+		PrimitiveModel cyl2 = cyl;
+		cyl2.mesh = MeshSpec{};
+		const size_t coarse = cyl2.BuildMeshes(5e-3)[0].mesh.triangles.size();
+		const size_t fine = cyl2.BuildMeshes(5e-4)[0].mesh.triangles.size();
+		Check(fine > coarse && coarse > 100, "cylinder grid: automatic counts refine with the tolerance");
+
+		// A loft with the refinement off: its vertices are exactly the panel
+		// method's network corners for the same counts -- one grid.
+		PrimitiveModel sph;
+		sph.shape = PrimitiveShape::Sphere;
+		sph.radius = 1.0;
+		sph.stretch = {1.0, 0.7, 1.3};
+		sph.mesh.stations = 9;
+		sph.mesh.around = 16;
+		sph.mesh.refine = false;
+		TriMesh sm = sph.BuildMeshes(tol)[0].mesh;
+		// 9 uniform intervals plus the seed at u = 0.5: 11 stations, the two
+		// poles apexes; 16 points round.
+		Check(sm.vertices.size() == 9 * 16 + 2 && sm.triangles.size() == 8 * 16 * 2 + 2 * 16 && sm.IsClosedManifold(),
+			"structured loft: 11 stations x 16 points, the poles apexes, 288 triangles, closed");
+		panel::BodyPaneling bp;
+		bp.along = 9;
+		bp.around = 16;
+		panel::Network net = panel::LoftNetwork(sph.BuildLofts()[0], "sphere", bp, Vec3{1.0, 0.0, 0.0});
+		int missing = 0;
+		for (const Vec3& c : net.corners) {
+			bool found = false;
+			for (const Vec3& v : sm.vertices) if (DistanceSq(v, c) <= 1e-18) { found = true; break; }
+			if (!found) ++missing;
+		}
+		Check(net.rows == 11 && net.cols == 17 && missing == 0, "structured loft: every corner of the panel method's network is a vertex of the triangulation");
+		// With the refinement on, the grid is still the start: no fewer
+		// stations or points than the structured one.
+		sph.mesh.refine = true;
+		TriMesh refined = sph.BuildMeshes(tol)[0].mesh;
+		Check(refined.vertices.size() >= sm.vertices.size(), "structured loft: refinement only adds to the grid");
 	}
 
 	std::printf("RESULT: %d failure(s)\n", g_failures);

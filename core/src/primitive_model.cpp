@@ -157,11 +157,29 @@ void PrimitiveModel::Validate() const {
 std::vector<NamedMesh> PrimitiveModel::BuildMeshes(double tolerance) const {
 	Validate();
 	if (shape == PrimitiveShape::Sphere) {
+		// The loft, with the entity's grid over EllipsoidMesh's defaults.
 		auto a = SemiAxes();
-		return {{"Main", EllipsoidMesh(a[0], a[1], a[2], tolerance)}};
+		LoftOptions base;
+		base.min_v = 12;
+		base.min_u = 5;
+		return {{"Main", TriangulateLoft(EllipsoidLoft(a[0], a[1], a[2]), mesh.Apply(base, tolerance))}};
 	}
-	if (shape == PrimitiveShape::Cylinder) return {{"Main", CylinderMesh(cyl_radius, cyl_length, tolerance)}};
-	return {{"Main", BoxMesh(size[0], size[1], size[2])}};
+	if (shape == PrimitiveShape::Cylinder) {
+		int around = 0, along = 0, cap_rings = 0;
+		CylinderCounts(cyl_radius, cyl_length, tolerance, around, along, cap_rings);
+		if (mesh.around > 0) around = mesh.around;
+		if (mesh.stations > 0) along = mesh.stations;
+		if (mesh.cap_rings > 0) cap_rings = mesh.cap_rings;
+		return {{"Main", CylinderMesh(cyl_radius, cyl_length, around, along, cap_rings)}};
+	}
+	// The box: the entity's cells, or cells about as long as the shortest
+	// side (one cell per side was 12 triangles, which no analysis can use).
+	const double shortest = std::max(std::min({size[0], size[1], size[2]}), 1e-300);
+	int n[3];
+	for (int i = 0; i < 3; ++i) {
+		n[i] = mesh.cells[i] > 0 ? mesh.cells[i] : std::clamp(static_cast<int>(std::lround(size[i] / shortest)), 1, 200);
+	}
+	return {{"Main", BoxMesh(size[0], size[1], size[2], n[0], n[1], n[2])}};
 }
 
 std::vector<NamedLoft> PrimitiveModel::BuildLofts() const {

@@ -73,9 +73,17 @@ namespace AerotelicFeaPreprocess
 			double Value = 0.0;
 			double Tolerance = 0.0;
 			int32 Nodes = 0;   // on this plane
+			double Furthest = 0.0;   // the furthest of them from the plane, project units
 		};
 		TArray<FPlane> SupportPlanes;
 		TArray<int32> SupportNodes;   // the union, each node once
+		// The median edge length of the wetted faces, project units: the scale
+		// a support tolerance is judged against. A tolerance of more than
+		// about a quarter of it can take a second ring of nodes and shorten
+		// the part (a 1 x 10 x 1 beam lost 3.7% of its deflection to one
+		// extra ring, 2026-11-02).
+		double MedianEdge = 0.0;
+		bool ToleranceIsCoarse(const FPlane& P) const { return MedianEdge > 0.0 && P.Tolerance > 0.25 * MedianEdge; }
 		// The load path: the mesh's connected pieces (nodes joined by a
 		// tetrahedron or a face), and the regions none of whose pieces holds
 		// a support node. Such a region FLOATS -- a linear static solve on

@@ -432,8 +432,11 @@ namespace
 			Request.bSecondOrder = SecondOrderCheck.IsValid() && SecondOrderCheck->IsChecked();
 			static const TCHAR* kSolvers[] = { TEXT("auto"), TEXT("sparse_lu"), TEXT("amgcl") };
 			Request.LinearSolver = kSolvers[FMath::Clamp(SolverIndex, 0, 2)];
-			static const TCHAR* kShellElements[] = { TEXT("ShellThinElement3D3N"), TEXT("ShellThinElementCorotational3D3N"), TEXT("ShellThickElementCorotational3D3N") };
-			Request.ShellElement = kShellElements[FMath::Clamp(ShellIndex, 0, 2)];
+			// The thick corotational triangle is no longer offered (2026-11-02:
+			// too stiff and not converging on a thin-walled box, its force
+			// balance drifting with refinement); the script still takes it.
+			static const TCHAR* kShellElements[] = { TEXT("ShellThinElement3D3N"), TEXT("ShellThinElementCorotational3D3N") };
+			Request.ShellElement = kShellElements[FMath::Clamp(ShellIndex, 0, 1)];
 			Request.bHomogenizeCache = CacheCheck.IsValid() && CacheCheck->IsChecked();
 			Request.VtkPath = PathBox.IsValid() ? PathBox->GetText().ToString().TrimStartAndEnd() : FString();
 		}
@@ -692,9 +695,12 @@ namespace
 			if (Derive())
 			{
 				const FModel& M = Built->Model;
-				Status(FText::FromString(FString::Printf(TEXT("Applied: %d support plane(s) fixing %s nodes, %d point force(s)%s"),
+				int32 Coarse = 0;
+				for (const FModel::FPlane& P : M.SupportPlanes) Coarse += M.ToleranceIsCoarse(P) ? 1 : 0;
+				Status(FText::FromString(FString::Printf(TEXT("Applied: %d support plane(s) fixing %s nodes, %d point force(s)%s%s"),
 					M.SupportPlanes.Num(), *Thousands(M.SupportNodes.Num()), M.PointLoads.Num(),
-					Built->Dropped.Num() ? *FString::Printf(TEXT("; %d part(s) left out for floating, see the Support tab"), Built->Dropped.Num()) : TEXT(""))));
+					Built->Dropped.Num() ? *FString::Printf(TEXT("; %d part(s) left out for floating, see the Support tab"), Built->Dropped.Num()) : TEXT(""),
+					Coarse ? *FString::Printf(TEXT("; WARNING: %d support tolerance(s) wider than the mesh's edges, see the Support tab"), Coarse) : TEXT(""))));
 			}
 		}
 
@@ -863,9 +869,15 @@ namespace
 						P[c][W] = (c >= 2) ? Hi[W] : Lo[W];
 					}
 					for (int32 c = 0; c < 4; ++c) AddBar(Marks, P[c], P[(c + 1) % 4], 0.002 * Diag, kPlane);
-					Text += FString::Printf(TEXT("%sSupport %d (blue frame): the plane %c = %.6g %s, %s nodes within %.3g %s of it%s"),
+					Text += FString::Printf(TEXT("%sSupport %d (blue frame): the plane %c = %.6g %s, %s nodes within %.3g %s of it%s; the furthest of them %.3g %s from the plane"),
 						k ? TEXT("\n") : TEXT(""), k + 1, AxisName[A], Plane.Value, *LengthUnit, *Thousands(Plane.Nodes), Plane.Tolerance, *LengthUnit,
-						B.Request.Supports.IsValidIndex(k) && B.Request.Supports[k].Tolerance > 0.0 ? TEXT("") : TEXT(" (a ten-thousandth of the mesh's diagonal)"));
+						B.Request.Supports.IsValidIndex(k) && B.Request.Supports[k].Tolerance > 0.0 ? TEXT("") : TEXT(" (a ten-thousandth of the mesh's diagonal)"),
+						Plane.Furthest, *LengthUnit);
+					if (M.ToleranceIsCoarse(Plane))
+					{
+						Text += FString::Printf(TEXT("\n  WARNING: that tolerance is more than a quarter of the mesh's edge length (median %.3g %s): it can clamp a second ring of nodes and shorten the part. Narrow it to the plane's own flatness."),
+							M.MedianEdge, *LengthUnit);
+					}
 				}
 				if (M.SupportPlanes.Num() == 0) Text += TEXT("No support: add a plane on the left and Apply.");
 				Text += FString::Printf(TEXT("\nFixed nodes (red): %s of %s, every degree of freedom -- the three displacements and, on the shells, the three rotations: a clamp"),
@@ -1241,8 +1253,7 @@ void ShowAerotelicStructuralFeaDialog(TFunction<void(const FText&)> Status)
 		MakeShared<FString>(TEXT("amgcl (iterative; check the force balance)")) };
 	S->ShellOptions = {
 		MakeShared<FString>(TEXT("Linear thin triangle (Kirchhoff; reactions balance exactly)")),
-		MakeShared<FString>(TEXT("Corotational thin triangle (small displacements only)")),
-		MakeShared<FString>(TEXT("Corotational thick triangle (small displacements only)")) };
+		MakeShared<FString>(TEXT("Corotational thin triangle (small displacements only)")) };
 	S->AxisOptions = { MakeShared<FString>(TEXT("x")), MakeShared<FString>(TEXT("y")), MakeShared<FString>(TEXT("z")) };
 	S->PlaneOptions = { MakeShared<FString>(TEXT("at the value")), MakeShared<FString>(TEXT("at the mesh's minimum")), MakeShared<FString>(TEXT("at the mesh's maximum")) };
 	// One support to start with: y = 0, the root of a mirrored half.

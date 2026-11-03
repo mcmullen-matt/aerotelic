@@ -872,10 +872,9 @@ TriMesh WingModel::BuildMesh(double tolerance, double s_min, double s_max) const
 	// section and the thin wedge at the trailing edge can be given a
 	// conforming tetrahedral mesh (see LoftSource::mirror_v).
 	src.mirror_v = [&](double s, double v) { return airfoil_at(s).MirrorParameter(v); };
-	LoftOptions opt;
-	opt.tolerance = tolerance;
-	opt.min_v = 24;
-	return TriangulateLoft(src, opt);
+	LoftOptions base;
+	base.min_v = 24;
+	return TriangulateLoft(src, mesh.Apply(base, tolerance));
 }
 
 std::vector<NamedMesh> WingModel::BuildMeshes(double tolerance) const {
@@ -983,9 +982,9 @@ std::vector<NamedMesh> WingModel::BuildFlappedMeshes(double tolerance) const {
 		return cuts.emplace(key, std::move(sc)).first->second;
 	};
 
-	LoftOptions opt;
-	opt.tolerance = tolerance;
-	opt.min_v = 24;
+	LoftOptions base;
+	base.min_v = 24;
+	const LoftOptions opt = mesh.Apply(base, tolerance);
 
 	// The main element: full sections outside the flaps, the notched
 	// section (SectionLoop::MainElement) across each, one closed body.

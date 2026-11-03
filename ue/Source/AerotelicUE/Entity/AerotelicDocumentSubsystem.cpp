@@ -162,7 +162,11 @@ std::unique_ptr<ISolidModel> UAerotelicDocumentSubsystem::CloneEntityModel(const
 	}
 	try
 	{
-		return ModelFromEntitySpec(Entity->GetEntityType(), Spec);
+		std::unique_ptr<ISolidModel> Clone = ModelFromEntitySpec(Entity->GetEntityType(), Spec);
+		// The grid density travels beside the parameterisation (it is not
+		// in the spec): the draft edits a copy of it on its Mesh tab.
+		if (Clone != nullptr) Clone->mesh = Entity->GetModel()->mesh;
+		return Clone;
 	}
 	catch (const std::exception& e)
 	{
@@ -197,6 +201,7 @@ bool UAerotelicDocumentSubsystem::ApplyEntityModel(AAerotelicEntityActor* Entity
 		OutError = UTF8_TO_TCHAR(e.what());
 		return false;
 	}
+	if (Model != nullptr) Model->mesh = Draft.mesh;
 	if (!Entity->ReplaceModel(std::move(Model), OutError))
 	{
 		return false;
@@ -902,6 +907,7 @@ bool UAerotelicDocumentSubsystem::CopyEntityToClipboard(const AAerotelicEntityAc
 	}
 	Snapshot.hidden = !Entity->IsEntityVisible();
 	Snapshot.mass = Entity->GetMassSpec();
+	Snapshot.mesh = Entity->GetModel()->mesh;
 	Clipboard = MoveTemp(Snapshot);
 	return true;
 }
@@ -952,6 +958,7 @@ AAerotelicEntityActor* UAerotelicDocumentSubsystem::PasteEntity(FString& OutErro
 		OutError = TEXT("That kind of entity cannot be copied.");
 		return nullptr;
 	}
+	Model->mesh = Clipboard->mesh;
 
 	AAerotelicEntityActor* Actor = SpawnEntity(Clipboard->type, std::move(Model), Label);
 	if (Actor == nullptr)
@@ -1197,6 +1204,7 @@ bool UAerotelicDocumentSubsystem::OpenProjectPath(const FString& InPath, bool bA
 		{
 			continue;
 		}
+		Model->mesh = Entity.mesh;
 		ResolveReferenceImagePaths(Model.get(), Entity.type, FPaths::GetPath(Path));
 		const FString Name = UTF8_TO_TCHAR(Entity.name.c_str());
 		AAerotelicEntityActor* Actor = SpawnEntity(Entity.type, std::move(Model), Name);
@@ -1385,6 +1393,7 @@ bool UAerotelicDocumentSubsystem::SaveProjectToPath(const FString& InPath)
 		}
 		Pe.hidden = !Entity->IsEntityVisible();
 		Pe.mass = Entity->GetMassSpec();
+		if (Entity->GetModel() != nullptr) Pe.mesh = Entity->GetModel()->mesh;
 		SpecFromEntityModel(*Entity, Pe.model);
 		RelativiseReferenceImagePaths(Pe.model, FPaths::GetPath(Path));
 		Project.entities.push_back(std::move(Pe));

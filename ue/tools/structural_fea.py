@@ -85,9 +85,11 @@ so the sign can be seen to be right.
 
 SUPPORT. Every degree of freedom (rotations too, where the node has them)
 of the nodes within ``tolerance`` of the plane ``axis = value`` is fixed;
-``value`` may be "min" or "max" for the mesh's own extreme. The reactions
-there are summed and reported against the applied loads: equal and
-opposite in a converged solution.
+``value`` may be "min" or "max" for the mesh's own extreme. With 10-node
+tetrahedra the mid-edge nodes on the plane are fixed as well (the result
+reports ``support_nodes``, all of them, and ``support_corner_nodes``). The
+reactions there are summed and reported against the applied loads: equal
+and opposite in a converged solution.
 
 RESULTS. Per node the displacement; per element the von Mises stress
 (the largest over its integration points -- for a shell over its top,
@@ -969,10 +971,19 @@ def run_job(job_dir):
     # surface-load condition on every wetted face. The shell-only faces
     # stay 3-node whatever the order: a mid-edge node there would have a
     # load and no stiffness.
+    support_corner_nodes = len(support_nodes)
     if use_second:
         nodes_all, tets_el, tet_faces_el = second_order(nodes, tets, tet_faces)
+        # The clamp again on EVERY node, the mid-edge ones included: a
+        # mid-edge node on the support plane left free (2026-11-02, found on
+        # a 1 x 10 x 1 bar at 1.08 then 1.04 of beam theory, converging only
+        # at first order) makes the clamp compliant.
+        support_nodes, support_planes = _support_nodes(nodes_all, supports)
     else:
         nodes_all, tets_el, tet_faces_el = nodes, tets, tet_faces
+    result["support_nodes"] = int(len(support_nodes))
+    result["support_corner_nodes"] = int(support_corner_nodes)
+    result["support_planes"] = support_planes
     has_skin = np.array([bool(by_id[int(rid)].get("skin")) for rid in region_of_face]) if len(faces) else np.zeros(0, dtype=bool)
     shell_sel = np.nonzero(has_skin)[0]
     shells = faces[shell_sel]

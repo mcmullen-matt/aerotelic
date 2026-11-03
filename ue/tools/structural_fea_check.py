@@ -118,6 +118,44 @@ def box_tets(L, b, H, size, skin=0.0):
     return nodes, tets, region
 
 
+def box_shell(lx, ly, lz, nx, ny, nz):
+    """The closed surface of the box [-lx/2, lx/2] x [-ly/2, ly/2] x
+    [-lz/2, lz/2] as nx x ny x nz cells: every face a grid of quads split in
+    two, the nodes shared along the edges, wound outward (what the
+    application's BoxMesh builds for a box primitive's cells)."""
+    idx, verts, tris = {}, [], []
+
+    def node(p):
+        k = tuple(np.round(p, 9))
+        if k not in idx:
+            idx[k] = len(verts)
+            verts.append(np.array(p, dtype=np.float64))
+        return idx[k]
+
+    def face(origin, du, dv, nu_, nv_, normal):
+        for i in range(nu_):
+            for j in range(nv_):
+                p00 = origin + du * (i / nu_) + dv * (j / nv_)
+                p10 = origin + du * ((i + 1) / nu_) + dv * (j / nv_)
+                p11 = origin + du * ((i + 1) / nu_) + dv * ((j + 1) / nv_)
+                p01 = origin + du * (i / nu_) + dv * ((j + 1) / nv_)
+                a, b, c, d = node(p00), node(p10), node(p11), node(p01)
+                if np.dot(np.cross(p10 - p00, p11 - p00), normal) > 0:
+                    tris.extend([[a, b, c], [a, c, d]])
+                else:
+                    tris.extend([[a, c, b], [a, d, c]])
+
+    X, Y, Z = np.eye(3)
+    hx, hy, hz = lx / 2, ly / 2, lz / 2
+    face(np.array([-hx, -hy, -hz]), 2 * hy * Y, 2 * hz * Z, ny, nz, -X)
+    face(np.array([hx, -hy, -hz]), 2 * hy * Y, 2 * hz * Z, ny, nz, X)
+    face(np.array([-hx, -hy, -hz]), 2 * hx * X, 2 * hy * Y, nx, ny, -Z)
+    face(np.array([-hx, -hy, hz]), 2 * hx * X, 2 * hy * Y, nx, ny, Z)
+    face(np.array([-hx, -hy, -hz]), 2 * hx * X, 2 * hz * Z, nx, nz, -Y)
+    face(np.array([-hx, hy, -hz]), 2 * hx * X, 2 * hz * Z, nx, nz, Y)
+    return np.array(verts), np.array(tris, dtype=np.int64)
+
+
 def sphere_tets(job_dir, radius, subdivisions, core_size):
     """An icosphere's interior meshed by tet_gmsh.py (the body's own
     triangles stay the boundary)."""
@@ -372,6 +410,80 @@ def main(argv):
         failures += not check(abs(np.median(radial) / u_r - 1.0) < 0.10, "sphere: the radial displacement is -p a^2 (1 - nu) / 2 E t = %.4g m (median %.4g)" % (u_r, float(np.median(radial))))
         print("  sphere: %d dof in %.1f s; membrane %.4g Pa (median %.4g, peak %.4g); u_r %.4g m (median %.4g)"
               % (rs["dofs"], rs["seconds_solve"], sigma, median, vm.max(), u_r, float(np.median(radial))))
+
+        # ------------------------------------------------------------------
+        # The thin-walled box beam against beam theory (2026-11-02): the
+        # 1 x 10 x 1 m box of ue/Projects/simple_beam.yaml, 10 mm aluminium
+        # shells, clamped at y = min, two 500 N loads at the tip on the webs'
+        # mid-height. Timoshenko with the shells' mid-surface on the outer
+        # surface, I = 2 (b t (h/2)^2 + t h^3 / 12), the two webs the shear
+        # area: the linear thin shell is within 2% on a 0.25 m grid.
+        # ------------------------------------------------------------------
+        beam_dir = os.path.join(job_dir, "beam")
+        os.makedirs(beam_dir)
+        bL, bb, bh, bt = 10.0, 1.0, 1.0, 0.01
+        bverts, btris = box_shell(bb, bL, bh, 4, 40, 4)
+        write_mesh(os.path.join(beam_dir, "beam.bin"), bverts, np.zeros((0, 4), dtype=np.int32), np.zeros(0, dtype=np.int32))
+        with open(os.path.join(beam_dir, "faces.bin"), "wb") as fh:
+            fh.write(struct.pack("<I", len(btris)))
+            fh.write(np.ascontiguousarray(btris, dtype="<i4").tobytes())
+            fh.write(np.ones(len(btris), dtype="<i4").tobytes())
+        P_tip = 1000.0
+        job_b = {
+            "mesh": "beam.bin", "faces": "faces.bin", "model": "regions",
+            "regions": [{"id": 1, "label": "beam", "skin": {"material": AL, "thickness": bt}, "core": None, "solid": None}],
+            "supports": [{"axis": "y", "value": "min", "tolerance": 0.0}],
+            "loads": {"load_factor": 0.0, "pressure": 0.0, "pressure_file": None,
+                      "point_forces": [{"at": [0.5, 5.0, 0.0], "force": [0.0, 0.0, -P_tip / 2]}, {"at": [-0.5, 5.0, 0.0], "force": [0.0, 0.0, -P_tip / 2]}]},
+            "solver": {"echo_level": 0, "linear_solver": solver, "homogenize_cache": False, "shell_element": "ShellThinElement3D3N"},
+            "outputs": {"vtk": os.path.join(beam_dir, "beam.vtk"), "result": "beam_result.json"},
+        }
+        rb = run(beam_dir, job_b)
+        E_b, nu_b = AL["youngs_modulus"], AL["poisson_ratio"]
+        G_b = E_b / (2 * (1 + nu_b))
+        I_b = 2 * (bb * bt * (bh / 2) ** 2 + bt * bh ** 3 / 12)
+        delta_b = P_tip * bL ** 3 / (3 * E_b * I_b) + P_tip * bL / (G_b * 2 * bh * bt)
+        pts_b, cells_b, types_b, pd_b, cd_b = read_vtk(os.path.join(beam_dir, "beam.vtk"))
+        tip_b = pts_b[:, 1] > pts_b[:, 1].max() - 1e-6
+        tip_uz = float(pd_b["displacement"][tip_b, 2].mean())
+        failures += not check(rb["ok"] and rb["balanced"] and abs(rb["reaction"][2] - P_tip) < 0.01 * P_tip, "beam: the clamp carries the two tip loads (%.4g vs %.4g N)" % (rb["reaction"][2], P_tip))
+        failures += not check(abs(-tip_uz / delta_b - 1.0) < 0.02, "beam: the thin shell's tip deflection is Timoshenko's (%.4g vs %.4g m, %.1f%%)" % (-tip_uz, delta_b, 100 * (-tip_uz / delta_b - 1)))
+        failures += not check(rb["support_nodes"] == rb["support_corner_nodes"] == int((np.abs(bverts[:, 1] - bverts[:, 1].min()) < 1e-9).sum()), "beam: the clamp is the root ring and cap alone (%d nodes)" % rb["support_nodes"])
+        # The flange stress at 2.5 m from the root, M c / I.
+        cen_b = np.array([pts_b[c].mean(axis=0) for c in cells_b])
+        band = (np.abs(cen_b[:, 1] + 2.5) < 0.3) & (np.abs(cen_b[:, 2]) > 0.45)
+        sigma_b = P_tip * (bL - 2.5) * (bh / 2) / I_b
+        med = float(np.median(cd_b["von_mises_element"][band]))
+        failures += not check(abs(med / sigma_b - 1.0) < 0.05, "beam: the flange von Mises is M c / I (median %.4g vs %.4g Pa)" % (med, sigma_b))
+        print("  beam: %d dof in %.1f s; tip %.4g m vs %.4g; flange %.4g Pa vs %.4g" % (rb["dofs"], rb["seconds_solve"], -tip_uz, delta_b, med, sigma_b))
+
+        # The same bar as a solid of 10-node tetrahedra: the clamp must hold
+        # the mid-edge nodes on the plane too (left free until 2026-11-02 the
+        # bar came out 4-8% too flexible, converging at first order).
+        nodes_t, tets_t, region_t = box_tets(bL, bb, bh, size=0.25)
+        write_mesh(os.path.join(beam_dir, "bar.bin"), nodes_t, tets_t, region_t)
+        job_t = {
+            "mesh": "bar.bin", "faces": None, "model": "regions", "second_order": True,
+            "regions": [{"id": 1, "label": "bar", "skin": None, "core": None, "solid": {"material": AL}}],
+            "supports": [{"axis": "x", "value": "min", "tolerance": 0.0}],
+            "loads": {"load_factor": 0.0, "pressure": 0.0, "pressure_file": None,
+                      "point_forces": [{"at": [bL, 0.5, 0.0], "force": [0.0, 0.0, -P_tip / 2]}, {"at": [bL, -0.5, 0.0], "force": [0.0, 0.0, -P_tip / 2]}]},
+            "solver": {"echo_level": 0, "linear_solver": solver, "homogenize_cache": False},
+            "outputs": {"vtk": os.path.join(beam_dir, "bar.vtk"), "result": "bar_result.json"},
+        }
+        rt = run(beam_dir, job_t)
+        pts_t, cells_t, types_t, pd_t, cd_t = read_vtk(os.path.join(beam_dir, "bar.vtk"))
+        root_t = np.abs(pts_t[:, 0] - pts_t[:, 0].min()) < 1e-9
+        moving = int((root_t & (np.linalg.norm(pd_t["displacement"], axis=1) > 0.0)).sum())
+        failures += not check(rt["ok"] and rt["second_order"] and rt["support_nodes"] > rt["support_corner_nodes"] and rt["support_nodes"] == int(root_t.sum()) and moving == 0,
+                              "bar (10-node): every node on the clamped face is fixed, mid-edge nodes included (%d of %d on the face, %d corners, %d moving)" % (rt["support_nodes"], int(root_t.sum()), rt["support_corner_nodes"], moving))
+        kappa = 10.0 * (1 + nu_b) / (12.0 + 11.0 * nu_b)
+        I_t = bb * bh ** 3 / 12
+        delta_t = P_tip * bL ** 3 / (3 * E_b * I_t) + P_tip * bL / (kappa * G_b * bb * bh)
+        tip_t = pts_t[:, 0] > pts_t[:, 0].max() - 1e-6
+        tip_uz_t = float(pd_t["displacement"][tip_t, 2].mean())
+        failures += not check(abs(-tip_uz_t / delta_t - 1.0) < 0.03, "bar (10-node): the tip deflection is Timoshenko's (%.4g vs %.4g m, %.1f%%)" % (-tip_uz_t, delta_t, 100 * (-tip_uz_t / delta_t - 1)))
+        print("  bar (10-node): %d dof in %.1f s; tip %.4g m vs %.4g" % (rt["dofs"], rt["seconds_solve"], -tip_uz_t, delta_t))
 
         if keep:
             os.makedirs(keep, exist_ok=True)

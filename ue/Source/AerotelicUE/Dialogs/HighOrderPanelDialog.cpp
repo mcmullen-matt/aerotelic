@@ -610,9 +610,11 @@ namespace
 					Share.SpanAxis = Transform.TransformVectorNoScale(FVector(0, 1, 0)).GetSafeNormal();
 					aerotelic::WingModel* W = E->GetModelAs<aerotelic::WingModel>();
 					for (int32 k = 0; k <= kLoadCuts; ++k) Share.CutChords.Add(W->planform().ChordAt(static_cast<double>(k) / kLoadCuts));
+					// The counts from the wing's own Mesh tab where it sets them;
+					// the dialog's figures where it leaves them automatic.
 					aerotelic::panel::WingPaneling Pan;
-					Pan.chordwise = FMath::Clamp(FMath::RoundToInt(Chordwise), 2, 200);
-					Pan.spanwise = FMath::Clamp(FMath::RoundToInt(Spanwise), 1, 200);
+					Pan.chordwise = FMath::Clamp(W->mesh.chordwise > 0 ? W->mesh.chordwise : FMath::RoundToInt(Chordwise), 2, 200);
+					Pan.spanwise = FMath::Clamp(W->mesh.spanwise > 0 ? W->mesh.spanwise : FMath::RoundToInt(Spanwise), 1, 200);
 					Pan.wake_length = WakeChords * W->planform().RootChord();
 					Pan.wake_direction = StreamModel; // the wake sheds along the world stream, in the wing's frame
 					Own = aerotelic::panel::WingNetworks(*W, Pan, StreamModel);
@@ -646,9 +648,13 @@ namespace
 						C->Skipped.Add(E->EntityName);
 						continue;
 					}
+					// The body's own grid (its Mesh tab: panels along and round,
+					// the same construction its triangles start from) where set;
+					// the dialog's figures where automatic.
+					const aerotelic::MeshSpec& Grid = E->GetModel()->mesh;
 					aerotelic::panel::BodyPaneling BP;
-					BP.along = FMath::Clamp(FMath::RoundToInt(Along), 1, 400);
-					BP.around = FMath::Clamp(FMath::RoundToInt(Around), 3, 400);
+					BP.along = FMath::Clamp(Grid.stations > 0 ? Grid.stations : FMath::RoundToInt(Along), 1, 400);
+					BP.around = FMath::Clamp(Grid.around > 0 ? Grid.around : FMath::RoundToInt(Around), 3, 400);
 					if (bSymmetry && !E->IsMirrored()) BP.half_plane_y = 0.0;
 					for (const aerotelic::NamedLoft& L : Lofts)
 					{
@@ -1586,11 +1592,11 @@ void ShowAerotelicHighOrderPanelDialog(TFunction<void(const FText&)> Status)
 		[
 			MakeGroup(LOCTEXT("PanelingGroup", "Paneling"),
 				SNew(SVerticalBox)
-				+ SVerticalBox::Slot().AutoHeight().Padding(0, 2) [ FormRow(LOCTEXT("Chordwise", "Wing: chordwise per surface:"), Spin(&FState::Chordwise, 2, 200, 1, FText::GetEmpty())) ]
-				+ SVerticalBox::Slot().AutoHeight().Padding(0, 2) [ FormRow(LOCTEXT("Spanwise", "Wing: spanwise panels:"), Spin(&FState::Spanwise, 1, 200, 1, FText::GetEmpty())) ]
+				+ SVerticalBox::Slot().AutoHeight().Padding(0, 2) [ FormRow(LOCTEXT("Chordwise", "Wing: chordwise per surface (Mesh tab at 0):"), Spin(&FState::Chordwise, 2, 200, 1, FText::GetEmpty())) ]
+				+ SVerticalBox::Slot().AutoHeight().Padding(0, 2) [ FormRow(LOCTEXT("Spanwise", "Wing: spanwise panels (Mesh tab at 0):"), Spin(&FState::Spanwise, 1, 200, 1, FText::GetEmpty())) ]
 				+ SVerticalBox::Slot().AutoHeight().Padding(0, 2) [ FormRow(LOCTEXT("Wake", "Wing: wake length, root chords:"), Spin(&FState::WakeChords, 1, 1000, 5, FText::GetEmpty())) ]
-				+ SVerticalBox::Slot().AutoHeight().Padding(0, 2) [ FormRow(LOCTEXT("Along", "Bodies: panels along:"), Spin(&FState::Along, 1, 400, 1, FText::GetEmpty())) ]
-				+ SVerticalBox::Slot().AutoHeight().Padding(0, 2) [ FormRow(LOCTEXT("Around", "Bodies: panels round a section:"), Spin(&FState::Around, 3, 400, 1, FText::GetEmpty())) ]
+				+ SVerticalBox::Slot().AutoHeight().Padding(0, 2) [ FormRow(LOCTEXT("Along", "Bodies: panels along (Mesh tab at 0):"), Spin(&FState::Along, 1, 400, 1, FText::GetEmpty())) ]
+				+ SVerticalBox::Slot().AutoHeight().Padding(0, 2) [ FormRow(LOCTEXT("Around", "Bodies: panels round (Mesh tab at 0):"), Spin(&FState::Around, 3, 400, 1, FText::GetEmpty())) ]
 				+ SVerticalBox::Slot().AutoHeight().Padding(0, 4, 0, 0)
 				[
 					MakeInfoLabel(LOCTEXT("PanelingHint",

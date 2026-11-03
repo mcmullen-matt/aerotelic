@@ -308,6 +308,40 @@ void CheckMassSpecRoundTrip() {
 		&& from_text.material.youngs_modulus == 0.0, "mass: the old `{density: 1200}` reads as a custom material with only a density");
 }
 
+// `mesh:` on an entity -- the density of its grid (the Mesh tab) --
+// round-trips with only the keys that were set, and an entity left
+// automatic writes no key at all.
+void CheckMeshSpecRoundTrip() {
+	ProjectEntity e;
+	e.name = "Box1";
+	e.type = EntityType::Primitive;
+	e.model = PrimitiveSpec{};
+	ProjectEntity none = RoundTripThroughText(e);
+	Check(none.mesh.IsDefault(), "mesh round trip: nothing set stays automatic");
+	Check(EncodeMeshSpec(MeshSpec{}).size() == 0, "mesh: automatic encodes to an empty map (and is not written)");
+
+	e.mesh.stations = 20;
+	e.mesh.around = 32;
+	e.mesh.refine = false;
+	e.mesh.tolerance = 0.002;
+	e.mesh.max_aspect = -1.0;
+	e.mesh.cells = {2, 20, 2};
+	e.mesh.cap_rings = 3;
+	e.mesh.chordwise = 16;
+	e.mesh.spanwise = 12;
+	ProjectEntity back = RoundTripThroughText(e);
+	Check(back.mesh.stations == 20 && back.mesh.around == 32 && !back.mesh.refine && back.mesh.cells == std::array<int, 3>{2, 20, 2}
+		&& back.mesh.cap_rings == 3 && back.mesh.chordwise == 16 && back.mesh.spanwise == 12, "mesh round trip: every count survives");
+	CheckClose(back.mesh.tolerance, 0.002, 1e-15, "mesh round trip: the tolerance");
+	CheckClose(back.mesh.max_aspect, -1.0, 0.0, "mesh round trip: the aspect switch");
+
+	MeshSpec partial = DecodeMeshSpec(YAML::Load("{stations: 5, cells: [1, 2, 3]}"));
+	Check(partial.stations == 5 && partial.cells == std::array<int, 3>{1, 2, 3} && partial.refine && partial.around == 0 && partial.tolerance == 0.0,
+		"mesh: a partial `mesh:` decodes with the rest automatic");
+	Check(DecodeMeshSpec(YAML::Node()).IsDefault(), "mesh: no key at all is automatic");
+	e.mesh = MeshSpec{};
+}
+
 // `units:` is always written -- the defaults too -- and read back; a file
 // without it is metres and kilograms; a unit the application does not
 // offer is refused.
@@ -564,6 +598,7 @@ int main() {
 		CheckPrimitiveRoundTrip();
 		CheckPlacementRoundTrip();
 		CheckMassSpecRoundTrip();
+		CheckMeshSpecRoundTrip();
 		CheckUnitsRoundTrip();
 		CheckLatticeRoundTrip();
 		CheckRealPythonProjectFile();

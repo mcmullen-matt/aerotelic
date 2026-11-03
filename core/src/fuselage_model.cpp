@@ -296,11 +296,10 @@ std::vector<NamedLoft> FuselageModel::BuildLofts() const {
 std::vector<NamedMesh> FuselageModel::BuildMeshes(double tolerance) const {
 	LoftSource src = BuildLofts()[0].source;
 	src.u_seeds = StationFracs(30, tolerance);
-	LoftOptions opt;
-	opt.tolerance = tolerance;
-	opt.min_v = 16;
-	opt.apex_tolerance = 1e-5;
-	return {{"Main", TriangulateLoft(src, opt)}};
+	LoftOptions base;
+	base.min_v = 16;
+	base.apex_tolerance = 1e-5;
+	return {{"Main", TriangulateLoft(src, mesh.Apply(base, tolerance))}};
 }
 
 // FuselageModel::ExportStep() is defined in step_export.cpp, deliberately

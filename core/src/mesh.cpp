@@ -578,27 +578,44 @@ int RefineChordal(std::vector<double>& params, double tol, int max_points,
 // The loft
 // ---------------------------------------------------------------------------
 
+std::vector<double> GridParameters(double lo, double hi, int intervals, const std::vector<double>& seeds) {
+	std::vector<double> v;
+	const int n = std::max(intervals, 1);
+	for (int i = 0; i <= n; ++i) v.push_back(lo + (hi - lo) * i / n);
+	for (double s : seeds) if (s >= lo - 1e-12 && s <= hi + 1e-12) v.push_back(std::clamp(s, lo, hi));
+	std::sort(v.begin(), v.end());
+	std::vector<double> out;
+	const double eps = 1e-9 * std::max(hi - lo, 1e-300);
+	for (double x : v) if (out.empty() || x - out.back() > eps) out.push_back(x);
+	return out;
+}
+
 TriMesh TriangulateLoft(const LoftSource& src, const LoftOptions& opt, LoftStats* stats, LoftEndRings* ends) {
 	if (!src.section) throw std::invalid_argument("TriangulateLoft: no section function");
 	if (!(src.u_max > src.u_min)) throw std::invalid_argument("TriangulateLoft: empty station range");
 	const double tol = std::max(opt.tolerance, 1e-12);
 
 	// ---- initial parameter sets ----
+	// A structured grid (LoftOptions::grid_u / grid_v) is the panel method's
+	// own construction of its rows and columns, GridParameters, and then
+	// stands as given: the minimum rule applies to the seeds alone.
 	std::vector<double> us = src.u_seeds;
+	if (opt.grid_u > 0) us = GridParameters(src.u_min, src.u_max, opt.grid_u, us);
 	us.push_back(src.u_min);
 	us.push_back(src.u_max);
 	us = SortedUnique(us);
 	us.erase(std::remove_if(us.begin(), us.end(), [&](double u) { return u < src.u_min - 1e-12 || u > src.u_max + 1e-12; }), us.end());
 	if (src.periodic_u) us.pop_back(); // u_max coincides with u_min
-	EnsureMinimum(us, std::max(opt.min_u, src.periodic_u ? 3 : 2), src.periodic_u, src.u_max - src.u_min);
+	EnsureMinimum(us, std::max(opt.grid_u > 0 ? 0 : opt.min_u, src.periodic_u ? 3 : 2), src.periodic_u, src.u_max - src.u_min);
 
 	std::vector<double> vs = src.v_seeds;
+	if (opt.grid_v > 0) vs = GridParameters(0.0, 1.0, opt.grid_v, vs);
 	vs.push_back(0.0);
 	vs.push_back(1.0);
 	vs = SortedUnique(vs);
 	vs.erase(std::remove_if(vs.begin(), vs.end(), [](double v) { return v < -1e-12 || v > 1.0 + 1e-12; }), vs.end());
 	if (src.closed_curve) vs.pop_back(); // v = 1 coincides with v = 0
-	EnsureMinimum(vs, std::max(opt.min_v, 3), src.closed_curve, 1.0);
+	EnsureMinimum(vs, std::max(opt.grid_v > 0 ? 0 : opt.min_v, 3), src.closed_curve, 1.0);
 
 	// Evaluates the section at u for the v list, with the closing interval
 	// of a closed curve / periodic chain appended as an explicit extra point
@@ -1025,6 +1042,17 @@ TriMesh TriangulateLoftChain(std::vector<LoftSource> segments, const std::vector
 	}
 	LoftOptions seg_opt = opt;
 	seg_opt.orient_outward = false; // one winding for all, oriented at the end
+	// A structured grid's stations are spread over the whole chain: each
+	// segment gets its share by span, at least one interval.
+	double total_span = 0.0;
+	for (const LoftSource& s : segments) total_span += std::max(s.u_max - s.u_min, 0.0);
+	auto opt_for = [&](int i) {
+		LoftOptions o = seg_opt;
+		if (opt.grid_u > 0 && total_span > 0.0) {
+			o.grid_u = std::max(1, static_cast<int>(std::lround(opt.grid_u * (segments[i].u_max - segments[i].u_min) / total_span)));
+		}
+		return o;
+	};
 
 	auto in_range = [](double v, double lo, double hi) { return v >= lo - 1e-9 && v <= hi + 1e-9; };
 	// Index of the ring point at parameter v, or -1.
@@ -1041,7 +1069,7 @@ TriMesh TriangulateLoftChain(std::vector<LoftSource> segments, const std::vector
 	// Pass 1: each segment's natural end rings, to tell each break's two
 	// rings what the other has on the shared stretch.
 	std::vector<LoftEndRings> natural(n);
-	for (int i = 0; i < n; ++i) TriangulateLoft(segments[i], seg_opt, nullptr, &natural[i]);
+	for (int i = 0; i < n; ++i) TriangulateLoft(segments[i], opt_for(i), nullptr, &natural[i]);
 	for (int k = 0; k + 1 < n; ++k) {
 		const LoftBreak& br = breaks[k];
 		for (double v : natural[k].v_end) if (in_range(v, br.va0, br.va1)) segments[k + 1].v_extra_start.push_back(br.a_to_b(v));
@@ -1051,7 +1079,7 @@ TriMesh TriangulateLoftChain(std::vector<LoftSource> segments, const std::vector
 	// Pass 2: the meshes, with the end rings complete.
 	std::vector<TriMesh> meshes(n);
 	std::vector<LoftEndRings> ends(n);
-	for (int i = 0; i < n; ++i) meshes[i] = TriangulateLoft(segments[i], seg_opt, stats ? &(*stats)[i] : nullptr, &ends[i]);
+	for (int i = 0; i < n; ++i) meshes[i] = TriangulateLoft(segments[i], opt_for(i), stats ? &(*stats)[i] : nullptr, &ends[i]);
 
 	// Assemble: append each segment, its first ring's shared points taking
 	// the previous segment's last-ring vertices, then cap the pocket.
@@ -1119,23 +1147,105 @@ TriMesh TriangulateLoftChain(std::vector<LoftSource> segments, const std::vector
 // ---------------------------------------------------------------------------
 
 TriMesh BoxMesh(double lx, double ly, double lz) {
+	return BoxMesh(lx, ly, lz, 1, 1, 1);
+}
+
+TriMesh BoxMesh(double lx, double ly, double lz, int nx, int ny, int nz) {
+	nx = std::max(nx, 1);
+	ny = std::max(ny, 1);
+	nz = std::max(nz, 1);
 	TriMesh m;
-	double hx = 0.5 * lx, hy = 0.5 * ly, hz = 0.5 * lz;
-	for (int i = 0; i < 8; ++i) {
-		m.vertices.push_back({(i & 1) ? hx : -hx, (i & 2) ? hy : -hy, (i & 4) ? hz : -hz});
-	}
-	// Faces as quads (outward, counter-clockwise from outside).
-	const int quads[6][4] = {
-		{0, 2, 3, 1}, // -z
-		{4, 5, 7, 6}, // +z
-		{0, 1, 5, 4}, // -y
-		{2, 6, 7, 3}, // +y
-		{0, 4, 6, 2}, // -x
-		{1, 3, 7, 5}, // +x
+	const double hx = 0.5 * lx, hy = 0.5 * ly, hz = 0.5 * lz;
+	// The surface nodes of the (nx + 1) x (ny + 1) x (nz + 1) lattice, each
+	// made once however many faces meet at it.
+	std::unordered_map<uint64_t, int> index;
+	auto node = [&](int i, int j, int k) {
+		const uint64_t key = (static_cast<uint64_t>(i) * (ny + 1) + j) * (nz + 1) + k;
+		auto it = index.find(key);
+		if (it != index.end()) return it->second;
+		const int id = static_cast<int>(m.vertices.size());
+		m.vertices.push_back({-hx + lx * i / nx, -hy + ly * j / ny, -hz + lz * k / nz});
+		index.emplace(key, id);
+		return id;
 	};
-	for (const auto& q : quads) {
-		m.triangles.push_back({q[0], q[1], q[2]});
-		m.triangles.push_back({q[0], q[2], q[3]});
+	auto quad = [&](int a, int b, int c, int d) {
+		m.triangles.push_back({a, b, c});
+		m.triangles.push_back({a, c, d});
+	};
+	// Each face wound so its normal points out of the box.
+	for (int j = 0; j < ny; ++j) for (int k = 0; k < nz; ++k) {
+		quad(node(0, j, k), node(0, j, k + 1), node(0, j + 1, k + 1), node(0, j + 1, k));          // -x
+		quad(node(nx, j, k), node(nx, j + 1, k), node(nx, j + 1, k + 1), node(nx, j, k + 1));      // +x
+	}
+	for (int i = 0; i < nx; ++i) for (int k = 0; k < nz; ++k) {
+		quad(node(i, 0, k), node(i + 1, 0, k), node(i + 1, 0, k + 1), node(i, 0, k + 1));          // -y
+		quad(node(i, ny, k), node(i, ny, k + 1), node(i + 1, ny, k + 1), node(i + 1, ny, k));      // +y
+	}
+	for (int i = 0; i < nx; ++i) for (int j = 0; j < ny; ++j) {
+		quad(node(i, j, 0), node(i, j + 1, 0), node(i + 1, j + 1, 0), node(i + 1, j, 0));          // -z
+		quad(node(i, j, nz), node(i + 1, j, nz), node(i + 1, j + 1, nz), node(i, j + 1, nz));      // +z
+	}
+	m.FlipIfInsideOut();
+	return m;
+}
+
+void CylinderCounts(double radius, double length, double tolerance, int& around, int& along, int& cap_rings) {
+	// The chord of `around` points round the circle sags radius (1 - cos(pi / n)).
+	double angle = 2.0 * kPi / 64.0;
+	if (tolerance > 0.0 && radius > 0.0 && tolerance < radius) angle = 2.0 * std::acos(1.0 - tolerance / radius);
+	around = std::clamp(static_cast<int>(std::ceil(2.0 * kPi / std::max(angle, 1e-9))), 12, 400);
+	const double cell = 2.0 * kPi * radius / around;
+	along = std::clamp(static_cast<int>(std::lround(length / cell)), 1, 400);
+	cap_rings = std::clamp(static_cast<int>(std::lround(radius / cell)), 1, 200);
+}
+
+TriMesh CylinderMesh(double radius, double length, int around, int along, int cap_rings) {
+	around = std::max(around, 3);
+	along = std::max(along, 1);
+	cap_rings = std::max(cap_rings, 1);
+	TriMesh m;
+	const double hl = 0.5 * length;
+	// The side: rows of `around` points at along + 1 stations.
+	auto side = [&](int i, int j) { return i * around + (j % around); };
+	for (int i = 0; i <= along; ++i) {
+		const double x = -hl + length * i / along;
+		for (int j = 0; j < around; ++j) {
+			const double phi = 2.0 * kPi * j / around;
+			m.vertices.push_back({x, radius * std::cos(phi), radius * std::sin(phi)});
+		}
+	}
+	auto quad = [&](int a, int b, int c, int d) {
+		m.triangles.push_back({a, b, c});
+		m.triangles.push_back({a, c, d});
+	};
+	for (int i = 0; i < along; ++i) for (int j = 0; j < around; ++j) {
+		quad(side(i, j), side(i, j + 1), side(i + 1, j + 1), side(i + 1, j));
+	}
+	// Each cap: rings cap_rings - 1 .. 1 inside the rim (the side's own
+	// row), then the centre; quads between rings, a fan to the centre.
+	for (int end = 0; end < 2; ++end) {
+		const double x = end ? hl : -hl;
+		const int rim_row = end ? along : 0;
+		std::vector<int> ring_start(cap_rings + 1, -1);
+		for (int k = cap_rings - 1; k >= 1; --k) {
+			ring_start[k] = static_cast<int>(m.vertices.size());
+			const double r = radius * k / cap_rings;
+			for (int j = 0; j < around; ++j) {
+				const double phi = 2.0 * kPi * j / around;
+				m.vertices.push_back({x, r * std::cos(phi), r * std::sin(phi)});
+			}
+		}
+		const int centre = static_cast<int>(m.vertices.size());
+		m.vertices.push_back({x, 0.0, 0.0});
+		auto at = [&](int k, int j) { return k == cap_rings ? side(rim_row, j) : ring_start[k] + (j % around); };
+		for (int k = cap_rings; k >= 2; --k) for (int j = 0; j < around; ++j) {
+			if (end) quad(at(k, j), at(k, j + 1), at(k - 1, j + 1), at(k - 1, j));
+			else quad(at(k, j), at(k - 1, j), at(k - 1, j + 1), at(k, j + 1));
+		}
+		for (int j = 0; j < around; ++j) {
+			if (end) m.triangles.push_back({at(1, j), at(1, j + 1), centre});
+			else m.triangles.push_back({at(1, j), centre, at(1, j + 1)});
+		}
 	}
 	m.FlipIfInsideOut();
 	return m;
@@ -1230,12 +1340,9 @@ TriMesh EllipsoidMesh(double a, double b, double c, double tolerance) {
 }
 
 TriMesh CylinderMesh(double radius, double length, double tolerance) {
-	LoftSource src = CylinderLoft(radius, length);
-	LoftOptions opt;
-	opt.tolerance = tolerance;
-	opt.min_v = 12;
-	opt.min_u = 4;
-	return TriangulateLoft(src, opt);
+	int around = 0, along = 0, cap_rings = 0;
+	CylinderCounts(radius, length, tolerance, around, along, cap_rings);
+	return CylinderMesh(radius, length, around, along, cap_rings);
 }
 
 } // namespace aerotelic

@@ -2038,6 +2038,84 @@ the support carries the weight with the shells' share, the surface moves
 inward, and the skin's peak von Mises is the thin-shell membrane stress
 p a / 2t = 1.0 MPa up to the support's concentration.
 
+**The beam study, three fixes and the Mesh tab (2026-11-02).** Matt asked
+for the 1 x 10 x 1 m box of `Projects/simple_beam.yaml` (10 mm aluminium
+skin) as a cantilever against beam theory, every element type, with the
+inputs varied (the driver, every job and the results are in
+`C:\temp\beam_fea`). Two symmetric 500 N loads at the tip on the webs'
+mid-height, the root clamped; an end couple as the pure-bending case.
+Found: the linear thin shell converges cleanly (tip 0.988 of Timoshenko
+at h = 0.5 m, 1.000 at 0.0625; M c / I to 1%; the couple to 0.3%; amgcl
+agrees with sparse_lu); the thick corotational shell is too stiff and
+does NOT converge (0.82, 0.94, 0.98, 0.93 over the series) with its force
+balance error growing 1e-4 -> 1e-1; the 10-node tetrahedra came out 8%
+then 4% too flexible because `_support_nodes` ran on the corner nodes
+BEFORE `second_order()` added the mid-edge nodes, so every mid-edge node
+on the clamp plane was free (clamping them all gave 0.99 on both meshes);
+and the box primitive was 12 triangles, which both routes used as given --
+48 degrees of freedom of shells at 0.69 of the right deflection (0.05
+with the thick shell), and the solid route's `core_size` had no effect at
+all (gmsh keeps the boundary triangles, so 0.5, 0.25 and 0.125 all gave
+the same 9-node mesh: Tet4 0.015, Tet10 0.76 of theory) -- all reported
+as converged, the force balance being exact. Also measured: a support
+tolerance wider than the element size clamps the next ring and shortens
+the beam (0.963 = (9.875 / 10)^3); the shells sit on the outer surface
+rather than t/2 inward, 3% stiff at 10 mm and 16% at 50 mm (Matt chose to
+leave this); where the tip loads are put does not matter (the end cap is
+a diaphragm). The fixes, as Matt chose them:
+
+* **The clamp holds the mid-edge nodes** (`structural_fea.py`): the
+  support search runs again on `nodes_all` after `second_order()`; the
+  result reports `support_nodes` (all) and `support_corner_nodes` (the
+  pre-processor's figure), which the commandlet compares and checks that
+  the former exceeds the latter on 10-node runs. `structural_fea_check.py`
+  solves a 10-node bar and asserts no node on the clamped face moves.
+* **The thick corotational shell left the dialog** (the script still
+  takes it in a job). The thin linear triangle remains the default, the
+  corotational thin one the alternative.
+* **Support tolerance guard**: the pre-processor reports each plane's
+  furthest fixed node and the mesh's median wetted edge; a tolerance over
+  a quarter of that edge is flagged on the Support tab and in the Apply
+  status as liable to clamp a second ring.
+* **A Mesh tab on every parameterisation** (wing, fuselage, nacelle,
+  lofted nacelle, propeller, primitive; `Dialogs/MeshTab`), in place of
+  remeshing in the analysis: the grid is defined with the parameterisation
+  and every analysis uses it. `aerotelic::MeshSpec` (mesh.hpp) lives on
+  `ISolidModel::mesh`, travels with clone / Apply / copy / paste / load /
+  save (an entity-level `mesh:` key with only the non-automatic fields;
+  WingDesigner ignores keys it does not know), and every `BuildMeshes`
+  goes through `mesh.Apply(base, tolerance)` over its own defaults -- so
+  the viewport, the FEA shells and tetrahedra, the potential flow's and
+  DUST's wetted surfaces and the STL / 3D PDF exports all see one grid.
+  Fields, each 0 = automatic (what the model did before): *Panels along*
+  and *Panels round* (`LoftOptions::grid_u / grid_v`: uniform intervals
+  merged with the loft's seeds by `GridParameters`, the very construction
+  `LoftNetwork` uses for its rows and columns, so the same numbers give
+  the panel method the same stations and ring points), *Refine to
+  tolerance* (off: the grid as it stands, no chordal or aspect
+  refinement, and the triangles are the panel method's quads split --
+  `mesh_check` asserts every corner of a structured ellipsoid's network
+  is a vertex of its triangulation), *Tolerance*, *Longest strip times
+  spacing*; a wing's *chordwise / spanwise* panel counts (the Panel Method
+  dialog takes them from the entity where set, its own spins otherwise --
+  the body spins likewise); a box's *cells* along x, y, z (`BoxMesh` with
+  counts; automatic is cells about the shortest side, so the 1 x 10 x 1
+  bar is 1 x 10 x 1 cells); a cylinder's *points round*, *cells along*
+  and *cap rings* (`CylinderMesh` with counts, structured caps closing on
+  the axis; automatic from the chordal tolerance). A read-out builds the
+  draft and shows the triangle count. On a flapped wing the stations are
+  shared out over the chain's segments by span. Not yet one grid: a
+  wing's panel networks (cosine-spaced on the planform, `WingNetworks`)
+  and the box's and cylinder's loft networks (`BoxLoft` / `CylinderLoft`
+  panel their own u in [0, 3]) do not coincide with the triangulation.
+* **Tests**: `mesh_check` (box cells, cylinder counts, the structured
+  loft against `LoftNetwork`), `project_yaml_check` (`mesh:` round trip),
+  `structural_fea_check.py` (the thin-walled box beam within 2% of
+  Timoshenko and M c / I, the 10-node bar's clamp), and the document
+  commandlet's step "structural fea (a box beam)": a box primitive given
+  2 x 20 x 2 cells through a draft, the pre-processor's 9 root nodes and
+  the coarse-tolerance flag, the solve within 3% of Timoshenko.
+
 ## How the standalone build is put together
 
 * `Source/AerotelicUE.Target.cs` -- the game target that becomes `AerotelicUE.exe`.

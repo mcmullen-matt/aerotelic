@@ -112,10 +112,14 @@ namespace AerotelicStructuralFea
 		// The shell element: "ShellThinElement3D3N" (the linear thin
 		// triangle, the default: a linear static analysis is then
 		// self-consistent whatever the displacement -- the reactions balance
-		// the loads exactly), "ShellThinElementCorotational3D3N" or
-		// "ShellThickElementCorotational3D3N" (geometrically nonlinear
-		// elements solved in one step: fine for small displacements, and
-		// inconsistent reactions and stresses once they are large).
+		// the loads exactly) or "ShellThinElementCorotational3D3N" (a
+		// geometrically nonlinear element solved in one step: fine for small
+		// displacements, inconsistent reactions and stresses once they are
+		// large). The script also takes "ShellThickElementCorotational3D3N",
+		// which the dialog no longer offers: on a 1 x 10 x 1 thin-walled box
+		// (2026-11-02) it was too stiff and did not converge with refinement
+		// (0.82, 0.94, 0.98, 0.93 of beam theory) while its force balance
+		// error grew from 1e-4 to 1e-1.
 		FString ShellElement = TEXT("ShellThinElement3D3N");
 		// Reuse a homogenisation of the same cell and material from an
 		// earlier run (the script keeps them under the user's temp folder).
@@ -183,7 +187,10 @@ namespace AerotelicStructuralFea
 	{
 		int32 Nodes = 0, Elements = 0, Dofs = 0;
 		int32 Tets = 0, Shells = 0;
-		int32 SupportNodes = 0, WettedFaces = 0;
+		// The nodes the solver clamped: on 10-node tetrahedra the mid-edge
+		// nodes on the support planes as well as the corner nodes, which
+		// SupportCornerNodes counts alone (the pre-processor's figure).
+		int32 SupportNodes = 0, SupportCornerNodes = 0, WettedFaces = 0;
 		bool bSecondOrder = false;
 
 		double Mass = 0.0;                      // kg, over every element

@@ -1,0 +1,30 @@
+units: {length: m, mass: kg, time: s, stress: Pa}
+entities:
+  - name: Box 1
+    type: primitive
+    mirror: false
+    placement:
+      translation:
+        - 0
+        - 0
+        - 0
+      rotation_axis:
+        - 0
+        - 0
+        - 1
+      rotation_deg: 0
+    model:
+      shape: box
+      name: Box 1
+      radius: 1
+      stretch:
+        - 1
+        - 1
+        - 1
+      size:
+        - 1
+        - 10
+        - 1
+      cyl_radius: 1
+      cyl_length: 2
+    mass: {material: {name: Aluminium 6061-T6, density: 2700, youngs_modulus: 68900000000, poisson_ratio: 0.33000000000000002, allowable_stress: 276000000}, skin_thickness: 0.01}

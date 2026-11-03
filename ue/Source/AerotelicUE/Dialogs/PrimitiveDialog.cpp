@@ -10,6 +10,7 @@
 #include "Widgets/TabStrip.h"
 #include "Widgets/CurveTabControls.h"
 #include "EntityDesignContent.h"
+#include "MeshTab.h"
 
 #include "aerotelic/primitive_model.hpp"
 
@@ -135,7 +136,8 @@ void SPrimitiveDialog::Construct(const FArguments& InArgs, PrimitiveModel* InMod
 
 	TArray<FAerotelicTab> Tabs;
 	Tabs.Add({ LOCTEXT("ShapeTab", "Shape"), ShapeTab });
-	Tabs.Add({ LOCTEXT("HelpTab", "Help"), MakeHelpTab(kHelp) });
+	Tabs.Add({ LOCTEXT("MeshTab", "Mesh"), MakeMeshTab(Model, aerotelic::project_yaml::EntityType::Primitive, OnChangedDelegate) });
+	Tabs.Add({ LOCTEXT("HelpTab", "Help"), MakeHelpTab(FText::Join(FText::FromString(TEXT("\n\n")), kHelp, MeshTabHelpText(aerotelic::project_yaml::EntityType::Primitive))) });
 
 	ChildSlot
 	[

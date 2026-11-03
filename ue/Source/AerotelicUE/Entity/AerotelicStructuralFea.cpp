@@ -304,6 +304,7 @@ namespace AerotelicStructuralFea
 		Out.Shells = Int(TEXT("shells"));
 		Out.Dofs = Int(TEXT("dofs"));
 		Out.SupportNodes = Int(TEXT("support_nodes"));
+		Out.SupportCornerNodes = Result->HasField(TEXT("support_corner_nodes")) ? Int(TEXT("support_corner_nodes")) : Out.SupportNodes;
 		Out.WettedFaces = Int(TEXT("wetted_faces"));
 		Result->TryGetBoolField(TEXT("second_order"), Out.bSecondOrder);
 		Out.Mass = Real(TEXT("mass"));

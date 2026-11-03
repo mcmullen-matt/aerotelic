@@ -127,6 +127,22 @@ namespace AerotelicFeaPreprocess
 			Out.FaceNormal[i] = Area > 0.0 ? ToF(NA / Area) : FVector::ZeroVector;
 			Out.FaceArea[i] = Area;
 		}
+		{
+			// The median edge of the wetted faces (every edge of every face,
+			// shared ones counted twice, which does not move a median much).
+			TArray<double> Edges;
+			Edges.Reserve(3 * NFaces);
+			for (int32 i = 0; i < NFaces; ++i)
+			{
+				const FFace& F = Out.WettedFaces[i];
+				for (int32 e = 0; e < 3; ++e) Edges.Add(aerotelic::Length(Mesh.nodes[F.N[(e + 1) % 3]] - Mesh.nodes[F.N[e]]));
+			}
+			if (Edges.Num() > 0)
+			{
+				Edges.Sort();
+				Out.MedianEdge = Edges[Edges.Num() / 2];
+			}
+		}
 
 		// The regions: counts, volumes, areas; the labels, kinds and the
 		// masses from the request. The script's densities are SI and its
@@ -234,7 +250,8 @@ namespace AerotelicFeaPreprocess
 				P.Tolerance = S.Tolerance > 0.0 ? S.Tolerance : 1e-4 * Out.Diagonal;
 				for (int32 n = 0; n < Out.Nodes; ++n)
 				{
-					if (std::abs(Mesh.nodes[n][P.Axis] - P.Value) <= P.Tolerance) { ++P.Nodes; Fixed[n] = true; }
+					const double D = std::abs(Mesh.nodes[n][P.Axis] - P.Value);
+					if (D <= P.Tolerance) { ++P.Nodes; Fixed[n] = true; P.Furthest = FMath::Max(P.Furthest, D); }
 				}
 				Out.SupportPlanes.Add(P);
 			}

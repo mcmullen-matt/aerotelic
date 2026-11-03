@@ -29,6 +29,14 @@ public:
 	virtual ~ISolidModel() = default;
 	virtual TopoDS_Shape BuildSolid() const = 0;
 
+	// The density of this body's grid (mesh.hpp MeshSpec): set on the
+	// entity's Mesh tab, saved with the entity, read by BuildMeshes (every
+	// implementation goes through mesh.Apply over its own defaults) and by
+	// the panel method for its network counts. Not part of the model's
+	// parameterisation spec: the document copies it across clone / apply /
+	// load / save.
+	MeshSpec mesh;
+
 	// The model's bodies as closed triangle meshes built directly from its
 	// section curves (mesh.hpp), within `tolerance` (model units) of the
 	// surface, without OCCT -- what the viewport, STL export and the
