@@ -167,8 +167,119 @@ def main(argv):
               "  tet_check nested %s %s %.6g - 2" % (os.path.join(keep, "target_0.tri"), os.path.join(keep, targets[0]["inner_file"]) if targets else "", cell))
     else:
         shutil.rmtree(job_dir, ignore_errors=True)
+    if not body_path:
+        ok &= check_per_body_skin()
+        ok &= check_remesh_budget()
     print("RESULT: %s" % ("all checks passed" if ok else "some checks FAILED"))
     return 0 if ok else 1
+
+
+def check_remesh_budget():
+    """The remeshes of a job's offset surfaces are together held to
+    MAX_INNER_FACES (2026-11-01: p38's 1 mm skin asked for a 2 mm edge
+    over a 148 m^2 airframe and ran to 20 M triangles per body, 15
+    minutes and 18 GB -- the application hung in swap). The budget is
+    lowered here so a unit sphere trips it: the edge asked for would take
+    ~65 k triangles, the budget allows 20 k, and the result says so and
+    stays near it."""
+    print("remesh budget: a unit sphere asked for an edge far under its budget")
+    job_dir = tempfile.mkdtemp(prefix="aerotelic_lattice_budget_")
+    saved = lm.MAX_INNER_FACES
+    ok = True
+    try:
+        budget = 20000
+        lm.MAX_INNER_FACES = budget
+        sphere = mm.makeUVSphere(1.0, 64, 32)
+        lm.write_tri(os.path.join(job_dir, "target_0.tri"), sphere)
+        thickness = 0.05
+        voxel = thickness / 4.0
+        edge = 0.02  # 4 pi 0.95^2 / (0.433 * 0.02^2) ~ 65 k triangles, over the budget
+        job = {
+            "skin_thickness": thickness,
+            "offset_voxel": voxel,
+            "offset_mode": "standard",
+            "decimate_tolerance": 0.2 * voxel,
+            "min_pocket_volume": (4.0 * voxel) ** 3,
+            "inner_opening": 0.0,
+            "inner_remesh_edge": edge,
+            "targets": [{"label": "Sphere", "file": "target_0.tri"}],
+            "reserved": [],
+            "field": None,
+            "outputs": {"skin": "skin.tri", "lattice": "lattice.tri", "result": "result.json"},
+        }
+        with open(os.path.join(job_dir, "job.json"), "w", encoding="utf-8") as f:
+            json.dump(job, f, indent=1)
+        code = lm.main(["lattice_meshlib.py", job_dir])
+        with open(os.path.join(job_dir, "result.json"), "r", encoding="utf-8") as f:
+            result = json.load(f)
+        ok &= check(code == 0 and result.get("ok"), "remesh budget: the job succeeded: %s" % result.get("error", ""))
+        if not ok:
+            return False
+        targets = result.get("targets", [])
+        n = targets[0]["inner_triangles"] if targets else -1
+        # The remesh lands near its target count, not exactly on it; well
+        # under the ~65 k the edge asked for and no more than a little
+        # over the budget.
+        ok &= check(0 < n <= 1.25 * budget, "remesh budget: the inner surface stays near the %d budget (%d triangles)" % (budget, n))
+        raised = [w for w in result.get("warnings", []) if "remeshed at" in w and "under %d triangles" % budget in w]
+        ok &= check(len(raised) == 1, "remesh budget: the result warns that the edge was raised (%s)" % (raised[0] if raised else "no warning"))
+        ok &= check(targets and targets[0]["inner_ok"], "remesh budget: the coarser inner surface is still usable: %s" % (targets[0].get("inner_note", "") if targets else "no targets"))
+    finally:
+        lm.MAX_INNER_FACES = saved
+        shutil.rmtree(job_dir, ignore_errors=True)
+    return ok
+
+
+def check_per_body_skin():
+    """The skin thickness is per target (2026-10-31): a target carrying its
+    own `skin_thickness` is hollowed by it, one carrying none by the job's.
+    Two unit spheres apart, no infill: the first with its own 0.05, the
+    second left to the job's 0.10; each inner volume is the sphere's at
+    1 - t, and the result reports each target's thickness."""
+    print("per-body skin: two spheres, one with its own 0.05, one on the job's 0.10")
+    job_dir = tempfile.mkdtemp(prefix="aerotelic_lattice_skins_")
+    ok = True
+    try:
+        own, default = 0.05, 0.10
+        for i, offset in enumerate((0.0, 4.0)):
+            sphere = mm.makeUVSphere(1.0, 64, 32)
+            sphere.transform(mm.AffineXf3f.translation(mm.Vector3f(offset, 0.0, 0.0)))
+            lm.write_tri(os.path.join(job_dir, "target_%d.tri" % i), sphere)
+        voxel = own / 4.0
+        job = {
+            "skin_thickness": default,
+            "offset_voxel": voxel,
+            "offset_mode": "standard",
+            "decimate_tolerance": 0.2 * voxel,
+            "min_pocket_volume": (4.0 * voxel) ** 3,
+            "inner_opening": 0.0,
+            "inner_remesh_edge": 2.0 * default,
+            "targets": [
+                {"label": "Own", "file": "target_0.tri", "skin_thickness": own, "inner_remesh_edge": 2.0 * own},
+                {"label": "Default", "file": "target_1.tri"},
+            ],
+            "reserved": [],
+            "field": None,
+            "outputs": {"skin": "skin.tri", "lattice": "lattice.tri", "result": "result.json"},
+        }
+        with open(os.path.join(job_dir, "job.json"), "w", encoding="utf-8") as f:
+            json.dump(job, f, indent=1)
+        code = lm.main(["lattice_meshlib.py", job_dir])
+        with open(os.path.join(job_dir, "result.json"), "r", encoding="utf-8") as f:
+            result = json.load(f)
+        ok &= check(code == 0 and result.get("ok"), "per-body skin: the job succeeded: %s" % result.get("error", ""))
+        if not ok:
+            return False
+        targets = result.get("targets", [])
+        ok &= check(len(targets) == 2 and targets[0]["skin_thickness"] == own and targets[1]["skin_thickness"] == default,
+                    "per-body skin: the result reports each target's thickness (%s)" % [t.get("skin_thickness") for t in targets])
+        for t, thickness in zip(targets, (own, default)):
+            expected = 4.0 / 3.0 * np.pi * (1.0 - thickness) ** 3
+            ok &= check(abs(t["inner_volume"] - expected) < 0.06 * expected,
+                        "per-body skin: '%s' hollowed to the %.2f skin (inner volume %.5g vs %.5g)" % (t["label"], thickness, t["inner_volume"], expected))
+    finally:
+        shutil.rmtree(job_dir, ignore_errors=True)
+    return ok
 
 
 if __name__ == "__main__":

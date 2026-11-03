@@ -34,6 +34,28 @@ namespace
 		Cached = M;
 		return M;
 	}
+
+	// The main view's edge material (AerotelicEntityActor's WireMaterial):
+	// wireframe rasterisation of the triangles, unlit, nudged towards the
+	// camera so the lines sit on the coplanar surface.
+	UMaterialInterface* WireBaseMaterial()
+	{
+		static TWeakObjectPtr<UMaterialInterface> Cached;
+		static bool bWarned = false;
+		if (Cached.IsValid())
+		{
+			return Cached.Get();
+		}
+		const FString Package = TEXT("/Game/Materials/M_AerotelicWire");
+		UMaterialInterface* M = LoadObject<UMaterialInterface>(nullptr, *FString::Printf(TEXT("%s.%s"), *Package, *FPackageName::GetLongPackageAssetName(Package)));
+		if (M == nullptr && !bWarned)
+		{
+			bWarned = true;
+			UE_LOG(LogTemp, Warning, TEXT("AerotelicColoredMeshActor: %s not found (run setup_materials.bat); result meshes draw no edges."), *Package);
+		}
+		Cached = M;
+		return M;
+	}
 }
 
 AAerotelicColoredMeshActor::AAerotelicColoredMeshActor()
@@ -51,6 +73,16 @@ AAerotelicColoredMeshActor::AAerotelicColoredMeshActor()
 	// The result view's lighting channel alone (AAerotelicSceneViewActor):
 	// lit by its eye-fixed rig, unlit by the scene's studio rig.
 	Mesh->SetLightingChannels(false, false, true);
+
+	Edges = CreateDefaultSubobject<UProceduralMeshComponent>(TEXT("Edges"));
+	Edges->SetupAttachment(Mesh);
+	Edges->SetMobility(EComponentMobility::Movable);
+	Edges->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	Edges->SetCastShadow(false);
+	Edges->bUseAsyncCooking = false;
+	Edges->SetVisibleInSceneCaptureOnly(true);
+	Edges->SetLightingChannels(false, false, true);
+	Edges->SetVisibility(false);
 }
 
 FString AAerotelicColoredMeshActor::VertexColorMaterialPackage()
@@ -69,10 +101,11 @@ FColor AAerotelicColoredMeshActor::VertexColorFromSRGB(float R, float G, float B
 	return FLinearColor(Srgb).ToFColor(false);
 }
 
-void AAerotelicColoredMeshActor::SetMesh(const TArray<FVector>& InVertices, const TArray<int32>& Triangles, const TArray<FVector>& InNormals, const TArray<FColor>& Colors)
+void AAerotelicColoredMeshActor::SetMesh(const TArray<FVector>& InVertices, const TArray<int32>& InTriangles, const TArray<FVector>& InNormals, const TArray<FColor>& Colors)
 {
 	Vertices = InVertices;
 	Normals = InNormals;
+	Triangles = InTriangles;
 	if (Normals.Num() != Vertices.Num())
 	{
 		Normals.SetNumZeroed(Vertices.Num());
@@ -83,10 +116,12 @@ void AAerotelicColoredMeshActor::SetMesh(const TArray<FVector>& InVertices, cons
 		Cols.Init(FColor::White, Vertices.Num());
 	}
 	Mesh->ClearAllMeshSections();
+	Edges->ClearAllMeshSections();
 	if (Vertices.Num() == 0 || Triangles.Num() < 3)
 	{
 		return;
 	}
+	RefreshEdges();
 	UE_LOG(LogTemp, Verbose, TEXT("AerotelicColoredMeshActor: %d vertices, %d triangles, %d colours given (first %s, middle %s, last %s)"),
 		Vertices.Num(), Triangles.Num() / 3, Colors.Num(),
 		*Cols[0].ToString(), *Cols[Cols.Num() / 2].ToString(), *Cols.Last().ToString());
@@ -121,7 +156,43 @@ void AAerotelicColoredMeshActor::Clear()
 {
 	Vertices.Reset();
 	Normals.Reset();
+	Triangles.Reset();
 	Mesh->ClearAllMeshSections();
+	Edges->ClearAllMeshSections();
+}
+
+void AAerotelicColoredMeshActor::SetEdges(bool bShow, const FLinearColor& Color)
+{
+	bEdges = bShow;
+	EdgeColor = Color;
+	RefreshEdges();
+}
+
+void AAerotelicColoredMeshActor::RefreshEdges()
+{
+	if (!bEdges || Vertices.Num() == 0 || Triangles.Num() < 3)
+	{
+		Edges->ClearAllMeshSections();
+		Edges->SetVisibility(false);
+		return;
+	}
+	if (Edges->GetNumSections() == 0)
+	{
+		Edges->CreateMeshSection(0, Vertices, Triangles, Normals, TArray<FVector2D>(), TArray<FColor>(), TArray<FProcMeshTangent>(), false);
+	}
+	if (EdgeMaterial == nullptr)
+	{
+		if (UMaterialInterface* Base = WireBaseMaterial())
+		{
+			EdgeMaterial = UMaterialInstanceDynamic::Create(Base, this);
+		}
+	}
+	if (EdgeMaterial != nullptr)
+	{
+		EdgeMaterial->SetVectorParameterValue(TEXT("Color"), EdgeColor);
+		Edges->SetMaterial(0, EdgeMaterial);
+	}
+	Edges->SetVisibility(true);
 }
 
 FBox AAerotelicColoredMeshActor::GetMeshBounds() const
@@ -137,4 +208,5 @@ FBox AAerotelicColoredMeshActor::GetMeshBounds() const
 void AAerotelicColoredMeshActor::SetVisibleInCapturesOnly(bool bCapturesOnly)
 {
 	Mesh->SetVisibleInSceneCaptureOnly(bCapturesOnly);
+	Edges->SetVisibleInSceneCaptureOnly(bCapturesOnly);
 }

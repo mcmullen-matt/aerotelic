@@ -106,7 +106,7 @@ void OpenAerotelicMaterialDialog(AAerotelicEntityActor* Entity)
 
 	TSharedRef<SWindow> Window = SNew(SWindow)
 		.Title(FText::Format(LOCTEXT("Title", "Material Properties -- {0}"), FText::FromString(Entity->EntityName)))
-		.ClientSize(FVector2D(520, 560))
+		.ClientSize(FVector2D(520, 640))
 		.SupportsMaximize(false)
 		.SupportsMinimize(false);
 
@@ -192,8 +192,23 @@ void OpenAerotelicMaterialDialog(AAerotelicEntityActor* Entity)
 					[ FormRow(WithUnit(LOCTEXT("Allowable", "Allowable stress"), Units.StressName()), MaterialField(&Material::allowable_stress, Units.StressToSI(), 1.0e6 / Units.StressToSI(), 1.0e15)) ]
 					+ SVerticalBox::Slot().AutoHeight().Padding(0, 6, 0, 0)
 					[
+						// The skin thickness is a geometric figure, in the project's
+						// length unit as typed (never converted), like the asserted
+						// mass; it is not part of the material.
+						FormRow(WithUnit(LOCTEXT("SkinThickness", "Skin thickness, 0 = solid"), Units.LengthName()),
+							SNew(SAerotelicNumericEntry)
+							.Value_Lambda([&Spec]() { return Spec.skin_thickness; })
+							.MinValue(0.0).MaxValue(1.0e9).Delta(0.001)
+							.LiveUpdate(true)
+							.OnValueCommitted_Lambda([&Spec](double V, ETextCommit::Type) { Spec.skin_thickness = FMath::Max(V, 0.0); }))
+					]
+					+ SVerticalBox::Slot().AutoHeight().Padding(0, 6, 0, 0)
+					[
 						MakeInfoLabel(LOCTEXT("MaterialHint",
-							"A material is a property of the stuff, not of the project's units: the figures are kept in SI and shown here in the project's units (Geometry > Units). Pick a preset to take its handbook values; edit any figure and it becomes Custom. The density weighs the entity as a uniform solid over the volume its closed surface encloses -- a surface with no thickness weighs nothing this way, so assert the mass instead. Young's modulus, Poisson's ratio and the allowable are what Analysis > Structural uses; the allowable is what a margin is reported against (zero: no margin)."))
+							"A material is a property of the stuff, not of the project's units: the figures are kept in SI and shown here in the project's units (Geometry > Units). Pick a preset to take its handbook values; edit any figure and it becomes Custom. "
+							"With the skin thickness at zero the density weighs the entity as a uniform solid over the volume its closed surface encloses -- a surface with no thickness weighs nothing this way. "
+							"A positive skin thickness makes every solid body this parameterisation produces a skin of the material that thick: its material volume is the surface area times the thickness, its mass the density times that, spread over the surface as a thin shell (open surfaces included; a mirrored half carries its own). A lattice that fills this entity hollows it by this thickness (the lattice dialog's figure is only the default for bodies without one), and Analysis > Structural gives its shells this thickness. "
+							"Young's modulus, Poisson's ratio and the allowable are what Analysis > Structural uses; the allowable is what a margin is reported against (zero: no margin)."))
 					]
 				]
 			]
@@ -244,12 +259,22 @@ void OpenAerotelicMaterialDialog(AAerotelicEntityActor* Entity)
 					]
 					+ SVerticalBox::Slot().AutoHeight().Padding(0, 4, 0, 0)
 					[
-						MakeMetricRow(WithUnit(LOCTEXT("Weighs", "Would weigh"), Units.MassName()), TAttribute<FText>::CreateLambda([&Spec, Volume, Units]()
+						// What the material fills: the enclosed volume of a solid, the
+						// surface area times the thickness of a skin.
+						MakeMetricRow(WithUnit(LOCTEXT("MaterialVolume", "Material volume"), Units.VolumeName()), TAttribute<FText>::CreateLambda([&Spec, Volume, Area]()
+						{
+							if (Spec.mode != MassMode::Material) return DashText();
+							return FormatG(Spec.IsSkin() ? Area * Spec.skin_thickness : Volume, 5);
+						}))
+					]
+					+ SVerticalBox::Slot().AutoHeight()
+					[
+						MakeMetricRow(WithUnit(LOCTEXT("Weighs", "Would weigh"), Units.MassName()), TAttribute<FText>::CreateLambda([&Spec, Volume, Area, Units]()
 						{
 							switch (Spec.mode)
 							{
 							case MassMode::Asserted: return FormatG(Spec.mass, 6);
-							case MassMode::Material: return FormatG(Spec.material.density / Units.DensityToSI() * Volume, 6);
+							case MassMode::Material: return FormatG(Spec.material.density / Units.DensityToSI() * (Spec.IsSkin() ? Area * Spec.skin_thickness : Volume), 6);
 							case MassMode::Unset: break;
 							}
 							return DashText();

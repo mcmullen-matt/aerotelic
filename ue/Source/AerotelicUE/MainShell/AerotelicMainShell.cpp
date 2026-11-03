@@ -447,24 +447,8 @@ void SAerotelicMainShell::BindCommands()
 		if (!Result.IsEmpty()) StatusText = Result;
 	}));
 
-	// Lattice
-	Commands->MapAction(C.GenerateLattice, FExecuteAction::CreateLambda([this]()
-	{
-		ShowAerotelicLatticeDialog(nullptr, [this](const FText& T) { SetStatus(T); });
-	}));
-	Commands->MapAction(C.RegenerateLattices, FExecuteAction::CreateLambda([this]()
-	{
-		UAerotelicDocumentSubsystem* Doc = GetDocument();
-		if (Doc == nullptr) return;
-		TArray<FString> Errors;
-		const int32 Count = Doc->RegenerateLattices(Errors);
-		if (Errors.Num() > 0)
-		{
-			AerotelicMessageBox(EAppMsgType::Ok, FText::FromString(TEXT("Some lattices could not be regenerated:\n") + FString::Join(Errors, TEXT("\n"))), LOCTEXT("LatticeTitle", "Regenerate Lattices"));
-		}
-		SetStatus(Count == 0 && Errors.Num() == 0 ? LOCTEXT("NoLattices", "No lattices in the scene.")
-			: FText::Format(LOCTEXT("Regenerated", "Regenerated {0} lattice(s)."), FText::AsNumber(Count)));
-	}));
+	// Lattice exports (Generate Lattice and Regenerate are on the Scene
+	// tree's rows: a lattice is made within a body one picks)
 	Commands->MapAction(C.ExportSkinVtk, FExecuteAction::CreateLambda([this]() { ShowAerotelicExportSkinVtkDialog([this](const FText& T) { SetStatus(T); }); }));
 	Commands->MapAction(C.ExportTetVtk, FExecuteAction::CreateLambda([this]() { ShowAerotelicExportTetVtkDialog([this](const FText& T) { SetStatus(T); }); }));
 
@@ -522,7 +506,7 @@ void SAerotelicMainShell::BindCommands()
 		FIsActionChecked::CreateLambda([]() { UAerotelicDocumentSubsystem* Doc = UAerotelicDocumentSubsystem::Get(); return Doc != nullptr && Doc->GetSectionPlane().bFlipped; }));
 
 	// Help
-	// Forced: Help -> Welcome Screen... shows it even when ticked off at
+	// Forced: Help -> Welcome Screen shows it even when ticked off at
 	// start-up (the Qt app's own menu item lost that argument).
 	Commands->MapAction(C.WelcomeScreen, FExecuteAction::CreateLambda([]() { ShowAerotelicWelcomeScreen(/*bForce*/ true); }));
 	Commands->MapAction(C.TutorialProjects, FExecuteAction::CreateLambda([]() { ShowAerotelicTutorialDialog(); }));
@@ -561,7 +545,6 @@ TSharedRef<SWidget> SAerotelicMainShell::BuildMenuBar()
 	Bar.AddPullDownMenu(LOCTEXT("FileMenu", "File"), LOCTEXT("FileMenuTip", "Project files"), PullDown(&SAerotelicMainShell::FillFileMenu));
 	Bar.AddPullDownMenu(LOCTEXT("EditMenu", "Edit"), LOCTEXT("EditMenuTip", "Preferences"), PullDown(&SAerotelicMainShell::FillEditMenu));
 	Bar.AddPullDownMenu(LOCTEXT("GeometryMenu", "Geometry"), LOCTEXT("GeometryMenuTip", "Airfoils and boolean operations"), PullDown(&SAerotelicMainShell::FillGeometryMenu));
-	Bar.AddPullDownMenu(LOCTEXT("LatticeMenu", "Lattice"), LOCTEXT("LatticeMenuTip", "Lattice infill of the scene's bodies"), PullDown(&SAerotelicMainShell::FillLatticeMenu));
 	Bar.AddPullDownMenu(LOCTEXT("AnalysisMenu", "Analysis"), LOCTEXT("AnalysisMenuTip", "Flow analysis of the scene's geometry"), PullDown(&SAerotelicMainShell::FillAnalysisMenu));
 	Bar.AddPullDownMenu(LOCTEXT("ViewMenu", "View"), LOCTEXT("ViewMenuTip", "3D view"), PullDown(&SAerotelicMainShell::FillViewMenu));
 	Bar.AddPullDownMenu(LOCTEXT("HelpMenu", "Help"), LOCTEXT("HelpMenuTip", "Help"), PullDown(&SAerotelicMainShell::FillHelpMenu));
@@ -580,6 +563,8 @@ void SAerotelicMainShell::FillFileMenu(FMenuBuilder& Menu)
 	Menu.AddMenuEntry(C.ExportStep);
 	Menu.AddMenuEntry(C.ExportStl);
 	Menu.AddMenuEntry(C.Export3DPdf);
+	Menu.AddMenuEntry(C.ExportSkinVtk);
+	Menu.AddMenuEntry(C.ExportTetVtk);
 	Menu.AddMenuSeparator();
 	Menu.AddMenuEntry(C.Quit, NAME_None, TAttribute<FText>(), TAttribute<FText>(), FSlateIcon(), NAME_None);
 }
@@ -696,16 +681,6 @@ void SAerotelicMainShell::SetUnits(const aerotelic::UnitSystem& Units)
 				Described),
 			LOCTEXT("UnitsTitle", "Units"));
 	}
-}
-
-void SAerotelicMainShell::FillLatticeMenu(FMenuBuilder& Menu)
-{
-	const FAerotelicCommands& C = FAerotelicCommands::Get();
-	Menu.AddMenuEntry(C.GenerateLattice);
-	Menu.AddMenuEntry(C.RegenerateLattices);
-	Menu.AddMenuSeparator();
-	Menu.AddMenuEntry(C.ExportSkinVtk);
-	Menu.AddMenuEntry(C.ExportTetVtk);
 }
 
 void SAerotelicMainShell::FillAnalysisMenu(FMenuBuilder& Menu)

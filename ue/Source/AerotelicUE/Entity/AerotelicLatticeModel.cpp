@@ -30,6 +30,15 @@ namespace
 	// and a facet intersect"), two skins is clean and meshes in 15 s
 	// against 350 s at one skin, with the same exact volumes.
 	constexpr double kInnerRemeshEdgeOverSkin = 2.0;
+	// ... and never finer than this many offset voxels. The offset surface
+	// is a marching-cubes surface on that voxel and carries no detail finer
+	// than it, so a finer remesh only multiplies triangles. Measured on
+	// p38 (a 1 mm skin on a 12 m airframe, whose voxel budget caps the
+	// offset voxel at 19.5 mm): a 2 mm remesh edge ran to the 10 M split
+	// cap and 20 M triangles per body, 15 minutes and 18 GB with six
+	// bodies -- the application hung in swap. At two voxels the same body
+	// remeshes to a few hundred thousand triangles.
+	constexpr double kInnerRemeshEdgeOverVoxel = 2.0;
 	// Target edge length deep in the core, as a multiple of the lattice's
 	// unit cell: the core carries the lattice's material card rather than
 	// its geometry, so it needs no finer a mesh than the cell it
@@ -60,16 +69,19 @@ namespace
 		return false;
 	}
 
-	// A placed body: its mesh and the name it is reported under.
+	// A placed body: its mesh, the name it is reported under and (a target)
+	// the skin thickness it is hollowed by.
 	struct FPlacedBody
 	{
 		aerotelic::TriMesh Mesh;
 		FString Label;
+		double SkinThickness = 0.0;
 	};
 
 	// The placed meshes of every operand, with the names of those that
-	// produced nothing.
-	std::vector<FPlacedBody> PlacedMeshes(const TArray<FAerotelicBooleanOperand>& Operands, double Tolerance, TArray<FString>& OutMissing)
+	// produced nothing. bTargets resolves each body's skin thickness (a
+	// reserved volume has none).
+	std::vector<FPlacedBody> PlacedMeshes(const TArray<FAerotelicBooleanOperand>& Operands, double Tolerance, bool bTargets, TArray<FString>& OutMissing)
 	{
 		std::vector<FPlacedBody> Out;
 		for (const FAerotelicBooleanOperand& Op : Operands)
@@ -80,6 +92,7 @@ namespace
 				continue;
 			}
 			const FString EntityLabel = Op.Entity->EntityName + (Op.bMirror ? TEXT(" (mirror)") : TEXT(""));
+			const double Skin = bTargets ? FAerotelicLatticeModel::SkinThicknessFor(Op) : 0.0;
 			std::vector<aerotelic::NamedMesh> Meshes = Op.Entity->GetPlacedMeshes(Op.bMirror, Tolerance);
 			bool bAny = false;
 			for (aerotelic::NamedMesh& M : Meshes)
@@ -88,6 +101,7 @@ namespace
 				{
 					FPlacedBody Body;
 					Body.Mesh = std::move(M.mesh);
+					Body.SkinThickness = Skin;
 					Body.Label = Meshes.size() > 1 ? FString::Printf(TEXT("%s / %s"), *EntityLabel, UTF8_TO_TCHAR(M.name.c_str())) : EntityLabel;
 					Out.push_back(std::move(Body));
 					bAny = true;
@@ -198,16 +212,35 @@ FBox FAerotelicLatticeModel::TargetBounds() const
 	return Box;
 }
 
-double FAerotelicLatticeModel::BodyTolerance(const aerotelic::LatticeSpec& Spec)
+double FAerotelicLatticeModel::SkinThicknessFor(const FAerotelicBooleanOperand& Op)
+{
+	if (!Op.Entity.IsValid()) return 0.0;
+	const aerotelic::MassSpec S = Op.Entity->GetEffectiveMassSpec();
+	return S.mode == aerotelic::MassMode::Material ? FMath::Max(S.skin_thickness, 0.0) : 0.0;
+}
+
+double FAerotelicLatticeModel::MinSkinThickness() const
+{
+	double Min = 0.0;
+	for (const FAerotelicBooleanOperand& Op : Targets)
+	{
+		const double T = SkinThicknessFor(Op);
+		if (T > 0.0 && (!(Min > 0.0) || T < Min)) Min = T;
+	}
+	return Min;
+}
+
+double FAerotelicLatticeModel::BodyTolerance(const aerotelic::LatticeSpec& Spec, double MinSkinThickness)
 {
 	// The body mesh is the skin's outer surface as it stands, and the
 	// offset's distance field sees it to a fraction of its voxel, so it is
-	// built a few voxels finer than the lattice grid and than the skin.
+	// built a few voxels finer than the lattice grid and than the thinnest
+	// skin.
 	const double Voxel = aerotelic::LatticeVoxelSize(Spec);
 	double Tolerance = 0.25 * Voxel;
-	if (Spec.skin_thickness > 0.0)
+	if (MinSkinThickness > 0.0)
 	{
-		Tolerance = FMath::Min(Tolerance, 0.25 * Spec.skin_thickness);
+		Tolerance = FMath::Min(Tolerance, 0.25 * MinSkinThickness);
 	}
 	return FMath::Max(Tolerance, 1e-5);
 }
@@ -222,26 +255,48 @@ std::vector<aerotelic::NamedMesh> FAerotelicLatticeModel::BuildMeshes(double) co
 	{
 		throw std::runtime_error("The lattice fills no bodies.");
 	}
-	if (!(Spec.skin_thickness > 0.0))
+	// Every target must say how thick its skin is: the skin is the part's
+	// outer shell (its own body, 'Skin') and there is no default to fall
+	// back on. Refuse by name before any geometry is built.
 	{
-		throw std::runtime_error("The solid skin thickness must be greater than zero: the skin is the part's outer shell (its own body, 'Skin'), one percent of the largest root chord by default.");
+		TArray<FString> NoSkin;
+		for (const FAerotelicBooleanOperand& Op : Targets)
+		{
+			if (Op.Entity.IsValid() && !(SkinThicknessFor(Op) > 0.0))
+			{
+				const AAerotelicEntityActor* Source = Op.Entity->GetMassSpecSource();
+				NoSkin.Add(Op.Entity->EntityName + (Op.bMirror ? TEXT(" (mirror)") : TEXT(""))
+					+ (Source != nullptr && Source != Op.Entity.Get() ? FString::Printf(TEXT(" (inherits from %s)"), *Source->EntityName) : FString()));
+			}
+		}
+		if (NoSkin.Num() > 0)
+		{
+			throw std::runtime_error(TCHAR_TO_UTF8(*FString::Printf(
+				TEXT("No skin thickness for %s: set a material with a positive skin thickness under Material Properties in the Scene tree (on the parameterisation; a boolean result inherits its first operand's). The lattice hollows each body by its own skin thickness and has no default."),
+				*FString::Join(NoSkin, TEXT(", ")))));
+		}
 	}
 	const double T0 = FPlatformTime::Seconds();
 
-	const double MeshTolerance = BodyTolerance(Spec);
+	// Each target's own skin; the thinnest sizes the surface tolerance and
+	// the offset's voxel, the thickest pads the domain.
+	const double MinSkin = MinSkinThickness();
+	const double MeshTolerance = BodyTolerance(Spec, MinSkin);
 	TArray<FString> Missing;
-	std::vector<FPlacedBody> Bodies = PlacedMeshes(Targets, MeshTolerance, Missing);
+	std::vector<FPlacedBody> Bodies = PlacedMeshes(Targets, MeshTolerance, true, Missing);
 	if (Bodies.empty())
 	{
 		throw std::runtime_error(std::string("No body to fill could be built") + (Missing.Num() ? std::string(": ") + TCHAR_TO_UTF8(*FString::Join(Missing, TEXT(", "))) : std::string("")) + ".");
 	}
 	TArray<FString> MissingExclusions;
-	std::vector<FPlacedBody> Reserved = PlacedMeshes(Exclusions, MeshTolerance, MissingExclusions);
+	std::vector<FPlacedBody> Reserved = PlacedMeshes(Exclusions, MeshTolerance, false, MissingExclusions);
 	aerotelic::Box3 DomainBounds;
+	double MaxSkin = 0.0;
 	for (const FPlacedBody& B : Bodies)
 	{
 		RequireClosedBody(B, TEXT("a body to fill"));
 		DomainBounds.Add(B.Mesh.Bounds());
+		MaxSkin = FMath::Max(MaxSkin, B.SkinThickness);
 	}
 	for (const FPlacedBody& B : Reserved)
 	{
@@ -259,19 +314,10 @@ std::vector<aerotelic::NamedMesh> FAerotelicLatticeModel::BuildMeshes(double) co
 	// within a fifth of that voxel, and pockets of the interior smaller
 	// than a few voxels (slivers along a trailing edge) are filled solid.
 	AerotelicMeshLib::FRequest Request;
-	for (const FPlacedBody& B : Bodies)
-	{
-		Request.Targets.Add({B.Label, &B.Mesh});
-	}
-	for (const FPlacedBody& B : Reserved)
-	{
-		Request.Reserved.Add({B.Label, &B.Mesh});
-	}
-	Request.SkinThickness = Spec.skin_thickness;
 	{
 		const double LatticeVoxel = aerotelic::LatticeVoxelSize(Spec);
-		double Voxel = FMath::Min(0.25 * Spec.skin_thickness, LatticeVoxel);
-		const aerotelic::Vec3 Ext = DomainBounds.Extent() + aerotelic::Vec3{2.0, 2.0, 2.0} * Spec.skin_thickness;
+		double Voxel = FMath::Min(0.25 * MinSkin, LatticeVoxel);
+		const aerotelic::Vec3 Ext = DomainBounds.Extent() + aerotelic::Vec3{2.0, 2.0, 2.0} * MaxSkin;
 		const double Volume = Ext.x * Ext.y * Ext.z;
 		if (Volume / (Voxel * Voxel * Voxel) > kMaxOffsetVoxels)
 		{
@@ -279,6 +325,29 @@ std::vector<aerotelic::NamedMesh> FAerotelicLatticeModel::BuildMeshes(double) co
 		}
 		Request.OffsetVoxel = FMath::Max(Voxel, 1e-6);
 	}
+	// The remesh edge of a body's offset surface: a few skins, but never
+	// finer than the voxel the surface was extracted on (see the constants).
+	auto InnerRemeshEdgeFor = [&Request](double SkinThickness)
+	{
+		return FMath::Max(kInnerRemeshEdgeOverSkin * SkinThickness, kInnerRemeshEdgeOverVoxel * Request.OffsetVoxel);
+	};
+	for (const FPlacedBody& B : Bodies)
+	{
+		AerotelicMeshLib::FBody Target;
+		Target.Label = B.Label;
+		Target.Mesh = &B.Mesh;
+		Target.SkinThickness = B.SkinThickness;
+		Target.InnerRemeshEdge = InnerRemeshEdgeFor(B.SkinThickness);
+		Request.Targets.Add(Target);
+	}
+	for (const FPlacedBody& B : Reserved)
+	{
+		AerotelicMeshLib::FBody Volume;
+		Volume.Label = B.Label;
+		Volume.Mesh = &B.Mesh;
+		Request.Reserved.Add(Volume);
+	}
+	Request.SkinThickness = MinSkin;   // the script's fallback; every target carries its own
 	Request.OffsetMode = TEXT("standard");
 	Request.DecimateTolerance = 0.2 * Request.OffsetVoxel;
 	Request.MinPocketVolume = FMath::Pow(4.0 * Request.OffsetVoxel, 3.0);
@@ -288,7 +357,7 @@ std::vector<aerotelic::NamedMesh> FAerotelicLatticeModel::BuildMeshes(double) co
 	// two sides were closer than its triangles; that cost up to 94% of the
 	// hollow on a thick-skinned wing. gmsh needs no such help.)
 	Request.InnerOpening = 0.0;
-	Request.InnerRemeshEdge = kInnerRemeshEdgeOverSkin * Spec.skin_thickness;
+	Request.InnerRemeshEdge = InnerRemeshEdgeFor(MinSkin);   // the script's fallback; each target carries its own
 	Request.Field = &Field;
 
 	TetBodies.clear();
@@ -309,6 +378,7 @@ std::vector<aerotelic::NamedMesh> FAerotelicLatticeModel::BuildMeshes(double) co
 		T.Label = Bodies[I].Label;
 		T.Outer = std::move(Bodies[I].Mesh);
 		T.Inner = std::move(Result.Inners[I].Mesh);
+		T.SkinThickness = Bodies[I].SkinThickness;
 		T.bInnerUsable = Result.Inners[I].bUsable;
 		T.InnerNote = Result.Inners[I].Note;
 		T.MinPocketVolume = Request.MinPocketVolume;
@@ -399,6 +469,7 @@ const std::vector<FAerotelicLatticeModel::FTetMesh>& FAerotelicLatticeModel::Get
 		Request.MinPocketVolume = B.MinPocketVolume;
 		FTetMesh M;
 		M.Label = B.Label;
+		M.SkinThickness = B.SkinThickness;
 		FString Error;
 		if (!AerotelicTetGmsh::Run(Request, M.Result, Error))
 		{
@@ -457,6 +528,7 @@ const std::vector<FAerotelicLatticeModel::FTetMesh>& FAerotelicLatticeModel::Get
 		Request.bOptimizeNetgen = true;
 		FTetMesh M;
 		M.Label = B.Label;
+		M.SkinThickness = B.SkinThickness;
 		FString Error;
 		if (!AerotelicTetGmsh::Run(Request, M.Result, Error))
 		{

@@ -578,6 +578,8 @@ YAML::Node EncodeMassSpec(const MassSpec& m) {
 		mat["allowable_stress"] = m.material.allowable_stress;
 		mat.SetStyle(YAML::EmitterStyle::Flow);
 		n["material"] = mat;
+		// A skin, in the project's length unit (as typed); absent is solid.
+		if (m.skin_thickness > 0.0) n["skin_thickness"] = m.skin_thickness;
 	}
 	n.SetStyle(YAML::EmitterStyle::Flow);
 	return n;
@@ -596,6 +598,7 @@ MassSpec DecodeMassSpec(const YAML::Node& node) {
 		if (mat["youngs_modulus"]) m.material.youngs_modulus = mat["youngs_modulus"].as<double>();
 		if (mat["poisson_ratio"]) m.material.poisson_ratio = mat["poisson_ratio"].as<double>();
 		if (mat["allowable_stress"]) m.material.allowable_stress = mat["allowable_stress"].as<double>();
+		if (node["skin_thickness"]) m.skin_thickness = node["skin_thickness"].as<double>();
 	} else if (node["density"]) {
 		// The form before materials existed: a bare density, SI (every
 		// project then was metres and kilograms), as a custom material.

@@ -55,7 +55,10 @@ namespace AerotelicMeshLib
 					OutError = FString::Printf(TEXT("could not write the mesh of '%s' for MeshLib"), *Bodies[i].Label);
 					return false;
 				}
-				OutJson += FString::Printf(TEXT("%s{\"label\": %s, \"file\": %s}"), i ? TEXT(", ") : TEXT(""), *JsonString(Bodies[i].Label), *JsonString(File));
+				FString Own;
+			if (Bodies[i].SkinThickness > 0.0) Own += FString::Printf(TEXT(", \"skin_thickness\": %s"), *Num(Bodies[i].SkinThickness));
+			if (Bodies[i].InnerRemeshEdge > 0.0) Own += FString::Printf(TEXT(", \"inner_remesh_edge\": %s"), *Num(Bodies[i].InnerRemeshEdge));
+			OutJson += FString::Printf(TEXT("%s{\"label\": %s, \"file\": %s%s}"), i ? TEXT(", ") : TEXT(""), *JsonString(Bodies[i].Label), *JsonString(File), *Own);
 			}
 			OutJson += TEXT("]");
 			return true;

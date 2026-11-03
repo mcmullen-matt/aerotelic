@@ -6,15 +6,18 @@
 // boolean result or a lattice -- which have no B-rep solid -- weigh the
 // same way a wing does.
 //
-// Two models of where the mass sits, chosen per parameterisation in the
-// Scene tree's Mass Properties dialog (MassSpec):
-//   - Density: the body is a uniform solid; mass = density * the volume
-//     the closed surface encloses. Zero for a surface with no thickness,
-//     which is why the other exists.
+// Three models of where the mass sits, chosen per parameterisation in the
+// Scene tree's Material Properties dialog (MassSpec):
+//   - Material, solid: the body is a uniform solid; mass = density * the
+//     volume the closed surface encloses. Zero for a surface with no
+//     thickness, which is why the others exist.
+//   - Material, skin: the surface is a skin of the given thickness t in
+//     the material; its volume is area * t and mass = density * area * t,
+//     spread uniformly over the surface as a thin shell. The model for a
+//     moulded or printed skin whose thickness the geometry does not carry,
+//     and it holds for an open surface too.
 //   - Asserted: the user states the total mass and it is spread uniformly
-//     over the surface, a thin shell. The right model for a skin whose
-//     thickness the geometry does not carry, and the only one available
-//     for an open surface.
+//     over the surface, a thin shell.
 // Either way the result is one MassProperties: mass, centre, and the
 // inertia tensor about that centre in the world axes. An assembly is the
 // parallel-axis sum of its parts about the combined centre.
@@ -43,6 +46,14 @@ struct MassSpec {
 	MassMode mode = MassMode::Unset;
 	double mass = 0.0;   // Asserted: the total, in the project's mass unit
 	Material material;   // Material: density (and the structural properties), SI
+	// Material: the skin thickness, in the PROJECT's length unit (as typed,
+	// like every geometric figure). 0 means a solid: the density weighs the
+	// enclosed volume. Positive means a skin: every body of the
+	// parameterisation is a shell of this thickness, its material volume
+	// area * thickness and its mass density * area * thickness.
+	double skin_thickness = 0.0;
+
+	bool IsSkin() const { return mode == MassMode::Material && skin_thickness > 0.0; }
 };
 
 const char* MassModeName(MassMode m);
@@ -74,6 +85,12 @@ MassProperties SolidMassProperties(const TriMesh& mesh, double density);
 // `mesh` as a uniform thin shell carrying `mass` in total. Open or closed
 // alike: only the triangles themselves are integrated.
 MassProperties ShellMassProperties(const TriMesh& mesh, double mass);
+
+// `mesh` as a skin of `thickness` in a material of `density` (mass per
+// unit volume, in the mesh's units): mass = density * area * thickness,
+// spread as ShellMassProperties spreads it; `volume` is the material's,
+// area * thickness, not the enclosed volume. Open or closed alike.
+MassProperties SkinMassProperties(const TriMesh& mesh, double density, double thickness);
 
 // The inertia of `p` about an arbitrary point: the parallel-axis theorem,
 // I_point = I_centre + m (|d|^2 1 - d d^T) with d from the point to the

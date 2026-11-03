@@ -1,6 +1,6 @@
 """Self-check of structural_fea.py, outside the application.
 
-    python structural_fea_check.py [--keep DIR] [--no-solid] [--solver amgcl|sparse_lu]
+    python structural_fea_check.py [--keep DIR] [--no-solid] [--solver auto|amgcl|sparse_lu]
 
 Cases with closed forms, each run through the real job (the same
 ``run_job`` the application calls, through the same job.json):
@@ -186,7 +186,7 @@ def run(job_dir, job):
 
 
 def main(argv):
-    keep, do_solid, solver = None, True, "amgcl"
+    keep, do_solid, solver = None, True, "auto"
     args = list(argv[1:])
     while args:
         a = args.pop(0)
@@ -219,6 +219,14 @@ def main(argv):
         }
         r = run(job_dir, job)
         failures += not check(r["ok"] and r["model"] == "shell_core", "box: the shell / core job ran")
+        # "auto" is the direct solver at this size; the result says which
+        # ran and that the reactions balance the loads (2026-11-01: amgcl
+        # stopping short on a shell-only wing looked like a stiff, lightly
+        # stressed structure; the balance is the only tell).
+        expected_solver = "sparse_lu" if solver in ("auto", "sparse_lu") else solver
+        failures += not check(r["linear_solver"] == expected_solver, "box: the solver used is %s (asked for %s)" % (r["linear_solver"], solver))
+        failures += not check(r["balanced"] and r["balance_error"] <= sf.BALANCE_TOLERANCE and r["warnings"] == [],
+                              "box: the reactions balance the loads (error %.2e of %.4g N) with no warning" % (r["balance_error"], r["load_scale"]))
         n_shell_nodes = len(np.unique(sf.boundary_faces(sf.orient(nodes, tets.astype(np.int64))[0])[0]))
         failures += not check(r["dofs"] == 3 * len(nodes) + 3 * n_shell_nodes,
                               "box: six degrees of freedom on the %d shell nodes, three on the other %d (%d dof)" % (n_shell_nodes, len(nodes) - n_shell_nodes, r["dofs"]))

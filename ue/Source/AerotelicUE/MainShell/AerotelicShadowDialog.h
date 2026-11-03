@@ -2,7 +2,7 @@
 
 #include "CoreMinimal.h"
 
-// View -> Shadows...: a modeless window over the key light's shadow
+// View -> Shadows: a modeless window over the key light's shadow
 // settings (the document's FAerotelicShadowStyle) -- a Cast shadows
 // checkbox, a Depth bias slider and a Slope (normal) bias slider, with
 // Default / No acne / No peter-panning presets. The scene has one

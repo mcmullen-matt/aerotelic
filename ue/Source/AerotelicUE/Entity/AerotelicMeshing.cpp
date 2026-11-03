@@ -142,3 +142,69 @@ namespace AerotelicMeshing
 		return Box;
 	}
 }
+
+#include <algorithm>
+#include <map>
+#include <tuple>
+
+std::vector<aerotelic::TriMesh> AerotelicMeshing::SplitShells(const aerotelic::TriMesh& Mesh, double WeldTolerance)
+{
+	std::vector<aerotelic::TriMesh> Out;
+	const int N = static_cast<int>(Mesh.vertices.size());
+	if (N == 0 || Mesh.triangles.empty())
+	{
+		return Out;
+	}
+	// A representative per position (quantised), so doubled seam vertices
+	// join their shell; then union-find over the triangles.
+	std::vector<int> Rep(N);
+	{
+		std::map<std::tuple<long long, long long, long long>, int> ByCell;
+		const double Q = WeldTolerance > 0.0 ? 1.0 / WeldTolerance : 1e9;
+		for (int i = 0; i < N; ++i)
+		{
+			const aerotelic::Vec3& P = Mesh.vertices[i];
+			const auto Key = std::make_tuple(static_cast<long long>(std::floor(P.x * Q)), static_cast<long long>(std::floor(P.y * Q)), static_cast<long long>(std::floor(P.z * Q)));
+			auto It = ByCell.find(Key);
+			if (It == ByCell.end()) { ByCell.emplace(Key, i); Rep[i] = i; }
+			else Rep[i] = It->second;
+		}
+	}
+	std::vector<int> Parent(N);
+	for (int i = 0; i < N; ++i) Parent[i] = Rep[i];
+	auto Find = [&Parent](int a) { while (Parent[a] != a) { Parent[a] = Parent[Parent[a]]; a = Parent[a]; } return a; };
+	auto Unite = [&Parent, &Find](int a, int b) { a = Find(a); b = Find(b); if (a != b) Parent[a] = b; };
+	for (const auto& T : Mesh.triangles) { Unite(T[0], T[1]); Unite(T[0], T[2]); }
+	std::map<int, int> ShellOfRoot;
+	std::vector<int> ShellOfTriangle(Mesh.triangles.size());
+	for (size_t t = 0; t < Mesh.triangles.size(); ++t)
+	{
+		const int Root = Find(Mesh.triangles[t][0]);
+		auto It = ShellOfRoot.find(Root);
+		if (It == ShellOfRoot.end()) It = ShellOfRoot.emplace(Root, static_cast<int>(ShellOfRoot.size())).first;
+		ShellOfTriangle[t] = It->second;
+	}
+	Out.resize(ShellOfRoot.size());
+	// One remap table, stamped per shell, so a result of many shells costs
+	// no more than one table of the mesh's vertices.
+	std::vector<int> Remap(N, -1), Stamp(N, -1);
+	std::vector<std::vector<size_t>> TrianglesOfShell(ShellOfRoot.size());
+	for (size_t t = 0; t < Mesh.triangles.size(); ++t) TrianglesOfShell[ShellOfTriangle[t]].push_back(t);
+	for (size_t S = 0; S < Out.size(); ++S)
+	{
+		aerotelic::TriMesh& Shell = Out[S];
+		for (size_t t : TrianglesOfShell[S])
+		{
+			std::array<int, 3> Tri;
+			for (int k = 0; k < 3; ++k)
+			{
+				const int V = Mesh.triangles[t][k];
+				if (Stamp[V] != static_cast<int>(S)) { Stamp[V] = static_cast<int>(S); Remap[V] = static_cast<int>(Shell.vertices.size()); Shell.vertices.push_back(Mesh.vertices[V]); }
+				Tri[k] = Remap[V];
+			}
+			Shell.triangles.push_back(Tri);
+		}
+	}
+	std::stable_sort(Out.begin(), Out.end(), [](const aerotelic::TriMesh& A, const aerotelic::TriMesh& B) { return std::abs(A.SignedVolume()) > std::abs(B.SignedVolume()); });
+	return Out;
+}

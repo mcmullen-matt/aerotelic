@@ -7,7 +7,7 @@
 // band, the product identity, the licence block, the legal small print, a
 // link to the tutorial projects, a "Show this screen at start-up" tick and
 // Close. Returns false without showing when the tick is off and bForce is
-// false (Help -> Welcome Screen... forces it). When the user chooses the
+// false (Help -> Welcome Screen forces it). When the user chooses the
 // tutorials, the matrix opens after the card closes -- sequential, not
 // nested, modals.
 bool ShowAerotelicWelcomeScreen(bool bForce);

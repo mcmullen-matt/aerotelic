@@ -10,6 +10,7 @@
 
 #include "AerotelicDocumentSubsystem.h"
 #include "AerotelicBooleanModel.h"
+#include "AerotelicLatticeModel.h"
 #include "AerotelicMeshing.h"
 #include "Misc/PackageName.h"
 
@@ -1002,6 +1003,42 @@ double AAerotelicEntityActor::DisplayTolerance() const
 		return FMath::Clamp(Diag * 0.0015, 1e-4, 1e9);
 	}
 	return 2e-3;
+}
+
+bool AAerotelicEntityActor::IsDerived() const
+{
+	return EntityType == aerotelic::project_yaml::EntityType::Boolean || EntityType == aerotelic::project_yaml::EntityType::Lattice;
+}
+
+const AAerotelicEntityActor* AAerotelicEntityActor::GetMassSpecSource() const
+{
+	// Follow the first operand / first target down to a parameterisation;
+	// a bounded walk, since a chain of derived entities is finite and a
+	// cycle cannot be authored.
+	const AAerotelicEntityActor* E = this;
+	for (int32 Depth = 0; Depth < 32 && E != nullptr; ++Depth)
+	{
+		if (!E->IsDerived()) return E;
+		const FAerotelicBooleanOperand* First = nullptr;
+		if (E->EntityType == aerotelic::project_yaml::EntityType::Boolean)
+		{
+			const FAerotelicBooleanModel* M = static_cast<const FAerotelicBooleanModel*>(E->GetModel());
+			if (M != nullptr && M->Operands.Num() > 0) First = &M->Operands[0];
+		}
+		else
+		{
+			const FAerotelicLatticeModel* M = static_cast<const FAerotelicLatticeModel*>(E->GetModel());
+			if (M != nullptr && M->Targets.Num() > 0) First = &M->Targets[0];
+		}
+		E = (First != nullptr && First->Entity.IsValid()) ? First->Entity.Get() : nullptr;
+	}
+	return nullptr;
+}
+
+aerotelic::MassSpec AAerotelicEntityActor::GetEffectiveMassSpec() const
+{
+	const AAerotelicEntityActor* Source = GetMassSpecSource();
+	return Source != nullptr ? Source->MassSpec : aerotelic::MassSpec();
 }
 
 std::vector<aerotelic::NamedMesh> AAerotelicEntityActor::GetPlacedMeshes(bool bMirror, double Tolerance) const

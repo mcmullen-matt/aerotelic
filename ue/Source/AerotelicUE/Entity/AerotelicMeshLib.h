@@ -18,11 +18,15 @@ class FJsonObject;
 // separate-process pattern as the STEP writer (Export/AerotelicExport.h).
 namespace AerotelicMeshLib
 {
-	// A placed, closed body with the name it is reported under.
+	// A placed, closed body with the name it is reported under. A target
+	// may carry its own skin thickness and remesh edge (each > 0; 0 takes
+	// the request's); a reserved volume carries neither.
 	struct FBody
 	{
 		FString Label;
 		const aerotelic::TriMesh* Mesh = nullptr;
+		double SkinThickness = 0.0;
+		double InnerRemeshEdge = 0.0;
 	};
 
 	// The lattice field sampled on a regular grid: node (i, j, k) at
@@ -40,7 +44,7 @@ namespace AerotelicMeshLib
 	{
 		TArray<FBody> Targets;
 		TArray<FBody> Reserved;
-		// The skin depth (> 0).
+		// The skin depth (> 0) of a target that carries none of its own.
 		double SkinThickness = 0.0;
 		// Voxel size of the distance field behind the inward offset.
 		double OffsetVoxel = 0.0;
@@ -56,7 +60,8 @@ namespace AerotelicMeshLib
 		double InnerOpening = 0.0;
 		// The offset surface is remeshed to isotropic triangles of about
 		// this edge length before it is returned as a body's inner surface
-		// (0: the decimated surface as it is).
+		// (0: the decimated surface as it is); a target's own takes
+		// precedence.
 		double InnerRemeshEdge = 0.0;
 		// The infill's field; null for a hollow part with no infill.
 		const FField* Field = nullptr;

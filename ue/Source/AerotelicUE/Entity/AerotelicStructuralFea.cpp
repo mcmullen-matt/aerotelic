@@ -31,8 +31,9 @@ namespace AerotelicStructuralFea
 		}
 
 		// The mesh for the script, already in metres: counts, then nodes as
-		// float64 xyz, tetrahedra as int32 quads, material as int32 -- the
-		// layout tools/tet_gmsh.py's write_tet uses, without its magic.
+		// float64 xyz, tetrahedra as int32 quads, region as int32 -- the
+		// layout tools/tet_gmsh.py's write_tet uses, without its magic. No
+		// tetrahedra at all is allowed (a shell-only model).
 		bool WriteMesh(const aerotelic::TetMesh& Mesh, double Scale, const FString& Path)
 		{
 			TArray<uint8> Bytes;
@@ -55,6 +56,25 @@ namespace AerotelicStructuralFea
 			{
 				const int32 M = i < Mesh.material.size() ? Mesh.material[i] : 1;
 				Bytes.Append(reinterpret_cast<const uint8*>(&M), sizeof(M));
+			}
+			return FFileHelper::SaveArrayToFile(Bytes, *Path);
+		}
+
+		// The faces of the shell-only regions: a count, int32 triples, then
+		// an int32 region per face.
+		bool WriteFaces(const TArray<FShellFace>& Faces, const FString& Path)
+		{
+			TArray<uint8> Bytes;
+			const uint32 Nf = static_cast<uint32>(Faces.Num());
+			Bytes.Reserve(4 + Nf * 16);
+			Bytes.Append(reinterpret_cast<const uint8*>(&Nf), sizeof(Nf));
+			for (const FShellFace& F : Faces)
+			{
+				Bytes.Append(reinterpret_cast<const uint8*>(F.N), sizeof(F.N));
+			}
+			for (const FShellFace& F : Faces)
+			{
+				Bytes.Append(reinterpret_cast<const uint8*>(&F.Region), sizeof(F.Region));
 			}
 			return FFileHelper::SaveArrayToFile(Bytes, *Path);
 		}
@@ -103,57 +123,37 @@ namespace AerotelicStructuralFea
 
 	bool Run(const FRequest& Request, FResult& Out, FString& OutError)
 	{
-		if (Request.Mesh == nullptr || Request.Mesh->tets.empty())
+		if (Request.Mesh == nullptr || (Request.Mesh->tets.empty() && Request.ShellFaces.Num() == 0))
 		{
-			OutError = TEXT("no tetrahedra to analyse");
+			OutError = TEXT("nothing to analyse: no tetrahedra and no shells");
 			return false;
 		}
-		const bool bShellCore = Request.Model == EModel::ShellCore;
-		if (bShellCore)
+		if (Request.Regions.Num() == 0)
 		{
-			if (Request.Regions.Num() == 0)
-			{
-				OutError = TEXT("no region (skin and core) for the tetrahedra");
-				return false;
-			}
-			for (const FRegion& R : Request.Regions)
-			{
-				if (!R.Skin.IsStructural())
-				{
-					OutError = FString::Printf(TEXT("'%s' has no structural material for its skin: give the body a density, a Young's modulus and a Poisson's ratio under Material Properties in the Scene tree."), *R.Label);
-					return false;
-				}
-				if (!R.Core.IsStructural())
-				{
-					OutError = FString::Printf(TEXT("'%s' has no structural material for its lattice: give the lattice the material its struts are made of under Material Properties in the Scene tree."), *R.Label);
-					return false;
-				}
-				if (!(R.SkinThickness > 0.0))
-				{
-					OutError = FString::Printf(TEXT("'%s' has no skin thickness."), *R.Label);
-					return false;
-				}
-				if (R.Cell == nullptr || R.Cell->values.empty())
-				{
-					OutError = FString::Printf(TEXT("'%s' has no voxelised lattice cell to homogenise."), *R.Label);
-					return false;
-				}
-			}
+			OutError = TEXT("no region for the mesh");
+			return false;
 		}
-		else
+		for (const FRegion& R : Request.Regions)
 		{
-			if (Request.Materials.Num() == 0)
+			if (!R.HasShells() && !R.HasTetrahedra())
 			{
-				OutError = TEXT("no material for the tetrahedra");
+				OutError = FString::Printf(TEXT("'%s' is neither shells nor a solid nor a lattice core: give it a skin thickness or a solid material."), *R.Label);
 				return false;
 			}
-			for (const FMaterialRegion& M : Request.Materials)
+			if (R.HasShells() && !R.Skin.IsStructural())
 			{
-				if (!M.Material.IsStructural())
-				{
-					OutError = FString::Printf(TEXT("'%s' has no structural material: give it a density, a Young's modulus and a Poisson's ratio under Material Properties in the Scene tree."), *M.Label);
-					return false;
-				}
+				OutError = FString::Printf(TEXT("'%s' has no structural material for its skin: give it a density, a Young's modulus and a Poisson's ratio under Material Properties in the Scene tree."), *R.Label);
+				return false;
+			}
+			if (R.HasTetrahedra() && !R.Core.IsStructural())
+			{
+				OutError = FString::Printf(TEXT("'%s' has no structural material: give it a density, a Young's modulus and a Poisson's ratio under Material Properties in the Scene tree."), *R.Label);
+				return false;
+			}
+			if (R.Cell != nullptr && R.Cell->values.empty())
+			{
+				OutError = FString::Printf(TEXT("'%s' has no voxelised lattice cell to homogenise."), *R.Label);
+				return false;
 			}
 		}
 		if (Request.VtkPath.IsEmpty())
@@ -175,7 +175,11 @@ namespace AerotelicStructuralFea
 
 		const FString Dir = FPaths::Combine(FPlatformProcess::UserTempDir(), TEXT("aerotelic_fea_") + FGuid::NewGuid().ToString(EGuidFormats::Short));
 		IFileManager::Get().MakeDirectory(*Dir, true);
-		auto Cleanup = [&Dir]() { IFileManager::Get().DeleteDirectory(*Dir, false, true); };
+		// AEROTELIC_FEA_KEEP=1 keeps the job directory (mesh.bin, faces.bin,
+		// job.json, the Kratos files) for running the script by hand.
+		const bool bKeep = !FPlatformMisc::GetEnvironmentVariable(TEXT("AEROTELIC_FEA_KEEP")).IsEmpty();
+		if (bKeep) UE_LOG(LogTemp, Display, TEXT("AerotelicStructuralFea: keeping the job directory %s"), *Dir);
+		auto Cleanup = [&Dir, bKeep]() { if (!bKeep) IFileManager::Get().DeleteDirectory(*Dir, false, true); };
 
 		const double L = Request.LengthToSI;
 		if (!WriteMesh(*Request.Mesh, L, FPaths::Combine(Dir, TEXT("mesh.bin"))))
@@ -183,6 +187,17 @@ namespace AerotelicStructuralFea
 			OutError = TEXT("could not write the mesh for the solver");
 			Cleanup();
 			return false;
+		}
+		FString FacesFile;
+		if (Request.ShellFaces.Num() > 0)
+		{
+			FacesFile = TEXT("faces.bin");
+			if (!WriteFaces(Request.ShellFaces, FPaths::Combine(Dir, FacesFile)))
+			{
+				OutError = TEXT("could not write the shell faces for the solver");
+				Cleanup();
+				return false;
+			}
 		}
 		FString PressureFile;
 		if (Request.PressurePerFace.Num() > 0)
@@ -198,17 +213,20 @@ namespace AerotelicStructuralFea
 			}
 		}
 
-		// The regions (shell / core) or the materials (solid).
-		FString ModelJson;
-		if (bShellCore)
+		// The regions. Those sharing one cell (one lattice over several
+		// bodies) share one file.
+		TMap<const aerotelic::UnitCellSamples*, FString> CellJson;
+		FString Regions;
+		for (int32 i = 0; i < Request.Regions.Num(); ++i)
 		{
-			// Regions sharing one cell (one lattice over several bodies)
-			// share one file.
-			TMap<const aerotelic::UnitCellSamples*, FString> CellJson;
-			FString Regions;
-			for (int32 i = 0; i < Request.Regions.Num(); ++i)
+			const FRegion& R = Request.Regions[i];
+			FString Skin = TEXT("null"), Core = TEXT("null"), Solid = TEXT("null");
+			if (R.HasShells())
 			{
-				const FRegion& R = Request.Regions[i];
+				Skin = FString::Printf(TEXT("{\"material\": %s, \"thickness\": %s}"), *MaterialJson(R.Skin), *Num(R.SkinThickness * L));
+			}
+			if (R.Cell != nullptr)
+			{
 				FString* Cell = CellJson.Find(R.Cell);
 				if (Cell == nullptr)
 				{
@@ -221,41 +239,47 @@ namespace AerotelicStructuralFea
 					}
 					Cell = &CellJson.Add(R.Cell, Json);
 				}
-				Regions += FString::Printf(TEXT("%s{\"id\": %d, \"label\": %s, \"skin\": {\"material\": %s, \"thickness\": %s}, \"core\": {\"material\": %s, \"cell\": %s, \"density_correction\": true}}"),
-					i ? TEXT(", ") : TEXT(""), R.Id, *JsonString(R.Label), *MaterialJson(R.Skin), *Num(R.SkinThickness * L), *MaterialJson(R.Core), **Cell);
+				Core = FString::Printf(TEXT("{\"material\": %s, \"cell\": %s, \"density_correction\": true}"), *MaterialJson(R.Core), **Cell);
 			}
-			ModelJson = FString::Printf(TEXT(" \"model\": \"shell_core\",\n \"regions\": [%s],\n"), *Regions);
-		}
-		else
-		{
-			FString Materials;
-			for (int32 i = 0; i < Request.Materials.Num(); ++i)
+			else if (R.bSolid)
 			{
-				const FMaterialRegion& M = Request.Materials[i];
-				Materials += FString::Printf(TEXT("%s{\"id\": %d, \"label\": %s, \"name\": %s, \"density\": %s, \"youngs_modulus\": %s, \"poisson_ratio\": %s, \"allowable_stress\": %s}"),
-					i ? TEXT(", ") : TEXT(""), M.Id, *JsonString(M.Label), *JsonString(UTF8_TO_TCHAR(M.Material.name.c_str())),
-					*Num(M.Material.density), *Num(M.Material.youngs_modulus), *Num(M.Material.poisson_ratio), *Num(M.Material.allowable_stress));
+				Solid = FString::Printf(TEXT("{\"material\": %s}"), *MaterialJson(R.Core));
 			}
-			ModelJson = FString::Printf(TEXT(" \"model\": \"solid\",\n \"materials\": [%s],\n \"second_order\": %s,\n"), *Materials, Request.bSecondOrder ? TEXT("true") : TEXT("false"));
+			Regions += FString::Printf(TEXT("%s{\"id\": %d, \"label\": %s, \"skin\": %s, \"core\": %s, \"solid\": %s}"),
+				i ? TEXT(", ") : TEXT(""), R.Id, *JsonString(R.Label), *Skin, *Core, *Solid);
 		}
 
-		const FString SupportValue = Request.bSupportAtMin ? TEXT("\"min\"") : (Request.bSupportAtMax ? TEXT("\"max\"") : Num(Request.SupportValue * L));
-		const FString PointJson = Request.bPointForce
-			? FString::Printf(TEXT("{\"at\": [%s, %s, %s], \"force\": [%s, %s, %s]}"),
-				*Num(Request.PointAt.x * L), *Num(Request.PointAt.y * L), *Num(Request.PointAt.z * L),
-				*Num(Request.PointForce.x), *Num(Request.PointForce.y), *Num(Request.PointForce.z))
-			: TEXT("null");
+		if (Request.Supports.Num() == 0)
+		{
+			OutError = TEXT("no support: give at least one plane whose nodes are fixed");
+			Cleanup();
+			return false;
+		}
+		FString SupportsJson;
+		for (int32 i = 0; i < Request.Supports.Num(); ++i)
+		{
+			const FSupport& S = Request.Supports[i];
+			const FString Value = S.bAtMin ? TEXT("\"min\"") : (S.bAtMax ? TEXT("\"max\"") : Num(S.Value * L));
+			SupportsJson += FString::Printf(TEXT("%s{\"axis\": \"%c\", \"value\": %s, \"tolerance\": %s}"), i ? TEXT(", ") : TEXT(""), FChar::ToLower(S.Axis), *Value, *Num(S.Tolerance * L));
+		}
+		FString PointsJson;
+		for (int32 i = 0; i < Request.PointForces.Num(); ++i)
+		{
+			const FPointForce& P = Request.PointForces[i];
+			PointsJson += FString::Printf(TEXT("%s{\"at\": [%s, %s, %s], \"force\": [%s, %s, %s]}"), i ? TEXT(", ") : TEXT(""),
+				*Num(P.At.x * L), *Num(P.At.y * L), *Num(P.At.z * L), *Num(P.Force.x), *Num(P.Force.y), *Num(P.Force.z));
+		}
 		const FString Job = FString::Printf(
-			TEXT("{\n \"mesh\": \"mesh.bin\",\n")
-			TEXT("%s")
-			TEXT(" \"support\": {\"axis\": \"%c\", \"value\": %s, \"tolerance\": %s},\n")
-			TEXT(" \"loads\": {\"load_factor\": %s, \"pressure\": %s, \"pressure_file\": %s, \"point_force\": %s},\n")
-			TEXT(" \"solver\": {\"echo_level\": 0, \"linear_solver\": %s, \"homogenize_cache\": %s},\n")
+			TEXT("{\n \"mesh\": \"mesh.bin\",\n \"faces\": %s,\n \"model\": \"regions\",\n \"regions\": [%s],\n \"second_order\": %s,\n")
+			TEXT(" \"supports\": [%s],\n")
+			TEXT(" \"loads\": {\"load_factor\": %s, \"pressure\": %s, \"pressure_file\": %s, \"point_forces\": [%s]},\n")
+			TEXT(" \"solver\": {\"echo_level\": 0, \"linear_solver\": %s, \"homogenize_cache\": %s, \"shell_element\": %s},\n")
 			TEXT(" \"outputs\": {\"vtk\": %s, \"result\": \"result.json\"}\n}\n"),
-			*ModelJson,
-			FChar::ToLower(Request.SupportAxis), *SupportValue, *Num(Request.SupportTolerance * L),
-			*Num(Request.LoadFactor), *Num(Request.Pressure), PressureFile.IsEmpty() ? TEXT("null") : *JsonString(PressureFile), *PointJson,
-			*JsonString(Request.LinearSolver.IsEmpty() ? FString(TEXT("amgcl")) : Request.LinearSolver), Request.bHomogenizeCache ? TEXT("true") : TEXT("false"),
+			FacesFile.IsEmpty() ? TEXT("null") : *JsonString(FacesFile), *Regions, Request.bSecondOrder ? TEXT("true") : TEXT("false"),
+			*SupportsJson,
+			*Num(Request.LoadFactor), *Num(Request.Pressure), PressureFile.IsEmpty() ? TEXT("null") : *JsonString(PressureFile), *PointsJson,
+			*JsonString(Request.LinearSolver.IsEmpty() ? FString(TEXT("auto")) : Request.LinearSolver), Request.bHomogenizeCache ? TEXT("true") : TEXT("false"),
+			*JsonString(Request.ShellElement.IsEmpty() ? FString(TEXT("ShellThinElement3D3N")) : Request.ShellElement),
 			*JsonString(FPaths::ConvertRelativePathToFull(Request.VtkPath)));
 		if (!FFileHelper::SaveStringToFile(Job, *FPaths::Combine(Dir, TEXT("job.json")), FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM))
 		{
@@ -274,7 +298,6 @@ namespace AerotelicStructuralFea
 		auto Int = [&Result](const TCHAR* Field) { return static_cast<int32>(NumberOr(Result, Field)); };
 		auto Real = [&Result](const TCHAR* Field) { return NumberOr(Result, Field); };
 		Out = FResult();
-		Out.Model = Request.Model;
 		Out.Nodes = Int(TEXT("nodes"));
 		Out.Elements = Int(TEXT("elements"));
 		Out.Tets = Int(TEXT("tets"));
@@ -287,7 +310,7 @@ namespace AerotelicStructuralFea
 		Out.MaxDisplacement = Real(TEXT("max_displacement"));
 		ReadVec3(Result, TEXT("max_displacement_at"), Out.MaxDisplacementAt);
 		Out.MaxVonMises = Real(TEXT("max_von_mises"));
-		Out.MaxVonMisesMaterial = Int(TEXT("max_von_mises_material"));
+		Out.MaxVonMisesRegion = Int(TEXT("max_von_mises_material"));
 		const TArray<TSharedPtr<FJsonValue>>* PerMaterial = nullptr;
 		if (Result->TryGetArrayField(TEXT("per_material"), PerMaterial))
 		{
@@ -296,18 +319,23 @@ namespace AerotelicStructuralFea
 				const TSharedPtr<FJsonObject>* Obj = nullptr;
 				if (V.IsValid() && V->TryGetObject(Obj))
 				{
-					FString Label;
-					(*Obj)->TryGetStringField(TEXT("label"), Label);
-					Out.PerMaterialLabel.Add(Label);
-					Out.MaxVonMisesByMaterial.Add(NumberOr(*Obj, TEXT("max_von_mises")));
-					Out.MarginByMaterial.Add(NumberOr(*Obj, TEXT("margin")));
+					FEntryResult E;
+					E.Region = static_cast<int32>(NumberOr(*Obj, TEXT("id")));
+					(*Obj)->TryGetStringField(TEXT("label"), E.Label);
+					(*Obj)->TryGetStringField(TEXT("kind"), E.Kind);
+					E.MaxVonMises = NumberOr(*Obj, TEXT("max_von_mises"));
+					E.MacroVonMises = NumberOr(*Obj, TEXT("macro_von_mises"));
+					E.Margin = NumberOr(*Obj, TEXT("margin"));
+					E.Allowable = NumberOr(*Obj, TEXT("allowable"));
+					E.Mass = NumberOr(*Obj, TEXT("mass"));
+					Out.Entries.Add(E);
 				}
 			}
 		}
-		const TArray<TSharedPtr<FJsonValue>>* Regions = nullptr;
-		if (Result->TryGetArrayField(TEXT("regions"), Regions))
+		const TArray<TSharedPtr<FJsonValue>>* Regions2 = nullptr;
+		if (Result->TryGetArrayField(TEXT("regions"), Regions2))
 		{
-			for (const TSharedPtr<FJsonValue>& V : *Regions)
+			for (const TSharedPtr<FJsonValue>& V : *Regions2)
 			{
 				const TSharedPtr<FJsonObject>* Obj = nullptr;
 				if (!V.IsValid() || !V->TryGetObject(Obj)) continue;
@@ -338,6 +366,21 @@ namespace AerotelicStructuralFea
 		ReadVec3(Result, TEXT("applied_gravity"), Out.AppliedGravity);
 		ReadVec3(Result, TEXT("applied_pressure"), Out.AppliedPressure);
 		ReadVec3(Result, TEXT("applied_point"), Out.AppliedPoint);
+		Out.BalanceError = Real(TEXT("balance_error"));
+		if (!Result->TryGetBoolField(TEXT("balanced"), Out.bBalanced))
+		{
+			Out.bBalanced = true;   // an older script: no verdict, so no alarm
+		}
+		Result->TryGetStringField(TEXT("linear_solver"), Out.LinearSolver);
+		const TArray<TSharedPtr<FJsonValue>>* WarningsJson = nullptr;
+		if (Result->TryGetArrayField(TEXT("warnings"), WarningsJson))
+		{
+			for (const TSharedPtr<FJsonValue>& W : *WarningsJson)
+			{
+				FString S;
+				if (W.IsValid() && W->TryGetString(S)) Out.Warnings.Add(S);
+			}
+		}
 		Out.MeanNormalDisplacement = Real(TEXT("mean_normal_displacement"));
 		Out.SecondsSolve = Real(TEXT("seconds_solve"));
 		Out.SecondsHomogenize = Real(TEXT("seconds_homogenize"));

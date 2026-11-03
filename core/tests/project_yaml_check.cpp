@@ -285,6 +285,15 @@ void CheckMassSpecRoundTrip() {
 	CheckClose(by_material.mass.material.poisson_ratio, 0.342, 1e-12, "mass round trip: Poisson's ratio");
 	CheckClose(by_material.mass.material.allowable_stress, 880.0e6, 1e-3, "mass round trip: the allowable");
 	Check(IsMaterialPreset(by_material.mass.material), "mass round trip: it is still the preset");
+	CheckClose(by_material.mass.skin_thickness, 0.0, 0.0, "mass round trip: a solid writes no skin thickness and reads back solid");
+
+	// A skin of the material: the thickness travels beside it, as typed.
+	e.mass.skin_thickness = 0.0025;
+	ProjectEntity skin = RoundTripThroughText(e);
+	Check(skin.mass.mode == MassMode::Material && skin.mass.IsSkin(), "mass round trip: a skin stays a skin");
+	CheckClose(skin.mass.skin_thickness, 0.0025, 1e-15, "mass round trip: the skin thickness");
+	Check(skin.mass.material.name == "Titanium Ti-6Al-4V", "mass round trip: the skin's material");
+	e.mass.skin_thickness = 0.0;
 
 	// The forms the file is meant to read as, the pre-material one included.
 	MassSpec from_text = DecodeMassSpec(YAML::Load("{asserted: 3.5}"));
@@ -292,6 +301,8 @@ void CheckMassSpecRoundTrip() {
 	from_text = DecodeMassSpec(YAML::Load("{material: {name: Custom, density: 1200, youngs_modulus: 3.0e9, poisson_ratio: 0.35, allowable_stress: 5.0e7}}"));
 	Check(from_text.mode == MassMode::Material && from_text.material.density == 1200.0 && from_text.material.youngs_modulus == 3.0e9
 		&& from_text.material.name == "Custom", "mass: a custom material decodes");
+	from_text = DecodeMassSpec(YAML::Load("{material: {name: Custom, density: 1200}, skin_thickness: 0.003}"));
+	Check(from_text.mode == MassMode::Material && from_text.skin_thickness == 0.003 && from_text.IsSkin(), "mass: `skin_thickness` beside the material decodes");
 	from_text = DecodeMassSpec(YAML::Load("{density: 1200}"));
 	Check(from_text.mode == MassMode::Material && from_text.material.density == 1200.0 && from_text.material.name == "Custom"
 		&& from_text.material.youngs_modulus == 0.0, "mass: the old `{density: 1200}` reads as a custom material with only a density");

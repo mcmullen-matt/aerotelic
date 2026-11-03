@@ -12,7 +12,7 @@
 
 class AAerotelicEntityActor;
 
-// The model of a lattice infill (Lattice -> Generate Lattice...): the
+// The model of a lattice infill (Lattice -> Generate Lattice): the
 // OpenLattice lattice of `Spec` (lattice.hpp) generated inside the placed
 // bodies of `Targets` (an entity, its mirrored half, or a boolean result
 // -- the same operands a boolean takes) and kept out of the placed
@@ -20,9 +20,20 @@ class AAerotelicEntityActor;
 // volumes). A normal scene item once built: body, colour, visibility,
 // section, styles, STL export.
 //
+// The skin thickness is PER BODY and comes from the body alone
+// (2026-10-31): each target is hollowed by the skin thickness set on its
+// entity under Material Properties (MassSpec::skin_thickness -- a boolean
+// result's is its first operand's), as a wing's skin and a boom's differ.
+// There is NO default: a target without one refuses the generation by
+// name. `Spec.skin_thickness` belongs to the core's own generator and is
+// not read here. A mirrored half and the bodies of a multi-body entity
+// share their entity's. SkinThicknessFor resolves it; the FEA's shells
+// read the resolved figure off FTetMesh::SkinThickness. The lattice's
+// struts are of the filled body's material too (GetEffectiveMassSpec).
+//
 // The hollowing and the infill are MeshLib's (AerotelicMeshLib.h,
 // tools/lattice_meshlib.py, run as a separate process): each body is
-// offset inward by the skin thickness on a voxel distance field, the
+// offset inward by its skin thickness on a voxel distance field, the
 // "Skin" body being the body's own surface outside and the offset surface
 // inside; the lattice field (sampled here, from the core's LatticeField)
 // is extracted by marching cubes and cut to the union of the offset
@@ -74,6 +85,9 @@ public:
 		FString Label;
 		aerotelic::TriMesh Outer;
 		aerotelic::TriMesh Inner;
+		// The skin thickness this body was hollowed by (its entity's, or
+		// the spec's default), project units.
+		double SkinThickness = 0.0;
 		bool bInnerUsable = false;
 		FString InnerNote;
 		// The volume below which a pocket of the offset is a sliver, as the
@@ -97,7 +111,18 @@ public:
 	{
 		FString Label;
 		AerotelicTetGmsh::FResult Result;
+		// The body's skin thickness (FTetBody::SkinThickness): what the
+		// structural analysis gives the shells on this body's faces.
+		double SkinThickness = 0.0;
 	};
+
+	// The skin thickness a target is hollowed by: the one on its entity's
+	// effective Material Properties; 0 when it has none (the generation
+	// then refuses it). Static so the dialog can show what each body gets.
+	static double SkinThicknessFor(const FAerotelicBooleanOperand& Op);
+	// The thinnest skin over the targets that have one (0 if none): what
+	// the offset's voxel and the body tolerance are sized by.
+	double MinSkinThickness() const;
 	const std::vector<FTetMesh>& GetTetMeshes() const;
 	const TArray<FString>& GetTetNotes() const { GetTetMeshes(); return TetNotes; }
 	// The tetrahedra of every body of one material (1 skin, 2 core, -1 all)
@@ -154,8 +179,8 @@ public:
 	FBox TargetBounds() const;
 
 	// The surface tolerance the bodies are meshed at for a spec: a quarter
-	// of the lattice voxel or of the skin, whichever is finer.
-	static double BodyTolerance(const aerotelic::LatticeSpec& Spec);
+	// of the lattice voxel or of the thinnest skin, whichever is finer.
+	static double BodyTolerance(const aerotelic::LatticeSpec& Spec, double MinSkinThickness);
 
 private:
 	mutable bool bValid = false;

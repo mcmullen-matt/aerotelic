@@ -85,7 +85,7 @@ public:
 	AAerotelicEntityActor* AddPropeller();
 	AAerotelicEntityActor* AddPrimitive(const FString& Shape);
 
-	// Geometry -> Boolean Operation...: a new scene item, the operands'
+	// Geometry -> Boolean Operation: a new scene item, the operands'
 	// placed shapes folded left to right with Operation ("fuse" | "cut" |
 	// "common"). The operands stay in the scene (main_window.py
 	// _create_boolean_operation). Null with OutError on failure, in which
@@ -98,7 +98,7 @@ public:
 	// A default "BoolOp n" (_unique_label).
 	FString NextBooleanName() const;
 
-	// Lattice -> Generate Lattice...: a new scene item, the lattice of Spec
+	// Lattice -> Generate Lattice: a new scene item, the lattice of Spec
 	// generated inside the placed bodies of Targets and kept out of
 	// Exclusions (see FAerotelicLatticeModel). Generated once up front so a
 	// failure adds nothing: null with OutError then.
@@ -153,12 +153,6 @@ public:
 	bool ApplyEntityModel(AAerotelicEntityActor* Entity, const aerotelic::ISolidModel& Draft, FString& OutError);
 	// A default "Lattice n".
 	FString NextLatticeName() const;
-	// The solid skin thickness a new lattice over Targets starts with: one
-	// percent of the largest root chord among the wings filled, or, with no
-	// wing, one percent of the largest body's longest extent. A lattice
-	// always has a skin (its outer shell, a body of its own); a saved
-	// lattice without one is given this on load.
-	static double DefaultSkinThickness(const TArray<struct FAerotelicBooleanOperand>& Targets);
 	// True if Entity is a boolean result or lattice built on Other.
 	static bool DependsOn(const AAerotelicEntityActor* Entity, const AAerotelicEntityActor* Other);
 
@@ -199,12 +193,12 @@ public:
 	void SetSelectedEntity(AAerotelicEntityActor* Entity);
 	AAerotelicEntityActor* GetSelectedEntity() const;
 
-	// The scene-wide surface finish (View -> Surface...). Not saved with the
+	// The scene-wide surface finish (View -> Surface). Not saved with the
 	// project: it is how the scene is viewed, not what it is.
 	const FAerotelicSurfaceStyle& GetSurfaceStyle() const { return SurfaceStyle; }
 	void SetSurfaceStyle(const FAerotelicSurfaceStyle& Style);
 
-	// The key light's shadow settings (View -> Shadows...), applied to the
+	// The key light's shadow settings (View -> Shadows), applied to the
 	// studio rig's shadow-casting directional light. Not saved either.
 	// ApplyShadowStyle() re-applies the current settings to the lights of
 	// the world as it now stands; the game mode calls it once the rig is

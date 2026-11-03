@@ -19,7 +19,7 @@ struct FAerotelicBooleanOperand
 	bool bMirror = false;
 };
 
-// The model of a boolean result (Geometry -> Boolean Operation...): the
+// The model of a boolean result (Geometry -> Boolean Operation): the
 // operands' placed MESHES folded left to right through the core's mesh
 // boolean (mesh_boolean.hpp: triangle-triangle intersections on exact
 // predicates, the cut triangles re-triangulated in their planes, pieces
@@ -46,8 +46,11 @@ public:
 	// Throws std::runtime_error: a boolean result is a mesh, not a solid.
 	virtual TopoDS_Shape BuildSolid() const override;
 
-	// The result mesh at the given tolerance (the operands are rebuilt at
-	// it). Throws std::runtime_error, naming the operands, when an operand
+	// The result at the given tolerance (the operands are rebuilt at it),
+	// as its solid bodies: one shell is "Main"; a result of several shells
+	// that touch nothing of one another (a flap fused alongside its wing
+	// stays a body of its own) is "Body 1" (the largest) onwards.
+	// Throws std::runtime_error, naming the operands, when an operand
 	// is gone or has no geometry, is not a closed outward surface, when the
 	// mesh boolean refuses a degenerate contact (two triangles overlapping in
 	// one plane, a vertex of one body exactly on a face of the other), or

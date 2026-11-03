@@ -151,7 +151,7 @@ void AAerotelicGameMode::SpawnLighting()
 		}
 	}
 
-	// View -> Shadows... (FAerotelicShadowStyle): the cast toggle and the
+	// View -> Shadows (FAerotelicShadowStyle): the cast toggle and the
 	// shadow-map biases as they presently stand.
 	if (UAerotelicDocumentSubsystem* Doc = UAerotelicDocumentSubsystem::Get())
 	{

@@ -2,7 +2,7 @@
 
 #include "CoreMinimal.h"
 
-// Geometry -> Boolean Operation... (main_window.py
+// Geometry -> Boolean Operation (main_window.py
 // _show_boolean_operation_dialog): pick the operands -- every entity, the
 // mirrored half of each mirrored one, every earlier boolean result -- in
 // order (the first is the base; Cut subtracts the rest from it), the

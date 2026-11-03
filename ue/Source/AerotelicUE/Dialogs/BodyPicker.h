@@ -16,6 +16,10 @@ struct FAerotelicBodyChoice
 {
 	FString Label;
 	FAerotelicBooleanOperand Operand;
+	// One solid body of the operand by its role name ("Main", "Flap",
+	// "Body 2"); empty means the operand's every body. The structural
+	// analysis picks bodies, the rest pick operands.
+	FString Body;
 };
 using FAerotelicBodyChoicePtr = TSharedPtr<FAerotelicBodyChoice>;
 

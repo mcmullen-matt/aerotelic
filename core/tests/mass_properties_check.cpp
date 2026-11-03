@@ -98,6 +98,28 @@ void CheckShellBox() {
 	CheckClose(MaxOffDiagonal(p.inertia), 0.0, 1e-9, "shell box: no products of inertia");
 }
 
+void CheckSkinBox() {
+	// A skin of thickness t in a material of density rho is the shell of
+	// mass rho t A, and its material volume is t A -- not the box's.
+	const double lx = 2.0, ly = 3.0, lz = 5.0, rho = 7.0, t = 0.01;
+	const double area = 2.0 * (lx * ly + ly * lz + lz * lx);
+	const MassProperties p = SkinMassProperties(BoxMesh(lx, ly, lz), rho, t);
+	const MassProperties shell = ShellMassProperties(BoxMesh(lx, ly, lz), rho * t * area);
+	CheckClose(p.mass, rho * t * area, 1e-9, "skin box: mass = density * area * thickness");
+	CheckClose(p.volume, t * area, 1e-9, "skin box: the volume is the material's, area * thickness");
+	CheckClose(p.area, area, 1e-9, "skin box: area");
+	CheckClose(Ixx(p.inertia), Ixx(shell.inertia), 1e-9, "skin box: the inertia is the shell's of the same mass");
+	CheckClose(Length(p.centre), 0.0, 1e-9, "skin box: centre at the origin");
+
+	// An open surface weighs the same way: one triangle, as a lamina.
+	TriMesh tri;
+	tri.vertices = {Vec3{0, 0, 0}, Vec3{3, 0, 0}, Vec3{0, 4, 0}};
+	tri.triangles = {{0, 1, 2}};
+	const MassProperties q = SkinMassProperties(tri, rho, t);
+	CheckClose(q.mass, rho * t * 6.0, 1e-12, "skin triangle: an open surface weighs rho t A");
+	CheckClose(q.volume, t * 6.0, 1e-12, "skin triangle: volume t A");
+}
+
 void CheckSingleTriangle() {
 	// A lamina: the polar moment of a triangle about its centroid is
 	// m (a^2 + b^2 + c^2) / 36 with a, b, c the side lengths. 3-4-5 here.
@@ -246,6 +268,7 @@ int main() {
 	try {
 		CheckSolidBox();
 		CheckShellBox();
+		CheckSkinBox();
 		CheckSingleTriangle();
 		CheckSphereAndCylinder();
 		CheckInvariances();

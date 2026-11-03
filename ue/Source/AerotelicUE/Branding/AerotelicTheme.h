@@ -2,7 +2,7 @@
 
 #include "CoreMinimal.h"
 
-// Edit -> Preferences -> Color Theme... (ui/themes.py): WingDesigner's
+// Edit -> Preferences -> Color Theme (ui/themes.py): WingDesigner's
 // thirteen palettes, one current, persisted like its
 // QSettings("appearance/theme"). The frame's chrome -- title bar, menu and
 // tool bars, scene tree, panels, status bar -- and the 3D view's backdrop

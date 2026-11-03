@@ -127,6 +127,15 @@ MassProperties ShellMassProperties(const TriMesh& mesh, double mass) {
 	return Resolve(m, areal_density, mesh.SignedVolume(), m.measure);
 }
 
+MassProperties SkinMassProperties(const TriMesh& mesh, double density, double thickness) {
+	// The same shell integrals with the areal density rho t; the volume
+	// reported is the material's.
+	const double area = mesh.SurfaceArea();
+	MassProperties p = ShellMassProperties(mesh, density * thickness * area);
+	p.volume = area * thickness;
+	return p;
+}
+
 InertiaTensor InertiaAbout(const MassProperties& p, const Vec3& point) {
 	const Vec3 d = p.centre - point;
 	const double d2 = LengthSq(d);
