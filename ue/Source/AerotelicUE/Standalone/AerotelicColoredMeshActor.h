@@ -43,6 +43,12 @@ public:
 	// Visible to scene captures only (default) or in the main view as well.
 	void SetVisibleInCapturesOnly(bool bCapturesOnly);
 
+	// Draws the triangles' edges over the surface (the main view's "Shaded
+	// with Edges": the same triangles again through the wireframe material
+	// M_AerotelicWire, unlit, in the colour given) -- a finite-element
+	// mesh wants its elements seen. Off by default; survives SetMesh.
+	void SetEdges(bool bShow, const FLinearColor& Color = FLinearColor(0.02f, 0.02f, 0.03f));
+
 	// "/Game/Materials/M_AerotelicVertexColor", authored by the material
 	// setup commandlet: lit, two sided, base colour from the vertex colour.
 	// Falls back to the engine's unlit VertexColorMaterial when missing.
@@ -60,7 +66,20 @@ private:
 	UPROPERTY()
 	TObjectPtr<UMaterialInstanceDynamic> Material;
 
+	// The edge copy (SetEdges): the same section through the wire material.
+	UPROPERTY()
+	TObjectPtr<UProceduralMeshComponent> Edges;
+
+	UPROPERTY()
+	TObjectPtr<UMaterialInstanceDynamic> EdgeMaterial;
+
+	bool bEdges = false;
+	FLinearColor EdgeColor = FLinearColor(0.02f, 0.02f, 0.03f);
+
 	// Kept for UpdateMeshSection, which wants the positions again.
 	TArray<FVector> Vertices;
 	TArray<FVector> Normals;
+	TArray<int32> Triangles;
+
+	void RefreshEdges();
 };

@@ -72,6 +72,18 @@ from meshlib import mrmeshnumpy as mn  # noqa: E402
 
 TRI_MAGIC = b"AEROTRI1"
 
+# The isotropic remeshes of a job's offset surfaces are together held to
+# about this many triangles: every body's edge is raised to the one at
+# which the bodies' total area fits. The remesh is the step that runs
+# away when the edge asked for is far finer than the body (p38: a 2 mm
+# edge over a 148 m^2 airframe is 85 M triangles; MeshLib's split cap
+# stopped it at 20 M per body after 15 minutes and 18 GB, and the
+# application hung in swap). The budget is the job's, not each body's:
+# the same airframe as six shells reached 2 M on four of them in turn
+# and was still 12 minutes in. A million triangles remesh in about a
+# minute and leave the booleans after them tractable.
+MAX_INNER_FACES = 1000000
+
 
 # ---------------------------------------------------------------------------
 # .tri I/O
@@ -215,17 +227,31 @@ def inward_offset(body, thickness, voxel, mode):
         raise JobError("the inward offset failed: %s" % exc)
 
 
+def remesh_edge_floor(area, max_faces=None):
+    """The shortest isotropic edge at which surfaces of `area` in all
+    remesh to no more than `max_faces` (MAX_INNER_FACES as it stands when
+    called) equilateral triangles: area / (sqrt(3)/4 edge^2) = max_faces.
+    Zero for no area."""
+    if max_faces is None:
+        max_faces = MAX_INNER_FACES
+    if max_faces <= 0 or not area > 0.0:
+        return 0.0
+    return float(np.sqrt(area / (0.25 * np.sqrt(3.0) * max_faces)))
+
+
 def remesh_isotropic(mesh, edge_len):
     """Remeshes in place toward isotropic triangles of `edge_len` (for a
     better-conditioned constraint surface), keeping it closed; reverts
-    and returns False if MeshLib's remesh fails or opens the surface."""
+    and returns False if MeshLib's remesh fails or opens the surface. The
+    caller keeps `edge_len` at or above remesh_edge_floor; the split cap
+    here is the backstop for a surface whose area the floor misjudged."""
     if edge_len <= 0.0 or num_faces(mesh) == 0:
         return False
     backup = mm.Mesh(mesh)
     try:
         settings = mm.RemeshSettings()
         settings.targetEdgeLen = float(edge_len)
-        settings.maxEdgeSplits = 10000000
+        settings.maxEdgeSplits = MAX_INNER_FACES
         settings.maxAngleChangeAfterFlip = 30.0 * np.pi / 180.0
         settings.useCurvature = True
         settings.finalRelaxIters = 2
@@ -325,7 +351,8 @@ def lattice_surface(vol, origin):
 def run_job(job_dir):
     """Runs the job in `job_dir`. job.json:
 
-        skin_thickness      the skin depth t (model units), > 0
+        skin_thickness      the skin depth t (model units), > 0, of every
+                            target that gives none of its own
         offset_voxel        voxel size of the offset's distance field
         offset_mode         "standard" (default) | "smooth" | "sharpening"
         decimate_tolerance  decimate the offset surface within this (0: no)
@@ -336,8 +363,14 @@ def run_job(job_dir):
                             it is used (0: no opening)
         inner_remesh_edge   remesh the offset surface to isotropic triangles
                             of this edge length before it is written as an
-                            inner surface (0: keep the decimated surface)
-        targets             [{label, file}] bodies to fill (.tri, closed)
+                            inner surface (0: keep the decimated surface);
+                            raised, with a warning, where the job's inner
+                            surfaces together would exceed MAX_INNER_FACES
+                            triangles
+        targets             [{label, file, skin_thickness?,
+                            inner_remesh_edge?}] bodies to fill (.tri,
+                            closed), each optionally with its own skin
+                            depth and remesh edge in place of the job's
         reserved            [{label, file}] volumes the infill must avoid
         field               null, or {file, nx, ny, nz, origin, h}: the
                             lattice field on the grid (F <= 0 is material)
@@ -377,12 +410,31 @@ def run_job(job_dir):
     interiors = []
     skin_volume = 0.0
     t0 = time.time()
-    for index, item in enumerate(job.get("targets", [])):
+    targets = job.get("targets", [])
+    bodies = []
+    for item in targets:
         label = item.get("label", item["file"])
         body = read_tri(os.path.join(job_dir, item["file"]))
         require_closed_body(body, label, "a body to fill")
+        bodies.append(body)
+    # Never a remesh the machine cannot hold: the edge every body is
+    # remeshed at is at least the one at which their offset surfaces
+    # (about the bodies' own area, less a thin skin's worth) together fit
+    # the triangle budget.
+    remesh_floor = remesh_edge_floor(sum(float(b.area()) for b in bodies))
+    remesh_raised = []
+    for index, (item, body) in enumerate(zip(targets, bodies)):
+        label = item.get("label", item["file"])
+        # This body's own skin and remesh edge, else the job's.
+        own_thickness = float(item.get("skin_thickness", thickness))
+        if not own_thickness > 0.0:
+            raise JobError("the skin thickness of '%s' must be greater than zero" % label)
+        own_remesh = float(item.get("inner_remesh_edge", remesh_edge))
+        if own_remesh > 0.0 and remesh_floor > own_remesh:
+            remesh_raised.append((label, own_remesh))
+            own_remesh = remesh_floor
         body_volume = body.volume()
-        inner = inward_offset(body, thickness, voxel, mode)
+        inner = inward_offset(body, own_thickness, voxel, mode)
         n_inner = num_faces(inner)
         if n_inner > 0 and not is_closed(inner):
             raise JobError("the inward offset of '%s' did not close (%d holes)." % (label, inner.topology.findNumHoles()))
@@ -398,7 +450,7 @@ def run_job(job_dir):
         if dropped:
             warnings.append("%s: %d pocket(s) of the offset interior smaller than %.3g were filled solid" % (label, dropped, min_pocket))
         n_dec = decimate_within(inner, decimate_tol)
-        remeshed = remesh_isotropic(inner, remesh_edge) if remesh_edge > 0.0 else False
+        remeshed = remesh_isotropic(inner, own_remesh) if own_remesh > 0.0 else False
         if remeshed and min_pocket > 0.0:
             # The remesh can leave its own debris: on the P-38 airframe it
             # made four pockets of about 1e-5 (three self-intersecting)
@@ -410,7 +462,7 @@ def run_job(job_dir):
         inner_volume = inner.volume() if num_faces(inner) > 0 else 0.0
         n_components = mm.MeshComponents.getNumComponents(mm.MeshPart(inner)) if num_faces(inner) else 0
         log("  %s: body %d faces, volume %.6g; inward offset %.4g -> %d faces (%d after decimation%s), %d component(s), volume %.6g"
-            % (label, num_faces(body), body_volume, thickness, n_inner, n_dec,
+            % (label, num_faces(body), body_volume, own_thickness, n_inner, n_dec,
                (", %d after remeshing" % num_faces(inner)) if remeshed else "", n_components, inner_volume))
         if num_faces(inner) == 0:
             warnings.append("%s is nowhere thicker than two skins: it is all skin, with no infill" % label)
@@ -423,6 +475,7 @@ def run_job(job_dir):
         inner_counts = write_tri(os.path.join(job_dir, inner_file), mm.Mesh(inner) if num_faces(inner) > 0 else None)
         target_results.append({
             "label": label,
+            "skin_thickness": own_thickness,
             "inner_file": inner_file,
             "inner_vertices": inner_counts[0],
             "inner_triangles": inner_counts[1],
@@ -438,6 +491,9 @@ def run_job(job_dir):
             inverted.topology.flipOrientation()
             skin.addMesh(inverted)
             interiors.append((label, inner))
+    if remesh_raised:
+        warnings.append("the offset surface of %s was remeshed at %.3g rather than %.3g, so the job's inner surfaces together stay under %d triangles"
+                        % (", ".join("'%s'" % r[0] for r in remesh_raised), remesh_floor, min(r[1] for r in remesh_raised), MAX_INNER_FACES))
     timings["hollowing"] = time.time() - t0
 
     # 2. The infill domain: the union of the interiors minus the reserved volumes.

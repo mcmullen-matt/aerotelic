@@ -95,9 +95,8 @@ void ShowAerotelicMassPropertiesDialog(TFunction<void(const FText&)> Status)
 			return;
 		}
 		const double Started = FPlatformTime::Seconds();
-		const FAerotelicMassReport Report = ComputeAerotelicMassReport(Bodies, Tolerance);
-		const UAerotelicDocumentSubsystem* Doc = UAerotelicDocumentSubsystem::Get();
-		ReportString = FormatAerotelicMassReport(Report, Doc != nullptr ? Doc->GetUnits() : aerotelic::UnitSystem{});
+		const FAerotelicMassReport Report = ComputeAerotelicMassReport(Bodies, Tolerance, Units);
+		ReportString = FormatAerotelicMassReport(Report, Units);
 		ReportText->SetText(FText::FromString(ReportString));
 		const int32 LeftOut = Report.Bodies.Num() - Report.IncludedCount;
 		Status(FText::FromString(FString::Printf(TEXT("Weighed %d %s in %.1f s%s"),
@@ -157,7 +156,7 @@ void ShowAerotelicMassPropertiesDialog(TFunction<void(const FText&)> Status)
 					+ SVerticalBox::Slot().AutoHeight().Padding(0, 4, 0, 0)
 					[
 						MakeInfoLabel(LOCTEXT("BodiesHint",
-							"Each entity weighs the way its own Mass Properties setting says (right-click it in the Scene tree): a density over the volume it encloses, or an asserted mass spread over its surface. One without a setting is reported as left out rather than counted as zero."))
+							"Each entity weighs the way its own Material Properties setting says (right-click it in the Scene tree): its material's density over the volume it encloses, or an asserted mass spread over its surface. One without a setting is reported as left out rather than counted as zero."))
 					])
 			]
 			+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 8)

@@ -1,5 +1,6 @@
 #include "AerotelicBooleanModel.h"
 #include "AerotelicEntityActor.h"
+#include "AerotelicMeshing.h"
 
 #include <stdexcept>
 #include <string>
@@ -87,7 +88,23 @@ std::vector<aerotelic::NamedMesh> FAerotelicBooleanModel::BuildMeshes(double Tol
 	{
 		throw std::runtime_error("A boolean operation needs at least two operands.");
 	}
-	return {{"Main", FoldMeshes(Operands, Operation, Tolerance)}};
+	// The result as the solid bodies it really is: a shell that touches
+	// nothing else -- a wing's flap, parted from the wing by its gap, fused
+	// with the fuselage alongside it -- is a body of its own, not part of
+	// the airframe's. One shell keeps the name "Main"; several are "Body 1"
+	// (the largest) onwards.
+	std::vector<aerotelic::TriMesh> Shells = AerotelicMeshing::SplitShells(FoldMeshes(Operands, Operation, Tolerance), 1e-6);
+	std::vector<aerotelic::NamedMesh> Out;
+	if (Shells.size() <= 1)
+	{
+		Out.push_back({"Main", Shells.empty() ? aerotelic::TriMesh() : std::move(Shells[0])});
+		return Out;
+	}
+	for (size_t i = 0; i < Shells.size(); ++i)
+	{
+		Out.push_back({"Body " + std::to_string(i + 1), std::move(Shells[i])});
+	}
+	return Out;
 }
 
 bool FAerotelicBooleanModel::DependsOn(const AAerotelicEntityActor* Entity) const

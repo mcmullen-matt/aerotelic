@@ -14,6 +14,7 @@
 #include "Licensing/AerotelicLicenseInfo.h"
 #include "Licensing/AerotelicActivationDialog.h"
 #include "Dialogs/HighOrderPanelDialog.h"
+#include "Dialogs/StructuralFeaDialog.h"
 #include "Misc/App.h"
 #include "Misc/CommandLine.h"
 #include "Misc/Parse.h"
@@ -98,6 +99,18 @@ void AAerotelicPlayerController::ShowStartupWelcome()
 		}
 		TWeakPtr<SAerotelicMainShell> WeakShell = Shell;
 		ShowAerotelicHighOrderPanelDialog([WeakShell](const FText& T)
+		{
+			if (TSharedPtr<SAerotelicMainShell> P = WeakShell.Pin()) P->SetStatus(T);
+		});
+		return;
+	}
+	// -AerotelicFeaSmoke: the same for Analysis -> Structural (Kratos FEA)
+	// on a project with a lattice (-AerotelicProject): the dialog builds
+	// the model, screenshots its Mesh, Loads and Support tabs and quits.
+	if (FParse::Param(FCommandLine::Get(), TEXT("AerotelicFeaSmoke")))
+	{
+		TWeakPtr<SAerotelicMainShell> WeakShell = Shell;
+		ShowAerotelicStructuralFeaDialog([WeakShell](const FText& T)
 		{
 			if (TSharedPtr<SAerotelicMainShell> P = WeakShell.Pin()) P->SetStatus(T);
 		});

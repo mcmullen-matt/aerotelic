@@ -5,7 +5,7 @@
 // How the scene is *viewed* (not what it is): none of this is saved with
 // the project, exactly as WingDesigner's renderer state is not.
 
-// The finish every body is drawn with -- View -> Surface... sets it for the
+// The finish every body is drawn with -- View -> Surface sets it for the
 // whole scene. Metallic 0..1; Specular 0..1 (how strong the highlights
 // are, "glossy"); Roughness 0..1 (how blurred the reflections are, 0 is a
 // mirror polish). The defaults are the surface material's own.
@@ -28,7 +28,7 @@ struct FAerotelicSurfaceStyle
 	float FresnelExponent = 3.0f;
 };
 
-// The key light's shadow settings -- View -> Shadows... sets them for the
+// The key light's shadow settings -- View -> Shadows sets them for the
 // scene. The studio rig (AerotelicGameMode::SpawnLighting) has one
 // shadow-casting directional light, movable, so its shadows are cascaded
 // shadow maps: a depth map rendered from the light, compared against each

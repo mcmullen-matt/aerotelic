@@ -15,7 +15,6 @@
 /ue/DerivedDataCache/
 /ue/Packaged/
 /ue/Build/
-/ue/.vs/
 /ue/*.sln
 /ue/*.VC.db
 /ue/*.VC.opendb
@@ -31,8 +30,21 @@ __pycache__/
 # folder does too (/ue/.vs/ above only covered the one it used to make
 # beside the .uproject).
 /.vs/
+/ue/.vs/
+/core/src/.vs
 .vscode/
 .idea/
 Thumbs.db
 Desktop.ini
 ue/.vsconfig
+
+# ---- ignore derived files ----
+*.vtk
+*.pdf
+*.h5
+*.log
+
+# ---- ignore directories used to dump data ----
+/ue/Projects/p38_dust/
+/ue/Projects/p38_dust_prop/
+/ue/tools/fea_probes/

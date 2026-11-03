@@ -502,6 +502,60 @@ int Run() {
 		Check(threw, "generate: refuses a grid over the sample limit");
 	}
 
+	// ---- the voxelised unit cell for homogenization ----
+	{
+		// A cubic cell: n^3 voxels, the solid fraction near the calibrated
+		// target (voxel centres against jittered calibration samples).
+		LatticeSpec g;
+		g.cell_size = 0.5;
+		g.volume_fraction = 0.3;
+		UnitCellSamples c = SampleUnitCell(g, 24);
+		Check(c.nx == 24 && c.ny == 24 && c.nz == 24 && c.values.size() == 24u * 24 * 24, "unit cell: a TPMS cell is n^3 voxels");
+		Check(c.period.x == 0.5 && c.period.y == 0.5 && c.period.z == 0.5, "unit cell: the period is the cell");
+		Check(std::fabs(c.solid_fraction - 0.3) < 0.03, "unit cell: gyroid voxels fill the target fraction (" + std::to_string(c.solid_fraction) + ")");
+		// Periodicity: the voxel just outside the box in x equals the first
+		// one in x (the field at origin + period is the field at origin).
+		{
+			const LatticeField f(g);
+			const double h = 0.5 / 24;
+			const Vec3 a{0.5 * h, 3.5 * h, 7.5 * h};
+			Check(std::fabs(f(a) - f(a + Vec3{0.5, 0.0, 0.0})) < 1e-9 && std::fabs(f(a) - f(a + Vec3{0.0, 0.5, 0.5})) < 1e-9, "unit cell: the field repeats over the period");
+		}
+		// A strut cell: the octet at 0.2.
+		LatticeSpec s;
+		s.family = LatticeFamily::Strut;
+		s.type = "Octet";
+		s.volume_fraction = 0.2;
+		c = SampleUnitCell(s, 32);
+		Check(std::fabs(c.solid_fraction - 0.2) < 0.03, "unit cell: octet voxels fill the target fraction (" + std::to_string(c.solid_fraction) + ")");
+		// A hexagonal honeycomb along y: the box is a x 2h in the (z, x)
+		// plane, two voxels along y, and the field is y-invariant.
+		LatticeSpec hc;
+		hc.family = LatticeFamily::Honeycomb;
+		hc.type = "Hexagon";
+		hc.axis = PrismAxis::Y;
+		hc.cell_size = 1.0;
+		hc.volume_fraction = 0.3;
+		c = SampleUnitCell(hc, 20);
+		// u = z, v = x, w = y for PrismAxis::Y.
+		Check(c.nz == 20 && c.ny == 2 && c.nx == static_cast<int>(std::lround(std::sqrt(3.0) * 20)), "unit cell: hexagon along y is 20 voxels along z, sqrt(3) * 20 along x, two along y");
+		Check(std::fabs(c.period.z - 1.0) < 1e-12 && std::fabs(c.period.x - std::sqrt(3.0)) < 1e-12, "unit cell: the hexagon's rectangular period is a x sqrt(3) a");
+		Check(std::fabs(c.solid_fraction - 0.3) < 0.04, "unit cell: honeycomb voxels fill the target fraction (" + std::to_string(c.solid_fraction) + ")");
+		{
+			// The two layers along the prism axis are identical.
+			bool same = true;
+			for (int k = 0; k < c.nz && same; ++k)
+				for (int i = 0; i < c.nx; ++i)
+					if (c.values[(static_cast<size_t>(k) * c.ny + 0) * c.nx + i] != c.values[(static_cast<size_t>(k) * c.ny + 1) * c.nx + i]) { same = false; break; }
+			Check(same, "unit cell: a honeycomb is the same at every height");
+			// And the box is one period: the field at a point and at the
+			// point plus the period agree.
+			const LatticeField f(hc);
+			const Vec3 a{0.137, 0.0, 0.271};
+			Check(std::fabs(f(a) - f(a + Vec3{std::sqrt(3.0), 0.0, 0.0})) < 1e-9 && std::fabs(f(a) - f(a + Vec3{0.0, 0.0, 1.0})) < 1e-9, "unit cell: the honeycomb field repeats over a x sqrt(3) a");
+		}
+	}
+
 	std::printf("RESULT: %d failure(s)\n", g_failures);
 	return g_failures == 0 ? 0 : 1;
 }

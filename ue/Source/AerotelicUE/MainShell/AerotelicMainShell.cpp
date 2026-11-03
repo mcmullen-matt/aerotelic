@@ -16,6 +16,7 @@
 #include "Dialogs/PotentialFlowDialog.h"
 #include "Dialogs/HighOrderPanelDialog.h"
 #include "Dialogs/MassPropertiesDialog.h"
+#include "Dialogs/StructuralFeaDialog.h"
 #include "Dialogs/DustDialog.h"
 #include "Dialogs/ThemeDialog.h"
 #include "Branding/AerotelicTheme.h"
@@ -446,29 +447,14 @@ void SAerotelicMainShell::BindCommands()
 		if (!Result.IsEmpty()) StatusText = Result;
 	}));
 
-	// Lattice
-	Commands->MapAction(C.GenerateLattice, FExecuteAction::CreateLambda([this]()
-	{
-		ShowAerotelicLatticeDialog(nullptr, [this](const FText& T) { SetStatus(T); });
-	}));
-	Commands->MapAction(C.RegenerateLattices, FExecuteAction::CreateLambda([this]()
-	{
-		UAerotelicDocumentSubsystem* Doc = GetDocument();
-		if (Doc == nullptr) return;
-		TArray<FString> Errors;
-		const int32 Count = Doc->RegenerateLattices(Errors);
-		if (Errors.Num() > 0)
-		{
-			AerotelicMessageBox(EAppMsgType::Ok, FText::FromString(TEXT("Some lattices could not be regenerated:\n") + FString::Join(Errors, TEXT("\n"))), LOCTEXT("LatticeTitle", "Regenerate Lattices"));
-		}
-		SetStatus(Count == 0 && Errors.Num() == 0 ? LOCTEXT("NoLattices", "No lattices in the scene.")
-			: FText::Format(LOCTEXT("Regenerated", "Regenerated {0} lattice(s)."), FText::AsNumber(Count)));
-	}));
+	// Lattice exports (Generate Lattice and Regenerate are on the Scene
+	// tree's rows: a lattice is made within a body one picks)
 	Commands->MapAction(C.ExportSkinVtk, FExecuteAction::CreateLambda([this]() { ShowAerotelicExportSkinVtkDialog([this](const FText& T) { SetStatus(T); }); }));
 	Commands->MapAction(C.ExportTetVtk, FExecuteAction::CreateLambda([this]() { ShowAerotelicExportTetVtkDialog([this](const FText& T) { SetStatus(T); }); }));
 
 	// Analysis
 	Commands->MapAction(C.MassProperties, FExecuteAction::CreateLambda([this]() { ShowAerotelicMassPropertiesDialog([this](const FText& T) { SetStatus(T); }); }));
+	Commands->MapAction(C.StructuralFea, FExecuteAction::CreateLambda([this]() { ShowAerotelicStructuralFeaDialog([this](const FText& T) { SetStatus(T); }); }));
 	Commands->MapAction(C.PotentialFlow, FExecuteAction::CreateLambda([this]() { ShowAerotelicPotentialFlowDialog([this](const FText& T) { SetStatus(T); }); }));
 	Commands->MapAction(C.HighOrderPanel, FExecuteAction::CreateLambda([this]() { ShowAerotelicHighOrderPanelDialog([this](const FText& T) { SetStatus(T); }); }));
 	Commands->MapAction(C.DustVpm, FExecuteAction::CreateLambda([this]() { ShowAerotelicDustDialog([this](const FText& T) { SetStatus(T); }); }));
@@ -520,7 +506,7 @@ void SAerotelicMainShell::BindCommands()
 		FIsActionChecked::CreateLambda([]() { UAerotelicDocumentSubsystem* Doc = UAerotelicDocumentSubsystem::Get(); return Doc != nullptr && Doc->GetSectionPlane().bFlipped; }));
 
 	// Help
-	// Forced: Help -> Welcome Screen... shows it even when ticked off at
+	// Forced: Help -> Welcome Screen shows it even when ticked off at
 	// start-up (the Qt app's own menu item lost that argument).
 	Commands->MapAction(C.WelcomeScreen, FExecuteAction::CreateLambda([]() { ShowAerotelicWelcomeScreen(/*bForce*/ true); }));
 	Commands->MapAction(C.TutorialProjects, FExecuteAction::CreateLambda([]() { ShowAerotelicTutorialDialog(); }));
@@ -559,7 +545,6 @@ TSharedRef<SWidget> SAerotelicMainShell::BuildMenuBar()
 	Bar.AddPullDownMenu(LOCTEXT("FileMenu", "File"), LOCTEXT("FileMenuTip", "Project files"), PullDown(&SAerotelicMainShell::FillFileMenu));
 	Bar.AddPullDownMenu(LOCTEXT("EditMenu", "Edit"), LOCTEXT("EditMenuTip", "Preferences"), PullDown(&SAerotelicMainShell::FillEditMenu));
 	Bar.AddPullDownMenu(LOCTEXT("GeometryMenu", "Geometry"), LOCTEXT("GeometryMenuTip", "Airfoils and boolean operations"), PullDown(&SAerotelicMainShell::FillGeometryMenu));
-	Bar.AddPullDownMenu(LOCTEXT("LatticeMenu", "Lattice"), LOCTEXT("LatticeMenuTip", "Lattice infill of the scene's bodies"), PullDown(&SAerotelicMainShell::FillLatticeMenu));
 	Bar.AddPullDownMenu(LOCTEXT("AnalysisMenu", "Analysis"), LOCTEXT("AnalysisMenuTip", "Flow analysis of the scene's geometry"), PullDown(&SAerotelicMainShell::FillAnalysisMenu));
 	Bar.AddPullDownMenu(LOCTEXT("ViewMenu", "View"), LOCTEXT("ViewMenuTip", "3D view"), PullDown(&SAerotelicMainShell::FillViewMenu));
 	Bar.AddPullDownMenu(LOCTEXT("HelpMenu", "Help"), LOCTEXT("HelpMenuTip", "Help"), PullDown(&SAerotelicMainShell::FillHelpMenu));
@@ -578,6 +563,8 @@ void SAerotelicMainShell::FillFileMenu(FMenuBuilder& Menu)
 	Menu.AddMenuEntry(C.ExportStep);
 	Menu.AddMenuEntry(C.ExportStl);
 	Menu.AddMenuEntry(C.Export3DPdf);
+	Menu.AddMenuEntry(C.ExportSkinVtk);
+	Menu.AddMenuEntry(C.ExportTetVtk);
 	Menu.AddMenuSeparator();
 	Menu.AddMenuEntry(C.Quit, NAME_None, TAttribute<FText>(), TAttribute<FText>(), FSlateIcon(), NAME_None);
 }
@@ -643,6 +630,21 @@ void SAerotelicMainShell::FillGeometryMenu(FMenuBuilder& Menu)
 			MassEntry(LOCTEXT("Kilograms", "Kilograms (kg)"), LOCTEXT("KilogramsTip", "Every mass and density in the project is in kilograms (the default)"), aerotelic::MassUnit::Kilogram);
 			MassEntry(LOCTEXT("Pounds", "Pounds, mass (lbm)"), LOCTEXT("PoundsTip", "Every mass and density in the project is in pounds-mass: densities in lbm/ft^3 (or per the length unit). The analysis codes are handed kilograms, so no slugs are ever needed."), aerotelic::MassUnit::PoundMass);
 			Sub.EndSection();
+			auto StressEntry = [this, &Sub, Current](const FText& Label, const FText& Tip, aerotelic::StressUnit Unit)
+			{
+				Sub.AddMenuEntry(Label, Tip, FSlateIcon(),
+					FUIAction(
+						FExecuteAction::CreateLambda([this, Current, Unit]() { aerotelic::UnitSystem U = Current(); U.stress = Unit; SetUnits(U); }),
+						FCanExecuteAction(),
+						FIsActionChecked::CreateLambda([Current, Unit]() { return Current().stress == Unit; })),
+					NAME_None, EUserInterfaceActionType::RadioButton);
+			};
+			Sub.BeginSection("Stress", LOCTEXT("StressSection", "Stress (Young's modulus, allowables, results)"));
+			StressEntry(LOCTEXT("Pascals", "Pascals (Pa)"), LOCTEXT("PascalsTip", "Stresses and moduli in pascals (the default)"), aerotelic::StressUnit::Pascal);
+			StressEntry(LOCTEXT("Megapascals", "Megapascals (MPa)"), LOCTEXT("MegapascalsTip", "Stresses and moduli in megapascals"), aerotelic::StressUnit::Megapascal);
+			StressEntry(LOCTEXT("Psi", "Pounds per square inch (psi)"), LOCTEXT("PsiTip", "Stresses and moduli in psi. A force per area is its own unit, not derivable from the length and mass: lbm/(ft s^2) would be poundals per square foot, which no materials table lists"), aerotelic::StressUnit::Psi);
+			StressEntry(LOCTEXT("Ksi", "Thousands of psi (ksi)"), LOCTEXT("KsiTip", "Stresses and moduli in ksi"), aerotelic::StressUnit::Ksi);
+			Sub.EndSection();
 			Sub.BeginSection("Time", LOCTEXT("TimeSection", "Time"));
 			Sub.AddMenuEntry(LOCTEXT("Seconds", "Seconds (s) -- fixed"),
 				LOCTEXT("SecondsTip", "Time is always in seconds: speeds are per second, time steps are seconds. A rotational speed given in rev/min is its own unit and is converted where it is used."),
@@ -675,25 +677,16 @@ void SAerotelicMainShell::SetUnits(const aerotelic::UnitSystem& Units)
 	{
 		AerotelicMessageBox(EAppMsgType::Ok,
 			FText::Format(LOCTEXT("UnitsChanged",
-				"The project's units are now {0}.\n\nNothing was converted: every number already typed -- every length, mass and density -- keeps its value and is read in these units from now on. Everything handed to an analysis code or written to a STEP file is converted to SI from them."),
+				"The project's units are now {0}.\n\nNothing was converted: every number already typed -- every length, mass, pressure and stress -- keeps its value and is read in these units from now on. Materials are the exception: a material is SI underneath and is only displayed in these units, so a preset's figures stay right. Everything handed to an analysis code or written to a STEP file is converted to SI."),
 				Described),
 			LOCTEXT("UnitsTitle", "Units"));
 	}
 }
 
-void SAerotelicMainShell::FillLatticeMenu(FMenuBuilder& Menu)
-{
-	const FAerotelicCommands& C = FAerotelicCommands::Get();
-	Menu.AddMenuEntry(C.GenerateLattice);
-	Menu.AddMenuEntry(C.RegenerateLattices);
-	Menu.AddMenuSeparator();
-	Menu.AddMenuEntry(C.ExportSkinVtk);
-	Menu.AddMenuEntry(C.ExportTetVtk);
-}
-
 void SAerotelicMainShell::FillAnalysisMenu(FMenuBuilder& Menu)
 {
 	Menu.AddMenuEntry(FAerotelicCommands::Get().MassProperties);
+	Menu.AddMenuEntry(FAerotelicCommands::Get().StructuralFea);
 	Menu.AddMenuEntry(FAerotelicCommands::Get().PotentialFlow);
 	Menu.AddMenuEntry(FAerotelicCommands::Get().HighOrderPanel);
 	Menu.AddMenuEntry(FAerotelicCommands::Get().DustVpm);
@@ -912,7 +905,7 @@ TSharedRef<SWidget> SAerotelicMainShell::BuildStatusBar()
 			[
 				SNew(STextBlock)
 				.Text(this, &SAerotelicMainShell::GetUnitsText)
-				.ToolTipText(LOCTEXT("UnitsReadoutTip", "The project's units: length, mass, time (Geometry > Units)"))
+				.ToolTipText(LOCTEXT("UnitsReadoutTip", "The project's units: length, mass, time, stress (Geometry > Units)"))
 				.ColorAndOpacity_Static(&MutedText)
 			]
 			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)

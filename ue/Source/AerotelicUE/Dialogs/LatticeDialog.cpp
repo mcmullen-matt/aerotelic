@@ -69,7 +69,7 @@ namespace
 	}
 }
 
-void ShowAerotelicLatticeDialog(AAerotelicEntityActor* Existing, TFunction<void(const FText&)> Status)
+void ShowAerotelicLatticeDialog(AAerotelicEntityActor* Existing, TFunction<void(const FText&)> Status, const FAerotelicBooleanOperand* FillBody)
 {
 	UAerotelicDocumentSubsystem* Doc = UAerotelicDocumentSubsystem::Get();
 	if (Doc == nullptr)
@@ -102,8 +102,9 @@ void ShowAerotelicLatticeDialog(AAerotelicEntityActor* Existing, TFunction<void(
 			LOCTEXT("Title", "Generate Lattice"));
 		return;
 	}
-	// Everything fillable and every primitive start chosen for a new
-	// lattice; an existing lattice's own lists otherwise.
+	// The body picked in the Scene tree (and its mirrored half) and every
+	// primitive start chosen for a new lattice; an existing lattice's own
+	// lists otherwise.
 	TArray<FAerotelicBodyChoicePtr> InitialTargets, InitialReserved;
 	auto PickInitial = [](const TArray<FAerotelicBodyChoicePtr>& From, const TArray<FAerotelicBooleanOperand>& Wanted, TArray<FAerotelicBodyChoicePtr>& Out)
 	{
@@ -126,7 +127,19 @@ void ShowAerotelicLatticeDialog(AAerotelicEntityActor* Existing, TFunction<void(
 	}
 	else
 	{
-		InitialTargets = Fillable;
+		if (FillBody != nullptr && FillBody->Entity.IsValid())
+		{
+			TArray<FAerotelicBooleanOperand> Wanted;
+			Wanted.Add(*FillBody);
+			if (FillBody->Entity->IsMirrored())
+			{
+				FAerotelicBooleanOperand Other = *FillBody;
+				Other.bMirror = !FillBody->bMirror;
+				Wanted.Add(Other);
+			}
+			PickInitial(Fillable, Wanted, InitialTargets);
+		}
+		if (InitialTargets.Num() == 0) InitialTargets = Fillable;
 		InitialReserved = Reserved;
 	}
 
@@ -151,13 +164,10 @@ void ShowAerotelicLatticeDialog(AAerotelicEntityActor* Existing, TFunction<void(
 			Spec.cell_size = FMath::Max(Largest / 10.0, 1e-4);
 		}
 	}
-	// Every lattice has a solid skin (the part's outer shell, its own body
-	// "Skin"): one percent of the largest root chord to start with. A
-	// lattice saved without one gets the same default.
-	if (!(Spec.skin_thickness > 0.0))
-	{
-		Spec.skin_thickness = UAerotelicDocumentSubsystem::DefaultSkinThickness(bEdit ? ExistingModel->Targets : FillableOperands);
-	}
+	// The skin is per body, from each body's Material Properties: the spec
+	// carries no thickness of its own (the core generator's field is left
+	// at zero so the file shows none).
+	Spec.skin_thickness = 0.0;
 
 	// ---- option lists ----
 	TArray<TSharedPtr<FString>> Families = { MakeShared<FString>(TEXT("TPMS")), MakeShared<FString>(TEXT("Strut-based")), MakeShared<FString>(TEXT("Auxetic")), MakeShared<FString>(TEXT("Honeycomb")) };
@@ -172,7 +182,7 @@ void ShowAerotelicLatticeDialog(AAerotelicEntityActor* Existing, TFunction<void(
 	TSharedPtr<FString> Type = Find(Types, UTF8_TO_TCHAR(Spec.type.c_str()));
 	TSharedPtr<SComboBox<TSharedPtr<FString>>> TypeCombo, PhaseCombo;
 	TSharedPtr<SAerotelicBodyPicker> TargetPicker, ReservedPicker;
-	TSharedPtr<STextBlock> EstimateLabel;
+	TSharedPtr<STextBlock> EstimateLabel, SkinLabel;
 	TSharedPtr<SEditableTextBox> NameBox;
 	TSharedPtr<SWidget> FractionRow, WallRow, AspectRow, AxisRow, SizingRow;
 	const FString DefaultName = bEdit ? Existing->EntityName : Doc->NextLatticeName();
@@ -221,9 +231,39 @@ void ShowAerotelicLatticeDialog(AAerotelicEntityActor* Existing, TFunction<void(
 		return Out;
 	};
 
+	// What each chosen body will be hollowed by: the skin thickness of its
+	// (effective) Material Properties. One without is named: the
+	// generation will refuse it.
+	auto UpdateSkins = [&]()
+	{
+		if (!SkinLabel.IsValid()) return;
+		TArray<FString> Lines;
+		int32 Missing = 0;
+		for (const FAerotelicBooleanOperand& Op : ChosenOperands(TargetPicker))
+		{
+			if (!Op.Entity.IsValid()) continue;
+			const double T = FAerotelicLatticeModel::SkinThicknessFor(Op);
+			const AAerotelicEntityActor* Source = Op.Entity->GetMassSpecSource();
+			const FString From = Source != nullptr && Source != Op.Entity.Get() ? FString::Printf(TEXT(", inherited from %s"), *Source->EntityName) : FString();
+			Missing += T > 0.0 ? 0 : 1;
+			Lines.Add(T > 0.0
+				? FString::Printf(TEXT("%s%s: %.4g (Material Properties%s)"), *Op.Entity->EntityName, Op.bMirror ? TEXT(" (mirror)") : TEXT(""), T, *From)
+				: FString::Printf(TEXT("%s%s: NO SKIN THICKNESS -- set a material with one under Material Properties%s"), *Op.Entity->EntityName, Op.bMirror ? TEXT(" (mirror)") : TEXT(""), *From));
+		}
+		if (Lines.Num() == 0)
+		{
+			SkinLabel->SetText(LOCTEXT("NoSkins", "Skin per body: choose at least one body to fill."));
+			SkinLabel->SetColorAndOpacity(FSlateColor(FLinearColor(0.85f, 0.85f, 0.85f)));
+			return;
+		}
+		SkinLabel->SetText(FText::FromString(TEXT("Skin per body, from each body's Material Properties:\n") + FString::Join(Lines, TEXT("\n"))));
+		SkinLabel->SetColorAndOpacity(FSlateColor(Missing > 0 ? FLinearColor(1.0f, 0.6f, 0.3f) : FLinearColor(0.85f, 0.85f, 0.85f)));
+	};
+
 	// The grid the generator would use, from the chosen bodies' bounds.
 	auto UpdateEstimate = [&]()
 	{
+		UpdateSkins();
 		if (!EstimateLabel.IsValid())
 		{
 			return;
@@ -358,9 +398,10 @@ void ShowAerotelicLatticeDialog(AAerotelicEntityActor* Existing, TFunction<void(
 						+ SVerticalBox::Slot().AutoHeight().Padding(0, 2) [ SAssignNew(FractionRow, SBox) [ FormRow(LOCTEXT("Fraction", "Volume fraction:"), Spin(Spec.volume_fraction, 0.02, 0.95, 0.05, FText::GetEmpty())) ] ]
 						+ SVerticalBox::Slot().AutoHeight().Padding(0, 2) [ SAssignNew(WallRow, SBox) [ FormRow(LOCTEXT("Wall", "Wall thickness:"), Spin(Spec.wall_thickness, 1e-6, 1e9, 0.001, FText::GetEmpty())) ] ]
 						+ SVerticalBox::Slot().AutoHeight().Padding(0, 2) [ FormRow(LOCTEXT("Resolution", "Voxels per cell:"), Spin(Resolution, 2, 64, 1, FText::GetEmpty())) ]
-						+ SVerticalBox::Slot().AutoHeight().Padding(0, 2) [ FormRow(LOCTEXT("Skin", "Solid skin thickness:"), Spin(Spec.skin_thickness, 1e-6, 1e9, 0.001, FText::GetEmpty())) ]
+						+ SVerticalBox::Slot().AutoHeight().Padding(0, 4)
+						[ SAssignNew(SkinLabel, STextBlock).AutoWrapText(true).ColorAndOpacity(FSlateColor(FLinearColor(0.85f, 0.85f, 0.85f))) ]
 						+ SVerticalBox::Slot().AutoHeight().Padding(0, 4, 0, 0)
-						[ MakeInfoLabel(LOCTEXT("ParamHint", "Sizes are in model units. Volume fraction is the lattice's share of the filled volume (its level-set parameter, strut radius or honeycomb wall thickness is calibrated to it). For a honeycomb, the unit cell size is the side of a Square or Triangle, the width of a Rectangle or a Hexagon's size across the flats, and the cell aspect stretches the cross-section's second dimension by that factor (1 is the regular cell; Square ignores it). A honeycomb wall can be set by thickness instead of volume fraction, which is what a printed or bonded core is actually specified by -- whole bead widths or foil gauge -- and the achieved fraction then follows from it. Voxels per cell is the sampling resolution of the surface extraction (OpenLattice's mesh density); 8-16 is usual, more is finer and slower. The skin is the part's solid outer shell to that depth, always present (one percent of the largest root chord by default): each body is hollowed by MeshLib's inward offset of its surface (so any thickness is fine, and a concave corner is rounded from the inside), giving its own body, 'Skin', beside the 'Lattice' body -- the lattice cut to the hollowed interior by a mesh boolean -- so the two can be coloured, exported and given materials separately. Lattice > Export Skin Tetrahedra / Export Tetrahedral Mesh mesh each body with gmsh into skin and core tetrahedra whose outer faces are the body's own triangles and whose volumes sum to the body's exactly. A region thinner than two skins comes out solid. Needs MeshLib and gmsh in the WingDesigner Python environment.")) ]
+						[ MakeInfoLabel(LOCTEXT("ParamHint", "Sizes are in model units. Volume fraction is the lattice's share of the filled volume (its level-set parameter, strut radius or honeycomb wall thickness is calibrated to it). For a honeycomb, the unit cell size is the side of a Square or Triangle, the width of a Rectangle or a Hexagon's size across the flats, and the cell aspect stretches the cross-section's second dimension by that factor (1 is the regular cell; Square ignores it). A honeycomb wall can be set by thickness instead of volume fraction, which is what a printed or bonded core is actually specified by -- whole bead widths or foil gauge -- and the achieved fraction then follows from it. Voxels per cell is the sampling resolution of the surface extraction (OpenLattice's mesh density); 8-16 is usual, more is finer and slower. The skin is the part's solid outer shell, always present, and its thickness comes from each body alone: every body to fill is hollowed by the skin thickness of its own Material Properties in the Scene tree (a boolean result inherits its first operand's; a wing's skin and a boom's can differ) -- there is no figure here and no default, and a body without one is refused by name. The list shows what each chosen body gets. The lattice's struts are of the body's material too. Each body is hollowed by MeshLib's inward offset of its surface to its depth (so any thickness is fine, and a concave corner is rounded from the inside), giving its own body, 'Skin', beside the 'Lattice' body -- the lattice cut to the hollowed interior by a mesh boolean -- so the two can be coloured and exported separately. Lattice > Export Skin Tetrahedra / Export Tetrahedral Mesh mesh each body with gmsh into skin and core tetrahedra whose outer faces are the body's own triangles and whose volumes sum to the body's exactly; Analysis > Structural gives each body's shells its thickness. A region thinner than two skins comes out solid. Needs MeshLib and gmsh in the WingDesigner Python environment.")) ]
 						+ SVerticalBox::Slot().AutoHeight().Padding(0, 6, 0, 0)
 						[ SAssignNew(EstimateLabel, STextBlock).AutoWrapText(true) ])
 				]
@@ -411,11 +452,7 @@ void ShowAerotelicLatticeDialog(AAerotelicEntityActor* Existing, TFunction<void(
 		AerotelicMessageBox(EAppMsgType::Ok, LOCTEXT("NeedTarget", "Select at least one body to fill."), LOCTEXT("Title", "Generate Lattice"));
 		return;
 	}
-	if (!(Final.skin_thickness > 0.0))
-	{
-		AerotelicMessageBox(EAppMsgType::Ok, LOCTEXT("NeedSkin", "The solid skin thickness must be greater than zero: the skin is the part's outer shell."), LOCTEXT("Title", "Generate Lattice"));
-		return;
-	}
+	Final.skin_thickness = 0.0;   // per body (Material Properties), never here
 	FString Name = NameBox.IsValid() ? NameBox->GetText().ToString().TrimStartAndEnd() : FString();
 	if (Name.IsEmpty())
 	{

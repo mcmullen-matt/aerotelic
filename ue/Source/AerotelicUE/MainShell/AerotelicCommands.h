@@ -33,14 +33,13 @@ public:
 	TSharedPtr<FUICommandInfo> Airfoils;
 	TSharedPtr<FUICommandInfo> BooleanOperation;
 
-	// Lattice
-	TSharedPtr<FUICommandInfo> GenerateLattice;
-	TSharedPtr<FUICommandInfo> RegenerateLattices;
+	// Lattice exports (File menu)
 	TSharedPtr<FUICommandInfo> ExportSkinVtk;
 	TSharedPtr<FUICommandInfo> ExportTetVtk;
 
 	// Analysis
 	TSharedPtr<FUICommandInfo> MassProperties;
+	TSharedPtr<FUICommandInfo> StructuralFea;
 	TSharedPtr<FUICommandInfo> PotentialFlow;
 	TSharedPtr<FUICommandInfo> HighOrderPanel;
 	TSharedPtr<FUICommandInfo> DustVpm;

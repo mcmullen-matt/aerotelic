@@ -2,7 +2,7 @@
 #include "Widgets/MessageBox.h"
 #include "AerotelicDesignDock.h"
 #include "AerotelicTransformDialog.h"
-#include "AerotelicMassSpecDialog.h"
+#include "AerotelicMaterialDialog.h"
 
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Layout/SBox.h"
@@ -451,13 +451,56 @@ TSharedPtr<SWidget> SAerotelicSceneTree::MakeEntityMenu(FItem Item)
 			FUIAction(FExecuteAction::CreateLambda([Entity]() { if (Entity.IsValid()) OpenAerotelicTransformDialog(Entity.Get()); })));
 	}
 
-	// On every row, derived ones included: a boolean result or a lattice
-	// has a density as much as a wing does, and Analysis > Mass Properties
-	// weighs whatever is chosen by this setting.
-	Menu.AddMenuEntry(LOCTEXT("MassProperties", "Mass Properties..."),
-		LOCTEXT("MassPropertiesTip", "How this parameterisation weighs: assert its mass, or give a density for the volume it encloses. Analysis > Mass Properties then reports mass, centre and inertia."),
-		FSlateIcon(),
-		FUIAction(FExecuteAction::CreateLambda([Entity]() { if (Entity.IsValid()) OpenAerotelicMassSpecDialog(Entity.Get()); })));
+	// A lattice is made within a body one picks: this one (and its
+	// mirrored half), a boolean result included. A lattice row regenerates
+	// instead.
+	const bool bLattice = Entity->GetEntityType() == project_yaml::EntityType::Lattice;
+	if (!bLattice)
+	{
+		Menu.AddMenuEntry(LOCTEXT("GenerateLattice", "Generate Lattice"),
+			LOCTEXT("GenerateLatticeTip", "Fill this body (and its mirrored half) with a lattice -- TPMS, strut-based, auxetic or honeycomb, after OpenLattice -- hollowed by the skin thickness of its Material Properties; the dialog picks the type and the parameters, and more bodies can be added"),
+			FSlateIcon(),
+			FUIAction(FExecuteAction::CreateLambda([this, Entity]()
+			{
+				if (!Entity.IsValid()) return;
+				FAerotelicBooleanOperand Op;
+				Op.Entity = Entity;
+				ShowAerotelicLatticeDialog(nullptr, [this](const FText& T) { Status(T); }, &Op);
+			})));
+	}
+	else
+	{
+		Menu.AddMenuEntry(LOCTEXT("RegenerateLattice", "Regenerate"),
+			LOCTEXT("RegenerateLatticeTip", "Rebuild this lattice over its bodies as they now stand (a lattice already follows an Apply on its bodies; this is for one that failed to, or that was left as it was)"),
+			FSlateIcon(),
+			FUIAction(FExecuteAction::CreateLambda([this, Entity]()
+			{
+				UAerotelicDocumentSubsystem* Doc = UAerotelicDocumentSubsystem::Get();
+				if (!Entity.IsValid() || Doc == nullptr) return;
+				FString Error;
+				if (Doc->RegenerateLattice(Entity.Get(), Error))
+				{
+					Status(FText::Format(LOCTEXT("StatusRegenerated", "Regenerated {0}"), FText::FromString(Entity->EntityName)));
+				}
+				else
+				{
+					AerotelicMessageBox(EAppMsgType::Ok, FText::FromString(Error), LOCTEXT("RegenerateTitle", "Regenerate Lattice"));
+				}
+			})));
+	}
+
+	// On a parameterisation only: a boolean result or a lattice inherits
+	// what it is built on (AAerotelicEntityActor::GetEffectiveMassSpec) and
+	// has nothing of its own to set. Analysis > Mass Properties weighs by
+	// it; Analysis > Structural analyses with it; a lattice hollows by its
+	// skin thickness.
+	if (!bDerived)
+	{
+		Menu.AddMenuEntry(LOCTEXT("MaterialProperties", "Material Properties"),
+			LOCTEXT("MaterialPropertiesTip", "What this parameterisation is made of -- a material (density, Young's modulus, Poisson's ratio, allowable stress) from a preset or typed, with the skin thickness of every body it produces -- or an asserted total mass. Analysis > Mass Properties weighs by it, Analysis > Structural analyses with it, a lattice hollows by its skin thickness; boolean results and lattices built on it inherit it."),
+			FSlateIcon(),
+			FUIAction(FExecuteAction::CreateLambda([Entity]() { if (Entity.IsValid()) OpenAerotelicMaterialDialog(Entity.Get()); })));
+	}
 
 	Menu.AddMenuEntry(LOCTEXT("Color", "Color"), LOCTEXT("ColorTip", "Pick the colour every body of this entity is drawn in (the mirrored ones included)"), FSlateIcon(),
 		FUIAction(FExecuteAction::CreateLambda([this, Entity]() { if (Entity.IsValid()) PickEntityColor(Entity.Get()); })));

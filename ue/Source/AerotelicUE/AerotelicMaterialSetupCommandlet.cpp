@@ -109,7 +109,7 @@ namespace
 	// leading edge separates from the skin behind it.
 	//
 	// Four parameters, FresnelIntensity and FresnelExponent driven live by
-	// View -> Surface... (FAerotelicSurfaceStyle):
+	// View -> Surface (FAerotelicSurfaceStyle):
 	//   FresnelIntensity   how bright the rim is; 0 switches the sheen off
 	//                      and leaves the plain lit shading.
 	//   FresnelExponent    the falloff; 1 washes the whole body, 8 is a
@@ -172,7 +172,7 @@ namespace
 	}
 
 	// M_AerotelicSurface: the lit body surface. Color, Metallic, Specular
-	// and Roughness parameters (View -> Surface...), a Fresnel sheen on the
+	// and Roughness parameters (View -> Surface), a Fresnel sheen on the
 	// emissive output (AddFresnelSheen), two sided, the section clip, and a
 	// darker tint on back faces so a cut body reads as a shell seen from
 	// inside (WingDesigner caps the cut instead; the engine has no capping,

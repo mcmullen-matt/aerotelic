@@ -65,6 +65,7 @@ add_library(aerotelic_core STATIC
 	src/dust_case.cpp
 	src/mass_properties.cpp
 	src/units.cpp
+	src/materials.cpp
 	# Shewchuk's exact geometric predicates (public domain), compiled as C
 	# with strict IEEE rounding: the adaptive arithmetic is defeated by
 	# fast-math style reassociation.
@@ -91,6 +92,11 @@ foreach(lib TKernel TKMath TKG2d TKG3d TKGeomBase TKGeomAlgo TKBRep TKTopAlgo
 		TKDE TKXSBase TKDESTEP TKCDF TKLCAF TKXCAF TKVCAF TKV3d TKService)
 	target_link_libraries(aerotelic_step_writer PRIVATE "${OCCT_ROOT}/lib/${lib}.lib")
 endforeach()
+
+# Voxelises one period of a lattice for ue/tools/homogenize_check.py (see
+# src/tools/lattice_cell.cpp); the application samples in-process.
+add_executable(aerotelic_lattice_cell src/tools/lattice_cell.cpp)
+target_link_libraries(aerotelic_lattice_cell PRIVATE aerotelic_core)
 
 add_executable(step_writer_check tests/step_writer_check.cpp)
 target_link_libraries(step_writer_check PRIVATE aerotelic_core)

@@ -2,7 +2,7 @@
 
 #include "CoreMinimal.h"
 
-// Analysis -> DUST (Vortex Particle Method)...: writes a complete DUST
+// Analysis -> DUST (Vortex Particle Method): writes a complete DUST
 // case for the chosen bodies. The same two-list body picker the Boolean,
 // export and Potential Flow dialogs use answers "which geometry", and
 // the rest of the dialog configures the parts of DUST this interface

@@ -32,4 +32,12 @@ namespace AerotelicMeshing
 	void ToProceduralMesh(const aerotelic::TriMesh& Mesh, TArray<FVector>& OutVertices, TArray<int32>& OutTriangles, TArray<FVector>& OutNormals);
 
 	FBox BoundsOf(const aerotelic::TriMesh& Mesh);
+
+	// The connected shells of a mesh, each as its own mesh with only the
+	// vertices it uses, largest enclosed volume first. Vertices within
+	// WeldTolerance of one another count as one for the connectivity (a
+	// mesh boolean can leave a seam's vertices doubled), though each shell
+	// keeps the vertices as they are. A boolean result that fused a wing
+	// and its flap, which never touch, comes out as two shells.
+	std::vector<aerotelic::TriMesh> SplitShells(const aerotelic::TriMesh& Mesh, double WeldTolerance);
 }

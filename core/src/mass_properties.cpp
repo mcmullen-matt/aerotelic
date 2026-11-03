@@ -70,7 +70,7 @@ const char* MassModeName(MassMode m) {
 	switch (m) {
 		case MassMode::Unset: return "unset";
 		case MassMode::Asserted: return "asserted";
-		case MassMode::Density: return "density";
+		case MassMode::Material: return "material";
 	}
 	return "unset";
 }
@@ -80,8 +80,10 @@ MassMode ParseMassMode(const std::string& s) {
 	for (char c : s) l += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
 	if (l == "unset" || l.empty()) return MassMode::Unset;
 	if (l == "asserted") return MassMode::Asserted;
-	if (l == "density") return MassMode::Density;
-	throw std::invalid_argument("unknown mass mode '" + s + "' (expected unset, asserted or density)");
+	// "density" is what the mode was called before it carried a whole
+	// material (2026-10-22, the same day); the files that wrote it are read.
+	if (l == "material" || l == "density") return MassMode::Material;
+	throw std::invalid_argument("unknown mass mode '" + s + "' (expected unset, asserted or material)");
 }
 
 MassProperties SolidMassProperties(const TriMesh& mesh, double density) {
@@ -123,6 +125,15 @@ MassProperties ShellMassProperties(const TriMesh& mesh, double mass) {
 	}
 	const double areal_density = m.measure > 0.0 ? mass / m.measure : 0.0;
 	return Resolve(m, areal_density, mesh.SignedVolume(), m.measure);
+}
+
+MassProperties SkinMassProperties(const TriMesh& mesh, double density, double thickness) {
+	// The same shell integrals with the areal density rho t; the volume
+	// reported is the material's.
+	const double area = mesh.SurfaceArea();
+	MassProperties p = ShellMassProperties(mesh, density * thickness * area);
+	p.volume = area * thickness;
+	return p;
 }
 
 InertiaTensor InertiaAbout(const MassProperties& p, const Vec3& point) {

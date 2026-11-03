@@ -2,7 +2,7 @@
 
 #include "CoreMinimal.h"
 
-// Analysis -> Potential Flow (Kratos)...: pick the geometry the flow is to
+// Analysis -> Potential Flow (Kratos): pick the geometry the flow is to
 // be computed around with the same two-list picker the Boolean Operation
 // dialog uses (every entity, the mirrored half of each mirrored one, every
 // boolean result), set the free stream and the size of the air around it,

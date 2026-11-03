@@ -132,12 +132,31 @@ public:
 
 	// ---- mass ----
 
-	// How this parameterisation weighs (the Scene tree's Mass Properties
-	// dialog): an asserted total spread over its surface, or a density
-	// times its enclosed volume. Per entity, not per body; saved with it.
-	// Unset means Analysis -> Mass Properties leaves it out and says so.
-	void SetMassSpec(const aerotelic::MassSpec& InSpec) { MassSpec = InSpec; }
+	// What this parameterisation is made of (the Scene tree's Material
+	// Properties dialog): an asserted total spread over its surface, a
+	// material's density times its enclosed volume, or that density over a
+	// skin of the given thickness on every body. Per entity, not per body;
+	// saved with it. Unset means Analysis -> Mass Properties leaves it out
+	// and says so.
+	//
+	// A PARAMETERISATION's own, only. A derived entity -- a boolean result
+	// or a lattice -- never carries one and has no Material Properties
+	// menu: it INHERITS from what it is built on (2026-10-31), the first
+	// operand or the first filled body, through GetEffectiveMassSpec, which
+	// is what every analysis reads. There is no global default anywhere: a
+	// lattice hollows each body by that body's own skin thickness and takes
+	// its material for the struts.
+	void SetMassSpec(const aerotelic::MassSpec& InSpec) { if (!IsDerived()) MassSpec = InSpec; }
 	const aerotelic::MassSpec& GetMassSpec() const { return MassSpec; }
+	// Built on other entities (a boolean result, a lattice): inherits.
+	bool IsDerived() const;
+	// The spec that applies: its own for a parameterisation; the first
+	// operand's (recursively) for a boolean result; the first filled body's
+	// for a lattice. Unset where the chain ends on nothing.
+	aerotelic::MassSpec GetEffectiveMassSpec() const;
+	// The entity the effective spec comes from (this one for a
+	// parameterisation), or null.
+	const AAerotelicEntityActor* GetMassSpecSource() const;
 
 	// ---- surface finish, style, section ----
 

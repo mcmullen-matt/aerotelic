@@ -2,7 +2,7 @@
 
 #include "CoreMinimal.h"
 
-// Analysis -> Mass Properties...: pick scene bodies with the same two-list
+// Analysis -> Mass Properties: pick scene bodies with the same two-list
 // picker the Boolean Operation, export and flow dialogs use, mesh them at
 // a chosen tolerance, and report the mass, centre of mass and inertia of
 // each and of the assembly (Entity/AerotelicMassProperties.h). Each

@@ -81,7 +81,8 @@ namespace
 	}
 }
 
-FAerotelicMassReport ComputeAerotelicMassReport(const TArray<FAerotelicBooleanOperand>& Bodies, double Tolerance)
+FAerotelicMassReport ComputeAerotelicMassReport(const TArray<FAerotelicBooleanOperand>& Bodies, double Tolerance,
+	const aerotelic::UnitSystem& Units)
 {
 	FAerotelicMassReport Report;
 	Report.Tolerance = Tolerance;
@@ -99,7 +100,17 @@ FAerotelicMassReport ComputeAerotelicMassReport(const TArray<FAerotelicBooleanOp
 			continue;
 		}
 		const FString Suffix = Op.bMirror ? TEXT(" (mirror)") : TEXT("");
-		const aerotelic::MassSpec& Spec = Entity->GetMassSpec();
+		// A derived entity inherits (the first operand's / first filled
+		// body's). A lattice's two bodies -- the hollowed shell and the
+		// struts -- are real solids, so its inherited skin thickness does
+		// not apply to them: they weigh by density over their volume.
+		aerotelic::MassSpec Spec = Entity->GetEffectiveMassSpec();
+		const AAerotelicEntityActor* Source = Entity->GetMassSpecSource();
+		const FString Inherited = Source != nullptr && Source != Entity ? FString::Printf(TEXT("inherited from %s"), *Source->EntityName) : FString();
+		if (Entity->GetEntityType() == aerotelic::project_yaml::EntityType::Lattice)
+		{
+			Spec.skin_thickness = 0.0;
+		}
 		const std::vector<aerotelic::NamedMesh> Meshes = Entity->GetPlacedMeshes(Op.bMirror, Tolerance);
 		if (Meshes.empty())
 		{
@@ -130,14 +141,30 @@ FAerotelicMassReport ComputeAerotelicMassReport(const TArray<FAerotelicBooleanOp
 			switch (Spec.mode)
 			{
 			case MassMode::Unset:
-				Line.Note = TEXT("no mass properties assigned (Scene tree > Mass Properties...)");
+				Line.Note = Inherited.IsEmpty() ? TEXT("no material assigned (Scene tree > Material Properties)")
+					: FString::Printf(TEXT("no material assigned on %s, which it inherits from (Scene tree > Material Properties)"), *Source->EntityName);
 				break;
-			case MassMode::Density:
-				Line.Props = aerotelic::SolidMassProperties(M.mesh, Spec.density);
+			case MassMode::Material:
+				if (!Spec.material.HasDensity())
+				{
+					Line.Note = TEXT("the material has no density (Scene tree > Material Properties)");
+					break;
+				}
+				// The material's density is SI; the mesh is in project units.
+				if (Spec.IsSkin())
+				{
+					// A skin of the material: every body of the entity is a shell
+					// of the thickness, rho t A; open or closed alike.
+					Line.Props = aerotelic::SkinMassProperties(M.mesh, Spec.material.density / Units.DensityToSI(), Spec.skin_thickness);
+					Line.bIncluded = true;
+					Line.Note = FString::Printf(TEXT("skin %.4g %s thick"), Spec.skin_thickness, UTF8_TO_TCHAR(Units.LengthName()));
+					break;
+				}
+				Line.Props = aerotelic::SolidMassProperties(M.mesh, Spec.material.density / Units.DensityToSI());
 				Line.bIncluded = true;
 				if (!M.mesh.IsClosedManifold())
 				{
-					Line.Note = TEXT("open surface: the enclosed volume, and so this mass, is not well defined -- assert the mass instead");
+					Line.Note = TEXT("open surface: the enclosed volume, and so this mass, is not well defined -- give the material a skin thickness or assert the mass instead");
 				}
 				break;
 			case MassMode::Asserted:
@@ -153,6 +180,7 @@ FAerotelicMassReport ComputeAerotelicMassReport(const TArray<FAerotelicBooleanOp
 			{
 				Included.push_back(Line.Props);
 				++Report.IncludedCount;
+				if (!Inherited.IsEmpty()) Line.Note += (Line.Note.IsEmpty() ? TEXT("") : TEXT("; ")) + Inherited;
 			}
 			Report.Bodies.Add(Line);
 		}

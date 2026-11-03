@@ -2,10 +2,17 @@
 
 #include "Entity/AerotelicDocumentSubsystem.h"
 #include "Entity/AerotelicEntityActor.h"
+#include "Entity/AerotelicBooleanModel.h"
+#include "Entity/AerotelicMeshLib.h"
+#include "Entity/AerotelicStructuralFea.h"
+#include "Entity/AerotelicFeaPreprocess.h"
 #include "Entity/ReferenceImagePaths.h"
+#include "HAL/FileManager.h"
+#include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 
 #include "aerotelic/fuselage_model.hpp"
+#include "aerotelic/materials.hpp"
 
 DEFINE_LOG_CATEGORY_STATIC(LogAerotelicRealProjectTest, Log, All);
 
@@ -18,6 +25,82 @@ namespace
 		if (bCond) { ++g_pass; return; }
 		++g_fail;
 		UE_LOG(LogAerotelicRealProjectTest, Error, TEXT("FAIL: %s"), *Msg);
+	}
+
+	// The per-cell von Mises the solver wrote to its legacy VTK
+	// ("SCALARS von_mises_element double 1" under CELL_DATA), one per
+	// element in the model's order: the tetrahedra, then the shells.
+	bool ReadVtkCellVonMises(const FString& Path, TArray<double>& Out)
+	{
+		TArray<FString> Lines;
+		if (!FFileHelper::LoadFileToStringArray(Lines, *Path)) return false;
+		int32 Count = -1;
+		for (int32 i = 0; i < Lines.Num(); ++i)
+		{
+			if (Lines[i].StartsWith(TEXT("CELL_DATA ")))
+			{
+				Count = FCString::Atoi(*Lines[i].Mid(10));
+			}
+			else if (Count > 0 && Lines[i].StartsWith(TEXT("SCALARS von_mises_element")))
+			{
+				Out.Reset();
+				for (int32 j = i + 2; j < Lines.Num() && Out.Num() < Count; ++j) Out.Add(FCString::Atod(*Lines[j]));
+				return Out.Num() == Count;
+			}
+		}
+		return false;
+	}
+
+	// The thin-walled section of a closed shell surface cut by the plane
+	// y = Station: every triangle crossing it gives a segment, and the
+	// skin's second moment about the section's own centroid in z (with
+	// its extreme fibre) follows from the segments as t ds. Beam theory's
+	// bending stress at the station is then M z_max / I.
+	struct FSection
+	{
+		double I = 0.0;        // t-weighted second moment about zc, project units^4
+		double ZCentroid = 0.0;
+		double ZMax = 0.0;     // the largest |z - zc|
+		int32 Segments = 0;
+	};
+	FSection CutSection(const aerotelic::TriMesh& Mesh, double Station, double Thickness)
+	{
+		struct FSeg { double Z0, Z1, L; };
+		TArray<FSeg> Segs;
+		for (const auto& T : Mesh.triangles)
+		{
+			const aerotelic::Vec3* P[3] = { &Mesh.vertices[T[0]], &Mesh.vertices[T[1]], &Mesh.vertices[T[2]] };
+			TArray<aerotelic::Vec3> Hits;
+			for (int32 e = 0; e < 3; ++e)
+			{
+				const aerotelic::Vec3& A = *P[e];
+				const aerotelic::Vec3& B = *P[(e + 1) % 3];
+				const double Da = A.y - Station, Db = B.y - Station;
+				if ((Da < 0.0) != (Db < 0.0))
+				{
+					const double S = Da / (Da - Db);
+					Hits.Add(A + (B - A) * S);
+				}
+			}
+			if (Hits.Num() == 2)
+			{
+				const double L = aerotelic::Length(Hits[1] - Hits[0]);
+				if (L > 0.0) Segs.Add({ Hits[0].z, Hits[1].z, L });
+			}
+		}
+		FSection S;
+		double Sum = 0.0, First = 0.0;
+		for (const FSeg& G : Segs) { Sum += Thickness * G.L; First += Thickness * G.L * 0.5 * (G.Z0 + G.Z1); }
+		if (!(Sum > 0.0)) return S;
+		S.ZCentroid = First / Sum;
+		for (const FSeg& G : Segs)
+		{
+			const double Zm = 0.5 * (G.Z0 + G.Z1) - S.ZCentroid, Dz = G.Z1 - G.Z0;
+			S.I += Thickness * G.L * (Zm * Zm + Dz * Dz / 12.0);
+			S.ZMax = FMath::Max(S.ZMax, FMath::Max(FMath::Abs(G.Z0 - S.ZCentroid), FMath::Abs(G.Z1 - S.ZCentroid)));
+		}
+		S.Segments = Segs.Num();
+		return S;
 	}
 }
 
@@ -115,6 +198,171 @@ int32 UAerotelicRealProjectTestCommandlet::Main(const FString& Params)
 	Check(Doc->OpenProjectPath(TempPath), "reopened the saved copy");
 	Check(Doc->GetEntities().Num() == 7, FString::Printf(TEXT("reopened entity count is 7 (got %d)"), Doc->GetEntities().Num()));
 	CheckState(TEXT("after save+reload"));
+
+	// A wing-tip test load on the P-38 (Matt, 2026-10-31: "the stress
+	// combinations look reasonable on one side but should be near zero for
+	// the unloaded side"). ue/Projects/p38a.yaml fuses the whole airframe
+	// into BoolOp 1; that boolean alone -- not its operands beside it,
+	// which would float free of the support -- is analysed as a thin-walled
+	// shell of aluminium, clamped on the centre nacelle's ring at y = 0, a
+	// point force down on the starboard wing tip and no other load. Held
+	// to: the reactions equal the load; the port wing's outer panel reads
+	// nothing; along the starboard outer panel (clear of the boom) the peak
+	// skin stress is beam theory's M z / I of the actual section.
+	UE_LOG(LogAerotelicRealProjectTest, Display, TEXT("step: p38a wing-tip load"));
+	const FString P38a = FPaths::Combine(FPaths::ProjectDir(), TEXT("Projects"), TEXT("p38a.yaml"));
+	if (AerotelicStructuralFea::FindScript().IsEmpty() || AerotelicMeshLib::FindPython().IsEmpty())
+	{
+		UE_LOG(LogAerotelicRealProjectTest, Display, TEXT("skipped: tools\\structural_fea.py or the WingDesigner environment is not here"));
+	}
+	else if (Doc->OpenProjectPath(P38a, /*bAdopt*/ false))
+	{
+		AAerotelicEntityActor* Bool = Find(TEXT("BoolOp 1"));
+		AAerotelicEntityActor* Wing = Find(TEXT("Wing"));
+		AAerotelicEntityActor* Boom = Find(TEXT("Boom"));
+		Check(Bool != nullptr && Bool->GetEntityType() == aerotelic::project_yaml::EntityType::Boolean && Wing != nullptr && Boom != nullptr, "p38a: BoolOp 1, Wing and Boom are present");
+		// The airframe's material, on every parameterisation (the file
+		// carries none): 2024-T3, 5 mm skins. The boolean inherits Center's.
+		const double Thickness = 0.005;
+		for (auto& Weak : Doc->GetEntities())
+		{
+			if (!Weak.IsValid() || Weak->IsDerived()) continue;
+			aerotelic::MassSpec Spec;
+			Spec.mode = aerotelic::MassMode::Material;
+			Spec.material = *aerotelic::FindMaterialPreset("Aluminium 2024-T3");
+			Spec.skin_thickness = Thickness;
+			Weak->SetMassSpec(Spec);
+		}
+		if (Bool != nullptr && Wing != nullptr && Boom != nullptr)
+		{
+			Check(Bool->GetMassSpecSource() == Find(TEXT("Center")) && FMath::IsNearlyEqual(Bool->GetEffectiveMassSpec().skin_thickness, Thickness, 1e-12),
+				"p38a: the boolean inherits Center's material and skin thickness");
+			const std::vector<aerotelic::NamedMesh> Placed = Bool->GetPlacedMeshes(false, 2e-3);
+			bool bClosed = Placed.size() >= 1;
+			for (const aerotelic::NamedMesh& NM : Placed) bClosed = bClosed && NM.mesh.IsClosedManifold() && NM.mesh.SignedVolume() > 0.0;
+			Check(bClosed, FString::Printf(TEXT("p38a: the fused airframe is %d closed, outward body(ies)"), (int32)Placed.size()));
+			// The biggest solid is the airframe; a floating remnant (a
+			// payload cylinder the fuse did not swallow) is left out, as the
+			// dialog's floating check would have the user do.
+			int32 Main = -1;
+			double MainVolume = 0.0;
+			for (int32 i = 0; i < (int32)Placed.size(); ++i)
+			{
+				const double V = Placed[i].mesh.SignedVolume();
+				if (V > MainVolume) { MainVolume = V; Main = i; }
+			}
+			if (Main >= 0)
+			{
+				const aerotelic::TriMesh& Airframe = Placed[Main].mesh;
+				aerotelic::TetMesh ShellMesh;
+				ShellMesh.nodes = Airframe.vertices;
+				AerotelicStructuralFea::FRequest Request;
+				Request.Mesh = &ShellMesh;
+				for (const auto& T : Airframe.triangles)
+				{
+					AerotelicStructuralFea::FShellFace F;
+					F.N[0] = T[0]; F.N[1] = T[1]; F.N[2] = T[2];
+					F.Region = 1;
+					Request.ShellFaces.Add(F);
+				}
+				AerotelicStructuralFea::FRegion Region;
+				Region.Id = 1;
+				Region.Label = TEXT("airframe");
+				Region.Skin = Bool->GetEffectiveMassSpec().material;
+				Region.SkinThickness = Bool->GetEffectiveMassSpec().skin_thickness;
+				Request.Regions.Add(Region);
+				Request.LengthToSI = 1.0;
+				// The starboard tip: the node furthest along +y. The force
+				// down, 5 kN; nothing else.
+				int32 Tip = 0;
+				for (int32 n = 1; n < (int32)Airframe.vertices.size(); ++n) if (Airframe.vertices[n].y > Airframe.vertices[Tip].y) Tip = n;
+				const aerotelic::Vec3 TipAt = Airframe.vertices[Tip];
+				const double Force = 5000.0;
+				AerotelicStructuralFea::FPointForce TipLoad;
+				TipLoad.At = TipAt;
+				TipLoad.Force = aerotelic::Vec3{ 0.0, 0.0, -Force };
+				Request.PointForces.Add(TipLoad);
+				Request.LoadFactor = 0.0;
+				Request.Pressure = 0.0;
+				AerotelicStructuralFea::FSupport Centre;
+				Centre.Axis = TEXT('y');
+				Centre.Value = 0.0;
+				Centre.Tolerance = 0.05;
+				Request.Supports.Add(Centre);
+				Request.LinearSolver = TEXT("sparse_lu");
+				Request.VtkPath = FPaths::Combine(FPlatformProcess::UserTempDir(), TEXT("aerotelic_real_project_test_p38a.vtk"));
+				IFileManager::Get().Delete(*Request.VtkPath, false, true, true);
+
+				AerotelicFeaPreprocess::FModel Pre;
+				FString PreError;
+				const bool bPre = AerotelicFeaPreprocess::Build(Request, Pre, PreError);
+				Check(bPre && Pre.SupportNodes.Num() >= 3 && Pre.FloatingRegions.Num() == 0,
+					FString::Printf(TEXT("p38a: the airframe is one piece on the support (%d fixed nodes at y = 0, %d pieces, %d floating; %s)"), bPre ? Pre.SupportNodes.Num() : -1, bPre ? Pre.Components : -1, bPre ? Pre.FloatingRegions.Num() : -1, *PreError));
+				Check(bPre && Pre.PointLoads.Num() == 1 && Pre.PointLoads[0].Node == Tip, "p38a: the point force goes to the tip node");
+				const double YTip = TipAt.y;
+				const FBox BoomBounds = Boom->GetPlacedBounds(false);
+				const double YBoom = BoomBounds.IsValid ? BoomBounds.Max.Y : 0.3 * YTip;   // the outer panel starts outboard of the boom
+				UE_LOG(LogAerotelicRealProjectTest, Display, TEXT("p38a: %d nodes, %d shells; tip at (%.3f, %.3f, %.3f); boom to y = %.3f; %d fixed nodes"),
+					(int32)Airframe.vertices.size(), (int32)Airframe.triangles.size(), TipAt.x, TipAt.y, TipAt.z, YBoom, bPre ? Pre.SupportNodes.Num() : -1);
+
+				AerotelicStructuralFea::FResult R;
+				FString Error;
+				const bool bSolved = AerotelicStructuralFea::Run(Request, R, Error);
+				Check(bSolved, FString::Printf(TEXT("p38a: the airframe solved under the tip load (%s)"), bSolved ? *FString::Printf(TEXT("%d nodes, %d shells, %d dof, %.1f s"), R.Nodes, R.Shells, R.Dofs, R.Seconds) : *Error));
+				if (bSolved)
+				{
+					Check(FMath::Abs(R.Reaction[2] - Force) <= 0.02 * Force && FMath::Abs(R.Reaction[0]) <= 0.02 * Force && FMath::Abs(R.Reaction[1]) <= 0.02 * Force,
+						FString::Printf(TEXT("p38a: the clamp reacts the tip load and nothing else (reactions %.4g, %.4g, %.4g N against %.4g)"), R.Reaction[0], R.Reaction[1], R.Reaction[2], Force));
+					// A skin-only airframe is very compliant where the outer wing's
+					// moment enters the nacelle cowl (no spar carries through), so
+					// the tip moves metres under 5 kN: a linear analysis reports it
+					// as such. What is checked is that it is at the tip and finite.
+					Check(R.MaxDisplacement > 0.0 && FMath::IsFinite(R.MaxDisplacement) && FMath::Abs(R.MaxDisplacementAt[1] - YTip) < 0.1 * YTip,
+						FString::Printf(TEXT("p38a: the largest displacement is at the loaded tip and finite (%.4g m at y = %.3f)"), R.MaxDisplacement, R.MaxDisplacementAt[1]));
+					TArray<double> VonMises;
+					const bool bVtk = ReadVtkCellVonMises(Request.VtkPath, VonMises) && VonMises.Num() == static_cast<int32>(Airframe.triangles.size());
+					Check(bVtk, FString::Printf(TEXT("p38a: the VTK holds a von Mises per shell (%d of %d)"), VonMises.Num(), (int32)Airframe.triangles.size()));
+					if (bVtk)
+					{
+						// Per shell: its centroid's y (the shells are the
+						// airframe's triangles, in order).
+						TArray<double> Yc;
+						Yc.Reserve(VonMises.Num());
+						for (const auto& T : Airframe.triangles) Yc.Add((Airframe.vertices[T[0]].y + Airframe.vertices[T[1]].y + Airframe.vertices[T[2]].y) / 3.0);
+						// The loaded outer panel against beam theory at three
+						// stations between the boom and the tip.
+						double Worst = 0.0, LoadedPeak = 0.0;
+						const double Panel = YTip - YBoom;
+						for (double Eta : { 0.3, 0.5, 0.7 })
+						{
+							const double Station = YBoom + Eta * Panel;
+							const FSection Sec = CutSection(Airframe, Station, Thickness);
+							const double Moment = Force * (YTip - Station);
+							const double Predicted = Sec.I > 0.0 ? Moment * Sec.ZMax / Sec.I : 0.0;
+							double Measured = 0.0;
+							for (int32 i = 0; i < VonMises.Num(); ++i) if (FMath::Abs(Yc[i] - Station) < 0.03 * Panel) Measured = FMath::Max(Measured, VonMises[i]);
+							const double Ratio = Predicted > 0.0 ? Measured / Predicted : 0.0;
+							Worst = FMath::Max(Worst, FMath::Abs(FMath::Loge(FMath::Max(Ratio, 1e-9))));
+							UE_LOG(LogAerotelicRealProjectTest, Display, TEXT("p38a: station y = %.3f (eta %.1f): section %d segments, I = %.4g m^4, z_max = %.4g m, M = %.4g N m -> beam theory %.4g Pa; FEA peak within the band %.4g Pa (ratio %.2f)"),
+								Station, Eta, Sec.Segments, Sec.I, Sec.ZMax, Moment, Predicted, Measured, Ratio);
+							Check(Ratio > 0.6 && Ratio < 1.7, FString::Printf(TEXT("p38a: at eta %.1f of the outer panel the skin's peak von Mises is beam theory's M z / I within reason (FEA %.4g vs %.4g Pa, ratio %.2f)"), Eta, Measured, Predicted, Ratio));
+						}
+						for (int32 i = 0; i < VonMises.Num(); ++i) if (Yc[i] > YBoom + 0.3 * Panel) LoadedPeak = FMath::Max(LoadedPeak, VonMises[i]);
+						// The unloaded (port) outer panel: nothing to speak of.
+						double UnloadedPeak = 0.0;
+						for (int32 i = 0; i < VonMises.Num(); ++i) if (Yc[i] < -(YBoom + 0.3 * Panel)) UnloadedPeak = FMath::Max(UnloadedPeak, VonMises[i]);
+						Check(LoadedPeak > 0.0 && UnloadedPeak < 0.02 * LoadedPeak,
+							FString::Printf(TEXT("p38a: the unloaded wing's outer panel reads nothing against the loaded one (%.4g vs %.4g Pa)"), UnloadedPeak, LoadedPeak));
+					}
+					IFileManager::Get().Delete(*Request.VtkPath, false, true, true);
+				}
+			}
+		}
+	}
+	else
+	{
+		Check(false, "p38a: ue/Projects/p38a.yaml opens");
+	}
 
 	UE_LOG(LogAerotelicRealProjectTest, Display, TEXT("RESULT: %d passed, %d failed"), g_pass, g_fail);
 	return g_fail == 0 ? 0 : 1;

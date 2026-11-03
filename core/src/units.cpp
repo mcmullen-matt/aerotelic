@@ -32,6 +32,35 @@ const char* MassUnitName(MassUnit u) {
 	return "kg";
 }
 
+const char* StressUnitName(StressUnit u) {
+	switch (u) {
+		case StressUnit::Pascal: return "Pa";
+		case StressUnit::Megapascal: return "MPa";
+		case StressUnit::Psi: return "psi";
+		case StressUnit::Ksi: return "ksi";
+	}
+	return "Pa";
+}
+
+StressUnit ParseStressUnit(const std::string& s) {
+	const std::string l = Lower(s);
+	if (l == "pa" || l == "pascal" || l == "pascals") return StressUnit::Pascal;
+	if (l == "mpa" || l == "megapascal" || l == "megapascals") return StressUnit::Megapascal;
+	if (l == "psi") return StressUnit::Psi;
+	if (l == "ksi") return StressUnit::Ksi;
+	throw std::invalid_argument("unknown stress unit '" + s + "' (expected Pa, MPa, psi or ksi)");
+}
+
+double UnitSystem::StressToSI() const {
+	switch (stress) {
+		case StressUnit::Pascal: return 1.0;
+		case StressUnit::Megapascal: return 1.0e6;
+		case StressUnit::Psi: return 6894.757293168;
+		case StressUnit::Ksi: return 6894757.293168;
+	}
+	return 1.0;
+}
+
 LengthUnit ParseLengthUnit(const std::string& s) {
 	const std::string l = Lower(s);
 	if (l == "m" || l == "metre" || l == "metres" || l == "meter" || l == "meters") return LengthUnit::Metre;

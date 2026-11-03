@@ -39,7 +39,7 @@ int main() {
 		Check(si.length == LengthUnit::Metre && si.mass == MassUnit::Kilogram, "the default is metres and kilograms");
 		CheckClose(si.LengthToSI(), 1.0, 0.0, "m -> m is 1");
 		CheckClose(si.DensityToSI(), 1.0, 0.0, "kg/m^3 -> SI is 1");
-		Check(si.Describe() == "m, kg, s", "SI describes as m, kg, s");
+		Check(si.Describe() == "m, kg, s, Pa", "SI describes as m, kg, s, Pa");
 		Check(std::string(si.StepUnitName()) == "M", "SI writes STEP in M");
 
 		UnitSystem imperial;
@@ -56,7 +56,7 @@ int main() {
 		CheckClose(imperial.InertiaToSI(), 0.45359237 * 0.3048 * 0.3048, 1e-15, "lbm ft^2 -> kg m^2");
 		Check(imperial.DensityName() == "lbm/ft^3" && imperial.InertiaName() == "lbm ft^2" && imperial.SpeedName() == "ft/s",
 			"compound names follow the base units");
-		Check(imperial.Describe() == "ft, lbm, s", "imperial describes as ft, lbm, s");
+		Check(imperial.Describe() == "ft, lbm, s, Pa", "feet and pounds with the default stress unit describe as ft, lbm, s, Pa");
 		Check(std::string(imperial.StepUnitName()) == "FT", "feet write STEP in FT");
 
 		// Air at sea level, the number the flow dialogs will show in each system.
@@ -83,6 +83,26 @@ int main() {
 		for (MassUnit u : {MassUnit::Kilogram, MassUnit::PoundMass}) {
 			Check(ParseMassUnit(MassUnitName(u)) == u, std::string("mass name round-trips: ") + MassUnitName(u));
 		}
+		// Stress is its own axis.
+		UnitSystem us_aero = imperial;
+		us_aero.stress = StressUnit::Psi;
+		CheckClose(us_aero.StressToSI(), 6894.757293168, 0.0, "a psi is 6894.757293168 Pa exactly");
+		UnitSystem ksi = us_aero;
+		ksi.stress = StressUnit::Ksi;
+		CheckClose(ksi.StressToSI(), 6894757.293168, 1e-6, "a ksi is a thousand psi");
+		UnitSystem mpa;
+		mpa.stress = StressUnit::Megapascal;
+		CheckClose(mpa.StressToSI(), 1.0e6, 0.0, "a MPa");
+		CheckClose(73.1e9 / us_aero.StressToSI(), 10.6e6, 0.01e6, "2024-T3's 73.1 GPa reads 10.6 Msi");
+		Check(us_aero.Describe() == "ft, lbm, s, psi" && si.Describe() == "m, kg, s, Pa", "the stress unit is part of the description");
+		Check(us_aero != imperial, "a different stress unit is a different system");
+		Check(ParseStressUnit("PSI") == StressUnit::Psi && ParseStressUnit("MPa") == StressUnit::Megapascal
+			&& ParseStressUnit("pascals") == StressUnit::Pascal && ParseStressUnit("ksi") == StressUnit::Ksi, "stress unit spellings");
+		for (StressUnit u : {StressUnit::Pascal, StressUnit::Megapascal, StressUnit::Psi, StressUnit::Ksi}) {
+			Check(ParseStressUnit(StressUnitName(u)) == u, std::string("stress name round-trips: ") + StressUnitName(u));
+		}
+		Check(Throws([] { ParseStressUnit("bar"); }), "bar is refused (not offered)");
+
 		Check(Throws([] { ParseLengthUnit("inch"); }), "inches are refused (not offered)");
 		Check(Throws([] { ParseMassUnit("slug"); }), "slugs are refused (the user types lbm; SI is what the codes get)");
 		CheckTimeUnit("s");

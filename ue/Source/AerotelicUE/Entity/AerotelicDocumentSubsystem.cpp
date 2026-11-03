@@ -718,29 +718,6 @@ FString UAerotelicDocumentSubsystem::NextLatticeName() const
 	return Candidate;
 }
 
-double UAerotelicDocumentSubsystem::DefaultSkinThickness(const TArray<FAerotelicBooleanOperand>& Targets)
-{
-	double LargestRootChord = 0.0, LargestExtent = 0.0;
-	for (const FAerotelicBooleanOperand& Op : Targets)
-	{
-		if (!Op.Entity.IsValid())
-		{
-			continue;
-		}
-		if (Op.Entity->GetEntityType() == EntityType::Wing)
-		{
-			LargestRootChord = FMath::Max(LargestRootChord, Op.Entity->GetModelAs<WingModel>()->planform().RootChord());
-		}
-		const FBox Bounds = Op.Entity->GetPlacedBounds(Op.bMirror);
-		if (Bounds.IsValid)
-		{
-			LargestExtent = FMath::Max(LargestExtent, (double)Bounds.GetSize().GetMax());
-		}
-	}
-	const double Reference = LargestRootChord > 0.0 ? LargestRootChord : LargestExtent;
-	return FMath::Max(0.01 * Reference, 1e-4);
-}
-
 AAerotelicEntityActor* UAerotelicDocumentSubsystem::AddLattice(const FString& Name, const aerotelic::LatticeSpec& Spec,
 	const TArray<FAerotelicBooleanOperand>& Targets, const TArray<FAerotelicBooleanOperand>& Exclusions, FString& OutError)
 {
@@ -1281,7 +1258,8 @@ bool UAerotelicDocumentSubsystem::OpenProjectPath(const FString& InPath, bool bA
 			continue;
 		}
 		Actor->RefreshProxy();
-		Actor->SetMassSpec(B.mass);
+		// A `mass:` on a boolean in an older file is ignored: it inherits
+		// its first operand's.
 		if (B.color)
 		{
 			Actor->SetColorOverride(FLinearColor((float)(*B.color)[0], (float)(*B.color)[1], (float)(*B.color)[2]));
@@ -1341,20 +1319,17 @@ bool UAerotelicDocumentSubsystem::OpenProjectPath(const FString& InPath, bool bA
 		Resolve(L.targets, Targets);
 		if (Error.IsEmpty()) Resolve(L.exclusions, Exclusions);
 		const FString Name = UTF8_TO_TCHAR(L.name.c_str());
-		// A file saved before every lattice had a skin: give it the default.
-		aerotelic::LatticeSpec Spec = L.spec;
-		if (!(Spec.skin_thickness > 0.0) && Error.IsEmpty())
-		{
-			Spec.skin_thickness = DefaultSkinThickness(Targets);
-		}
-		AAerotelicEntityActor* Actor = Error.IsEmpty() ? AddLattice(Name, Spec, Targets, Exclusions, Error) : nullptr;
+		// The spec's skin_thickness is the core generator's and not read
+		// here: a lattice hollows each body by the body's own (Material
+		// Properties), and a `mass:` on a lattice in an older file is
+		// ignored -- it inherits.
+		AAerotelicEntityActor* Actor = Error.IsEmpty() ? AddLattice(Name, L.spec, Targets, Exclusions, Error) : nullptr;
 		if (Actor == nullptr)
 		{
 			Failures.Add(FString::Printf(TEXT("%s: %s"), *Name, *Error));
 			continue;
 		}
 		Actor->RefreshProxy();
-		Actor->SetMassSpec(L.mass);
 		if (L.color)
 		{
 			Actor->SetColorOverride(FLinearColor((float)(*L.color)[0], (float)(*L.color)[1], (float)(*L.color)[2]));
@@ -1441,7 +1416,7 @@ bool UAerotelicDocumentSubsystem::SaveProjectToPath(const FString& InPath)
 			Pb.operands.push_back(Ref);
 		}
 		Pb.hidden = !Entity->IsEntityVisible();
-		Pb.mass = Entity->GetMassSpec();
+		// No mass: a boolean result inherits its first operand's.
 		if (const TOptional<FLinearColor> Color = Entity->GetColorOverride(); Color.IsSet())
 		{
 			Pb.color = std::array<double, 3>{ Color->R, Color->G, Color->B };
@@ -1495,7 +1470,7 @@ bool UAerotelicDocumentSubsystem::SaveProjectToPath(const FString& InPath)
 		Pl.targets = Refs(M->Targets);
 		Pl.exclusions = Refs(M->Exclusions);
 		Pl.hidden = !Entity->IsEntityVisible();
-		Pl.mass = Entity->GetMassSpec();
+		// No mass: a lattice inherits its first filled body's.
 		if (const TOptional<FLinearColor> Color = Entity->GetColorOverride(); Color.IsSet())
 		{
 			Pl.color = std::array<double, 3>{ Color->R, Color->G, Color->B };

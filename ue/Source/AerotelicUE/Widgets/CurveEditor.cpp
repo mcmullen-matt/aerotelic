@@ -1894,7 +1894,7 @@ void SCurveEditor::BuildPoleMenu(FMenuBuilder& MenuBuilder, FIntPoint Hit)
 	}
 	Mat PW = Slot.Curve->poles_and_weights();
 	const double CurrentWeight = PW(i, 2);
-	MenuBuilder.AddMenuEntry(NSLOCTEXT("CurveEditor", "SetWeight", "Set Weight..."), FText::GetEmpty(), FSlateIcon(),
+	MenuBuilder.AddMenuEntry(NSLOCTEXT("CurveEditor", "SetWeight", "Set Weight"), FText::GetEmpty(), FSlateIcon(),
 		FUIAction(FExecuteAction::CreateLambda([this, k, i, CurrentWeight]()
 		{
 			TOptional<double> Result = PromptForDouble(
