@@ -74,6 +74,11 @@ namespace AerotelicFeaPreprocess
 			double Tolerance = 0.0;
 			int32 Nodes = 0;   // on this plane
 			double Furthest = 0.0;   // the furthest of them from the plane, project units
+			// The chosen body "min" / "max" was resolved against (FSupport::Body),
+			// -1 for the whole mesh; true when that body had no nodes in the
+			// mesh and the whole mesh was used instead.
+			int32 Body = -1;
+			bool bBodyFallback = false;
 		};
 		TArray<FPlane> SupportPlanes;
 		TArray<int32> SupportNodes;   // the union, each node once
@@ -105,9 +110,14 @@ namespace AerotelicFeaPreprocess
 		{
 			int32 Node = -1;
 			FVector At = FVector::ZeroVector;      // the node, project units
+			FVector Asked = FVector::ZeroVector;   // the point asked for, project units
+			double SnapDistance = 0.0;             // from Asked to the node, project units
 			FVector Force = FVector::ZeroVector;   // N
 		};
 		TArray<FPointLoad> PointLoads;
+		// A point force that landed further from its point than a mesh edge
+		// is not where it was typed: the caption and the Apply status warn.
+		bool SnapIsFar(const FPointLoad& P) const { return MedianEdge > 0.0 && P.SnapDistance > MedianEdge; }
 		FVector PointResultant = FVector::ZeroVector;      // N
 		double Mass = 0.0;              // kg, the part's (see bMassEstimated)
 		bool bMassEstimated = false;    // a homogenised core's density from the cell's solid fraction

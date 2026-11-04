@@ -54,6 +54,11 @@ namespace AerotelicStructuralFea
 		aerotelic::Material Core;      // SI
 		const aerotelic::UnitCellSamples* Cell = nullptr;
 		bool bSolid = false;
+		// The chosen body this region was meshed from (the Structural
+		// dialog's picker index), so a support plane "at the mesh's minimum
+		// / maximum" can be resolved against that body alone (FSupport::Body).
+		// -1: not from a picked body.
+		int32 Body = -1;
 
 		bool HasShells() const { return SkinThickness > 0.0; }
 		bool HasHomogenisedCore() const { return Cell != nullptr; }
@@ -78,6 +83,13 @@ namespace AerotelicStructuralFea
 		bool bAtMin = false;
 		bool bAtMax = false;
 		double Tolerance = 0.0;   // 0: a ten-thousandth of the mesh's diagonal (a lofted section is planar to about that)
+		// "min" / "max" resolved over the nodes of the regions meshed from
+		// this chosen body (FRegion::Body) rather than over the whole mesh,
+		// so the body that sticks out furthest does not capture a support
+		// meant for another. -1: the whole mesh. The script only knows the
+		// whole mesh, so the dialog resolves the plane to a value before the
+		// request is handed over (AerotelicFeaPreprocess gives the value).
+		int32 Body = -1;
 	};
 
 	// A point force in newtons at the corner node nearest At (project units).

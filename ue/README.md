@@ -1745,6 +1745,59 @@ a quarter the size, the sphere's skin mass 1/16 (area) with its thickness
 as typed, the boolean and the lattice queued and rebuilt; saves, finds
 `scale: 0.25` in the file, reopens, and finds the replica as it was.
 
+### What the model scale broke, and the fixes (2026-11-03, evening)
+
+A replica a fraction of a unit across found every depth-related constant
+in the renderer and every coordinate in the FEA dialog assuming the
+vehicle was its full 6 to 16 units. Fixed:
+
+* **Clipping.** The near clip plane was the engine's one global value
+  (`NearClipPlane=0.5` in DefaultEngine.ini, still there as the fallback)
+  and the camera could come within 0.05 units of its focus, so a 1:40
+  replica framed behind the near plane and vanished, and any replica
+  clipped a few wheel notches in. Both are now proportional: the near
+  plane sits at 0.2% of the camera's distance to its focus
+  (`AAerotelicCameraPawn::CalcCamera` sets the view's own near plane;
+  the dialogs' picture views set the capture's custom near plane the
+  same way) and the camera may come no closer than 0.1% of the radius
+  last framed (`SceneRadius`). The far plane is the engine's infinite
+  reversed-Z one and needed nothing.
+* **Edges floating off the surface.** M_AerotelicWire nudges its lines
+  0.02 world units towards the camera -- 15% of a 1:72 replica. The
+  entity actors and the result meshes now set the material instance's
+  `EdgeOffset` to 0.15% of the placed diagonal, after every rebuild and
+  every move or rescale (`ApplyEdgeOffset`).
+* **The ground grid** had a half-unit floor; its floor is now the
+  content's own size.
+* **The FEA pictures framed once per dialog**; every Build and Apply
+  reframes them now (the panel-method picture reframes on every solve).
+* **FEA coordinates are typed FULL-SCALE**, as the parameterisations are:
+  a support plane's value and tolerance and a point force's position are
+  divided by the model scale on the way into the request, whose mesh is
+  the replica's; the captions show full-scale figures back and say so;
+  the field labels read "(full scale)" while a scale is set. Forces,
+  pressures, thicknesses and the load factor are untouched by scale.
+* **"At the mesh's minimum / maximum" has an "Of" choice**: the whole
+  mesh, or one picked body. Before, the extreme of all chosen bodies
+  decided, so a body that stuck out furthest captured a support meant for
+  another and everything else was dropped as floating. The pre-processor
+  resolves the plane against that body's nodes (`FSupport::Body`,
+  `FRegion::Body`), falls back to the whole mesh and says so if the body
+  has none, and the dialog hands the solver the resolved value (the
+  script only knows the whole mesh), so the two fix the same nodes.
+* **A point force that snaps further than a mesh edge is flagged**: the
+  pre-processor records the snap distance (`FPointLoad::SnapDistance`,
+  `SnapIsFar` against the median edge); the Loads caption prints the
+  point asked for, the distance and the warning, the Apply status counts
+  them, and Solve asks before running on one.
+* The smoke run's default skin thickness is one percent of the full-scale
+  extent, not the replica's.
+
+The document commandlet's beam step now also checks the snap distance (a
+point 3 above the top face snaps 2.5 to it and is flagged; the tip loads
+are not), the per-body minimum (body 0's is the beam's root; a body with
+no nodes falls back and is flagged).
+
 ## Materials and the structural analysis (2026-10-22)
 
 **A material is a property of the stuff, not of the units.** The

@@ -1,6 +1,7 @@
 #include "AerotelicCameraPawn.h"
 
 #include "Camera/CameraComponent.h"
+#include "Camera/CameraTypes.h"
 #include "Components/SceneComponent.h"
 #include "Engine/Engine.h"
 #include "Engine/World.h"
@@ -19,9 +20,34 @@ namespace
 	constexpr double kOrbitDegreesPerPixel = 0.35;
 	constexpr double kZoomStep = 0.85;          // wheel notch: distance *= / /= this
 	constexpr double kClickTravelPixels = 4.0;  // press/release moving less than this is a click, not a drag
-	constexpr double kMinDistance = 0.05;
 	constexpr double kMaxDistance = 1.0e6;
 	constexpr float kFieldOfViewDeg = 60.0f;
+	// Everything depth-related is proportional to the scene, not absolute
+	// (see AerotelicCameraPawn.h: a replica can be a fraction of a unit
+	// across). The camera may come no closer to the focus than this
+	// fraction of the framed radius; the near plane sits at this fraction
+	// of the distance to the focus (the far plane is the engine's infinite
+	// reversed-Z one and needs nothing). The same two constants serve the
+	// dialogs' picture views (Widgets/SceneView.cpp).
+	constexpr double kMinDistanceFraction = 1.0e-3;
+	constexpr double kNearPlaneFraction = 2.0e-3;
+	constexpr double kNearPlaneFloor = 1.0e-5;
+}
+
+double AAerotelicCameraPawn::MinDistance() const
+{
+	return FMath::Max(kMinDistanceFraction * SceneRadius, 1.0e-6);
+}
+
+double AAerotelicCameraPawn::NearPlane() const
+{
+	return FMath::Clamp(kNearPlaneFraction * Distance, kNearPlaneFloor, 0.5);
+}
+
+void AAerotelicCameraPawn::CalcCamera(float DeltaTime, FMinimalViewInfo& OutResult)
+{
+	Super::CalcCamera(DeltaTime, OutResult);
+	OutResult.PerspectiveNearClipPlane = static_cast<float>(NearPlane());
 }
 
 AAerotelicCameraPawn::AAerotelicCameraPawn()
@@ -128,7 +154,7 @@ void AAerotelicCameraPawn::Pan(double DeltaX, double DeltaY, const FVector2D& Vi
 
 void AAerotelicCameraPawn::Zoom(double Factor)
 {
-	Distance = FMath::Clamp(Distance * Factor, kMinDistance, kMaxDistance);
+	Distance = FMath::Clamp(Distance * Factor, MinDistance(), kMaxDistance);
 	UpdateCameraTransform();
 }
 
@@ -139,10 +165,13 @@ void AAerotelicCameraPawn::FrameBox(const FBox& Box)
 		return;
 	}
 	FocusPoint = Box.GetCenter();
-	const double Radius = FMath::Max(Box.GetExtent().Size(), 1e-3);
+	// The radius is the scale of the scene from here on (MinDistance,
+	// NearPlane); a tiny floor only against a degenerate box.
+	const double Radius = FMath::Max(Box.GetExtent().Size(), 1e-6);
+	SceneRadius = Radius;
 	// Fit the bounding sphere inside the vertical field of view, with a
 	// little margin.
-	Distance = FMath::Clamp(Radius / FMath::Sin(FMath::DegreesToRadians(kFieldOfViewDeg * 0.5)) * 1.1, kMinDistance, kMaxDistance);
+	Distance = FMath::Clamp(Radius / FMath::Sin(FMath::DegreesToRadians(kFieldOfViewDeg * 0.5)) * 1.1, MinDistance(), kMaxDistance);
 	UpdateCameraTransform();
 }
 

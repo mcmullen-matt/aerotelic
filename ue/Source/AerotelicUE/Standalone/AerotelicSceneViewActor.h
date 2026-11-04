@@ -51,8 +51,10 @@ public:
 	void SetRenderTarget(UTextureRenderTarget2D* Target);
 
 	// Places the camera: Distance back from Focus along the direction given
-	// by Yaw/Pitch (degrees), the orbit-camera convention of the main view.
-	void SetCamera(const FVector& Focus, double Distance, double Yaw, double Pitch, float FieldOfViewDeg);
+	// by Yaw/Pitch (degrees), the orbit-camera convention of the main view,
+	// with its near clip plane at NearPlane (world units) in place of the
+	// engine's global one -- the widget keeps it a fraction of the distance.
+	void SetCamera(const FVector& Focus, double Distance, double Yaw, double Pitch, float FieldOfViewDeg, double NearPlane);
 
 	// Renders the next frame into the target (deferred to the next scene
 	// render, so one call per frame at most costs one extra view).

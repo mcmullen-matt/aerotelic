@@ -272,6 +272,13 @@ namespace
 	{
 		int32 Axis = 1;     // x, y, z
 		int32 Where = 0;    // at the value, at the mesh's minimum, at its maximum
+		// Which body's minimum / maximum: 0 the whole mesh, i > 0 the picker's
+		// choice i - 1 (BodyOptions), so the body that sticks out furthest
+		// does not capture a support meant for another.
+		int32 Body = 0;
+		// Typed FULL-SCALE, as the parameterisations are; divided by the model
+		// scale (Geometry > Scale) on the way into the request, whose mesh is
+		// the replica's.
 		double Value = 0.0;
 		double Tolerance = 0.0;
 	};
@@ -307,8 +314,30 @@ namespace
 		// them (see slate-modeless-dialog-lifetimes).
 		TArray<FAerotelicBodyChoicePtr> Choices;
 		TSharedPtr<SAerotelicBodyPicker> Picker;
-		TArray<TSharedPtr<FString>> ModelOptions, SolverOptions, ShellOptions, AxisOptions, PlaneOptions;
+		TArray<TSharedPtr<FString>> ModelOptions, SolverOptions, ShellOptions, AxisOptions, PlaneOptions, BodyOptions;
 		int32 ModelIndex = 0, SolverIndex = 0, ShellIndex = 0;
+		// The model scale (Geometry > Scale) as it stands: the meshes are the
+		// replica's, the user types full-scale coordinates. Read live, so a
+		// scale changed while the dialog is open is honoured on the next
+		// Build or Apply.
+		static double ModelScale() { return AAerotelicEntityActor::GetModelScale(); }
+		static bool IsReplica() { return !FMath::IsNearlyEqual(ModelScale(), 1.0, 1e-9); }
+		// A replica-space length or coordinate shown as the full-scale one.
+		static double Full(double Replica) { return Replica / ModelScale(); }
+		static FVector Full(const FVector& Replica) { return Replica / ModelScale(); }
+		// "1:4" for a quarter-scale replica, "x 2.5" for an enlargement (the
+		// status bar's wording).
+		static FString ScaleText()
+		{
+			const double S = ModelScale();
+			if (S < 1.0)
+			{
+				const double Inverse = 1.0 / S;
+				return FMath::IsNearlyEqual(Inverse, FMath::RoundToDouble(Inverse), 1e-6 * Inverse)
+					? FString::Printf(TEXT("1:%d"), FMath::RoundToInt(Inverse)) : FString::Printf(TEXT("1:%.4g"), Inverse);
+			}
+			return FString::Printf(TEXT("x %.4g"), S);
+		}
 		double Voxels = 32.0;
 		double ElementSize = 0.0;   // solid bodies; 0: a twentieth of the largest extent
 		// The loads and the supports: any number of point forces and of
@@ -408,22 +437,26 @@ namespace
 		// The supports and loads as they stand on their tabs, into a request.
 		void FillInputs(AerotelicStructuralFea::FRequest& Request) const
 		{
+			// The rows are typed full-scale; the mesh is the replica's
+			// (Geometry > Scale), so every length goes in times the scale.
+			const double Scale = ModelScale();
 			Request.Supports.Reset();
 			for (const TSharedPtr<FSupportRow>& R : SupportRows)
 			{
 				AerotelicStructuralFea::FSupport S;
 				S.Axis = (*AxisOptions[FMath::Clamp(R->Axis, 0, 2)])[0];
-				S.Value = R->Value;
+				S.Value = R->Value * Scale;
 				S.bAtMin = R->Where == 1;
 				S.bAtMax = R->Where == 2;
-				S.Tolerance = R->Tolerance;
+				S.Tolerance = R->Tolerance * Scale;
+				S.Body = R->Body > 0 ? R->Body - 1 : -1;
 				Request.Supports.Add(S);
 			}
 			Request.PointForces.Reset();
 			for (const TSharedPtr<FPointRow>& R : PointRows)
 			{
 				AerotelicStructuralFea::FPointForce P;
-				P.At = aerotelic::Vec3{ R->X, R->Y, R->Z };
+				P.At = aerotelic::Vec3{ R->X * Scale, R->Y * Scale, R->Z * Scale };
 				P.Force = aerotelic::Vec3{ R->Fx, R->Fy, R->Fz };
 				Request.PointForces.Add(P);
 			}
@@ -479,6 +512,9 @@ namespace
 				const FAerotelicBooleanOperand& Op = C->Operand;
 				const FKind K = Classify(*C);
 				const FString EntityLabel = OperandLabel(Op);
+				// The picker's index of this body, for a support resolved
+				// against it alone (FSupport::Body).
+				const int32 BodyIndex = Choices.IndexOfByKey(C);
 				if (!K.bOk) { B->Problems.Add(K.Text); continue; }
 				const aerotelic::Material& Material = K.Spec.material;
 				// The body's label as the lattice names its meshes and the
@@ -522,10 +558,10 @@ namespace
 							const int32 SkinId = NextId++, CoreId = NextId++;
 							AppendTets(TM->Result.Mesh, [SkinId, CoreId](int32 Region) { return Region == 2 ? CoreId : SkinId; });
 							AerotelicStructuralFea::FRegion Skin;
-							Skin.Id = SkinId; Skin.Label = BodyLabel + TEXT(" skin"); Skin.Core = Material; Skin.bSolid = true;
+							Skin.Id = SkinId; Skin.Label = BodyLabel + TEXT(" skin"); Skin.Core = Material; Skin.bSolid = true; Skin.Body = BodyIndex;
 							Request.Regions.Add(Skin);
 							AerotelicStructuralFea::FRegion Core;
-							Core.Id = CoreId; Core.Label = BodyLabel + TEXT(" core (") + K.Lattice->EntityName + TEXT(")"); Core.Core = Material; Core.Cell = Cell;
+							Core.Id = CoreId; Core.Label = BodyLabel + TEXT(" core (") + K.Lattice->EntityName + TEXT(")"); Core.Core = Material; Core.Cell = Cell; Core.Body = BodyIndex;
 							Request.Regions.Add(Core);
 						}
 						else
@@ -533,7 +569,7 @@ namespace
 							const int32 Id = NextId++;
 							AppendTets(TM->Result.Mesh, [Id](int32) { return Id; });
 							AerotelicStructuralFea::FRegion R;
-							R.Id = Id; R.Label = BodyLabel;
+							R.Id = Id; R.Label = BodyLabel; R.Body = BodyIndex;
 							R.Skin = Material; R.SkinThickness = TM->SkinThickness > 0.0 ? TM->SkinThickness : FAerotelicLatticeModel::SkinThicknessFor(Op);
 							R.Core = Material; R.Cell = Cell;
 							Request.Regions.Add(R);
@@ -547,7 +583,7 @@ namespace
 					}
 					const int32 Id = NextId++;
 					AerotelicStructuralFea::FRegion R;
-					R.Id = Id; R.Label = BodyLabel;
+					R.Id = Id; R.Label = BodyLabel; R.Body = BodyIndex;
 					if (K.Spec.skin_thickness > 0.0)
 					{
 						const int32 Offset = static_cast<int32>(Mesh.nodes.size());
@@ -680,6 +716,21 @@ namespace
 					return false;
 				}
 			}
+			// "min" / "max" resolved to the value the pre-processor found (per
+			// body where asked): the script knows only the whole mesh, and the
+			// two must fix the same nodes (the commandlet compares the counts).
+			for (int32 k = 0; k < B.Request.Supports.Num() && k < B.Model.SupportPlanes.Num(); ++k)
+			{
+				AerotelicStructuralFea::FSupport& S = B.Request.Supports[k];
+				if (S.bAtMin || S.bAtMax)
+				{
+					S.Value = B.Model.SupportPlanes[k].Value;
+					S.bAtMin = S.bAtMax = false;
+				}
+			}
+			// Every Build and Apply reframes the pictures: the model may be of
+			// other bodies, or the vehicle at another model scale.
+			for (bool& F : bFramed) F = false;
 			UpdatePictures();
 			return true;
 		}
@@ -695,12 +746,14 @@ namespace
 			if (Derive())
 			{
 				const FModel& M = Built->Model;
-				int32 Coarse = 0;
+				int32 Coarse = 0, Far = 0;
 				for (const FModel::FPlane& P : M.SupportPlanes) Coarse += M.ToleranceIsCoarse(P) ? 1 : 0;
-				Status(FText::FromString(FString::Printf(TEXT("Applied: %d support plane(s) fixing %s nodes, %d point force(s)%s%s"),
+				for (const FModel::FPointLoad& P : M.PointLoads) Far += M.SnapIsFar(P) ? 1 : 0;
+				Status(FText::FromString(FString::Printf(TEXT("Applied: %d support plane(s) fixing %s nodes, %d point force(s)%s%s%s"),
 					M.SupportPlanes.Num(), *Thousands(M.SupportNodes.Num()), M.PointLoads.Num(),
 					Built->Dropped.Num() ? *FString::Printf(TEXT("; %d part(s) left out for floating, see the Support tab"), Built->Dropped.Num()) : TEXT(""),
-					Coarse ? *FString::Printf(TEXT("; WARNING: %d support tolerance(s) wider than the mesh's edges, see the Support tab"), Coarse) : TEXT(""))));
+					Coarse ? *FString::Printf(TEXT("; WARNING: %d support tolerance(s) wider than the mesh's edges, see the Support tab"), Coarse) : TEXT(""),
+					Far ? *FString::Printf(TEXT("; WARNING: %d point force(s) landed more than a mesh edge from the point typed, see the Loads tab"), Far) : TEXT(""))));
 			}
 		}
 
@@ -818,8 +871,16 @@ namespace
 					{
 						const FModel::FPointLoad& P = M.PointLoads[i];
 						AddArrow(Arrows, P.At, P.Force, 0.12 * Diag, 0.005 * Diag, kPointForce);
+						const FVector NodeAt = Full(P.At);
 						Text += FString::Printf(TEXT("\nPoint force %d (red): (%.4g, %.4g, %.4g) N at node %d, (%.4g, %.4g, %.4g) %s -- the corner node nearest the point asked for"),
-							i + 1, P.Force.X, P.Force.Y, P.Force.Z, P.Node, P.At.X, P.At.Y, P.At.Z, *LengthUnit);
+							i + 1, P.Force.X, P.Force.Y, P.Force.Z, P.Node, NodeAt.X, NodeAt.Y, NodeAt.Z, *LengthUnit);
+						if (M.SnapIsFar(P))
+						{
+							const FVector Asked = Full(P.Asked);
+							Text += FString::Printf(TEXT("\n  WARNING: the point asked for, (%.4g, %.4g, %.4g) %s, is %.4g %s from that node -- more than a mesh edge (median %.4g %s): the load is NOT where it was typed. Check the coordinates%s or refine the mesh."),
+								Asked.X, Asked.Y, Asked.Z, *LengthUnit, Full(P.SnapDistance), *LengthUnit, Full(M.MedianEdge), *LengthUnit,
+								IsReplica() ? TEXT(" (full-scale, as the parameterisations are)") : TEXT(""));
+						}
 					}
 					if (M.PointLoads.Num() > 1) Text += FString::Printf(TEXT("\nPoint forces together: (%.4g, %.4g, %.4g) N"), M.PointResultant.X, M.PointResultant.Y, M.PointResultant.Z);
 				}
@@ -830,15 +891,20 @@ namespace
 				if (B.Request.LoadFactor != 0.0 && M.Mass > 0.0)
 				{
 					AddArrow(Arrows, M.MassCentre, M.GravityForce, 0.12 * Diag, 0.005 * Diag, kGravity);
+					const FVector Centre = Full(M.MassCentre);
 					Text += FString::Printf(TEXT("\nInertial load (green): %.4g g on the model's mass of %.5g kg%s: (%.4g, %.4g, %.4g) N, drawn at the centre of mass (%.4g, %.4g, %.4g) %s; applied as a body force on every element"),
 						B.Request.LoadFactor, M.Mass, M.bMassEstimated ? TEXT(" (a homogenised core's density estimated from the cell's solid fraction, before homogenisation)") : TEXT(""),
-						M.GravityForce.X, M.GravityForce.Y, M.GravityForce.Z, M.MassCentre.X, M.MassCentre.Y, M.MassCentre.Z, *LengthUnit);
+						M.GravityForce.X, M.GravityForce.Y, M.GravityForce.Z, Centre.X, Centre.Y, Centre.Z, *LengthUnit);
 				}
 				else
 				{
 					Text += TEXT("\nInertial load: none (load factor 0)");
 				}
 				Text += TEXT("\nArrow heads sit at the point of application; forces are newtons whatever the project's units. Edit the loads on the left and Apply.");
+				if (IsReplica())
+				{
+					Text += FString::Printf(TEXT("\nCoordinates here and on the left are the FULL-SCALE aircraft's; the model is built at %s of that size (Geometry > Scale) and the picture shows the replica."), *ScaleText());
+				}
 				ShowPicture(TabLoads, { &G, &Arrows }, { false, false });
 				if (Captions[TabLoads].IsValid()) Captions[TabLoads]->SetText(FText::FromString(Text));
 			}
@@ -869,17 +935,29 @@ namespace
 						P[c][W] = (c >= 2) ? Hi[W] : Lo[W];
 					}
 					for (int32 c = 0; c < 4; ++c) AddBar(Marks, P[c], P[(c + 1) % 4], 0.002 * Diag, kPlane);
-					Text += FString::Printf(TEXT("%sSupport %d (blue frame): the plane %c = %.6g %s, %s nodes within %.3g %s of it%s; the furthest of them %.3g %s from the plane"),
-						k ? TEXT("\n") : TEXT(""), k + 1, AxisName[A], Plane.Value, *LengthUnit, *Thousands(Plane.Nodes), Plane.Tolerance, *LengthUnit,
+					FString Of;
+					if (Plane.Body >= 0)
+					{
+						const FString BodyName = BodyOptions.IsValidIndex(Plane.Body + 1) ? *BodyOptions[Plane.Body + 1] : FString::FromInt(Plane.Body);
+						Of = Plane.bBodyFallback
+							? FString::Printf(TEXT(" (asked of %s, which has no nodes in the model: the whole mesh's extreme was used)"), *BodyName)
+							: FString::Printf(TEXT(" (the extreme of %s alone)"), *BodyName);
+					}
+					Text += FString::Printf(TEXT("%sSupport %d (blue frame): the plane %c = %.6g %s%s, %s nodes within %.3g %s of it%s; the furthest of them %.3g %s from the plane"),
+						k ? TEXT("\n") : TEXT(""), k + 1, AxisName[A], Full(Plane.Value), *LengthUnit, *Of, *Thousands(Plane.Nodes), Full(Plane.Tolerance), *LengthUnit,
 						B.Request.Supports.IsValidIndex(k) && B.Request.Supports[k].Tolerance > 0.0 ? TEXT("") : TEXT(" (a ten-thousandth of the mesh's diagonal)"),
-						Plane.Furthest, *LengthUnit);
+						Full(Plane.Furthest), *LengthUnit);
 					if (M.ToleranceIsCoarse(Plane))
 					{
 						Text += FString::Printf(TEXT("\n  WARNING: that tolerance is more than a quarter of the mesh's edge length (median %.3g %s): it can clamp a second ring of nodes and shorten the part. Narrow it to the plane's own flatness."),
-							M.MedianEdge, *LengthUnit);
+							Full(M.MedianEdge), *LengthUnit);
 					}
 				}
 				if (M.SupportPlanes.Num() == 0) Text += TEXT("No support: add a plane on the left and Apply.");
+				if (IsReplica())
+				{
+					Text += FString::Printf(TEXT("\nCoordinates here and on the left are the FULL-SCALE aircraft's; the model is built at %s of that size (Geometry > Scale) and the picture shows the replica."), *ScaleText());
+				}
 				Text += FString::Printf(TEXT("\nFixed nodes (red): %s of %s, every degree of freedom -- the three displacements and, on the shells, the three rotations: a clamp"),
 					*Thousands(NSupport), *Thousands(M.Nodes));
 				if (Stride > 1) Text += FString::Printf(TEXT(" (one marker in %d drawn)"), Stride);
@@ -914,9 +992,25 @@ namespace
 			const FModel& M = B.Model;
 			if (M.SupportNodes.Num() < 3)
 			{
-				Message(FText::FromString(FString::Printf(TEXT("Only %d node(s) lie on the support plane(s); a support needs a face of them. See the Support tab: move a plane onto the geometry (or use the mesh's minimum / maximum) or widen the tolerance."), M.SupportNodes.Num())));
+				Message(FText::FromString(FString::Printf(TEXT("Only %d node(s) lie on the support plane(s); a support needs a face of them. See the Support tab: move a plane onto the geometry (or use the mesh's minimum / maximum) or widen the tolerance.%s"), M.SupportNodes.Num(),
+					IsReplica() ? TEXT(" Coordinates are typed full-scale; the dialog scales them to the replica.") : TEXT(""))));
 				if (Tabs.IsValid()) Tabs->SetActiveTab(TabSupport);
 				return;
+			}
+			// A point force that landed more than a mesh edge from its point
+			// is not where it was typed: say so before the solver runs on it.
+			int32 Far = 0;
+			for (const FModel::FPointLoad& P : M.PointLoads) Far += M.SnapIsFar(P) ? 1 : 0;
+			if (Far > 0 && !bSmoke)
+			{
+				const EAppReturnType::Type Answer = AerotelicMessageBox(EAppMsgType::YesNo,
+					FText::FromString(FString::Printf(TEXT("%d point force(s) landed more than a mesh edge from the point typed -- see the Loads tab for where each went. Solve anyway?"), Far)),
+					LOCTEXT("Title", "Structural (Kratos FEA)"));
+				if (Answer != EAppReturnType::Yes)
+				{
+					if (Tabs.IsValid()) Tabs->SetActiveTab(TabLoads);
+					return;
+				}
 			}
 			Status(FText::FromString(FString::Printf(TEXT("Solving %s tetrahedra and %s wetted faces on Kratos..."),
 				*Thousands((int64)B.Mesh.tets.size()), *Thousands(M.WettedFaces.Num()))));
@@ -1034,7 +1128,7 @@ namespace
 							+ SHorizontalBox::Slot().AutoWidth()
 							[ Button(LOCTEXT("Delete", "Delete"), [Self, Row]() { Self->PointRows.Remove(Row); Self->RebuildPointList(); }) ]
 						]
-						+ SVerticalBox::Slot().AutoHeight().Padding(0, 3) [ FormRow(LOCTEXT("At", "At:"), Triple(false), 70.0f) ]
+						+ SVerticalBox::Slot().AutoHeight().Padding(0, 3) [ FormRow(IsReplica() ? LOCTEXT("AtFull", "At (full scale):") : LOCTEXT("At", "At:"), Triple(false), 70.0f) ]
 						+ SVerticalBox::Slot().AutoHeight().Padding(0, 3) [ FormRow(LOCTEXT("Force", "Force:"), Triple(true), 70.0f) ]
 					]
 				];
@@ -1082,8 +1176,10 @@ namespace
 								+ SHorizontalBox::Slot().AutoWidth().Padding(0, 0, 4, 0) [ Combo(&FState::AxisOptions, &FSupportRow::Axis) ]
 								+ SHorizontalBox::Slot().FillWidth(1) [ Combo(&FState::PlaneOptions, &FSupportRow::Where) ], 70.0f)
 						]
-						+ SVerticalBox::Slot().AutoHeight().Padding(0, 3) [ FormRow(LOCTEXT("Value", "Value:"), NumberField([Row]() { return Row->Value; }, [Row](double V) { Row->Value = V; }, 0.1, LengthSuffix), 70.0f) ]
-						+ SVerticalBox::Slot().AutoHeight().Padding(0, 3) [ FormRow(LOCTEXT("Within", "Within:"), NumberField([Row]() { return Row->Tolerance; }, [Row](double V) { Row->Tolerance = FMath::Max(V, 0.0); }, 0.001, LengthSuffix, 0.0), 70.0f) ]
+						// Whose minimum / maximum: the whole mesh's, or one body's.
+						+ SVerticalBox::Slot().AutoHeight().Padding(0, 3) [ FormRow(LOCTEXT("Of", "Of:"), Combo(&FState::BodyOptions, &FSupportRow::Body), 70.0f) ]
+						+ SVerticalBox::Slot().AutoHeight().Padding(0, 3) [ FormRow(IsReplica() ? LOCTEXT("ValueFull", "Value (full scale):") : LOCTEXT("Value", "Value:"), NumberField([Row]() { return Row->Value; }, [Row](double V) { Row->Value = V; }, 0.1, LengthSuffix), 70.0f) ]
+						+ SVerticalBox::Slot().AutoHeight().Padding(0, 3) [ FormRow(IsReplica() ? LOCTEXT("WithinFull", "Within (full scale):") : LOCTEXT("Within", "Within:"), NumberField([Row]() { return Row->Tolerance; }, [Row](double V) { Row->Tolerance = FMath::Max(V, 0.0); }, 0.001, LengthSuffix, 0.0), 70.0f) ]
 					]
 				];
 			}
@@ -1256,6 +1352,10 @@ void ShowAerotelicStructuralFeaDialog(TFunction<void(const FText&)> Status)
 		MakeShared<FString>(TEXT("Corotational thin triangle (small displacements only)")) };
 	S->AxisOptions = { MakeShared<FString>(TEXT("x")), MakeShared<FString>(TEXT("y")), MakeShared<FString>(TEXT("z")) };
 	S->PlaneOptions = { MakeShared<FString>(TEXT("at the value")), MakeShared<FString>(TEXT("at the mesh's minimum")), MakeShared<FString>(TEXT("at the mesh's maximum")) };
+	// Whose minimum / maximum a plane takes: the whole mesh (0), or one of
+	// the picker's bodies (i + 1 for Choices[i], as FSupportRow::Body).
+	S->BodyOptions.Add(MakeShared<FString>(TEXT("the whole mesh")));
+	for (const FAerotelicBodyChoicePtr& C : Choices) S->BodyOptions.Add(MakeShared<FString>(C->Label));
 	// One support to start with: y = 0, the root of a mirrored half.
 	S->SupportRows.Add(MakeShared<FSupportRow>());
 
@@ -1423,7 +1523,7 @@ void ShowAerotelicStructuralFeaDialog(TFunction<void(const FText&)> Status)
 		+ SScrollBox::Slot()
 		[
 			MakeInfoLabel(LOCTEXT("LoadsHint",
-				"The load factor puts the model's own mass under that many g along -z (0 to begin with, so a test load acts alone; 1 is its weight, a 4 g pull-up a real case). The pressure acts on every wetted face, positive pressing inwards -- the place a pressure field from the potential flow or DUST will plug in. Each point force goes to the corner node nearest its point. Forces are newtons whatever the project's units. Apply pushes the loads onto the built model and redraws them."))
+				"The load factor puts the model's own mass under that many g along -z (0 to begin with, so a test load acts alone; 1 is its weight, a 4 g pull-up a real case). The pressure acts on every wetted face, positive pressing inwards -- the place a pressure field from the potential flow or DUST will plug in. Each point force goes to the corner node nearest its point; the picture warns when that node is more than a mesh edge away. Points are typed in FULL-SCALE coordinates, as the parameterisations are; with a model scale set (Geometry > Scale) the dialog scales them to the replica. Forces are newtons whatever the project's units or scale. Apply pushes the loads onto the built model and redraws them."))
 		];
 
 	// ---- the supports panel ----
@@ -1442,7 +1542,7 @@ void ShowAerotelicStructuralFeaDialog(TFunction<void(const FText&)> Status)
 		+ SScrollBox::Slot()
 		[
 			MakeInfoLabel(LOCTEXT("SupportHint",
-				"Every node within the tolerance of any plane is fixed in every degree of freedom (the shells' rotations too: a clamp). y = 0 is the root of a mirrored half -- the symmetry plane -- which is why it is the one to start with; the mesh's minimum or maximum along an axis clamps a body by its end. A tolerance of 0 is a ten-thousandth of the mesh's diagonal -- about how planar a lofted section comes out, so a root ring is taken whole. Whatever reaches no plane, on its own or through a body it was fused with, is left out of the solve and listed on the right. Apply pushes the supports onto the built model and redraws them."))
+				"Every node within the tolerance of any plane is fixed in every degree of freedom (the shells' rotations too: a clamp). y = 0 is the root of a mirrored half -- the symmetry plane -- which is why it is the one to start with; the mesh's minimum or maximum along an axis clamps a body by its end -- 'Of' says whose end: the whole mesh's, or one body's, so a body that sticks out further does not take a support meant for another. Values and tolerances are typed in FULL-SCALE coordinates, as the parameterisations are; with a model scale set (Geometry > Scale) the dialog scales them to the replica. A tolerance of 0 is a ten-thousandth of the mesh's diagonal -- about how planar a lofted section comes out, so a root ring is taken whole. Whatever reaches no plane, on its own or through a body it was fused with, is left out of the solve and listed on the right. Apply pushes the supports onto the built model and redraws them."))
 		];
 
 	TArray<FAerotelicTab> Tabs;
@@ -1493,8 +1593,10 @@ void ShowAerotelicStructuralFeaDialog(TFunction<void(const FText&)> Status)
 				aerotelic::MassSpec Spec;
 				Spec.mode = aerotelic::MassMode::Material;
 				Spec.material = *Preset;
+				// One percent of the FULL-SCALE extent: the placed bounds are the
+				// replica's, and a skin thickness does not scale with the model.
 				const FBox Bounds = E->GetPlacedBounds(false);
-				Spec.skin_thickness = Bounds.IsValid ? FMath::Max(0.01 * Bounds.GetSize().GetMax(), 1e-4) : 0.01;
+				Spec.skin_thickness = Bounds.IsValid ? FMath::Max(0.01 * Bounds.GetSize().GetMax() / AAerotelicEntityActor::GetModelScale(), 1e-4) : 0.01;
 				E->SetMassSpec(Spec);
 			}
 		}
@@ -1504,7 +1606,9 @@ void ShowAerotelicStructuralFeaDialog(TFunction<void(const FText&)> Status)
 		TSharedPtr<FPointRow> Tip = MakeShared<FPointRow>();
 		FBox All(ForceInit);
 		for (const FAerotelicBodyChoicePtr& C : InitiallyChosen) All += C->Operand.Entity->GetPlacedBounds(C->Operand.bMirror);
-		if (All.IsValid) { Tip->X = All.GetCenter().X; Tip->Y = All.Max.Y; Tip->Z = All.GetCenter().Z; }
+		// The rows are typed full-scale; the bounds are the replica's.
+		const double Scale = AAerotelicEntityActor::GetModelScale();
+		if (All.IsValid) { Tip->X = All.GetCenter().X / Scale; Tip->Y = All.Max.Y / Scale; Tip->Z = All.GetCenter().Z / Scale; }
 		S->PointRows.Add(Tip);
 		S->RebuildPointList();
 		if (S->BuildModel()) S->RunSmoke();

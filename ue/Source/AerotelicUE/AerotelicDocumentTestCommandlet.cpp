@@ -1020,6 +1020,39 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 					Check(bCoarse && PreCoarse.SupportPlanes[0].Nodes == 17 && PreCoarse.ToleranceIsCoarse(PreCoarse.SupportPlanes[0]) && FMath::IsNearlyEqual(PreCoarse.SupportPlanes[0].Furthest, 0.5, 1e-9),
 						FString::Printf(TEXT("fea (beam, pre-processor): a 0.6 tolerance takes the next ring too (%d nodes, furthest %.3g) and is flagged as coarse"), bCoarse ? PreCoarse.SupportPlanes[0].Nodes : -1, bCoarse ? PreCoarse.SupportPlanes[0].Furthest : -1.0));
 				}
+				// A point force typed off the geometry snaps to the nearest
+				// node and is flagged: 3 units above the top face lands on it,
+				// 2.5 away, more than the 0.5 edges; the two tip loads sit on
+				// their nodes exactly and are not.
+				Check(bPre && Pre.PointLoads.Num() == 2 && Pre.PointLoads[0].SnapDistance == 0.0 && !Pre.SnapIsFar(Pre.PointLoads[0]) && !Pre.SnapIsFar(Pre.PointLoads[1]),
+					"fea (beam, pre-processor): the tip loads land on their nodes and are not flagged");
+				{
+					AerotelicStructuralFea::FRequest Off = Request;
+					Off.PointForces[0].At = aerotelic::Vec3{ 0.5, 5.0, 3.0 };
+					AerotelicFeaPreprocess::FModel PreOff;
+					const bool bOff = AerotelicFeaPreprocess::Build(Off, PreOff, PreError);
+					Check(bOff && PreOff.PointLoads.Num() == 2 && FMath::IsNearlyEqual(PreOff.PointLoads[0].SnapDistance, 2.5, 1e-9) && PreOff.SnapIsFar(PreOff.PointLoads[0])
+						&& PreOff.PointLoads[0].Asked.Z == 3.0 && PreOff.PointLoads[0].At.Z == 0.5,
+						FString::Printf(TEXT("fea (beam, pre-processor): a point 3 above the top face snaps 2.5 to it and is flagged as far (snap %.3g, median edge %.3g)"), bOff ? PreOff.PointLoads[0].SnapDistance : -1.0, bOff ? PreOff.MedianEdge : -1.0));
+				}
+				// "At the mesh's minimum" of one body: the beam is body 0, so
+				// asking for body 0 gives the same 9 nodes; asking for a body
+				// the model has no nodes of falls back to the whole mesh and
+				// says so.
+				{
+					AerotelicStructuralFea::FRequest PerBody = Request;
+					PerBody.Regions[0].Body = 0;
+					PerBody.Supports[0].Body = 0;
+					AerotelicFeaPreprocess::FModel PreBody;
+					const bool bBody = AerotelicFeaPreprocess::Build(PerBody, PreBody, PreError);
+					Check(bBody && PreBody.SupportPlanes.Num() == 1 && PreBody.SupportPlanes[0].Nodes == 9 && PreBody.SupportPlanes[0].Body == 0 && !PreBody.SupportPlanes[0].bBodyFallback
+						&& PreBody.SupportPlanes[0].Value == -5.0,
+						FString::Printf(TEXT("fea (beam, pre-processor): the minimum of body 0 alone is the beam's root, 9 nodes at y = %.3g"), bBody ? PreBody.SupportPlanes[0].Value : 0.0));
+					PerBody.Supports[0].Body = 7;
+					const bool bNone = AerotelicFeaPreprocess::Build(PerBody, PreBody, PreError);
+					Check(bNone && PreBody.SupportPlanes[0].Nodes == 9 && PreBody.SupportPlanes[0].bBodyFallback,
+						"fea (beam, pre-processor): a body with no nodes in the model falls back to the whole mesh's minimum and is flagged");
+				}
 
 				AerotelicStructuralFea::FResult R;
 				const bool bSolved = AerotelicStructuralFea::Run(Request, R, Error);

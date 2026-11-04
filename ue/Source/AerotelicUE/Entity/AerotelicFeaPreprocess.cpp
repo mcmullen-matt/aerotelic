@@ -235,13 +235,40 @@ namespace AerotelicFeaPreprocess
 		{
 			TArray<bool> Fixed;
 			Fixed.Init(false, Out.Nodes);
+			// The nodes of each chosen body (FRegion::Body), for a "min" /
+			// "max" resolved against one body rather than the whole mesh.
+			TMap<int32, aerotelic::Box3> BodyBounds;
+			{
+				std::map<int32, int32> RegionBody;
+				for (const AerotelicStructuralFea::FRegion& R : Request.Regions) RegionBody[R.Id] = R.Body;
+				auto AddNode = [&](int32 Region, int32 Node)
+				{
+					const auto It = RegionBody.find(Region);
+					if (It == RegionBody.end() || It->second < 0) return;
+					BodyBounds.FindOrAdd(It->second).Add(Mesh.nodes[Node]);
+				};
+				for (int32 t = 0; t < Out.Tets; ++t)
+				{
+					const int32 Id = t < static_cast<int32>(Mesh.material.size()) ? Mesh.material[t] : 1;
+					for (int32 k = 0; k < 4; ++k) AddNode(Id, Mesh.tets[t][k]);
+				}
+				for (const FFace& F : Out.WettedFaces) for (int32 k = 0; k < 3; ++k) AddNode(F.Region, F.N[k]);
+			}
 			for (const AerotelicStructuralFea::FSupport& S : Request.Supports)
 			{
 				FModel::FPlane P;
 				const TCHAR Axis = FChar::ToLower(S.Axis);
 				P.Axis = Axis == TEXT('x') ? 0 : (Axis == TEXT('z') ? 2 : 1);
-				if (S.bAtMin) P.Value = Out.Bounds.min[P.Axis];
-				else if (S.bAtMax) P.Value = Out.Bounds.max[P.Axis];
+				P.Body = S.Body;
+				const aerotelic::Box3* Extent = &Out.Bounds;
+				if (S.Body >= 0 && (S.bAtMin || S.bAtMax))
+				{
+					const aerotelic::Box3* Own = BodyBounds.Find(S.Body);
+					if (Own != nullptr && !Own->IsEmpty()) Extent = Own;
+					else P.bBodyFallback = true;
+				}
+				if (S.bAtMin) P.Value = Extent->min[P.Axis];
+				else if (S.bAtMax) P.Value = Extent->max[P.Axis];
 				else P.Value = S.Value;
 				// The script's rule (SUPPORT_TOLERANCE_OVER_DIAGONAL): a
 				// ten-thousandth of the diagonal, which takes a lofted
@@ -333,6 +360,8 @@ namespace AerotelicFeaPreprocess
 			}
 			if (P.Node < 0) continue;
 			P.At = ToF(Mesh.nodes[P.Node]);
+			P.Asked = ToF(F.At);
+			P.SnapDistance = std::sqrt(Best);
 			P.Force = ToF(F.Force);
 			Out.PointResultant += P.Force;
 			Out.PointLoads.Add(P);

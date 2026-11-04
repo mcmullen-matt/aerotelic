@@ -17,8 +17,10 @@ namespace
 	// The main view's constants (AerotelicCameraPawn.cpp).
 	constexpr double kOrbitDegreesPerPixel = 0.35;
 	constexpr double kZoomStep = 0.85;
-	constexpr double kMinDistance = 0.05;
 	constexpr double kMaxDistance = 1.0e6;
+	constexpr double kMinDistanceFraction = 1.0e-3;
+	constexpr double kNearPlaneFraction = 2.0e-3;
+	constexpr double kNearPlaneFloor = 1.0e-5;
 	constexpr int32 kMinTarget = 32;
 	constexpr int32 kMaxTarget = 4096;
 
@@ -175,9 +177,19 @@ void SAerotelicSceneView::Tick(const FGeometry& AllottedGeometry, const double I
 	}
 	if (Now < CaptureUntilSeconds && ViewActor.IsValid())
 	{
-		ViewActor->SetCamera(FocusPoint, Distance, Yaw, Pitch, FieldOfViewDeg);
+		ViewActor->SetCamera(FocusPoint, Distance, Yaw, Pitch, FieldOfViewDeg, NearPlane());
 		ViewActor->RequestCapture();
 	}
+}
+
+double SAerotelicSceneView::MinDistance() const
+{
+	return FMath::Max(kMinDistanceFraction * SceneRadius, 1.0e-6);
+}
+
+double SAerotelicSceneView::NearPlane() const
+{
+	return FMath::Clamp(kNearPlaneFraction * Distance, kNearPlaneFloor, 0.5);
 }
 
 void SAerotelicSceneView::SetShownActors(const TArray<AActor*>& Actors)
@@ -201,8 +213,9 @@ void SAerotelicSceneView::FrameBox(const FBox& Box)
 		return;
 	}
 	FocusPoint = Box.GetCenter();
-	const double Radius = FMath::Max(Box.GetExtent().Size(), 1e-3);
-	Distance = FMath::Clamp(Radius / FMath::Sin(FMath::DegreesToRadians(FieldOfViewDeg * 0.5)) * 1.1, kMinDistance, kMaxDistance);
+	const double Radius = FMath::Max(Box.GetExtent().Size(), 1e-6);
+	SceneRadius = Radius;
+	Distance = FMath::Clamp(Radius / FMath::Sin(FMath::DegreesToRadians(FieldOfViewDeg * 0.5)) * 1.1, MinDistance(), kMaxDistance);
 	bDirty = true;
 }
 
@@ -247,7 +260,7 @@ void SAerotelicSceneView::Pan(double DeltaX, double DeltaY, const FVector2D& Vie
 
 void SAerotelicSceneView::Zoom(double Factor)
 {
-	Distance = FMath::Clamp(Distance * Factor, kMinDistance, kMaxDistance);
+	Distance = FMath::Clamp(Distance * Factor, MinDistance(), kMaxDistance);
 	bDirty = true;
 }
 

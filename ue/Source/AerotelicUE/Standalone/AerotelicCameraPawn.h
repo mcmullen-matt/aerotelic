@@ -36,6 +36,11 @@ public:
 	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 	virtual void Tick(float DeltaSeconds) override;
+	// The near clip plane follows the camera: a fixed fraction of the
+	// distance to the focus point (NearPlane()), in place of the engine's
+	// one global value. A replica at 1:72 is a fraction of a unit across;
+	// a near plane of half a unit would clip it whole.
+	virtual void CalcCamera(float DeltaTime, struct FMinimalViewInfo& OutResult) override;
 
 	// The camera pawn of the running standalone application, or null when
 	// this module is hosted by the Editor (which has no game world).
@@ -72,6 +77,15 @@ private:
 	double Distance = 30.0;
 	double Yaw = -135.0;
 	double Pitch = -25.0;
+	// The bounding-sphere radius of what was last framed: the scale every
+	// depth-related limit is proportional to (how close the camera may
+	// come, where the near plane sits). 30 before anything is framed.
+	double SceneRadius = 30.0;
+	// The closest the camera may come to the focus point, and the near clip
+	// plane at the current distance -- both proportional, so a 1:72 replica
+	// is orbited and zoomed like the full-size vehicle.
+	double MinDistance() const;
+	double NearPlane() const;
 
 	// Drag tracking (screen pixels).
 	bool bDragging = false;

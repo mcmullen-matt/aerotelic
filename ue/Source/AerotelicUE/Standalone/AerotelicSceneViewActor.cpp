@@ -162,11 +162,13 @@ void AAerotelicSceneViewActor::SetRenderTarget(UTextureRenderTarget2D* Target)
 	Capture->TextureTarget = Target;
 }
 
-void AAerotelicSceneViewActor::SetCamera(const FVector& Focus, double Distance, double Yaw, double Pitch, float FieldOfViewDeg)
+void AAerotelicSceneViewActor::SetCamera(const FVector& Focus, double Distance, double Yaw, double Pitch, float FieldOfViewDeg, double NearPlane)
 {
 	const FRotator Rotation(Pitch, Yaw, 0.0);
 	const FVector Location = Focus - Rotation.Vector() * Distance;
 	Capture->FOVAngle = FieldOfViewDeg;
+	Capture->bOverride_CustomNearClippingPlane = true;
+	Capture->CustomNearClippingPlane = static_cast<float>(FMath::Max(NearPlane, 1.0e-6));
 	Capture->SetWorldLocationAndRotation(Location, Rotation);
 }
 

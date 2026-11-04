@@ -253,7 +253,24 @@ void AAerotelicEntityActor::OnRootTransformed(USceneComponent*, EUpdateTransform
 	{
 		RefreshMirror();
 	}
+	// The placed size may have changed (Geometry > Scale).
+	ApplyEdgeOffset();
 	OnGeometryChanged.Broadcast(this);
+}
+
+void AAerotelicEntityActor::ApplyEdgeOffset()
+{
+	// M_AerotelicWire's EdgeOffset is a world-space length (the authored
+	// default, 0.02, suited a 10-unit vehicle). A fraction of the placed
+	// diagonal keeps the lines on the surface at any model scale.
+	if (!LastLocalBounds.IsValid)
+	{
+		return;
+	}
+	const double Diagonal = LastLocalBounds.GetSize().Size() * FMath::Abs(GetActorScale3D().X);
+	const float Offset = static_cast<float>(FMath::Max(1.5e-3 * Diagonal, 1.0e-7));
+	for (UMaterialInstanceDynamic* Mid : EdgeMaterials) if (Mid != nullptr) Mid->SetScalarParameterValue(TEXT("EdgeOffset"), Offset);
+	for (UMaterialInstanceDynamic* Mid : MirrorEdgeMaterials) if (Mid != nullptr) Mid->SetScalarParameterValue(TEXT("EdgeOffset"), Offset);
 }
 
 
@@ -772,6 +789,7 @@ void AAerotelicEntityActor::RefreshProxy()
 	}
 	ApplyColors();
 	RefreshMirror();
+	ApplyEdgeOffset();
 	if (bBodiesChanged)
 	{
 		OnBodiesChanged.Broadcast(this);

@@ -70,6 +70,13 @@ private:
 	double Distance = 30.0;
 	double Yaw = -135.0;
 	double Pitch = -25.0;
+	// The radius of what was last framed: the closest the camera may come
+	// and the near plane are fractions of it and of the distance, as the
+	// main view's are (AerotelicCameraPawn), so a replica's picture zooms
+	// like the full-size vehicle's.
+	double SceneRadius = 30.0;
+	double MinDistance() const;
+	double NearPlane() const;
 
 	bool bDragging = false;
 	bool bDragIsLeft = false;

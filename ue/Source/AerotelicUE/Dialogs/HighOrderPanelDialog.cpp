@@ -753,6 +753,9 @@ namespace
 				AerotelicMessageBox(EAppMsgType::Ok, LOCTEXT("PickOneWarn", "Choose at least one body."), LOCTEXT("Title", "High Order Panel"));
 				return;
 			}
+			// A new solve may be of other bodies, or of the vehicle at another
+			// model scale: the picture frames the new surface when it lands.
+			bFramed = false;
 			// The operating conditions: a list for the angle of attack OR for
 			// the sideslip, never both (a list of each would be a grid of
 			// cases, not a sweep), and sideslip held at zero for now (the

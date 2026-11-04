@@ -190,6 +190,12 @@ void AAerotelicColoredMeshActor::RefreshEdges()
 	if (EdgeMaterial != nullptr)
 	{
 		EdgeMaterial->SetVectorParameterValue(TEXT("Color"), EdgeColor);
+		// The nudge towards the camera as a fraction of this mesh's size
+		// (AAerotelicEntityActor::ApplyEdgeOffset), not the authored 0.02
+		// world units: a replica's picture is a fraction of a unit across.
+		const FBox Bounds = GetMeshBounds();
+		const double Diagonal = Bounds.IsValid ? Bounds.GetSize().Size() : 1.0;
+		EdgeMaterial->SetScalarParameterValue(TEXT("EdgeOffset"), static_cast<float>(FMath::Max(1.5e-3 * Diagonal, 1.0e-7)));
 		Edges->SetMaterial(0, EdgeMaterial);
 	}
 	Edges->SetVisibility(true);

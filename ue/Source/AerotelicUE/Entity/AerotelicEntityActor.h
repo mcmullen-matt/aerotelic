@@ -332,6 +332,11 @@ private:
 	void EnsureProxyEdges();
 	void ApplyColors();
 	void ApplyMeshVisibility();
+	// The wireframe material's nudge towards the camera, a fraction of this
+	// body's PLACED size (so a replica's edges sit on its surface as the
+	// full-size vehicle's do), on every edge material. After every rebuild
+	// and every move or rescale.
+	void ApplyEdgeOffset();
 	void ShowBoxFallback(const TopoDS_Shape& Shape);
 	// The chordal tolerance the viewport builds the model's meshes at:
 	// relative to the body's own size, as the OCCT deflection was.
