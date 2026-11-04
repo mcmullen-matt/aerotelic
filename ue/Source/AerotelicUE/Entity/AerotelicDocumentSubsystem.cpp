@@ -533,7 +533,33 @@ void UAerotelicDocumentSubsystem::ClearScene()
 	Entities.Empty();
 	CurrentPath.Empty();
 	Units = aerotelic::UnitSystem{};
+	ModelScale = 1.0;
 	OnEntityListChanged.Broadcast();
+}
+
+bool UAerotelicDocumentSubsystem::SetModelScale(double InScale)
+{
+	if (!(FMath::IsFinite(InScale) && InScale > 0.0))
+	{
+		return false;
+	}
+	if (InScale == ModelScale)
+	{
+		return true;
+	}
+	ModelScale = InScale;
+	// Every entity's actor transform is its full-scale placement under
+	// the model scale: re-applying the placements moves and resizes them,
+	// which (OnRootTransformed) refreshes the mirrors and queues every
+	// boolean and lattice over them, as a Transform dialog's Apply does.
+	for (auto& Weak : Entities)
+	{
+		if (Weak.IsValid() && !Weak->IsDerived())
+		{
+			Weak->ApplyPlacement(Weak->GetPlacement());
+		}
+	}
+	return true;
 }
 
 FString UAerotelicDocumentSubsystem::UniqueLabel(const FString& BaseName) const
@@ -1193,6 +1219,9 @@ bool UAerotelicDocumentSubsystem::OpenProjectPath(const FString& InPath, bool bA
 
 	ClearScene();
 	Units = Project.units;
+	// Set before any placement is applied: an actor's transform is its
+	// placement under the model scale.
+	ModelScale = Project.scale;
 	// Anything that could not be built: entities whose model refuses (a
 	// wing with a negative chord), boolean operations, lattices. Reported
 	// together at the end; the rest of the project still opens.
@@ -1369,6 +1398,7 @@ bool UAerotelicDocumentSubsystem::SaveProjectToPath(const FString& InPath)
 
 	ProjectFile Project;
 	Project.units = Units;
+	Project.scale = ModelScale;
 	for (auto& WeakEntity : Entities)
 	{
 		if (!WeakEntity.IsValid())

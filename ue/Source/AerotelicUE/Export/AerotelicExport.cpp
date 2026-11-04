@@ -224,7 +224,7 @@ namespace AerotelicExport
 			default:                        Solid = Entity->GetModel()->BuildSolid(); break;
 			}
 			const EntityTransform T = Entity->GetEntityTransform();
-			TopoDS_Shape Placed = Place(Solid, { T.tx, T.ty, T.tz }, { T.ax, T.ay, T.az }, T.angle_deg);
+			TopoDS_Shape Placed = Place(Solid, { T.tx, T.ty, T.tz }, { T.ax, T.ay, T.az }, T.angle_deg, T.scale);
 			if (Operand.bMirror)
 			{
 				Placed = ApplyMirror(Placed, { 0.0, 0.0, 0.0 }, { 0.0, 1.0, 0.0 });

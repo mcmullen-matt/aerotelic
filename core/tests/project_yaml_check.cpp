@@ -400,6 +400,57 @@ void CheckUnitsRoundTrip() {
 	Check(threw, "units: a time unit other than seconds is refused on load");
 }
 
+// `scale:` (Geometry > Scale) is written only when the vehicle is not
+// built full size, read back, absent means 1, and anything but a positive
+// number is refused both ways. The entities beneath it are the full-scale
+// aircraft whatever it says.
+void CheckScaleRoundTrip() {
+	const std::string path = AEROTELIC_TESTS_DIR "/project_yaml_check_tmp.yaml";
+	ProjectEntity e;
+	e.name = "Wing";
+	e.type = EntityType::Wing;
+	e.model = WingModelSpec{};
+	e.placement.translation = {4.0, 0.0, 1.0};
+
+	ProjectFile pf;
+	pf.entities.push_back(e);
+	SaveProjectYaml(pf, path);
+	{
+		std::ifstream in(path);
+		std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+		Check(text.find("scale:") == std::string::npos, "scale: not written at full size, so a 1:1 file reads as it always did");
+	}
+	ProjectFile back = LoadProjectYaml(path);
+	Check(back.scale == 1.0, "scale: absent reads as full size");
+
+	pf.scale = 0.25;
+	SaveProjectYaml(pf, path);
+	{
+		std::ifstream in(path);
+		std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+		Check(text.find("scale: 0.25") != std::string::npos, "scale: 0.25 is written");
+		Check(text.find("units:") < text.find("scale:") && text.find("scale:") < text.find("entities:"), "scale: sits between units and entities");
+	}
+	back = LoadProjectYaml(path);
+	Check(back.scale == 0.25, "scale: 0.25 reads back");
+	Check(back.entities.size() == 1 && std::get<WingModelSpec>(back.entities[0].model).planform.semi_span == kDefaultSemiSpan,
+		"scale: the parameterisation beneath it is still the full-scale one");
+	Check(back.entities[0].placement.translation[0] == 4.0, "scale: the placement beneath it is still the full-scale one");
+
+	for (const char* bad : {"0", "-2", ".nan"}) {
+		std::ofstream out(path);
+		out << "units: {length: m, mass: kg, time: s}\nscale: " << bad << "\nentities: []\n";
+		out.close();
+		bool threw = false;
+		try { LoadProjectYaml(path); } catch (const std::invalid_argument&) { threw = true; }
+		Check(threw, std::string("scale: '") + bad + "' is refused on load");
+	}
+	pf.scale = 0.0;
+	bool threw = false;
+	try { SaveProjectYaml(pf, path); } catch (const std::invalid_argument&) { threw = true; }
+	Check(threw, "scale: zero is refused on save");
+}
+
 // A lattice under `lattices:` (OpenLattice parameters, targets, reserved
 // volumes) round-trips, and its references are validated like a boolean's.
 void CheckLatticeRoundTrip() {
@@ -600,6 +651,7 @@ int main() {
 		CheckMassSpecRoundTrip();
 		CheckMeshSpecRoundTrip();
 		CheckUnitsRoundTrip();
+		CheckScaleRoundTrip();
 		CheckLatticeRoundTrip();
 		CheckRealPythonProjectFile();
 	} catch (const std::exception& e) {

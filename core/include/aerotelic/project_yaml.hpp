@@ -177,6 +177,14 @@ struct ProjectFile {
 	// What every length and mass in the file means (units.hpp). Always
 	// written; absent on load means metres and kilograms.
 	UnitSystem units;
+	// The model scale (Geometry > Scale): the size the vehicle is BUILT at
+	// as a fraction of the size it is DRAWN at. The parameterisations and
+	// placements below are always the full-scale aircraft; a replica is this
+	// times smaller, every solid scaled about the origin and every placement
+	// with it (feature_tree.hpp Place), with the materials' skin thicknesses
+	// and the lattices' parameters as typed. Written when it is not 1;
+	// absent on load means 1 (full size). Must be a positive number.
+	double scale = 1.0;
 	std::vector<ProjectEntity> entities;
 	// In build order; every operand names something listed before it.
 	std::vector<ProjectBoolean> booleans;

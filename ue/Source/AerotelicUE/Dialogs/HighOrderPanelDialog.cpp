@@ -505,9 +505,12 @@ namespace
 				{
 					try
 					{
+						// The model is the full-scale wing; the references are the
+						// replica's (Geometry > Scale), like the panels.
+						const double S = AAerotelicEntityActor::GetModelScale();
 						const aerotelic::WingModel* W = E->GetModelAs<aerotelic::WingModel>();
-						Area += W->planform().PlanformArea();
-						if (Length <= 0.0) Length = W->planform().RootChord();
+						Area += W->planform().PlanformArea() * S * S;
+						if (Length <= 0.0) Length = W->planform().RootChord() * S;
 					}
 					catch (const std::exception&) {}
 				}
@@ -609,7 +612,8 @@ namespace
 					Share.bWing = true;
 					Share.SpanAxis = Transform.TransformVectorNoScale(FVector(0, 1, 0)).GetSafeNormal();
 					aerotelic::WingModel* W = E->GetModelAs<aerotelic::WingModel>();
-					for (int32 k = 0; k <= kLoadCuts; ++k) Share.CutChords.Add(W->planform().ChordAt(static_cast<double>(k) / kLoadCuts));
+					// The placed (replica) chords: the planform is full-scale.
+					for (int32 k = 0; k <= kLoadCuts; ++k) Share.CutChords.Add(W->planform().ChordAt(static_cast<double>(k) / kLoadCuts) * Transform.GetScale3D().X);
 					// The counts from the wing's own Mesh tab where it sets them;
 					// the dialog's figures where it leaves them automatic.
 					aerotelic::panel::WingPaneling Pan;

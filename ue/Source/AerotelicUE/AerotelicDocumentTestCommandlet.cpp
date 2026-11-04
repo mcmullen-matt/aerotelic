@@ -22,6 +22,9 @@
 #include "aerotelic/colormaps.hpp"
 #include "Entity/AerotelicMeshing.h"
 
+#include <Bnd_Box.hxx>
+#include <BRepBndLib.hxx>
+
 DEFINE_LOG_CATEGORY_STATIC(LogAerotelicDocumentTest, Log, All);
 
 namespace
@@ -1118,6 +1121,72 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 		Check(Doc->GetUnits().length == aerotelic::LengthUnit::Foot, "units: set on the document");
 	}
 
+	// Geometry > Scale: a 1:4 replica. The parameterisations and the
+	// placements stay the full-scale aircraft; the actors, the placed
+	// meshes, bounds and solids are a quarter the size and a quarter as far
+	// out; a skin's mass goes as the area (1/16) while its thickness stays;
+	// the boolean and the lattice follow. Set before the save, read back
+	// after the reopen.
+	UE_LOG(LogAerotelicDocumentTest, Display, TEXT("step: scale"));
+	double FullSpan = 0.0, FullMass = 0.0;
+	FBox FullBounds(ForceInit);
+	aerotelic::Placement FullPlacement{{0.0, 0.0, 0.0}, {0.0, 0.0, 1.0}, 0.0};
+	if (Wing != nullptr && Primitive != nullptr)
+	{
+		Check(Doc->GetModelScale() == 1.0, "scale: a project starts at full size");
+		Check(!Doc->SetModelScale(0.0) && !Doc->SetModelScale(-1.0) && Doc->GetModelScale() == 1.0, "scale: zero and negative are refused and change nothing");
+		FullSpan = Wing->GetModelAs<aerotelic::WingModel>()->planform().SemiSpan();
+		// The wing sits where the placement step left it (10, 20, 30).
+		FullPlacement = Wing->GetPlacement();
+		FullBounds = Wing->GetPlacedBounds(false);
+		FAerotelicBooleanOperand P;
+		P.Entity = Primitive;
+		FullMass = ComputeAerotelicMassReport({ P }, 2e-3, Doc->GetUnits()).Assembly.mass;
+		Doc->FlushPendingRebuilds();
+
+		Check(Doc->SetModelScale(0.25) && Doc->GetModelScale() == 0.25, "scale: set to 1:4");
+		Check(FMath::IsNearlyEqual(Wing->GetModelAs<aerotelic::WingModel>()->planform().SemiSpan(), FullSpan, 1e-12), "scale: the wing's parameterisation is untouched");
+		const aerotelic::Placement Kept = Wing->GetPlacement();
+		Check(Kept.translation[0] == FullPlacement.translation[0] && Kept.translation[2] == FullPlacement.translation[2], "scale: the authored placement is untouched (full-scale)");
+		Check(Wing->GetActorScale3D().Equals(FVector(0.25), 1e-9), "scale: the actor carries the scale");
+		const FVector FullAt(FullPlacement.translation[0], FullPlacement.translation[1], FullPlacement.translation[2]);
+		Check(Wing->GetActorLocation().Equals(FullAt * 0.25, 1e-9), FString::Printf(TEXT("scale: the actor sits a quarter as far out (%s)"), *Wing->GetActorLocation().ToString()));
+		const aerotelic::EntityTransform T = Wing->GetEntityTransform();
+		Check(T.scale == 0.25 && T.tx == FullPlacement.translation[0], "scale: the feature-tree transform carries the scale with the full-scale translation");
+		// The bounds come off meshes at the display tolerance (the replica
+		// is meshed that much finer in model space), so to the chordal error.
+		const FBox Quarter = Wing->GetPlacedBounds(false);
+		const double Slack = 3e-3 * FullBounds.GetSize().GetMax();
+		Check(Quarter.IsValid && FullBounds.IsValid && Quarter.GetSize().Equals(FullBounds.GetSize() * 0.25, Slack)
+			&& Quarter.GetCenter().Equals(FullBounds.GetCenter() * 0.25, Slack),
+			FString::Printf(TEXT("scale: the placed bounds are the replica's (%s at %s vs full %s at %s)"), *Quarter.GetSize().ToString(), *Quarter.GetCenter().ToString(), *FullBounds.GetSize().ToString(), *FullBounds.GetCenter().ToString()));
+		{
+			FBox MeshBox(ForceInit);
+			for (const aerotelic::NamedMesh& M : Wing->GetPlacedMeshes(false, 2e-3)) MeshBox += AerotelicMeshing::BoundsOf(M.mesh);
+			Check(MeshBox.IsValid && MeshBox.GetSize().Equals(FullBounds.GetSize() * 0.25, 2e-3 * FullBounds.GetSize().GetMax()),
+				FString::Printf(TEXT("scale: the placed meshes are the replica's (%s)"), *MeshBox.GetSize().ToString()));
+		}
+		{
+			// The OCCT path: the placed solid, a quarter the size.
+			Bnd_Box B;
+			BRepBndLib::AddOptimal(Wing->GetPlacedShape(false), B);
+			double X0, Y0, Z0, X1, Y1, Z1;
+			B.Get(X0, Y0, Z0, X1, Y1, Z1);
+			Check(!B.IsVoid() && FMath::IsNearlyEqual(Y1 - Y0, FullBounds.GetSize().Y * 0.25, 2e-3 * FullBounds.GetSize().Y),
+				FString::Printf(TEXT("scale: the placed solid is the replica's (span %.4f vs full %.4f)"), Y1 - Y0, FullBounds.GetSize().Y));
+		}
+		{
+			const FAerotelicMassReport R = ComputeAerotelicMassReport({ P }, 2e-3, Doc->GetUnits());
+			const aerotelic::MassSpec Spec = Primitive->GetMassSpec();
+			Check(Spec.IsSkin(), "scale: the sphere weighs as a skin (set in the mass step)");
+			Check(FullMass > 0.0 && FMath::IsNearlyEqual(R.Assembly.mass, FullMass / 16.0, 1e-2 * FullMass / 16.0),
+				FString::Printf(TEXT("scale: a skin's mass goes as the area, 1/16 (%.5g vs %.5g full), its thickness as typed"), R.Assembly.mass, FullMass));
+		}
+		Check(Doc->HasPendingRebuilds(), "scale: the boolean and the lattice over the wing and sphere are queued to follow");
+		Doc->FlushPendingRebuilds();
+		Check(!Doc->HasPendingRebuilds(), "scale: ... and rebuilt");
+	}
+
 	UE_LOG(LogAerotelicDocumentTest, Display, TEXT("step: save"));
 	const FString TmpPath = FPaths::Combine(FPlatformProcess::UserTempDir(), TEXT("aerotelic_document_test.yaml"));
 	Check(Doc->SaveProjectToPath(TmpPath), "save succeeded");
@@ -1149,7 +1218,22 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 		FFileHelper::LoadFileToString(Saved, *TmpPath);
 		Check(Saved.Contains(TEXT("units:")) && Saved.Contains(TEXT("length: ft")) && Saved.Contains(TEXT("mass: lbm")) && Saved.Contains(TEXT("time: s")),
 			"units: the project file carries them, time included");
+		Check(Saved.Contains(TEXT("scale: 0.25")), "scale: the project file carries the model scale");
 	}
+	// The replica came back as one: the full-scale parameterisation and
+	// placement in the file, the actors a quarter the size.
+	Check(Doc->GetModelScale() == 0.25, "scale: 1:4 came back with the project");
+	for (auto& Weak : Doc->GetEntities())
+	{
+		if (!Weak.IsValid() || Weak->GetEntityType() != aerotelic::project_yaml::EntityType::Wing) continue;
+		Check(FMath::IsNearlyEqual(Weak->GetModelAs<aerotelic::WingModel>()->planform().SemiSpan(), FullSpan, 1e-9), "scale: the reopened wing is the full-scale parameterisation");
+		Check(FMath::IsNearlyEqual(Weak->GetPlacement().translation[0], FullPlacement.translation[0], 1e-9), "scale: the reopened placement is the full-scale one");
+		Check(Weak->GetActorScale3D().Equals(FVector(0.25), 1e-9)
+			&& Weak->GetActorLocation().Equals(FVector(FullPlacement.translation[0], FullPlacement.translation[1], FullPlacement.translation[2]) * 0.25, 1e-6),
+			"scale: the reopened actor is the replica");
+	}
+	Check(Doc->SetModelScale(1.0) && Doc->GetModelScale() == 1.0, "scale: back to full size for the rest of the run");
+	Doc->FlushPendingRebuilds();
 
 	// Copy refuses the derived kinds, while they are still in the scene: a
 	// boolean result and a lattice are solids built FROM other entities,

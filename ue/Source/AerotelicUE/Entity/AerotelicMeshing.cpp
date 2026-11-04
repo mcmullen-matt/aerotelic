@@ -87,7 +87,10 @@ namespace AerotelicMeshing
 
 	void PlaceMesh(aerotelic::TriMesh& Mesh, const FTransform& Transform)
 	{
-		const FMatrix M = Transform.ToMatrixNoScale();
+		// With the scale: an entity actor's transform carries the project's
+		// model scale (Geometry > Scale) as a uniform scale, and a placed
+		// mesh is the replica's.
+		const FMatrix M = Transform.ToMatrixWithScale();
 		// FMatrix is row-vector convention (v' = v * M): M.M[row][col].
 		const std::array<double, 9> Linear = {
 			M.M[0][0], M.M[1][0], M.M[2][0],

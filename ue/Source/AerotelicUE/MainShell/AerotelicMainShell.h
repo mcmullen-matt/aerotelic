@@ -129,5 +129,13 @@ private:
 	// Geometry > Units: sets the project's units, converting nothing, and
 	// says so once if there is anything in the scene to be re-read.
 	void SetUnits(const aerotelic::UnitSystem& Units);
+	// Geometry > Scale: the model scale the vehicle is built at
+	// (UAerotelicDocumentSubsystem::SetModelScale), a preset or a typed
+	// number; the status bar says which, and the view reframes.
+	void SetModelScale(double Scale);
+	void OnCustomModelScale();
+	// "1:4" for a quarter-scale replica, "x 2.5" for an enlargement, empty
+	// at full size: the status bar's readout.
+	static FString DescribeModelScale(double Scale);
 	UAerotelicDocumentSubsystem* GetDocument() const;
 };

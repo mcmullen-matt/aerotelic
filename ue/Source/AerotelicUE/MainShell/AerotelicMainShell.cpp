@@ -48,6 +48,7 @@
 #include "Widgets/AerotelicDialogWindow.h"
 #include "Widgets/InputSink.h"
 #include "Widgets/NavCube.h"
+#include "Widgets/PromptDialogs.h"
 #include "Widgets/SOverlay.h"
 
 #define LOCTEXT_NAMESPACE "AerotelicMainShell"
@@ -651,13 +652,124 @@ void SAerotelicMainShell::FillGeometryMenu(FMenuBuilder& Menu)
 				FSlateIcon(), FUIAction(FExecuteAction(), FCanExecuteAction::CreateLambda([]() { return false; })));
 			Sub.EndSection();
 		}));
+	// Geometry > Scale: the model scale the vehicle is built at. The
+	// parameterisations are always the full-scale aircraft; a replica is
+	// built from them at this fraction of the size. A radio per common
+	// model scale, reading the document each time the menu opens, and a
+	// prompt for any other number.
+	Menu.AddSubMenu(LOCTEXT("ScaleMenu", "Scale"),
+		LOCTEXT("ScaleMenuTip", "The model scale: the size the vehicle is built at as a fraction of the size it is drawn at. The parameterisations stay the full-scale aircraft; the scene, the booleans, the lattices, every export and every analysis are the replica. Material properties (skin thickness) and lattice parameters are not scaled -- they are what the replica is built from -- so the stresses the FEA reports and every flow quantity with a length scale are the replica's."),
+		FNewMenuDelegate::CreateLambda([this](FMenuBuilder& Sub)
+		{
+			Sub.SetSearchable(false);
+			auto Current = [this]() { UAerotelicDocumentSubsystem* Doc = GetDocument(); return Doc != nullptr ? Doc->GetModelScale() : 1.0; };
+			auto IsCurrent = [Current](double Scale) { return FMath::IsNearlyEqual(Current(), Scale, 1e-9 * Scale); };
+			auto Entry = [this, &Sub, IsCurrent](const FText& Label, const FText& Tip, double Scale)
+			{
+				Sub.AddMenuEntry(Label, Tip, FSlateIcon(),
+					FUIAction(
+						FExecuteAction::CreateLambda([this, Scale]() { SetModelScale(Scale); }),
+						FCanExecuteAction(),
+						FIsActionChecked::CreateLambda([IsCurrent, Scale]() { return IsCurrent(Scale); })),
+					NAME_None, EUserInterfaceActionType::RadioButton);
+			};
+			Sub.BeginSection("FullSize", LOCTEXT("FullSizeSection", "Model scale"));
+			Entry(LOCTEXT("ScaleFull", "Full size (1:1)"), LOCTEXT("ScaleFullTip", "The vehicle built at the size it is drawn"), 1.0);
+			Sub.EndSection();
+			Sub.BeginSection("Replicas", LOCTEXT("ReplicasSection", "Replica"));
+			const int32 Denominators[] = { 2, 3, 4, 5, 6, 8, 10, 12, 16, 20, 24, 32, 48, 72 };
+			for (int32 D : Denominators)
+			{
+				Entry(FText::FromString(FString::Printf(TEXT("1:%d"), D)),
+					FText::FromString(FString::Printf(TEXT("A 1:%d replica: every length %s of the full-scale vehicle's"), D, D == 2 ? TEXT("half") : *FString::Printf(TEXT("one %s"), D == 3 ? TEXT("third") : D == 4 ? TEXT("quarter") : *FString::Printf(TEXT("%dth"), D)))),
+					1.0 / D);
+			}
+			Sub.EndSection();
+			Sub.BeginSection("CustomScale", LOCTEXT("CustomScaleSection", "Any other"));
+			const bool bCustom = ![Current, IsCurrent]() { if (IsCurrent(1.0)) return true; for (int32 D : { 2, 3, 4, 5, 6, 8, 10, 12, 16, 20, 24, 32, 48, 72 }) if (IsCurrent(1.0 / D)) return true; return false; }();
+			Sub.AddMenuEntry(
+				bCustom ? FText::Format(LOCTEXT("ScaleCustomCurrent", "Custom ({0})..."), FText::FromString(DescribeModelScale(Current()))) : LOCTEXT("ScaleCustom", "Custom..."),
+				LOCTEXT("ScaleCustomTip", "Type the model scale as a fraction of full size: 0.25 for a 1:4 replica, 0.0139 for 1:72, 2 for a double-size model"),
+				FSlateIcon(),
+				FUIAction(
+					FExecuteAction::CreateLambda([this]() { OnCustomModelScale(); }),
+					FCanExecuteAction(),
+					FIsActionChecked::CreateLambda([bCustom]() { return bCustom; })),
+				NAME_None, EUserInterfaceActionType::RadioButton);
+			Sub.EndSection();
+		}));
+}
+
+FString SAerotelicMainShell::DescribeModelScale(double Scale)
+{
+	if (FMath::IsNearlyEqual(Scale, 1.0, 1e-9))
+	{
+		return FString();
+	}
+	if (Scale < 1.0)
+	{
+		const double Inverse = 1.0 / Scale;
+		if (FMath::IsNearlyEqual(Inverse, FMath::RoundToDouble(Inverse), 1e-6 * Inverse))
+		{
+			return FString::Printf(TEXT("1:%d"), FMath::RoundToInt(Inverse));
+		}
+		return FString::Printf(TEXT("1:%.4g"), Inverse);
+	}
+	return FString::Printf(TEXT("x %.4g"), Scale);
+}
+
+void SAerotelicMainShell::OnCustomModelScale()
+{
+	UAerotelicDocumentSubsystem* Doc = GetDocument();
+	const TOptional<double> Scale = PromptForDouble(
+		LOCTEXT("ScaleTitle", "Model Scale"),
+		LOCTEXT("ScaleLabel", "Build the vehicle at this fraction of full size"),
+		Doc != nullptr ? Doc->GetModelScale() : 1.0, 1e-6, 1e6, 0.05);
+	if (Scale.IsSet())
+	{
+		SetModelScale(Scale.GetValue());
+	}
+}
+
+void SAerotelicMainShell::SetModelScale(double Scale)
+{
+	UAerotelicDocumentSubsystem* Doc = GetDocument();
+	if (Doc == nullptr)
+	{
+		return;
+	}
+	if (!Doc->SetModelScale(Scale))
+	{
+		AerotelicMessageBox(EAppMsgType::Ok,
+			LOCTEXT("ScaleRefused", "The model scale must be a positive number: 1 for full size, 0.25 for a 1:4 replica."),
+			LOCTEXT("ScaleTitle", "Model Scale"));
+		return;
+	}
+	// The vehicle is a different size: the view that framed it does not
+	// any more.
+	if (AAerotelicCameraPawn* Camera = AAerotelicCameraPawn::FindInGameWorld())
+	{
+		Camera->FrameAll();
+	}
+	const FString Described = DescribeModelScale(Scale);
+	SetStatus(Described.IsEmpty()
+		? LOCTEXT("ScaleFullSet", "Model scale: full size. The vehicle is built at the size it is drawn.")
+		: FText::Format(LOCTEXT("ScaleSet", "Model scale {0}: the vehicle is built at {1} of the size it is drawn. The parameterisations are unchanged; booleans rebuild and lattices regenerate over the replica. Skin thicknesses and lattice parameters are as typed."),
+			FText::FromString(Described), FText::AsNumber(Scale)));
 }
 
 FText SAerotelicMainShell::GetUnitsText() const
 {
 	UAerotelicDocumentSubsystem* Doc = GetDocument();
 	const aerotelic::UnitSystem Units = Doc != nullptr ? Doc->GetUnits() : aerotelic::UnitSystem{};
-	return FText::FromString(UTF8_TO_TCHAR(Units.Describe().c_str()));
+	FString Text = UTF8_TO_TCHAR(Units.Describe().c_str());
+	// "..., 1:4 scale" when the vehicle is not built full size.
+	const FString Scale = DescribeModelScale(Doc != nullptr ? Doc->GetModelScale() : 1.0);
+	if (!Scale.IsEmpty())
+	{
+		Text += FString::Printf(TEXT(", %s scale"), *Scale);
+	}
+	return FText::FromString(Text);
 }
 
 void SAerotelicMainShell::SetUnits(const aerotelic::UnitSystem& Units)
@@ -905,7 +1017,7 @@ TSharedRef<SWidget> SAerotelicMainShell::BuildStatusBar()
 			[
 				SNew(STextBlock)
 				.Text(this, &SAerotelicMainShell::GetUnitsText)
-				.ToolTipText(LOCTEXT("UnitsReadoutTip", "The project's units: length, mass, time, stress (Geometry > Units)"))
+				.ToolTipText(LOCTEXT("UnitsReadoutTip", "The project's units: length, mass, time, stress (Geometry > Units); and the model scale when the vehicle is not built full size (Geometry > Scale)"))
 				.ColorAndOpacity_Static(&MutedText)
 			]
 			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)

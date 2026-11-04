@@ -222,10 +222,21 @@ public:
 	// World bounds of the placed (or mirrored) bodies; invalid if none.
 	FBox GetPlacedBounds(bool bMirror) const;
 
-	// This actor's placement as the backend's feature tree wants it.
+	// This actor's placement as the backend's feature tree wants it: the
+	// full-scale translation and rotation as authored, and the project's
+	// model scale (GetModelScale) for Place() to apply.
 	aerotelic::EntityTransform GetEntityTransform() const;
+	// The project's model scale (Geometry > Scale; the document's). The
+	// model stays the full-scale aircraft: the actor is placed at the
+	// scaled translation with a uniform scale, so everything read off the
+	// actor's transform -- the viewport, GetPlacedMeshes, GetPlacedBounds,
+	// GetPlacedShape -- is the replica. 1 outside a document.
+	static double GetModelScale();
 	// Applies a placement -- from a loaded project file, the clipboard, or
-	// the Transform dialog -- and makes it this entity's stored one.
+	// the Transform dialog -- and makes it this entity's stored one. The
+	// placement is FULL-SCALE; the actor's transform is it scaled by the
+	// model scale, so the document re-applies every placement when the
+	// scale changes.
 	// Placement is declared in the base `aerotelic` namespace (feature_tree.hpp),
 	// not `aerotelic::project_yaml` -- project_yaml.hpp only (de)serializes it.
 	void ApplyPlacement(const aerotelic::Placement& InPlacement);

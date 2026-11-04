@@ -461,7 +461,9 @@ void ShowAerotelicDustDialog(TFunction<void(const FText&)> Status)
 				std::vector<aerotelic::NamedMesh> Local;
 				try
 				{
-					if (Entity->GetModel() != nullptr) Local = Entity->GetModel()->BuildMeshes(Deflection);
+					// The model is the full-scale propeller; the deflection is
+					// asked for on the replica (Geometry > Scale).
+					if (Entity->GetModel() != nullptr) Local = Entity->GetModel()->BuildMeshes(Deflection / AAerotelicEntityActor::GetModelScale());
 				}
 				catch (const std::exception& E)
 				{
@@ -469,9 +471,13 @@ void ShowAerotelicDustDialog(TFunction<void(const FText&)> Status)
 					continue;
 				}
 
+				// The placement under the model scale: the hub that much
+				// closer to the origin, the blade and spinner that much
+				// smaller (the translation in T is the full-scale one).
 				const aerotelic::EntityTransform T = Entity->GetEntityTransform();
+				const double S = T.scale;
 				FRot3 R = AxisAngleToMatrix(T.ax, T.ay, T.az, T.angle_deg);
-				aerotelic::Vec3 Origin{T.tx, T.ty, T.tz};
+				aerotelic::Vec3 Origin{T.tx * S, T.ty * S, T.tz * S};
 				if (C->Operand.bMirror)
 				{
 					// Reflection about world y = 0, folded as M*R = (M*R*M)*M.
@@ -488,7 +494,7 @@ void ShowAerotelicDustDialog(TFunction<void(const FText&)> Status)
 				bool bNegativeSpin = false;
 				if (const aerotelic::PropellerModel* P = Entity->GetModelAs<aerotelic::PropellerModel>())
 				{
-					Rot.Radius = P->radius;
+					Rot.Radius = P->radius * S;
 					bNegativeSpin = P->spin_direction == aerotelic::SpinDirection::Negative;
 				}
 
@@ -512,6 +518,7 @@ void ShowAerotelicDustDialog(TFunction<void(const FText&)> Status)
 						// leftover reflection of a mirrored propeller is
 						// folded in here.
 						Comp.mesh = std::move(M.mesh);
+						if (S != 1.0) for (aerotelic::Vec3& v : Comp.mesh.vertices) v = v * S;
 						if (C->Operand.bMirror) Comp.mesh.Mirror({0.0, 0.0, 0.0}, {0.0, 1.0, 0.0});
 						Comp.ref_tag = TCHAR_TO_UTF8(*Rot.Tag);
 						Components.push_back(std::move(Comp));
@@ -535,7 +542,7 @@ void ShowAerotelicDustDialog(TFunction<void(const FText&)> Status)
 						// body facing outwards.
 						aerotelic::TriMesh Placed = std::move(M.mesh);
 						if (C->Operand.bMirror) Placed.Mirror({0.0, 0.0, 0.0}, {0.0, 1.0, 0.0});
-						for (aerotelic::Vec3& v : Placed.vertices) v = R.Apply(v) + Origin;
+						for (aerotelic::Vec3& v : Placed.vertices) v = R.Apply(v * S) + Origin;
 						Comp.mesh = std::move(Placed);
 						Components.push_back(std::move(Comp));
 					}

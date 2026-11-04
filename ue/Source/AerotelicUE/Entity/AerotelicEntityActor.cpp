@@ -276,7 +276,7 @@ TopoDS_Shape AAerotelicEntityActor::GetPlacedShape(bool bMirror) const
 		}
 	}
 	const aerotelic::EntityTransform T = GetEntityTransform();
-	TopoDS_Shape Placed = aerotelic::Place(Solid, { T.tx, T.ty, T.tz }, { T.ax, T.ay, T.az }, T.angle_deg);
+	TopoDS_Shape Placed = aerotelic::Place(Solid, { T.tx, T.ty, T.tz }, { T.ax, T.ay, T.az }, T.angle_deg, T.scale);
 	if (bMirror)
 	{
 		Placed = aerotelic::ApplyMirror(Placed, { 0.0, 0.0, 0.0 }, { 0.0, 1.0, 0.0 });
@@ -621,7 +621,7 @@ void AAerotelicEntityActor::RefreshMirror()
 			// The OCCT path: the solid RefreshProxy() cached, placed and
 			// reflected.
 			const aerotelic::EntityTransform T = GetEntityTransform();
-			Placed = aerotelic::Place(LastSolid.IsNull() ? Model->BuildSolid() : LastSolid, { T.tx, T.ty, T.tz }, { T.ax, T.ay, T.az }, T.angle_deg);
+			Placed = aerotelic::Place(LastSolid.IsNull() ? Model->BuildSolid() : LastSolid, { T.tx, T.ty, T.tz }, { T.ax, T.ay, T.az }, T.angle_deg, T.scale);
 			Placed = aerotelic::ApplyMirror(Placed, { 0.0, 0.0, 0.0 }, { 0.0, 1.0, 0.0 });
 		}
 		catch (const std::exception& e)
@@ -1048,16 +1048,19 @@ std::vector<aerotelic::NamedMesh> AAerotelicEntityActor::GetPlacedMeshes(bool bM
 	{
 		return Meshes;
 	}
+	// Tolerance is asked for on the placed (replica) mesh; the model is the
+	// full-scale aircraft, so it is meshed that much finer.
+	const double ModelTolerance = Tolerance / GetModelScale();
 	try
 	{
 		// The viewport's own meshes when they are at least as fine as asked.
-		if (!LastMeshes.empty() && LastMeshTolerance <= Tolerance)
+		if (!LastMeshes.empty() && LastMeshTolerance <= ModelTolerance)
 		{
 			Meshes = LastMeshes;
 		}
 		else
 		{
-			Meshes = Model->BuildMeshes(Tolerance);
+			Meshes = Model->BuildMeshes(ModelTolerance);
 		}
 	}
 	catch (const std::exception& e)
@@ -1101,7 +1104,7 @@ FBox AAerotelicEntityActor::GetPlacedBounds(bool bMirror) const
 		for (int32 i = 0; i < 8; ++i)
 		{
 			FVector Corner((i & 1) ? Local.Max.X : Local.Min.X, (i & 2) ? Local.Max.Y : Local.Min.Y, (i & 4) ? Local.Max.Z : Local.Min.Z);
-			Corner = Transform.TransformPositionNoScale(Corner);
+			Corner = Transform.TransformPosition(Corner); // with the model scale
 			if (bMirror)
 			{
 				Corner.Y = -Corner.Y;
@@ -1180,18 +1183,25 @@ void AAerotelicEntityActor::ShowBoxFallback(const TopoDS_Shape& Shape)
 
 // ------------------------------------------------------------- placement
 
+double AAerotelicEntityActor::GetModelScale()
+{
+	const UAerotelicDocumentSubsystem* Doc = UAerotelicDocumentSubsystem::Get();
+	return Doc != nullptr ? Doc->GetModelScale() : 1.0;
+}
+
 aerotelic::EntityTransform AAerotelicEntityActor::GetEntityTransform() const
 {
 	const aerotelic::Placement& P = Placement;
+	const double Scale = GetModelScale();
 	// A zero-length axis is no rotation whatever the angle reads: OCC's
 	// gp_Dir, which Place() hands this to, throws on a null direction.
 	const bool bHasAxis = P.rotation_axis[0] != 0.0 || P.rotation_axis[1] != 0.0 || P.rotation_axis[2] != 0.0;
 	if (!bHasAxis)
 	{
-		return { P.translation[0], P.translation[1], P.translation[2], 0.0, 0.0, 1.0, 0.0 };
+		return { P.translation[0], P.translation[1], P.translation[2], 0.0, 0.0, 1.0, 0.0, Scale };
 	}
 	return { P.translation[0], P.translation[1], P.translation[2],
-		P.rotation_axis[0], P.rotation_axis[1], P.rotation_axis[2], P.rotation_deg };
+		P.rotation_axis[0], P.rotation_axis[1], P.rotation_axis[2], P.rotation_deg, Scale };
 }
 
 void AAerotelicEntityActor::ApplyPlacement(const aerotelic::Placement& InPlacement)
@@ -1205,7 +1215,11 @@ void AAerotelicEntityActor::ApplyPlacement(const aerotelic::Placement& InPlaceme
 	Placement = InPlacement;
 	aerotelic::SyncPlacementRotation(Placement);
 
-	const FVector Loc(Placement.translation[0], Placement.translation[1], Placement.translation[2]);
+	// The model scale (Geometry > Scale): the replica sits that much
+	// closer to the origin, at that fraction of the size. The model itself
+	// is untouched -- it is the full-scale aircraft, drawn smaller.
+	const double Scale = GetModelScale();
+	const FVector Loc(Placement.translation[0] * Scale, Placement.translation[1] * Scale, Placement.translation[2] * Scale);
 	const FVector Axis(Placement.rotation_axis[0], Placement.rotation_axis[1], Placement.rotation_axis[2]);
 	FQuat Quat = FQuat::Identity;
 	if (!Axis.IsNearlyZero() && !FMath::IsNearlyZero(Placement.rotation_deg))
@@ -1217,4 +1231,5 @@ void AAerotelicEntityActor::ApplyPlacement(const aerotelic::Placement& InPlaceme
 	// leaves the transform alone (an axis typed while the angle is zero)
 	// deliberately rebuilds nothing: the geometry really is unchanged.
 	SetActorLocationAndRotation(Loc, Quat);
+	SetActorScale3D(FVector(Scale));
 }

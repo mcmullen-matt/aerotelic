@@ -45,16 +45,26 @@ TopoDS_Shape ApplyRotation(const TopoDS_Shape& shape, const std::array<double, 3
 	return BRepBuilderAPI_Transform(shape, trsf, true).Shape();
 }
 
+TopoDS_Shape ApplyScale(const TopoDS_Shape& shape, double scale) {
+	if (!(std::isfinite(scale) && scale > 0.0)) throw std::invalid_argument("the model scale must be a positive number");
+	if (scale == 1.0) return shape;
+	gp_Trsf trsf;
+	trsf.SetScale(gp_Pnt(0.0, 0.0, 0.0), scale);
+	return BRepBuilderAPI_Transform(shape, trsf, true).Shape();
+}
+
 TopoDS_Shape Place(const TopoDS_Shape& shape_in, const std::array<double, 3>& translation,
-	const std::array<double, 3>& rotation_axis, double rotation_deg) {
-	TopoDS_Shape shape = shape_in;
+	const std::array<double, 3>& rotation_axis, double rotation_deg, double scale) {
+	TopoDS_Shape shape = ApplyScale(shape_in, scale);
 	// A zero-length axis is no rotation, whatever the angle says: gp_Dir
 	// throws on a null vector, and a project file (or a half-typed axis in
 	// the Transform dialog) can hold one.
 	const double axis_len_sq = rotation_axis[0] * rotation_axis[0] + rotation_axis[1] * rotation_axis[1]
 		+ rotation_axis[2] * rotation_axis[2];
 	if (rotation_deg != 0.0 && axis_len_sq > 0.0) shape = ApplyRotation(shape, rotation_axis, rotation_deg);
-	double tx = translation[0], ty = translation[1], tz = translation[2];
+	// The placement is authored full-scale; the replica sits that much
+	// closer to the origin.
+	double tx = translation[0] * scale, ty = translation[1] * scale, tz = translation[2] * scale;
 	if (tx != 0.0 || ty != 0.0 || tz != 0.0) shape = ApplyTranslation(shape, {tx, ty, tz});
 	return shape;
 }
@@ -291,7 +301,7 @@ TopoDS_Shape EntityShapeFeature::Compute() {
 	offered_.reset();
 	TopoDS_Shape s = shape ? *shape : model->BuildSolid();
 	EntityTransform t = get_transform();
-	return Place(s, {t.tx, t.ty, t.tz}, {t.ax, t.ay, t.az}, t.angle_deg);
+	return Place(s, {t.tx, t.ty, t.tz}, {t.ax, t.ay, t.az}, t.angle_deg, t.scale);
 }
 
 // ---------------------------------------------------------------------

@@ -336,6 +336,26 @@ void CheckPlacementRotationSync() {
 	PrimitiveModel box = MakeBox(2, 2, 2);
 	TopoDS_Shape placed = Place(box.BuildSolid(), {0.0, 0.0, 0.0}, {0.0, 0.0, 0.0}, 90.0);
 	CheckClose(Volume(placed), 8.0, 1e-9, "Place with a zero-length axis is a no-op, not a gp_Dir throw");
+
+	// The model scale (Geometry > Scale): the solid a quarter the size
+	// about the origin, and the placement a quarter as far -- the full-scale
+	// translation is what is handed in.
+	TopoDS_Shape replica = Place(box.BuildSolid(), {8.0, 0.0, 0.0}, {0.0, 0.0, 1.0}, 90.0, 0.25);
+	CheckClose(Volume(replica), 8.0 / 64.0, 1e-9, "Place at 1:4 scales the volume by 1/64");
+	{
+		GProp_GProps props;
+		BRepGProp::VolumeProperties(replica, props);
+		CheckClose(props.CentreOfMass().X(), 2.0, 1e-9, "Place at 1:4 puts the centre a quarter as far out");
+	}
+	CheckClose(Volume(Place(box.BuildSolid(), {0.0, 0.0, 0.0}, {0.0, 0.0, 1.0}, 0.0, 1.0)), 8.0, 1e-9, "Place at 1:1 is the identity");
+	bool threw = false;
+	try { Place(box.BuildSolid(), {0.0, 0.0, 0.0}, {0.0, 0.0, 1.0}, 0.0, 0.0); } catch (const std::invalid_argument&) { threw = true; }
+	Check(threw, "Place refuses a zero scale");
+	threw = false;
+	try { ApplyScale(box.BuildSolid(), -2.0); } catch (const std::invalid_argument&) { threw = true; }
+	Check(threw, "ApplyScale refuses a negative scale");
+	EntityTransform t{1.0, 2.0, 3.0, 0.0, 0.0, 1.0, 0.0};
+	Check(t.scale == 1.0, "an EntityTransform built from the seven placement numbers is full scale");
 }
 
 } // namespace

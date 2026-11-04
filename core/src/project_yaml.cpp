@@ -1,6 +1,7 @@
 #include "aerotelic/project_yaml.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <fstream>
 #include <set>
 #include <stdexcept>
@@ -913,6 +914,15 @@ ProjectFile LoadProjectYaml(const std::string& path) {
 		if (units["time"]) CheckTimeUnit(units["time"].as<std::string>());
 		if (units["stress"]) project.units.stress = ParseStressUnit(units["stress"].as<std::string>());
 	}
+	// The model scale: absent means full size. Anything but a positive
+	// number is refused -- a replica at zero or negative size is not a
+	// misreading worth guessing at.
+	if (const YAML::Node scale = root["scale"]) {
+		project.scale = scale.as<double>();
+		if (!(std::isfinite(project.scale) && project.scale > 0.0)) {
+			throw std::invalid_argument("scale: the model scale must be a positive number");
+		}
+	}
 	if (root["entities"]) {
 		for (const auto& en : root["entities"]) project.entities.push_back(DecodeEntity(en));
 	}
@@ -971,6 +981,15 @@ void SaveProjectYaml(const ProjectFile& project, const std::string& path) {
 	units["stress"] = std::string(StressUnitName(project.units.stress));
 	units.SetStyle(YAML::EmitterStyle::Flow);
 	root["units"] = units;
+	// The model scale, only when the vehicle is not built full size, so a
+	// file saved at 1:1 reads as it always did. Refused rather than written
+	// when it is not a positive number: the file must open again.
+	if (project.scale != 1.0) {
+		if (!(std::isfinite(project.scale) && project.scale > 0.0)) {
+			throw std::invalid_argument("scale: the model scale must be a positive number");
+		}
+		root["scale"] = project.scale;
+	}
 	YAML::Node entities(YAML::NodeType::Sequence);
 	for (const auto& e : project.entities) entities.push_back(EncodeEntity(e));
 	root["entities"] = entities;

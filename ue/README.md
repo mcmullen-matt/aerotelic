@@ -1683,6 +1683,68 @@ spellings both ways and the refusals (inches, slugs, minutes);
 key, and the refusals on load; the document commandlet sets feet and
 pounds, saves, reopens, and reads the file's `units:` line.
 
+## Scale: a replica of the full-scale aircraft (2026-11-03)
+
+The parameterisations are always the **full-scale aircraft**: a wing's
+span is the real wing's, a fuselage's length the real fuselage's, and
+that is what every panel edits and every project file saves. **Geometry >
+Scale** sets the *model scale* -- the size the vehicle is BUILT at as a
+fraction of the size it is drawn at -- so a 1:4 replica is the same
+project with the scale at 0.25, and nothing in any parameterisation
+changes. A radio per common model scale (1:1, 1:2 ... 1:72) and
+*Custom...* for any other number (a double-size model is 2). The status
+bar's units readout gains ", 1:4 scale" while the vehicle is not full
+size.
+
+How it is done: the document holds one number
+(`UAerotelicDocumentSubsystem::GetModelScale` / `SetModelScale`) and an
+entity actor's transform is its FULL-SCALE placement under that scale --
+the translation multiplied by it and a uniform scale of it
+(`AAerotelicEntityActor::ApplyPlacement`). The backend's placement
+transform carries it the same way (`feature_tree.hpp EntityTransform::
+scale`, `Place(..., scale)`: the solid scaled about the origin, then
+rotated, then translated by the scaled translation). So everything that
+reads placed geometry is the replica's without knowing it: the viewport,
+the mirrors, `GetPlacedMeshes` / `GetPlacedBounds` / `GetPlacedShape`,
+the boolean results and the lattices built over them, STL / STEP / 3D PDF
+export, mass properties, the FEA, the potential flow, the panel method
+(its default reference area and length are scaled with the wing) and the
+DUST case (a spinning propeller's hub-local blade and radius are scaled).
+Setting the scale re-places every entity, which rebuilds the booleans and
+regenerates the lattices as a Transform dialog's Apply does, and reframes
+the view. The Transform dialog and the design panels keep showing the
+full-scale numbers, which is what they are.
+
+**Not scaled, on purpose**: the materials -- a skin thickness and a
+density are what the replica is to be built FROM, so a 1:4 model with a
+2 mm skin weighs its area at 2 mm, and the stresses and strains the FEA
+reports are the replica's under its own loads; the lattice parameters --
+cell size, wall thickness, skin depth stay as set and the lattice
+regenerates over the smaller bodies (a 1:10 replica at the same cell size
+has a thousandth of the cells: set the cell smaller if that was not the
+intent); and the units -- a 1:4 replica of a vehicle drawn in feet is in
+feet. Every flow quantity with a length scale in it (Reynolds number, the
+forces at a given speed) is the replica's.
+
+The project file: `scale: 0.25` between `units:` and `entities:`,
+written only when the vehicle is not full size so a 1:1 file reads as it
+always did; absent on load means 1; anything but a positive number is
+refused on load and on save. The Python app does not know the key and
+ignores it (it reads `entities`, `booleans` and `lattices` by name).
+
+`feature_tree_check`: `Place` at 1:4 scales a box's volume by 1/64 and
+its centre by 1/4, 1:1 is the identity, zero and negative are refused, an
+`EntityTransform` built from the seven placement numbers is full scale.
+`project_yaml_check`: the key absent at 1:1, written and read back at
+0.25 with the full-scale parameterisation and placement beneath it, the
+refusals. The document commandlet sets 1:4 on the scene: the wing's
+parameterisation and authored placement unchanged, the actor at a quarter
+scale a quarter as far out, the feature-tree transform carrying the scale
+with the full-scale translation, the placed bounds, meshes and OCCT solid
+a quarter the size, the sphere's skin mass 1/16 (area) with its thickness
+as typed, the boolean and the lattice queued and rebuilt; saves, finds
+`scale: 0.25` in the file, reopens, and finds the replica as it was.
+
 ## Materials and the structural analysis (2026-10-22)
 
 **A material is a property of the stuff, not of the units.** The

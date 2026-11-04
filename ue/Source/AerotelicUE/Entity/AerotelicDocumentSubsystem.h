@@ -71,6 +71,23 @@ public:
 	const aerotelic::UnitSystem& GetUnits() const { return Units; }
 	void SetUnits(const aerotelic::UnitSystem& InUnits) { Units = InUnits; }
 
+	// The model scale (Geometry -> Scale; project_yaml.hpp
+	// ProjectFile::scale): the size the vehicle is BUILT at as a fraction
+	// of the size it is DRAWN at. Every parameterisation stays the
+	// full-scale aircraft, as typed into its panel and as saved; the
+	// entity actors are placed at the scaled translation with a uniform
+	// scale (AAerotelicEntityActor::ApplyPlacement), so the viewport, the
+	// placed meshes and solids, the booleans, the lattices and every
+	// analysis see the replica -- a 1:4 model at 0.25. Materials (skin
+	// thickness) and lattice parameters are not scaled: they are what the
+	// replica is to be built from. Saved with the project (written when it
+	// is not 1); New resets it to 1, Open takes the file's. SetModelScale
+	// re-places every entity, which rebuilds the booleans and regenerates
+	// the lattices over them; false, and nothing changed, for anything but
+	// a positive number.
+	double GetModelScale() const { return ModelScale; }
+	bool SetModelScale(double InScale);
+
 	const TArray<TWeakObjectPtr<AAerotelicEntityActor>>& GetEntities() const { return Entities; }
 
 	// Every section airfoil on any Wing or Propeller blade in the scene --
@@ -259,6 +276,7 @@ private:
 
 	FString CurrentPath;
 	aerotelic::UnitSystem Units;
+	double ModelScale = 1.0;
 	FAerotelicSurfaceStyle SurfaceStyle;
 	FAerotelicShadowStyle ShadowStyle;
 	EAerotelicRenderStyle RenderStyle = EAerotelicRenderStyle::Shaded;

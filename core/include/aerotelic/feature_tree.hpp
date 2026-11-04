@@ -41,11 +41,18 @@ namespace aerotelic {
 
 TopoDS_Shape ApplyTranslation(const TopoDS_Shape& shape, const std::array<double, 3>& translation);
 TopoDS_Shape ApplyRotation(const TopoDS_Shape& shape, const std::array<double, 3>& axis, double angle_deg);
-// `shape` rotated then translated. Skips the OCCT round-trip entirely when
-// both are no-ops (see the Python docstring: BRepBuilderAPI_Transform
-// rebuilds the whole shape whether or not the transform does anything).
+// `shape` scaled about the origin by `scale`, then rotated, then
+// translated. Skips the OCCT round-trip entirely when all are no-ops (see
+// the Python docstring: BRepBuilderAPI_Transform rebuilds the whole shape
+// whether or not the transform does anything). The scale is the project's
+// model scale (Geometry > Scale, project_yaml.hpp ProjectFile::scale): a
+// replica at 1:4 is every full-scale solid placed at a quarter the size,
+// a quarter as far from the origin -- the parameterisations themselves
+// are never touched. Must be positive.
 TopoDS_Shape Place(const TopoDS_Shape& shape, const std::array<double, 3>& translation,
-	const std::array<double, 3>& rotation_axis = {0, 0, 0}, double rotation_deg = 0.0);
+	const std::array<double, 3>& rotation_axis = {0, 0, 0}, double rotation_deg = 0.0, double scale = 1.0);
+// Uniform scaling about the origin (a no-op at 1).
+TopoDS_Shape ApplyScale(const TopoDS_Shape& shape, double scale);
 TopoDS_Shape ApplyMirror(const TopoDS_Shape& shape, const std::array<double, 3>& point, const std::array<double, 3>& normal);
 
 // Runs fuse/cut/common with history tracking on. Throws std::invalid_argument
@@ -66,8 +73,11 @@ enum class FeatureKind { ComponentSource, EntityShape, Placement, Mirror, Boolea
 const char* FeatureKindName(FeatureKind k);
 
 // (tx, ty, tz, ax, ay, az, angle_deg) -- an entity's current placement,
-// supplied by whatever owns the scene (not this module's business).
-struct EntityTransform { double tx, ty, tz, ax, ay, az, angle_deg; };
+// supplied by whatever owns the scene (not this module's business) -- and
+// the project's model scale, applied to the solid before the rotation and
+// to the translation (see Place). The translation is given FULL-SCALE, as
+// authored; Place scales it.
+struct EntityTransform { double tx, ty, tz, ax, ay, az, angle_deg; double scale = 1.0; };
 
 // ---------------------------------------------------------------------
 // Euler rotations
