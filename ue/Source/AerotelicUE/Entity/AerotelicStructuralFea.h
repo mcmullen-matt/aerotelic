@@ -96,7 +96,14 @@ namespace AerotelicStructuralFea
 
 	// A support plane: the nodes within Tolerance of Axis = Value (project
 	// units; "min" / "max" put it at the mesh's own extreme) are fixed in
-	// every degree of freedom -- a clamp.
+	// every degree of freedom -- a clamp. Bounded (2026-11-05), it is a
+	// PATCH of that plane: only the nodes inside the rectangle Lo..Hi
+	// along the plane's two in-plane axes -- the other two axes in cyclic
+	// order, (Axis + 1) % 3 then (Axis + 2) % 3, so a plane x = c has the
+	// patch in (y, z), y = c in (z, x), z = c in (x, y) -- are fixed. An
+	// infinite plane through a fuselage at x = 3 also took the wing root
+	// and anything else crossing x = 3; the patch is what the user drags
+	// in the Support tab's picture.
 	struct FSupport
 	{
 		TCHAR Axis = TEXT('y');
@@ -104,6 +111,11 @@ namespace AerotelicStructuralFea
 		bool bAtMin = false;
 		bool bAtMax = false;
 		double Tolerance = 0.0;   // 0: a ten-thousandth of the mesh's diagonal (a lofted section is planar to about that)
+		bool bBounded = false;
+		double Lo[2] = { 0.0, 0.0 };   // project units, in-plane axes as above
+		double Hi[2] = { 0.0, 0.0 };
+		// The in-plane axes (0 x, 1 y, 2 z) of a plane normal to Axis.
+		static int32 InPlaneAxis(int32 PlaneAxis, int32 Which) { return (PlaneAxis + 1 + Which) % 3; }
 		// "min" / "max" resolved over the nodes of the regions meshed from
 		// this chosen body (FRegion::Body) rather than over the whole mesh,
 		// so the body that sticks out furthest does not capture a support

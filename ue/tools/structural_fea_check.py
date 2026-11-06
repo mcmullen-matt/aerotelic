@@ -547,6 +547,21 @@ def main(argv):
                               "beam: the first mode shape is still at the clamp and largest at the tip")
         print("  beam modes (%s, %.2f s): %s Hz; theory f1 %.4g" % (rb["eigensolver"], rb["seconds_modes"], ", ".join("%.4g" % f for f in f_b), f1_b))
 
+        # A support PATCH (2026-11-05): the same clamp plane y = min limited
+        # to the upper half of the root (the in-plane axes of a y plane are
+        # z then x): the fixed nodes are exactly the root nodes with z >= 0,
+        # and the half clamp still carries the tip loads.
+        job_p = dict(job_b)
+        job_p["supports"] = [{"axis": "y", "value": "min", "tolerance": 0.0, "bounds": [0.0, 1.0, -1.0, 1.0]}]
+        job_p["solver"] = dict(job_b["solver"], modes=0)
+        job_p["outputs"] = {"vtk": os.path.join(beam_dir, "beam_patch.vtk"), "result": "beam_patch_result.json"}
+        rp = run(beam_dir, job_p)
+        root = np.abs(bverts[:, 1] - bverts[:, 1].min()) < 1e-9
+        expected_patch = int((root & (bverts[:, 2] >= 0.0)).sum())
+        failures += not check(rp["ok"] and rp["support_nodes"] == expected_patch and rp["support_nodes"] < rb["support_nodes"] and rp["support_planes"][0]["bounds"] == [0.0, 1.0, -1.0, 1.0],
+                              "patch: the clamp limited to z >= 0 fixes the upper half of the root (%d of %d nodes)" % (rp["support_nodes"], rb["support_nodes"]))
+        failures += not check(rp["balanced"] and abs(rp["reaction"][2] - P_tip) < 0.01 * P_tip, "patch: the half clamp carries the tip loads (%.4g vs %.4g N)" % (rp["reaction"][2], P_tip))
+
         # The same bar as a solid of 10-node tetrahedra: the clamp must hold
         # the mid-edge nodes on the plane too (left free until 2026-11-02 the
         # bar came out 4-8% too flexible, converging at first order).

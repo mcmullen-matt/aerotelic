@@ -48,6 +48,25 @@ public:
 	// The backdrop colour; unset, it follows the theme's viewport colour.
 	void SetBackdropColor(const FLinearColor& Color);
 
+	// ---- picking (2026-11-05): a dialog may put handles in the picture
+	// and drag them. On a left press the view asks OnPickDown with the
+	// cursor (widget pixels) and the view ray through it; true means the
+	// dialog took the press, and the move and release go to OnPickMove /
+	// OnPickUp with the same arguments instead of orbiting. OnPickHover is
+	// asked on a plain move for the cursor's shape (true: a hand). The
+	// projection helpers are the capture camera's own convention
+	// (AAerotelicSceneViewActor::SetCamera: the eye at the focus minus the
+	// view direction times the distance, the field of view across the
+	// picture's width). ----
+	using FPickDelegate = TFunction<bool(const FVector2D& Pixel, const FVector& RayOrigin, const FVector& RayDir)>;
+	FPickDelegate OnPickDown, OnPickMove, OnPickUp, OnPickHover;
+	// The view ray through a widget pixel; false before the first tick (no size yet).
+	bool PixelToRay(const FGeometry& MyGeometry, const FVector2D& Pixel, FVector& OutOrigin, FVector& OutDir) const;
+	// A world point onto the widget's pixels; false if behind the eye.
+	bool WorldToPixel(const FGeometry& MyGeometry, const FVector& World, FVector2D& OutPixel) const;
+	// The widget's last geometry (for callers projecting outside an event).
+	const FGeometry& LastGeometry() const { return CachedGeometry; }
+
 	// SWidget
 	virtual void Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime) override;
 	virtual FReply OnMouseButtonDown(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent) override;
@@ -77,10 +96,16 @@ private:
 	double SceneRadius = 30.0;
 	double MinDistance() const;
 	double NearPlane() const;
+	// The half-tangents of the view across the width and the height, the
+	// capture's own convention (see the .cpp).
+	void HalfTangents(const FVector2D& Size, double& OutTanH, double& OutTanV) const;
 
 	bool bDragging = false;
 	bool bDragIsLeft = false;
+	bool bPicking = false;      // the dialog has the press (OnPickDown said so)
+	bool bHoverHandle = false;  // the cursor is over a handle (OnPickHover said so)
 	bool bDirty = true;
+	FGeometry CachedGeometry;
 	// Capture every frame until this time (FPlatformTime seconds) after the
 	// last change. A change is captured for a while, not once: a procedural
 	// mesh created this frame reaches the capture before its vertex colour

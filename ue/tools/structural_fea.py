@@ -849,7 +849,12 @@ def nodal_average(n_nodes, element_blocks, values):
 
 def _support_nodes(nodes, supports):
     """The nodes any of the support planes fixes (each once), and the
-    planes resolved: [{"axis", "value", "tolerance", "nodes"}]."""
+    planes resolved: [{"axis", "value", "tolerance", "bounds", "nodes"}].
+    A support with ``bounds`` [u0, u1, w0, w1] is a PATCH of its plane:
+    only the nodes inside that rectangle along the plane's two in-plane
+    axes -- the other two axes in cyclic order, (axis + 1) % 3 then
+    (axis + 2) % 3 -- are fixed (2026-11-05: an infinite plane through a
+    fuselage also clamped the wing root)."""
     lo, hi = nodes.min(axis=0), nodes.max(axis=0)
     diagonal = float(np.linalg.norm(hi - lo))
     fixed = np.zeros(len(nodes), dtype=bool)
@@ -867,8 +872,14 @@ def _support_nodes(nodes, supports):
             value = float(value)
         tolerance = float(support.get("tolerance", 0.0)) or SUPPORT_TOLERANCE_OVER_DIAGONAL * diagonal
         on = np.abs(nodes[:, axis] - value) <= tolerance
+        bounds = support.get("bounds")
+        if bounds is not None:
+            u0, u1, w0, w1 = (float(v) for v in bounds)
+            u, w = (axis + 1) % 3, (axis + 2) % 3
+            on &= (nodes[:, u] >= min(u0, u1)) & (nodes[:, u] <= max(u0, u1)) & (nodes[:, w] >= min(w0, w1)) & (nodes[:, w] <= max(w0, w1))
+            bounds = [u0, u1, w0, w1]
         fixed |= on
-        planes.append({"axis": "xyz"[axis], "value": value, "tolerance": tolerance, "nodes": int(on.sum())})
+        planes.append({"axis": "xyz"[axis], "value": value, "tolerance": tolerance, "bounds": bounds, "nodes": int(on.sum())})
     support_nodes = np.nonzero(fixed)[0]
     if len(support_nodes) < 3:
         raise JobError("only %d node(s) lie on the support plane(s); a support needs a face of them. "
@@ -936,7 +947,10 @@ def run_job(job_dir):
                       regions -- the two earlier forms)
         supports      [{"axis": "x"|"y"|"z", "value": number | "min" |
                       "max", "tolerance": distance (0: 1e-4 of the
-                      diagonal)}], every plane clamping its nodes (the older
+                      diagonal), "bounds": null | [u0, u1, w0, w1]}], every
+                      plane clamping its nodes -- within the rectangle
+                      along the plane's in-plane axes ((axis + 1) % 3,
+                      (axis + 2) % 3) when bounds are given (the older
                       single "support" is read too)
         loads         {"load_factor": g's along -z, "pressure": pascals on
                       every wetted face, "pressure_file": float64 per face

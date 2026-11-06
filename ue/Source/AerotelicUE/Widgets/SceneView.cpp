@@ -164,6 +164,7 @@ void SAerotelicSceneView::Tick(const FGeometry& AllottedGeometry, const double I
 	{
 		return;
 	}
+	CachedGeometry = AllottedGeometry;
 	const FVector2D Px = AllottedGeometry.GetAbsoluteSize();
 	const FIntPoint Size(
 		FMath::Clamp(FMath::RoundToInt(Px.X), kMinTarget, kMaxTarget),
@@ -264,12 +265,71 @@ void SAerotelicSceneView::Zoom(double Factor)
 	bDirty = true;
 }
 
+void SAerotelicSceneView::HalfTangents(const FVector2D& Size, double& OutTanH, double& OutTanV) const
+{
+	// A scene capture applies FOVAngle across the picture's WIDTH whatever
+	// its aspect (checked 2026-11-05 by picking handles in the structural
+	// dialog's portrait-shaped Support picture: the width rule finds them
+	// under the cursor, the height rule misses them); the height follows
+	// the aspect.
+	const double T = FMath::Tan(FMath::DegreesToRadians(FieldOfViewDeg * 0.5));
+	OutTanH = T;
+	OutTanV = T * Size.Y / Size.X;
+}
+
+bool SAerotelicSceneView::PixelToRay(const FGeometry& MyGeometry, const FVector2D& Pixel, FVector& OutOrigin, FVector& OutDir) const
+{
+	const FVector2D Size = MyGeometry.GetLocalSize();
+	if (Size.X <= 1.0 || Size.Y <= 1.0) return false;
+	const FRotator Rotation(Pitch, Yaw, 0.0);
+	const FRotationMatrix Frame(Rotation);
+	const FVector Forward = Frame.GetUnitAxis(EAxis::X);
+	const FVector Right = Frame.GetUnitAxis(EAxis::Y);
+	const FVector Up = Frame.GetUnitAxis(EAxis::Z);
+	OutOrigin = FocusPoint - Rotation.Vector() * Distance;
+	double TanH, TanV;
+	HalfTangents(Size, TanH, TanV);
+	const double Nx = (Pixel.X / Size.X) * 2.0 - 1.0;
+	const double Ny = 1.0 - (Pixel.Y / Size.Y) * 2.0;
+	OutDir = (Forward + Right * (Nx * TanH) + Up * (Ny * TanV)).GetSafeNormal();
+	return true;
+}
+
+bool SAerotelicSceneView::WorldToPixel(const FGeometry& MyGeometry, const FVector& World, FVector2D& OutPixel) const
+{
+	const FVector2D Size = MyGeometry.GetLocalSize();
+	if (Size.X <= 1.0 || Size.Y <= 1.0) return false;
+	const FRotator Rotation(Pitch, Yaw, 0.0);
+	const FRotationMatrix Frame(Rotation);
+	const FVector Eye = FocusPoint - Rotation.Vector() * Distance;
+	const FVector D = World - Eye;
+	const double Depth = FVector::DotProduct(D, Frame.GetUnitAxis(EAxis::X));
+	if (Depth <= 1e-9) return false;
+	double TanH, TanV;
+	HalfTangents(Size, TanH, TanV);
+	const double Nx = FVector::DotProduct(D, Frame.GetUnitAxis(EAxis::Y)) / (Depth * TanH);
+	const double Ny = FVector::DotProduct(D, Frame.GetUnitAxis(EAxis::Z)) / (Depth * TanV);
+	OutPixel = FVector2D((Nx + 1.0) * 0.5 * Size.X, (1.0 - Ny) * 0.5 * Size.Y);
+	return true;
+}
+
 FReply SAerotelicSceneView::OnMouseButtonDown(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent)
 {
 	const FKey Button = MouseEvent.GetEffectingButton();
 	if (Button != EKeys::LeftMouseButton && Button != EKeys::RightMouseButton && Button != EKeys::MiddleMouseButton)
 	{
 		return FReply::Unhandled();
+	}
+	if (Button == EKeys::LeftMouseButton && OnPickDown)
+	{
+		const FVector2D Pixel = MyGeometry.AbsoluteToLocal(MouseEvent.GetScreenSpacePosition());
+		FVector O, Dir;
+		if (PixelToRay(MyGeometry, Pixel, O, Dir) && OnPickDown(Pixel, O, Dir))
+		{
+			bPicking = true;
+			bDragging = false;
+			return FReply::Handled().CaptureMouse(SharedThis(this)).SetUserFocus(SharedThis(this), EFocusCause::Mouse);
+		}
 	}
 	bDragging = true;
 	bDragIsLeft = Button == EKeys::LeftMouseButton;
@@ -278,6 +338,15 @@ FReply SAerotelicSceneView::OnMouseButtonDown(const FGeometry& MyGeometry, const
 
 FReply SAerotelicSceneView::OnMouseButtonUp(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent)
 {
+	if (bPicking)
+	{
+		bPicking = false;
+		const FVector2D Pixel = MyGeometry.AbsoluteToLocal(MouseEvent.GetScreenSpacePosition());
+		FVector O, Dir;
+		if (OnPickUp && PixelToRay(MyGeometry, Pixel, O, Dir)) OnPickUp(Pixel, O, Dir);
+		bDirty = true;
+		return FReply::Handled().ReleaseMouseCapture();
+	}
 	if (!bDragging)
 	{
 		return FReply::Unhandled();
@@ -288,8 +357,23 @@ FReply SAerotelicSceneView::OnMouseButtonUp(const FGeometry& MyGeometry, const F
 
 FReply SAerotelicSceneView::OnMouseMove(const FGeometry& MyGeometry, const FPointerEvent& MouseEvent)
 {
+	if (bPicking && HasMouseCapture())
+	{
+		const FVector2D Pixel = MyGeometry.AbsoluteToLocal(MouseEvent.GetScreenSpacePosition());
+		FVector O, Dir;
+		if (OnPickMove && PixelToRay(MyGeometry, Pixel, O, Dir)) OnPickMove(Pixel, O, Dir);
+		bDirty = true;
+		return FReply::Handled();
+	}
 	if (!bDragging || !HasMouseCapture())
 	{
+		// A plain move: is the cursor over a handle?
+		if (OnPickHover)
+		{
+			const FVector2D Pixel = MyGeometry.AbsoluteToLocal(MouseEvent.GetScreenSpacePosition());
+			FVector O, Dir;
+			bHoverHandle = PixelToRay(MyGeometry, Pixel, O, Dir) && OnPickHover(Pixel, O, Dir);
+		}
 		return FReply::Unhandled();
 	}
 	// Deltas in screen pixels, as the main view's are.
@@ -330,5 +414,7 @@ FReply SAerotelicSceneView::OnKeyDown(const FGeometry& MyGeometry, const FKeyEve
 
 FCursorReply SAerotelicSceneView::OnCursorQuery(const FGeometry& MyGeometry, const FPointerEvent& CursorEvent) const
 {
+	if (bPicking) return FCursorReply::Cursor(EMouseCursor::GrabHandClosed);
+	if (bHoverHandle) return FCursorReply::Cursor(EMouseCursor::GrabHand);
 	return FCursorReply::Cursor(bDragging ? EMouseCursor::GrabHandClosed : EMouseCursor::Default);
 }

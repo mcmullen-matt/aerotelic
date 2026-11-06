@@ -937,6 +937,40 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 					Check(bPre && Pre.Tets == 0 && Pre.WettedFaces.Num() == R.WettedFaces && Pre.SupportNodes.Num() == R.SupportCornerNodes && Pre.Regions.Num() == 1 && Pre.Regions[0].Kind == TEXT("shells"),
 						FString::Printf(TEXT("fea (shells only, pre-processor): the faces and the fixed nodes are the script's (%d / %d faces, %d / %d nodes; %s)"), bPre ? Pre.WettedFaces.Num() : -1, R.WettedFaces, bPre ? Pre.SupportNodes.Num() : -1, R.SupportCornerNodes, *PreError));
 					Check(bPre && FMath::IsNearlyEqual(Pre.Mass, R.Mass, 1e-6 * R.Mass), "fea (shells only, pre-processor): the mass is rho t A");
+
+					// A support PATCH (2026-11-05): the same plane z = min limited
+					// to a quadrant, x and y from -1 to 0.15 (the in-plane axes of a
+					// z plane are x then y). The script and the pre-processor fix
+					// the same, smaller set of nodes, and the quadrant still
+					// carries the sphere's weight.
+					const int32 WholePlaneNodes = R.SupportCornerNodes;
+					Request.Supports[0].bBounded = true;
+					Request.Supports[0].Lo[0] = -1.0; Request.Supports[0].Hi[0] = 0.15;
+					Request.Supports[0].Lo[1] = -1.0; Request.Supports[0].Hi[1] = 0.15;
+					Request.VtkPath = FPaths::Combine(FPlatformProcess::UserTempDir(), TEXT("aerotelic_document_test_fea_patch.vtk"));
+					AerotelicStructuralFea::FResult RP;
+					FString PatchError;
+					const bool bPatch = AerotelicStructuralFea::Run(Request, RP, PatchError);
+					Check(bPatch, FString::Printf(TEXT("fea (patch): the thin-walled sphere solved on a quadrant patch of the support plane (%s)"), bPatch ? *FString::Printf(TEXT("%d fixed nodes of %d on the whole plane"), RP.SupportCornerNodes, WholePlaneNodes) : *PatchError));
+					if (bPatch)
+					{
+						AerotelicFeaPreprocess::FModel PreP;
+						FString PrePError;
+						const bool bPreP = AerotelicFeaPreprocess::Build(Request, PreP, PrePError);
+						Check(RP.SupportCornerNodes > 2 && RP.SupportCornerNodes < WholePlaneNodes, FString::Printf(TEXT("fea (patch): the patch fixes fewer nodes than the whole plane (%d vs %d)"), RP.SupportCornerNodes, WholePlaneNodes));
+						Check(bPreP && PreP.SupportNodes.Num() == RP.SupportCornerNodes && PreP.SupportPlanes.Num() == 1 && PreP.SupportPlanes[0].bBounded,
+							FString::Printf(TEXT("fea (patch, pre-processor): the patch's fixed nodes are the script's (%d vs %d)"), bPreP ? PreP.SupportNodes.Num() : -1, RP.SupportCornerNodes));
+						bool bInside = bPreP;
+						for (int32 N : (bPreP ? PreP.SupportNodes : TArray<int32>()))
+						{
+							const aerotelic::Vec3& P = ShellMesh.nodes[N];
+							bInside = bInside && P.x >= -1.0 && P.x <= 0.15 && P.y >= -1.0 && P.y <= 0.15;
+						}
+						Check(bInside, "fea (patch, pre-processor): every fixed node lies inside the patch's rectangle");
+						const double WeightP = RP.Mass * 9.80665;
+						Check(RP.bBalanced && FMath::Abs(RP.Reaction[2] - WeightP) <= 0.02 * WeightP, FString::Printf(TEXT("fea (patch): the quadrant carries the weight (%.4g vs %.4g N)"), RP.Reaction[2], WeightP));
+						IFileManager::Get().Delete(*Request.VtkPath, false, true, true);
+					}
 				}
 			}
 		}

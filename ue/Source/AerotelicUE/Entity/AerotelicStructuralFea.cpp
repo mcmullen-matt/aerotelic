@@ -262,7 +262,10 @@ namespace AerotelicStructuralFea
 		{
 			const FSupport& S = Request.Supports[i];
 			const FString Value = S.bAtMin ? TEXT("\"min\"") : (S.bAtMax ? TEXT("\"max\"") : Num(S.Value * L));
-			SupportsJson += FString::Printf(TEXT("%s{\"axis\": \"%c\", \"value\": %s, \"tolerance\": %s}"), i ? TEXT(", ") : TEXT(""), FChar::ToLower(S.Axis), *Value, *Num(S.Tolerance * L));
+			const FString Bounds = S.bBounded
+				? FString::Printf(TEXT("[%s, %s, %s, %s]"), *Num(S.Lo[0] * L), *Num(S.Hi[0] * L), *Num(S.Lo[1] * L), *Num(S.Hi[1] * L))
+				: FString(TEXT("null"));
+			SupportsJson += FString::Printf(TEXT("%s{\"axis\": \"%c\", \"value\": %s, \"tolerance\": %s, \"bounds\": %s}"), i ? TEXT(", ") : TEXT(""), FChar::ToLower(S.Axis), *Value, *Num(S.Tolerance * L), *Bounds);
 		}
 		FString PointsJson;
 		for (int32 i = 0; i < Request.PointForces.Num(); ++i)

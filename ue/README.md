@@ -2449,6 +2449,57 @@ the homogenised sphere and the solid sphere, and that the seeded fill of
 the sphere is within the band. The Help tab has a QUALITY section citing
 Shewchuk 2002.
 
+### Support patches, dragged in the picture (2026-11-05, night)
+
+Matt: the infinite support plane clamps parts that should be free (x = 3
+through the fuselage also takes the wing root), so let the plane's extent
+be limited, by mouse, with live feedback. Done as an axis-aligned PATCH,
+consistent with the planes the Support panel already has:
+
+* **Model**: `FSupport::bBounded`, `Lo[2]`, `Hi[2]` along the plane's two
+  in-plane axes -- the other two axes in cyclic order,
+  `FSupport::InPlaneAxis`: x = c has its patch in (y, z), y = c in (z, x),
+  z = c in (x, y) -- project units; the job's support entries carry
+  `bounds: [u0, u1, w0, w1]` (SI) or null; `structural_fea.py
+  _support_nodes` and `AerotelicFeaPreprocess` (`NodeOnPlane`, the one
+  rule, shared with the dialog's live redraw) fix only the nodes within
+  the tolerance of the plane AND inside the rectangle; the resolved
+  planes report their bounds.
+* **Card**: a "Limit to a patch" tick, the rectangle's four numbers with
+  their axes named live from the plane's axis, *Fit to body* (the 'Of'
+  body's extent on the plane, else the whole mesh's, with a 1% margin)
+  and *Whole plane*. Full-scale like Value and Within.
+* **Picture**: each plane's frame is drawn at its patch (amber) or at the
+  mesh's extent plus 5% (blue, the whole plane) with eight handles -- the
+  corners and the edges' midpoints (`FPatchHandle`). `SAerotelicSceneView`
+  gained picking: `OnPickHover / Down / Move / Up` callbacks with the
+  cursor's pixel and the view ray through it, `PixelToRay` and
+  `WorldToPixel` in the capture camera's own convention (the eye at the
+  focus minus the view direction times the distance; the field of view
+  across the picture's WIDTH whatever its aspect -- checked by picking in
+  the portrait-shaped Support picture, where the height rule misses the
+  handles), and the hand cursor over a handle. A press within 14 px of a
+  handle takes the drag (else the view orbits as before); a whole-plane
+  support becomes a patch starting from its drawn frame; the cursor's
+  point on the plane (ray / plane intersection) moves the corner's two
+  sides or the edge's one, never past the opposite side; every move
+  recomputes the fixed nodes by the pre-processor's rule and redraws the
+  markers' actor alone (the surface stays), with the caption's counts
+  marked provisional; release re-derives the model (`Derive(false)`: no
+  reframing, the view stays where the user had it).
+* **Checked live** with `tools/mouse.ps1` and screen captures on the
+  gyroid-filled box (`Saved/Screenshots/fea_patch_drag.png`): a corner
+  dragged on the end face y = -2 sits under the cursor mid-drag, the
+  patch's numbers and the count (20 to 6 nodes) follow, and release keeps
+  them. Also seen: a left press that misses a handle orbits the view as
+  before, so aim at the octahedra.
+* **Tests**: `structural_fea_check.py` -- the beam's clamp limited to
+  z >= 0 fixes exactly the root nodes with z >= 0 and the half clamp
+  carries the tip loads; the document commandlet -- the thin-walled
+  sphere clamped on a quadrant patch of z = min: the script and the
+  pre-processor fix the same, smaller set, every fixed node inside the
+  rectangle, the quadrant carrying the weight (293 passed).
+
 ## How the standalone build is put together
 
 * `Source/AerotelicUE.Target.cs` -- the game target that becomes `AerotelicUE.exe`.

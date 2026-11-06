@@ -355,10 +355,13 @@ namespace AerotelicFeaPreprocess
 				// section's whole ring (planar to about that); a millionth
 				// took two of hershey_bar's thirty root nodes.
 				P.Tolerance = S.Tolerance > 0.0 ? S.Tolerance : 1e-4 * Out.Diagonal;
+				P.bBounded = S.bBounded;
+				for (int32 k = 0; k < 2; ++k) { P.Lo[k] = S.Lo[k]; P.Hi[k] = S.Hi[k]; }
 				for (int32 n = 0; n < Out.Nodes; ++n)
 				{
+					if (!NodeOnPlane(Mesh.nodes[n], P)) continue;
 					const double D = std::abs(Mesh.nodes[n][P.Axis] - P.Value);
-					if (D <= P.Tolerance) { ++P.Nodes; Fixed[n] = true; P.Furthest = FMath::Max(P.Furthest, D); }
+					++P.Nodes; Fixed[n] = true; P.Furthest = FMath::Max(P.Furthest, D);
 				}
 				Out.SupportPlanes.Add(P);
 			}

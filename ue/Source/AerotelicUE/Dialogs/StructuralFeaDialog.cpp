@@ -267,6 +267,8 @@ namespace
 	const FColor kGravity = Srgb(0.30f, 0.85f, 0.35f);
 	const FColor kFixed = Srgb(0.95f, 0.15f, 0.15f);
 	const FColor kPlane = Srgb(0.35f, 0.55f, 1.0f);
+	const FColor kHandle = Srgb(1.0f, 0.75f, 0.2f);
+	const FColor kHandleHot = Srgb(1.0f, 0.95f, 0.5f);
 
 	// A point force as the user types it (project units, newtons).
 	struct FPointRow
@@ -288,7 +290,26 @@ namespace
 		// the replica's.
 		double Value = 0.0;
 		double Tolerance = 0.0;
+		// The patch (2026-11-05): bounded, only the nodes inside Lo..Hi along
+		// the plane's two in-plane axes (FSupport::InPlaneAxis) are fixed.
+		// Full-scale, like Value. Set by dragging the handles in the Support
+		// picture, by the fields on the card, or by Fit to body.
+		bool bBounded = false;
+		double Lo[2] = { 0.0, 0.0 };
+		double Hi[2] = { 0.0, 0.0 };
 	};
+
+	// A handle of a support patch in the Support picture: which plane,
+	// which part of its rectangle (0..3 the corners lo/lo, hi/lo, hi/hi,
+	// lo/hi; 4..7 the edges u lo, u hi, w lo, w hi) and where it is drawn
+	// (replica coordinates).
+	struct FPatchHandle
+	{
+		int32 Plane = -1;
+		int32 Kind = -1;
+		FVector World = FVector::ZeroVector;
+	};
+	constexpr double kHandlePickPixels = 14.0;
 
 	// The model as built from the chosen bodies: the full mesh as meshed,
 	// the mesh the solver gets (the full one less whatever floats free of
@@ -409,6 +430,13 @@ namespace
 
 		TSharedPtr<SAerotelicTabStrip> Tabs;
 		bool bSmoke = false;
+
+		// The support patches' handles as last drawn, and the one being
+		// dragged (its plane and kind; -1 none). Hover is the handle under
+		// the cursor, drawn brighter.
+		TArray<FPatchHandle> Handles;
+		int32 DragPlane = -1, DragKind = -1;
+		int32 HoverHandle = -1;
 
 		// The three ways a lattice-filled body may be analysed (ModelOptions):
 		// shells on its own grid over a homogenised core; the lattice's
@@ -549,6 +577,8 @@ namespace
 				S.bAtMax = R->Where == 2;
 				S.Tolerance = R->Tolerance * Scale;
 				S.Body = R->Body > 0 ? R->Body - 1 : -1;
+				S.bBounded = R->bBounded;
+				for (int32 k = 0; k < 2; ++k) { S.Lo[k] = R->Lo[k] * Scale; S.Hi[k] = R->Hi[k] * Scale; }
 				Request.Supports.Add(S);
 			}
 			Request.PointForces.Reset();
@@ -815,7 +845,7 @@ namespace
 		// no load path to any support are left out (a control surface in
 		// its gap, a payload bay inside the fuselage -- they would make the
 		// system singular), the rest derived for the pictures and the solve.
-		bool Derive()
+		bool Derive(bool bReframe = true)
 		{
 			if (!Built.IsValid()) return false;
 			if (IsSolving())
@@ -905,10 +935,201 @@ namespace
 				}
 			}
 			// Every Build and Apply reframes the pictures: the model may be of
-			// other bodies, or the vehicle at another model scale.
-			for (bool& F : bFramed) F = false;
+			// other bodies, or the vehicle at another model scale. A patch
+			// drag's release does not: the view stays where the user had it.
+			if (bReframe) for (bool& F : bFramed) F = false;
 			UpdatePictures();
 			return true;
+		}
+
+		// ---- the support patches: rectangles, handles, live nodes ----
+
+		// The rectangle a plane is drawn with, replica coordinates: the
+		// patch when bounded, else the mesh's extent plus a margin (what an
+		// infinite plane has always been drawn as, and what a patch starts
+		// from when a handle of it is first dragged).
+		void PlaneRect(int32 k, const FModel& M, double Lo[2], double Hi[2]) const
+		{
+			const FModel::FPlane& Plane = M.SupportPlanes[k];
+			const bool bBounded = SupportRows.IsValidIndex(k) && SupportRows[k]->bBounded;
+			const double Margin = 0.05 * FMath::Max(M.Diagonal, 1e-9);
+			const double MinV[3] = { M.Bounds.min.x, M.Bounds.min.y, M.Bounds.min.z };
+			const double MaxV[3] = { M.Bounds.max.x, M.Bounds.max.y, M.Bounds.max.z };
+			for (int32 i = 0; i < 2; ++i)
+			{
+				const int32 A = AerotelicStructuralFea::FSupport::InPlaneAxis(Plane.Axis, i);
+				if (bBounded)
+				{
+					Lo[i] = FMath::Min(SupportRows[k]->Lo[i], SupportRows[k]->Hi[i]) * ModelScale();
+					Hi[i] = FMath::Max(SupportRows[k]->Lo[i], SupportRows[k]->Hi[i]) * ModelScale();
+				}
+				else
+				{
+					Lo[i] = MinV[A] - Margin;
+					Hi[i] = MaxV[A] + Margin;
+				}
+			}
+		}
+
+		// The planes as the rows have them now (the resolved value and
+		// tolerance from the last derivation, the patch from the rows), for
+		// a redraw between a drag's moves without the full derivation.
+		TArray<FModel::FPlane> LivePlanes() const
+		{
+			TArray<FModel::FPlane> Planes = Built.IsValid() ? Built->Model.SupportPlanes : TArray<FModel::FPlane>();
+			for (int32 k = 0; k < Planes.Num() && k < SupportRows.Num(); ++k)
+			{
+				Planes[k].bBounded = SupportRows[k]->bBounded;
+				for (int32 i = 0; i < 2; ++i) { Planes[k].Lo[i] = SupportRows[k]->Lo[i] * ModelScale(); Planes[k].Hi[i] = SupportRows[k]->Hi[i] * ModelScale(); }
+				Planes[k].Nodes = 0;
+				Planes[k].Furthest = 0.0;
+			}
+			return Planes;
+		}
+
+		// The nodes those planes fix, by the pre-processor's own rule.
+		TArray<int32> LiveSupportNodes(TArray<FModel::FPlane>& Planes) const
+		{
+			TArray<int32> Nodes;
+			if (!Built.IsValid()) return Nodes;
+			const aerotelic::TetMesh& Mesh = Built->Mesh;
+			for (int32 n = 0; n < static_cast<int32>(Mesh.nodes.size()); ++n)
+			{
+				bool bFixed = false;
+				for (FModel::FPlane& P : Planes)
+				{
+					if (!AerotelicFeaPreprocess::NodeOnPlane(Mesh.nodes[n], P)) continue;
+					++P.Nodes;
+					P.Furthest = FMath::Max(P.Furthest, std::abs(Mesh.nodes[n][P.Axis] - P.Value));
+					bFixed = true;
+				}
+				if (bFixed) Nodes.Add(n);
+			}
+			return Nodes;
+		}
+
+		// The handle under a pixel, or -1.
+		int32 HandleAt(const FVector2D& Pixel) const
+		{
+			if (!Views[TabSupport].IsValid()) return -1;
+			int32 Best = -1;
+			double BestD = kHandlePickPixels;
+			for (int32 i = 0; i < Handles.Num(); ++i)
+			{
+				FVector2D P;
+				if (!Views[TabSupport]->WorldToPixel(Views[TabSupport]->LastGeometry(), Handles[i].World, P)) continue;
+				const double D = FVector2D::Distance(P, Pixel);
+				if (D < BestD) { BestD = D; Best = i; }
+			}
+			return Best;
+		}
+
+		bool OnPatchHover(const FVector2D& Pixel)
+		{
+			const int32 H = HandleAt(Pixel);
+			if (H != HoverHandle)
+			{
+				HoverHandle = H;
+				if (Built.IsValid()) UpdateSupportPicture(Built->Model.SupportPlanes, Built->Model.SupportNodes, false);
+			}
+			return H >= 0;
+		}
+
+		// A press on a handle starts a drag of its patch; a plane that was
+		// infinite becomes the rectangle it was drawn as.
+		bool OnPatchDown(const FVector2D& Pixel)
+		{
+			const int32 H = HandleAt(Pixel);
+			if (H < 0 || !Built.IsValid() || IsSolving()) return false;
+			const FPatchHandle& Handle = Handles[H];
+			if (!SupportRows.IsValidIndex(Handle.Plane)) return false;
+			TSharedPtr<FSupportRow> Row = SupportRows[Handle.Plane];
+			if (!Row->bBounded)
+			{
+				double Lo[2], Hi[2];
+				PlaneRect(Handle.Plane, Built->Model, Lo, Hi);
+				Row->bBounded = true;
+				for (int32 i = 0; i < 2; ++i) { Row->Lo[i] = Full(Lo[i]); Row->Hi[i] = Full(Hi[i]); }
+			}
+			DragPlane = Handle.Plane;
+			DragKind = Handle.Kind;
+			return true;
+		}
+
+		// The cursor's point on the plane moves the grabbed corner or edge.
+		void OnPatchMove(const FVector& RayOrigin, const FVector& RayDir)
+		{
+			if (DragPlane < 0 || !Built.IsValid() || !SupportRows.IsValidIndex(DragPlane) || !Built->Model.SupportPlanes.IsValidIndex(DragPlane)) return;
+			const FModel::FPlane& Plane = Built->Model.SupportPlanes[DragPlane];
+			const double DirA = RayDir[Plane.Axis];
+			if (FMath::Abs(DirA) < 1e-9) return;   // looking along the plane: no point to drag to
+			const double T = (Plane.Value - RayOrigin[Plane.Axis]) / DirA;
+			if (T <= 0.0) return;
+			const FVector Hit = RayOrigin + RayDir * T;
+			TSharedPtr<FSupportRow> Row = SupportRows[DragPlane];
+			const int32 U = AerotelicStructuralFea::FSupport::InPlaneAxis(Plane.Axis, 0);
+			const int32 W = AerotelicStructuralFea::FSupport::InPlaneAxis(Plane.Axis, 1);
+			const double u = Full(Hit[U]), w = Full(Hit[W]);
+			// Corners 0..3: lo/lo, hi/lo, hi/hi, lo/hi; edges 4..7: u lo, u hi, w lo, w hi.
+			const bool bU = DragKind <= 3 || DragKind == 4 || DragKind == 5;
+			const bool bW = DragKind <= 3 || DragKind == 6 || DragKind == 7;
+			const bool bULo = DragKind == 0 || DragKind == 3 || DragKind == 4;
+			const bool bWLo = DragKind == 0 || DragKind == 1 || DragKind == 6;
+			if (bU) { if (bULo) Row->Lo[0] = FMath::Min(u, Row->Hi[0]); else Row->Hi[0] = FMath::Max(u, Row->Lo[0]); }
+			if (bW) { if (bWLo) Row->Lo[1] = FMath::Min(w, Row->Hi[1]); else Row->Hi[1] = FMath::Max(w, Row->Lo[1]); }
+			// Live: the fixed nodes by the pre-processor's rule, redrawn.
+			TArray<FModel::FPlane> Planes = LivePlanes();
+			const TArray<int32> Nodes = LiveSupportNodes(Planes);
+			UpdateSupportPicture(Planes, Nodes, true);
+		}
+
+		// Release: the full derivation (the request, every count, the
+		// captions), the view left where it is.
+		void OnPatchUp()
+		{
+			if (DragPlane < 0) return;
+			DragPlane = DragKind = -1;
+			Derive(false);
+		}
+
+		// Fit to body: the patch becomes the chosen body's extent on the
+		// plane (the whole mesh's if none), with a small margin.
+		void FitPatch(TSharedPtr<FSupportRow> Row)
+		{
+			if (!Built.IsValid()) { Status(LOCTEXT("NotBuilt", "Build the model first (Set-up tab); the loads and supports are then applied to it.")); return; }
+			const FBuilt& B = *Built;
+			const int32 A = FMath::Clamp(Row->Axis, 0, 2);
+			aerotelic::Box3 Box;
+			const int32 Body = Row->Body > 0 ? Row->Body - 1 : -1;
+			if (Body >= 0)
+			{
+				TSet<int32> Regions;
+				for (const AerotelicStructuralFea::FRegion& R : B.Request.Regions) if (R.Body == Body) Regions.Add(R.Id);
+				for (size_t t = 0; t < B.Mesh.tets.size(); ++t)
+				{
+					const int32 Region = t < B.Mesh.material.size() ? B.Mesh.material[t] : 1;
+					if (!Regions.Contains(Region)) continue;
+					for (int32 k = 0; k < 4; ++k) Box.Add(B.Mesh.nodes[B.Mesh.tets[t][k]]);
+				}
+				for (const AerotelicStructuralFea::FShellFace& F : B.Request.ShellFaces)
+				{
+					if (!Regions.Contains(F.Region)) continue;
+					for (int32 k = 0; k < 3; ++k) Box.Add(B.Mesh.nodes[F.N[k]]);
+				}
+			}
+			if (Box.IsEmpty()) Box = B.Model.Bounds;
+			const double Margin = 0.01 * FMath::Max(B.Model.Diagonal, 1e-9);
+			const double MinV[3] = { Box.min.x, Box.min.y, Box.min.z };
+			const double MaxV[3] = { Box.max.x, Box.max.y, Box.max.z };
+			Row->bBounded = true;
+			for (int32 i = 0; i < 2; ++i)
+			{
+				const int32 Ax = AerotelicStructuralFea::FSupport::InPlaneAxis(A, i);
+				Row->Lo[i] = Full(MinV[Ax] - Margin);
+				Row->Hi[i] = Full(MaxV[Ax] + Margin);
+			}
+			// The card's fields read the row live; only the model moves.
+			Derive(false);
 		}
 
 		// Apply on the Loads or Support tab: the inputs onto the built model.
@@ -1089,59 +1310,101 @@ namespace
 			}
 
 			// Support: the surface with its edges, a marker on every fixed
-			// node, and each plane as a frame round the mesh.
+			// node, and each plane as a frame with its patch handles.
+			UpdateSupportPicture(M.SupportPlanes, M.SupportNodes, false);
+		}
+
+		// The Support picture from a set of planes and the nodes they fix:
+		// the derived model's (bLive false) or the rows' as a handle is
+		// dragged (bLive true: the counts are provisional until release).
+		void UpdateSupportPicture(const TArray<FModel::FPlane>& Planes, const TArray<int32>& SupportNodes, bool bLive)
+		{
+			if (!Built.IsValid()) return;
+			const FBuilt& B = *Built;
+			const FModel& M = B.Model;
+			const aerotelic::TetMesh& Mesh = B.Mesh;
+			const double Diag = FMath::Max(M.Diagonal, 1e-9);
+			auto At = [&Mesh](int32 Node) { const aerotelic::Vec3& P = Mesh.nodes[Node]; return FVector(P.x, P.y, P.z); };
+			const FString LengthUnit = UnitName(Units.LengthName());
+			// The surface is rebuilt only for a full redraw: during a drag the
+			// markers' actor alone is refreshed, so a large mesh follows the
+			// mouse.
+			const bool bMarksOnly = bLive && Actors[TabSupport].IsValidIndex(1) && Actors[TabSupport][1].IsValid() && Views[TabSupport].IsValid();
+			FGeom G;
+			if (!bMarksOnly)
 			{
-				FGeom G = Surface([&](const FFace&) { return kGrey; });
-				FGeom Marks;
-				const int32 NSupport = M.SupportNodes.Num();
-				const int32 Stride = FMath::Max(1, FMath::DivideAndRoundUp(NSupport, 20000));
-				const double R = 0.005 * Diag;
-				for (int32 i = 0; i < NSupport; i += Stride) AddOctahedron(Marks, At(M.SupportNodes[i]), R, kFixed);
-				const TCHAR AxisName[3] = { TEXT('x'), TEXT('y'), TEXT('z') };
-				FString Text;
-				for (int32 k = 0; k < M.SupportPlanes.Num(); ++k)
+				G.V.Reserve(M.WettedFaces.Num() * 6);
+				for (const FFace& F : M.WettedFaces) G.Tri(At(F.N[0]), At(F.N[1]), At(F.N[2]), kGrey);
+			}
+			FGeom Marks;
+			const int32 NSupport = SupportNodes.Num();
+			const int32 Stride = FMath::Max(1, FMath::DivideAndRoundUp(NSupport, 20000));
+			const double R = 0.005 * Diag;
+			for (int32 i = 0; i < NSupport; i += Stride) AddOctahedron(Marks, At(SupportNodes[i]), R, kFixed);
+			const TCHAR AxisName[3] = { TEXT('x'), TEXT('y'), TEXT('z') };
+			FString Text;
+			Handles.Reset();
+			for (int32 k = 0; k < Planes.Num(); ++k)
+			{
+				const FModel::FPlane& Plane = Planes[k];
+				const int32 A = Plane.Axis, U = (A + 1) % 3, W = (A + 2) % 3;
+				const bool bBounded = SupportRows.IsValidIndex(k) && SupportRows[k]->bBounded;
+				double Lo[2], Hi[2];
+				PlaneRect(k, M, Lo, Hi);
+				FVector P[4];
+				for (int32 c = 0; c < 4; ++c)
 				{
-					const FModel::FPlane& Plane = M.SupportPlanes[k];
-					const int32 A = Plane.Axis, U = (A + 1) % 3, W = (A + 2) % 3;
-					const double Margin = 0.05 * Diag;
-					FVector Lo(M.Bounds.min.x, M.Bounds.min.y, M.Bounds.min.z), Hi(M.Bounds.max.x, M.Bounds.max.y, M.Bounds.max.z);
-					Lo[U] -= Margin; Lo[W] -= Margin; Hi[U] += Margin; Hi[W] += Margin;
-					FVector P[4];
-					for (int32 c = 0; c < 4; ++c)
-					{
-						P[c][A] = Plane.Value;
-						P[c][U] = (c == 1 || c == 2) ? Hi[U] : Lo[U];
-						P[c][W] = (c >= 2) ? Hi[W] : Lo[W];
-					}
-					for (int32 c = 0; c < 4; ++c) AddBar(Marks, P[c], P[(c + 1) % 4], 0.002 * Diag, kPlane);
-					FString Of;
-					if (Plane.Body >= 0)
-					{
-						const FString BodyName = BodyOptions.IsValidIndex(Plane.Body + 1) ? *BodyOptions[Plane.Body + 1] : FString::FromInt(Plane.Body);
-						Of = Plane.bBodyFallback
-							? FString::Printf(TEXT(" (asked of %s, which has no nodes in the model: the whole mesh's extreme was used)"), *BodyName)
-							: FString::Printf(TEXT(" (the extreme of %s alone)"), *BodyName);
-					}
-					Text += FString::Printf(TEXT("%sSupport %d (blue frame): the plane %c = %.6g %s%s, %s nodes within %.3g %s of it%s; the furthest of them %.3g %s from the plane"),
-						k ? TEXT("\n") : TEXT(""), k + 1, AxisName[A], Full(Plane.Value), *LengthUnit, *Of, *Thousands(Plane.Nodes), Full(Plane.Tolerance), *LengthUnit,
-						B.Request.Supports.IsValidIndex(k) && B.Request.Supports[k].Tolerance > 0.0 ? TEXT("") : TEXT(" (a ten-thousandth of the mesh's diagonal)"),
-						Full(Plane.Furthest), *LengthUnit);
-					if (M.ToleranceIsCoarse(Plane))
-					{
-						Text += FString::Printf(TEXT("\n  WARNING: that tolerance is more than a quarter of the mesh's edge length (median %.3g %s): it can clamp a second ring of nodes and shorten the part. Narrow it to the plane's own flatness."),
-							Full(M.MedianEdge), *LengthUnit);
-					}
+					P[c][A] = Plane.Value;
+					P[c][U] = (c == 1 || c == 2) ? Hi[0] : Lo[0];
+					P[c][W] = (c >= 2) ? Hi[1] : Lo[1];
 				}
-				if (M.SupportPlanes.Num() == 0) Text += TEXT("No support: add a plane on the left and Apply.");
-				if (IsReplica())
+				for (int32 c = 0; c < 4; ++c) AddBar(Marks, P[c], P[(c + 1) % 4], 0.002 * Diag, bBounded ? kHandle : kPlane);
+				// The handles: the corners, then the edges' midpoints (u lo
+				// between corners 3 and 0, u hi between 1 and 2, w lo between
+				// 0 and 1, w hi between 2 and 3).
+				const FVector Centres[8] = { P[0], P[1], P[2], P[3], (P[3] + P[0]) * 0.5, (P[1] + P[2]) * 0.5, (P[0] + P[1]) * 0.5, (P[2] + P[3]) * 0.5 };
+				for (int32 h = 0; h < 8; ++h)
 				{
-					Text += FString::Printf(TEXT("\nCoordinates here and on the left are the FULL-SCALE aircraft's; the model is built at %s of that size (Geometry > Scale) and the picture shows the replica."), *ScaleText());
+					FPatchHandle Handle;
+					Handle.Plane = k; Handle.Kind = h; Handle.World = Centres[h];
+					const bool bHot = (DragPlane == k && DragKind == h) || (Handles.Num() == HoverHandle);
+					AddOctahedron(Marks, Centres[h], (h < 4 ? 0.012 : 0.009) * Diag, bHot ? kHandleHot : kHandle);
+					Handles.Add(Handle);
 				}
-				Text += FString::Printf(TEXT("\nFixed nodes (red): %s of %s, every degree of freedom -- the three displacements and, on the shells, the three rotations: a clamp"),
-					*Thousands(NSupport), *Thousands(M.Nodes));
-				if (Stride > 1) Text += FString::Printf(TEXT(" (one marker in %d drawn)"), Stride);
-				if (NSupport < 3) Text += TEXT("\nFEWER THAN THREE NODES: the solver refuses this support. Move a plane onto the geometry (or use the mesh's minimum / maximum) or widen the tolerance.");
-				if (M.SecondOrderTets > 0) Text += TEXT("\nThe mid-edge nodes the solver adds between two fixed nodes are fixed with them.");
+				FString Of;
+				if (Plane.Body >= 0)
+				{
+					const FString BodyName = BodyOptions.IsValidIndex(Plane.Body + 1) ? *BodyOptions[Plane.Body + 1] : FString::FromInt(Plane.Body);
+					Of = Plane.bBodyFallback
+						? FString::Printf(TEXT(" (asked of %s, which has no nodes in the model: the whole mesh's extreme was used)"), *BodyName)
+						: FString::Printf(TEXT(" (the extreme of %s alone)"), *BodyName);
+				}
+				const FString Patch = bBounded
+					? FString::Printf(TEXT(" limited to the patch %c in [%.4g, %.4g], %c in [%.4g, %.4g] %s (amber frame; drag its handles)"),
+						AxisName[U], Full(Lo[0]), Full(Hi[0]), AxisName[W], Full(Lo[1]), Full(Hi[1]), *LengthUnit)
+					: TEXT(" over the whole plane (blue frame; drag a handle to limit it to a patch)");
+				Text += FString::Printf(TEXT("%sSupport %d: the plane %c = %.6g %s%s,%s: %s nodes within %.3g %s of it%s; the furthest of them %.3g %s from the plane%s"),
+					k ? TEXT("\n") : TEXT(""), k + 1, AxisName[A], Full(Plane.Value), *LengthUnit, *Of, *Patch, *Thousands(Plane.Nodes), Full(Plane.Tolerance), *LengthUnit,
+					B.Request.Supports.IsValidIndex(k) && B.Request.Supports[k].Tolerance > 0.0 ? TEXT("") : TEXT(" (a ten-thousandth of the mesh's diagonal)"),
+					Full(Plane.Furthest), *LengthUnit, bLive ? TEXT(" (dragging: provisional until release)") : TEXT(""));
+				if (M.ToleranceIsCoarse(Plane))
+				{
+					Text += FString::Printf(TEXT("\n  WARNING: that tolerance is more than a quarter of the mesh's edge length (median %.3g %s): it can clamp a second ring of nodes and shorten the part. Narrow it to the plane's own flatness."),
+						Full(M.MedianEdge), *LengthUnit);
+				}
+			}
+			if (Planes.Num() == 0) Text += TEXT("No support: add a plane on the left and Apply.");
+			if (IsReplica())
+			{
+				Text += FString::Printf(TEXT("\nCoordinates here and on the left are the FULL-SCALE aircraft's; the model is built at %s of that size (Geometry > Scale) and the picture shows the replica."), *ScaleText());
+			}
+			Text += FString::Printf(TEXT("\nFixed nodes (red): %s of %s, every degree of freedom -- the three displacements and, on the shells, the three rotations: a clamp"),
+				*Thousands(NSupport), *Thousands(M.Nodes));
+			if (Stride > 1) Text += FString::Printf(TEXT(" (one marker in %d drawn)"), Stride);
+			if (NSupport < 3) Text += TEXT("\nFEWER THAN THREE NODES: the solver refuses this support. Move a plane onto the geometry (or use the mesh's minimum / maximum), widen the tolerance or enlarge the patch.");
+			if (M.SecondOrderTets > 0) Text += TEXT("\nThe mid-edge nodes the solver adds between two fixed nodes are fixed with them.");
+			if (!bLive)
+			{
 				if (B.Dropped.Num() > 0)
 				{
 					Text += TEXT("\nLEFT OUT, no load path to any support (they would make the system singular):");
@@ -1151,10 +1414,20 @@ namespace
 				{
 					Text += FString::Printf(TEXT("\nLoad path: every element reaches a support (%d connected piece%s)."), M.Components, M.Components == 1 ? TEXT("") : TEXT("s"));
 				}
-				Text += TEXT("\nEdit the supports on the left and Apply.");
-				ShowPicture(TabSupport, { &G, &Marks }, { true, false });
-				if (Captions[TabSupport].IsValid()) Captions[TabSupport]->SetText(FText::FromString(Text));
 			}
+			Text += TEXT("\nEdit the supports on the left and Apply, or drag a patch's corner or edge handles here (the fixed nodes follow as you drag; the model is re-derived when you let go).");
+			if (bMarksOnly)
+			{
+				AAerotelicColoredMeshActor* A = Actors[TabSupport][1].Get();
+				A->SetMesh(Marks.V, Marks.T, Marks.N, Marks.C);
+				A->SetEdges(false);
+				Views[TabSupport]->RequestRedraw();
+			}
+			else
+			{
+				ShowPicture(TabSupport, { &G, &Marks }, { true, false });
+			}
+			if (Captions[TabSupport].IsValid()) Captions[TabSupport]->SetText(FText::FromString(Text));
 		}
 
 		// ---- the solve ----
@@ -1492,6 +1765,48 @@ namespace
 						+ SVerticalBox::Slot().AutoHeight().Padding(0, 3) [ FormRow(LOCTEXT("Of", "Of:"), Combo(&FState::BodyOptions, &FSupportRow::Body), 70.0f) ]
 						+ SVerticalBox::Slot().AutoHeight().Padding(0, 3) [ FormRow(IsReplica() ? LOCTEXT("ValueFull", "Value (full scale):") : LOCTEXT("Value", "Value:"), NumberField([Row]() { return Row->Value; }, [Row](double V) { Row->Value = V; }, 0.1, LengthSuffix), 70.0f) ]
 						+ SVerticalBox::Slot().AutoHeight().Padding(0, 3) [ FormRow(IsReplica() ? LOCTEXT("WithinFull", "Within (full scale):") : LOCTEXT("Within", "Within:"), NumberField([Row]() { return Row->Tolerance; }, [Row](double V) { Row->Tolerance = FMath::Max(V, 0.0); }, 0.001, LengthSuffix, 0.0), 70.0f) ]
+						// The patch: a rectangle of the plane along its two in-plane
+						// axes (named live from the plane's axis), or the whole plane.
+						+ SVerticalBox::Slot().AutoHeight().Padding(0, 5, 0, 2)
+						[
+							SNew(SCheckBox)
+							.IsChecked_Lambda([Row]() { return Row->bBounded ? ECheckBoxState::Checked : ECheckBoxState::Unchecked; })
+							.OnCheckStateChanged_Lambda([Self, Row](ECheckBoxState State)
+							{
+								Row->bBounded = State == ECheckBoxState::Checked;
+								if (Row->bBounded && Row->Lo[0] == Row->Hi[0] && Row->Lo[1] == Row->Hi[1]) { Self->FitPatch(Row); return; }
+								if (Self->Built.IsValid()) Self->Derive(false);
+							})
+							[ SNew(STextBlock).Text(LOCTEXT("Patch", "Limit to a patch (drag its handles in the picture)")) ]
+						]
+						+ SVerticalBox::Slot().AutoHeight().Padding(0, 3)
+						[
+							FormRow(LOCTEXT("PatchU", "Patch, first axis:"),
+								SNew(SHorizontalBox)
+								+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 0, 4, 0)
+								[ SNew(STextBlock).Text_Lambda([Row]() { return FText::FromString(FString::Printf(TEXT("%c from"), TEXT("xyz")[AerotelicStructuralFea::FSupport::InPlaneAxis(FMath::Clamp(Row->Axis, 0, 2), 0)])); }) ]
+								+ SHorizontalBox::Slot().FillWidth(1).Padding(0, 0, 4, 0) [ NumberField([Row]() { return Row->Lo[0]; }, [Row](double V) { Row->Lo[0] = V; }, 0.1, LengthSuffix) ]
+								+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 0, 4, 0) [ SNew(STextBlock).Text(LOCTEXT("To", "to")) ]
+								+ SHorizontalBox::Slot().FillWidth(1) [ NumberField([Row]() { return Row->Hi[0]; }, [Row](double V) { Row->Hi[0] = V; }, 0.1, LengthSuffix) ], 110.0f)
+						]
+						+ SVerticalBox::Slot().AutoHeight().Padding(0, 3)
+						[
+							FormRow(LOCTEXT("PatchW", "Patch, second axis:"),
+								SNew(SHorizontalBox)
+								+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 0, 4, 0)
+								[ SNew(STextBlock).Text_Lambda([Row]() { return FText::FromString(FString::Printf(TEXT("%c from"), TEXT("xyz")[AerotelicStructuralFea::FSupport::InPlaneAxis(FMath::Clamp(Row->Axis, 0, 2), 1)])); }) ]
+								+ SHorizontalBox::Slot().FillWidth(1).Padding(0, 0, 4, 0) [ NumberField([Row]() { return Row->Lo[1]; }, [Row](double V) { Row->Lo[1] = V; }, 0.1, LengthSuffix) ]
+								+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 0, 4, 0) [ SNew(STextBlock).Text(LOCTEXT("To", "to")) ]
+								+ SHorizontalBox::Slot().FillWidth(1) [ NumberField([Row]() { return Row->Hi[1]; }, [Row](double V) { Row->Hi[1] = V; }, 0.1, LengthSuffix) ], 110.0f)
+						]
+						+ SVerticalBox::Slot().AutoHeight().Padding(0, 3)
+						[
+							SNew(SHorizontalBox)
+							+ SHorizontalBox::Slot().AutoWidth().Padding(0, 0, 6, 0)
+							[ Button(LOCTEXT("FitPatch", "Fit to body"), [Self, Row]() { Self->FitPatch(Row); }) ]
+							+ SHorizontalBox::Slot().AutoWidth()
+							[ Button(LOCTEXT("WholePlane", "Whole plane"), [Self, Row]() { Row->bBounded = false; if (Self->Built.IsValid()) Self->Derive(false); }) ]
+						]
 					]
 				];
 			}
@@ -1633,7 +1948,8 @@ namespace
 		"LOADS\n"
 		"On the left: the inertial load factor (the model's own mass under that many g along -z; 0 to begin with, so a test load acts alone), a uniform pressure on every wetted face (positive pressing inward), and any number of point forces, each at a point (the corner node nearest it takes the load) with its force in newtons -- add, edit, delete, then Apply. On the right the forces as arrows, each head at its point of application: orange the pressure as the traction on up to ~1500 faces (direction and relative size, not the face force), red each point force at its node, green the inertial load at the centre of mass.\n\n"
 		"SUPPORT\n"
-		"On the left: any number of support planes, each axis = value (or the mesh's minimum or maximum along the axis) with a tolerance (0 is a ten-thousandth of the mesh's diagonal, about how planar a lofted section is); every node within the tolerance of any plane is clamped in every degree of freedom (the shells' rotations too) -- add, edit, delete, then Apply. On the right a red marker on every fixed node, each plane as a blue frame, and the load path: whatever reaches no support is left out and listed.\n\n"
+		"On the left: any number of support planes, each axis = value (or the mesh's minimum or maximum along the axis) with a tolerance (0 is a ten-thousandth of the mesh's diagonal, about how planar a lofted section is); every node within the tolerance of any plane is clamped in every degree of freedom (the shells' rotations too) -- add, edit, delete, then Apply. "
+		"A plane may be LIMITED TO A PATCH (2026-11-05): a rectangle of it along its two in-plane axes (the other two axes in order: a plane x = c has its patch in y and z), so a clamp at x = 3 through the fuselage does not also take the wing root that crosses x = 3. Tick the patch on the card and type the rectangle, press Fit to body (the chosen body's extent on the plane, or the whole mesh's), or drag the handles in the picture: a press on a corner moves two sides, on an edge's midpoint one side; the red markers follow as you drag, and the model is re-derived when you let go (the view stays put). Dragging a handle of a whole-plane support turns it into a patch starting from the frame as drawn. On the right a red marker on every fixed node, each plane as a frame (blue for the whole plane, amber for a patch) with its eight handles, and the load path: whatever reaches no support is left out and listed.\n\n"
 		"RESULT\n"
 		"Linear static, small displacement, linear elastic, the linear thin shell triangle (its reactions balance the loads exactly; the corotational triangles are options for small-displacement comparisons). The reactions at the supports must balance what was applied: the Force balance line says by how much they miss, and a miss of more than one percent means the linear solver did not converge -- the solution is then reported as NOT converged and nothing in it is to be trusted (the iterative solver can do this on thin shells; the direct solver cannot, which is why the automatic choice takes it up to 150,000 degrees of freedom). Margin is allowable / peak von Mises - 1 for each region's skin, solid or core; a homogenised core's margin is against the material's allowable using the stress estimated in the struts. "
 		"The natural frequencies (2026-11-04) are the lowest modes of K phi = omega^2 M phi for the same mesh, materials and clamps with no loads: the stiffness the static solve used and the elements' own mass from the densities and skin thicknesses (the core's overlap correction included). They are in hertz whatever the units; under a model scale they are the replica's. Checked on a 1 x 10 x 1 m thin-walled aluminium box: the degenerate first bending pair within 1.5% of the clamped-free beam's frequency corrected for shear, rotary inertia and the tip cap's mass, then the skin panels' own plate modes -- a thin-walled part goes local long before its second beam mode. The VTK holds the displacement, the stresses and the mode shapes (mode_1, mode_2, ... scaled to a unit largest displacement) for ParaView, in SI. No post-processing view yet.");
@@ -1880,15 +2196,25 @@ void ShowAerotelicStructuralFeaDialog(TFunction<void(const FText&)> Status)
 		+ SScrollBox::Slot()
 		[
 			MakeInfoLabel(LOCTEXT("SupportHint",
-				"Every node within the tolerance of any plane is fixed in every degree of freedom (the shells' rotations too: a clamp). y = 0 is the root of a mirrored half -- the symmetry plane -- which is why it is the one to start with; the mesh's minimum or maximum along an axis clamps a body by its end -- 'Of' says whose end: the whole mesh's, or one body's, so a body that sticks out further does not take a support meant for another. Values and tolerances are typed in FULL-SCALE coordinates, as the parameterisations are; with a model scale set (Geometry > Scale) the dialog scales them to the replica. A tolerance of 0 is a ten-thousandth of the mesh's diagonal -- about how planar a lofted section comes out, so a root ring is taken whole. Whatever reaches no plane, on its own or through a body it was fused with, is left out of the solve and listed on the right. Apply pushes the supports onto the built model and redraws them."))
+				"Every node within the tolerance of any plane is fixed in every degree of freedom (the shells' rotations too: a clamp). y = 0 is the root of a mirrored half -- the symmetry plane -- which is why it is the one to start with; the mesh's minimum or maximum along an axis clamps a body by its end -- 'Of' says whose end: the whole mesh's, or one body's, so a body that sticks out further does not take a support meant for another. A plane limited to a PATCH fixes only the nodes inside its rectangle: type it, Fit to body, or drag the handles in the picture (the fixed nodes follow live). Values, tolerances and patches are typed in FULL-SCALE coordinates, as the parameterisations are; with a model scale set (Geometry > Scale) the dialog scales them to the replica. A tolerance of 0 is a ten-thousandth of the mesh's diagonal -- about how planar a lofted section comes out, so a root ring is taken whole. Whatever reaches no plane, on its own or through a body it was fused with, is left out of the solve and listed on the right. Apply pushes the supports onto the built model and redraws them."))
 		];
 
 	TArray<FAerotelicTab> Tabs;
 	Tabs.Add({ LOCTEXT("SetupTab", "Set-up"), SetupTab });
 	Tabs.Add({ LOCTEXT("MeshTab", "Mesh"), MakePictureTab(S, TabMesh, LOCTEXT("MeshEmpty", "Build the model (Set-up tab) to see the mesh the solver is handed: its wetted faces by region, with their edges."), nullptr) });
 	Tabs.Add({ LOCTEXT("LoadsTab", "Loads"), MakePictureTab(S, TabLoads, LOCTEXT("LoadsEmpty", "Build the model (Set-up tab) to see the loads as vectors: the pressure on the wetted faces, each point force at its node, the inertial load at the centre of mass."), LoadsPanel) });
-	Tabs.Add({ LOCTEXT("SupportTab", "Support"), MakePictureTab(S, TabSupport, LOCTEXT("SupportEmpty", "Build the model (Set-up tab) to see the boundary conditions: a marker on every node the supports fix, each plane, and what reaches no support."), SupportPanel) });
+	Tabs.Add({ LOCTEXT("SupportTab", "Support"), MakePictureTab(S, TabSupport, LOCTEXT("SupportEmpty", "Build the model (Set-up tab) to see the boundary conditions: a marker on every node the supports fix, each plane with its patch handles, and what reaches no support."), SupportPanel) });
 	Tabs.Add({ LOCTEXT("HelpTab", "Help"), MakeHelpTab(FText::FromString(kHelp)) });
+	// The Support picture's handles: a press on one drags its patch, the
+	// fixed nodes following, the model re-derived on release.
+	if (S->Views[TabSupport].IsValid())
+	{
+		TWeakPtr<FState> Weak = S;
+		S->Views[TabSupport]->OnPickHover = [Weak](const FVector2D& Pixel, const FVector&, const FVector&) { TSharedPtr<FState> P = Weak.Pin(); return P.IsValid() && P->OnPatchHover(Pixel); };
+		S->Views[TabSupport]->OnPickDown = [Weak](const FVector2D& Pixel, const FVector&, const FVector&) { TSharedPtr<FState> P = Weak.Pin(); return P.IsValid() && P->OnPatchDown(Pixel); };
+		S->Views[TabSupport]->OnPickMove = [Weak](const FVector2D&, const FVector& O, const FVector& D) { TSharedPtr<FState> P = Weak.Pin(); if (P.IsValid()) P->OnPatchMove(O, D); return true; };
+		S->Views[TabSupport]->OnPickUp = [Weak](const FVector2D&, const FVector&, const FVector&) { TSharedPtr<FState> P = Weak.Pin(); if (P.IsValid()) P->OnPatchUp(); return true; };
+	}
 
 	Window->SetContent(
 		SNew(SBorder).Padding(12)

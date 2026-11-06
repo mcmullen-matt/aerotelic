@@ -6,6 +6,8 @@
 #include "aerotelic/tet.hpp"
 #include "aerotelic/vec3.hpp"
 
+#include <cmath>
+
 // The structural analysis's inputs as the solver will see them, derived
 // here -- headless, from an AerotelicStructuralFea::FRequest and without
 // running anything -- by the same rules tools/structural_fea.py applies
@@ -101,7 +103,12 @@ namespace AerotelicFeaPreprocess
 			int32 Axis = 1;
 			double Value = 0.0;
 			double Tolerance = 0.0;
-			int32 Nodes = 0;   // on this plane
+			// The patch (FSupport::bBounded): Lo..Hi along the in-plane axes
+			// (Axis + 1) % 3 and (Axis + 2) % 3, project units.
+			bool bBounded = false;
+			double Lo[2] = { 0.0, 0.0 };
+			double Hi[2] = { 0.0, 0.0 };
+			int32 Nodes = 0;   // on this plane (and inside the patch)
 			double Furthest = 0.0;   // the furthest of them from the plane, project units
 			// The chosen body "min" / "max" was resolved against (FSupport::Body),
 			// -1 for the whole mesh; true when that body had no nodes in the
@@ -159,4 +166,20 @@ namespace AerotelicFeaPreprocess
 	// A support with fewer than three nodes is NOT an error here (the
 	// script refuses it; the dialog shows what there is and says so).
 	bool Build(const AerotelicStructuralFea::FRequest& Request, FModel& Out, FString& OutError);
+
+	// Whether a node lies on a resolved plane: within its tolerance of it,
+	// and inside its patch when bounded. The one rule, shared by Build and
+	// by the dialog's live redraw while a patch handle is dragged.
+	inline bool NodeOnPlane(const aerotelic::Vec3& P, const FModel::FPlane& Plane)
+	{
+		const double C[3] = { P.x, P.y, P.z };
+		if (std::abs(C[Plane.Axis] - Plane.Value) > Plane.Tolerance) return false;
+		if (!Plane.bBounded) return true;
+		for (int32 k = 0; k < 2; ++k)
+		{
+			const double V = C[(Plane.Axis + 1 + k) % 3];
+			if (V < FMath::Min(Plane.Lo[k], Plane.Hi[k]) || V > FMath::Max(Plane.Lo[k], Plane.Hi[k])) return false;
+		}
+		return true;
+	}
 }
