@@ -342,6 +342,45 @@ def main(argv):
         failures += not check(np.isfinite(pdata["displacement"]).all() and np.isfinite(cdata["von_mises_element"]).all(), "box: the solution is finite")
 
         # ------------------------------------------------------------------
+        # The element order per region (2026-11-05): a region's own
+        # "second_order" overrides the job's. The sandwich box with the
+        # job asking for 10 nodes and its one region declining stays 4-node
+        # and solves the same; a two-region solid with one region at each
+        # order writes both element kinds, keeps the condition ids in the
+        # faces' order (the pressure maps by id) and balances.
+        # ------------------------------------------------------------------
+        job4 = dict(job)
+        job4["second_order"] = True
+        job4["regions"] = [dict(job["regions"][0], second_order=False)]
+        job4["solver"] = {"echo_level": 0, "linear_solver": solver, "homogenize_cache": False, "modes": 0}
+        job4["outputs"] = {"vtk": os.path.join(job_dir, "box_order.vtk"), "result": "box_order_result.json"}
+        r4 = run(job_dir, job4)
+        failures += not check(r4["ok"] and not r4["second_order"] and r4["tets_second_order"] == 0 and r4["second_order_regions"] == [] and r4["dofs"] == r["dofs"],
+                              "order: a region declining second order stays 4-node under a job that asks for it (%d dof)" % r4["dofs"])
+        failures += not check(abs(r4["max_displacement"] / shell_delta - 1.0) < 1e-6, "order: and solves the same")
+        nodes_m, tets_m, region_m = box_tets(L, b, H, size=0.03, skin=t * 2.5)
+        write_mesh(os.path.join(job_dir, "box_mixed.bin"), nodes_m, tets_m, region_m)
+        job_m = {
+            "mesh": "box_mixed.bin", "faces": None, "model": "regions", "second_order": False,
+            "regions": [{"id": 1, "label": "skin", "skin": None, "core": None, "solid": {"material": AL}, "second_order": True},
+                        {"id": 2, "label": "core", "skin": None, "core": None, "solid": {"material": soft}, "second_order": None}],
+            "supports": [{"axis": "x", "value": "min", "tolerance": 1e-6}],
+            "loads": {"load_factor": 1.0, "pressure": 1000.0, "pressure_file": None, "point_forces": []},
+            "solver": {"echo_level": 0, "linear_solver": solver, "homogenize_cache": False, "modes": 0},
+            "outputs": {"vtk": os.path.join(job_dir, "box_mixed.vtk"), "result": "box_mixed_result.json"},
+        }
+        rm = run(job_dir, job_m)
+        n_skin_tets = int((region_m == 1).sum())
+        failures += not check(rm["ok"] and rm["second_order"] and rm["second_order_regions"] == [1] and rm["tets_second_order"] == n_skin_tets and rm["tets"] == len(tets_m),
+                              "order: the skin region's %d tetrahedra are 10-node, the core's %d stay 4-node" % (n_skin_tets, len(tets_m) - n_skin_tets))
+        failures += not check(rm["nodes"] > len(nodes_m) and rm["support_nodes"] > rm["support_corner_nodes"], "order: mid-edge nodes were added and clamped on the plane (%d of %d corners)" % (rm["support_nodes"], rm["support_corner_nodes"]))
+        failures += not check(rm["balanced"] and rm["balance_error"] <= sf.BALANCE_TOLERANCE, "order: the mixed-order model balances its weight and pressure (error %.2e)" % rm["balance_error"])
+        pts_x, cells_x, types_x, pd_x, cd_x = read_vtk(os.path.join(job_dir, "box_mixed.vtk"))
+        failures += not check((types_x == 24).sum() == n_skin_tets and (types_x == 10).sum() == len(tets_m) - n_skin_tets and cd_x["material"][types_x == 24].min() == 1 and cd_x["material"][types_x == 24].max() == 1,
+                              "order: the VTK holds %d quadratic and %d linear tetrahedra, the quadratic ones the skin's" % (n_skin_tets, len(tets_m) - n_skin_tets))
+        print("  order: mixed 10-node skin / 4-node core, %d dof in %.1f s" % (rm["dofs"], rm["seconds_solve"]))
+
+        # ------------------------------------------------------------------
         # The same box as skin / core tetrahedra: the full-resolution model.
         # ------------------------------------------------------------------
         if do_solid:

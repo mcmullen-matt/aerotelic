@@ -2290,6 +2290,116 @@ Timoshenko cantilever frequency.
   document commandlet's lattice step (0.05 to 0.08 and back; the same spec
   again, or a density edit, queues nothing).
 
+### The body's own grid, and a solve you can watch (2026-11-05)
+
+Matt ran the structural analysis on the P-38's Center fuselage with a
+honeycomb lattice inside it and it "stalled": no feedback, then a failure
+after eight minutes. The log, the page-file counters and the job
+directory it left behind said what happened. The solve was not hung: it
+was a 540,000-degree-of-freedom model on the single-threaded direct
+solver, which ran 32 GB of memory and a 23 GB page file dry. Three things
+had multiplied a model that should have been a few thousand shells and
+tetrahedra:
+
+1. **The solver was not given the body the user picked.** The picker
+   lists solid bodies; a body filled by a lattice was silently
+   reclassified and its geometry taken from the lattice, which keeps a
+   PRIVATE copy of each target's surface rebuilt at a quarter of the skin
+   thickness so that MeshLib's distance field can resolve the hollowing.
+   For Center (1 mm skin) that copy is 28,074 triangles where the Mesh tab
+   grid the viewport shows is 1,574. The core tetrahedra were built on
+   that copy (`GetStructuralTetMeshes`, now gone), so the FEA shells were
+   eighteen times the grid the user had set, and the Mesh tab's whole
+   purpose -- the user defines the discretisation every analysis uses --
+   was bypassed. Worse, nothing in the UI said so.
+2. **Second order was on by default for everything**, the homogenised
+   core included, which the script's own header says needs no such thing
+   (the shells carry the bending; the core carries a material card). That
+   turned 24,571 nodes into 165,900.
+3. **The automatic solver choice took the direct solver to a million
+   DOF**, four times what a desktop can factor, and the dialog ran it on
+   the game thread, so the window could not even paint the "Solving..."
+   line it had set.
+
+What changed:
+
+* **Every analysis asks for the body's own grid.**
+  `AAerotelicEntityActor::GetPlacedMeshes(bMirror, Tolerance = 0)`: a
+  tolerance of zero means the viewport's meshes as they stand (the Mesh
+  tab spec at the viewport's rule, 0.15% of the diagonal; built at that
+  rule if the viewport has not yet). The structural dialog, the material
+  dialog and mass properties (whose tolerance box now takes 0 for this,
+  and starts there; the report says so) all ask for it. A caller with a
+  tolerance of its own -- STL export, the lattice's hollowing -- gets a
+  private copy and must not hand it to a solver.
+* **The lattice lends its material card only.** The structural dialog
+  meshes the chosen body's own grid itself (`TetMeshFor`: gmsh on exactly
+  the body's triangles, the interior at the lattice cell size and no
+  longer seeded by the surface -- `AerotelicTetGmsh::FRequest::
+  bSizeFromBoundary`, `tet_gmsh.py size_from_boundary`, measured on a
+  1,280-triangle sphere at a 0.25 cell: 5,531 tetrahedra down to 2,939
+  with the worst element no worse) and takes from the lattice its cell
+  and skin thickness. The meshes are cached in the dialog by the
+  surface's bytes and the cell size. The lattice model's structural mesh
+  and notes are deleted; `FTetBody::Outer` stays private to the hollowing
+  and the full-resolution skin / core mesh, which is the one model still
+  meshed on the lattice's copy (its inner boundary is the lattice's
+  offset) and is now labelled as such.
+* **The reclassification is visible and optional.** The Set-up tab says
+  "FILLED BY Lattice 1 (not chosen; it lends its material card only)" and
+  what follows from it; the Model combo has a third choice, *Ignore the
+  lattices*, which analyses every body as its Material Properties alone
+  say (shells or solid), and says beside a body that a lattice fills it
+  and was ignored.
+* **An element order per region.** `FRegion::SecondOrder` (1 / 0 / -1 =
+  the request's flag) and the job's per-region `second_order`; the
+  script sorts the tetrahedra 4-node first and writes two element blocks,
+  the condition ids staying in the wetted faces' order so a pressure per
+  face still maps by id; the VTK holds both cell kinds. A homogenised
+  core is 0 whatever the checkbox says; solids and the full-resolution
+  skin tetrahedra follow it. The result reports `second_order_regions`
+  and `tets_second_order`. (Also fixed on the way: the core's micro
+  stress was skipped for 10-node core elements, so a 10-node homogenised
+  core reported zero strut stress.)
+* **The cost is known before the solve.** `AerotelicFeaPreprocess::FModel`
+  counts, by the script's own rules, the second-order tetrahedra, the
+  mid-edge nodes (one per distinct edge of those tetrahedra), the nodes
+  carrying shells and the degrees of freedom; Build Model's status line
+  and the Mesh caption show it with which solver the automatic choice
+  takes; past the budget Solve asks first. The document commandlet
+  asserts the estimate equals the solver's `dofs` on the 10-node sphere
+  (mid-edge nodes counted), the 4-node homogenised sphere (shell nodes
+  counted) and the 10-node solid.
+* **The direct solver's budget is 150,000 DOF**, `AUTO_DIRECT_DOFS` in
+  the script and `AerotelicStructuralFea::kAutoDirectDofs` in the
+  application, amgcl beyond on every core. Checked first:
+  `structural_fea_check.py --solver amgcl` passes every case with the
+  reactions balanced to 1e-12 (the mixed shell / core box, the shell-only
+  beam, the pressurised sphere, the 10-node bar), so the 2026-11-01
+  failure on hershey_bar was the clamp's tolerance and the shell element,
+  not amgcl as such; the force balance still guards every solve.
+* **A solve you can watch and stop.** `AerotelicMeshLib::RunJob` takes
+  an `FJobProgress` (every line the script prints, as it prints it; a
+  cancel flag that terminates the process); `AerotelicStructuralFea::Run`
+  passes it through; the dialog runs the solve on a worker thread
+  (`FSolveJob`, `Async(EAsyncExecution::Thread)`), a ticker shows the
+  script's stage and the elapsed time in the status bar and in a line
+  with a marquee above the buttons, Build and Solve go quiet, Cancel
+  ends it, and the window may be closed while it runs. The script prints
+  its stages (mesh read, homogenising, writing the Kratos model, Kratos
+  reading, assembling and solving with which solver, post-processing,
+  the modes, the VTK). Meshing in Build Model is still on the game thread
+  (it touches the entity actors; seconds, not minutes).
+* **Tests**: `structural_fea_check.py` -- a region declining second order
+  under a job that asks for it stays 4-node and solves the same; a
+  two-region solid with a 10-node skin over a 4-node core writes both
+  element kinds, clamps the mid-edge nodes, balances, and the VTK holds
+  3,196 quadratic and 1,243 linear tetrahedra. The document commandlet's
+  homogenised sphere now meshes the body's own grid (tolerance 0, coarser
+  than a finer tolerance's mesh, the lattice's hollowed body left to
+  itself), asks for 10 nodes and gets a 4-node core, and checks the
+  pre-processor's DOF, order and budget verdict against the solver's.
+
 ## How the standalone build is put together
 
 * `Source/AerotelicUE.Target.cs` -- the game target that becomes `AerotelicUE.exe`.

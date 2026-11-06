@@ -71,7 +71,9 @@ void OpenAerotelicMaterialDialog(AAerotelicEntityActor* Entity)
 	double Volume = 0.0, Area = 0.0;
 	bool bClosed = true;
 	{
-		const std::vector<aerotelic::NamedMesh> Meshes = Entity->GetPlacedMeshes(false, FAerotelicBooleanModel::kValidationTolerance);
+		// The body's own grid (its Mesh tab's, the viewport's): the same
+		// triangles the analyses weigh and solve on.
+		const std::vector<aerotelic::NamedMesh> Meshes = Entity->GetPlacedMeshes(false);
 		for (const aerotelic::NamedMesh& M : Meshes)
 		{
 			Volume += std::abs(M.mesh.SignedVolume());

@@ -133,10 +133,11 @@ namespace AerotelicTetGmsh
 		}
 
 		const FString Job = FString::Printf(
-			TEXT("{\n \"outer\": \"outer.tri\",\n \"inner\": \"%s\",\n \"core_size\": %s,\n \"min_size\": %s,\n \"min_pocket_volume\": %s,\n \"algorithm\": %d,\n \"optimize\": %s,\n \"optimize_netgen\": %s,\n")
+			TEXT("{\n \"outer\": \"outer.tri\",\n \"inner\": \"%s\",\n \"core_size\": %s,\n \"min_size\": %s,\n \"min_pocket_volume\": %s,\n \"algorithm\": %d,\n \"optimize\": %s,\n \"optimize_netgen\": %s,\n \"size_from_boundary\": %s,\n")
 			TEXT(" \"outputs\": {\"mesh\": \"mesh.tet\", \"result\": \"result.json\"}\n}\n"),
 			bHasInner ? TEXT("inner.tri") : TEXT(""), *Num(Request.CoreSize), *Num(Request.MinSize), *Num(Request.MinPocketVolume),
-			Request.Algorithm, Request.bOptimize ? TEXT("true") : TEXT("false"), Request.bOptimizeNetgen ? TEXT("true") : TEXT("false"));
+			Request.Algorithm, Request.bOptimize ? TEXT("true") : TEXT("false"), Request.bOptimizeNetgen ? TEXT("true") : TEXT("false"),
+			Request.bSizeFromBoundary ? TEXT("true") : TEXT("false"));
 		if (!FFileHelper::SaveStringToFile(Job, *FPaths::Combine(Dir, TEXT("job.json")), FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM))
 		{
 			OutError = TEXT("could not write the gmsh job file");

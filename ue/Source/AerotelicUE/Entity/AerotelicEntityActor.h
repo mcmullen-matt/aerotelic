@@ -234,7 +234,17 @@ public:
 	// (ISolidModel::BuildMeshes, reusing the viewport's when they are fine
 	// enough), else the OCCT solid tessellated. What STL export and the
 	// lattice generator consume. Empty if nothing can be built.
-	std::vector<aerotelic::NamedMesh> GetPlacedMeshes(bool bMirror, double Tolerance) const;
+	//
+	// A Tolerance of 0 or less asks for THE BODY'S OWN GRID (2026-11-05):
+	// the mesh the viewport shows, built by the entity's Mesh tab spec at
+	// the viewport's tolerance rule (DisplayTolerance, 0.15% of the body's
+	// diagonal) -- so an analysis that asks for it solves on exactly the
+	// triangles the user sees and set. The structural analysis, mass
+	// properties and the material dialog ask for it; a caller with a
+	// tolerance of its own (STL export, the lattice's hollowing, which
+	// needs the surface finer than its distance field's voxel) gets a
+	// private copy at that tolerance and must not hand it to a solver.
+	std::vector<aerotelic::NamedMesh> GetPlacedMeshes(bool bMirror, double Tolerance = 0.0) const;
 	// World bounds of the placed (or mirrored) bodies; invalid if none.
 	FBox GetPlacedBounds(bool bMirror) const;
 

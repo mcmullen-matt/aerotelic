@@ -13,11 +13,15 @@
 #include "Widgets/Input/SCheckBox.h"
 #include "Widgets/Input/SComboBox.h"
 #include "Widgets/Input/SEditableTextBox.h"
+#include "Widgets/Notifications/SProgressBar.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Misc/Paths.h"
 #include "Misc/FileHelper.h"
 #include "Misc/CommandLine.h"
 #include "Misc/Parse.h"
+#include "Misc/Crc.h"
+#include "Misc/ScopeLock.h"
+#include "Async/Async.h"
 #include "Containers/Ticker.h"
 #include "ImageUtils.h"
 #include "Styling/CoreStyle.h"
@@ -39,6 +43,7 @@
 #include "aerotelic/materials.hpp"
 #include "aerotelic/units.hpp"
 
+#include <atomic>
 #include <memory>
 
 // Last: OCCT's Handle() macro vs engine headers.
@@ -139,7 +144,9 @@ namespace
 		return Out;
 	}
 
-	// The lattice that fills a body, if one does.
+	// The lattice that fills a body, if one does. The body is what the user
+	// picked; the lattice is looked up from it and lends its MATERIAL CARD
+	// (the cell to homogenise, the skin thickness) -- never its geometry.
 	AAerotelicEntityActor* LatticeFilling(const FAerotelicBooleanOperand& Op)
 	{
 		const UAerotelicDocumentSubsystem* Doc = UAerotelicDocumentSubsystem::Get();
@@ -299,6 +306,33 @@ namespace
 		TArray<FString> Dropped;    // left out for floating, this derivation
 	};
 
+	// A solve in flight (2026-11-05): the script runs on a worker thread
+	// through AerotelicStructuralFea::Run, which blocks for minutes on a
+	// large model; the dialog's ticker reads the last line it printed and
+	// shows it with the elapsed time, and Cancel ends the process. Holds
+	// the built model so the request's pointers stay good until the worker
+	// is done, whatever the dialog does meanwhile.
+	struct FSolveJob
+	{
+		TSharedPtr<FBuilt> Built;
+		AerotelicStructuralFea::FResult Result;
+		FString Error;
+		AerotelicMeshLib::FJobProgress Progress;
+		std::atomic<bool> bDone{ false };
+		bool bOk = false;
+		double Started = 0.0;
+		FCriticalSection Lock;
+		FString LastLine;   // under Lock: written by the worker, read by the ticker
+		FTSTicker::FDelegateHandle Ticker;
+
+		bool IsRunning() const { return !bDone.load(); }
+		FString TakeLastLine()
+		{
+			FScopeLock L(&Lock);
+			return LastLine;
+		}
+	};
+
 	enum ETab { TabSetup = 0, TabMesh = 1, TabLoads = 2, TabSupport = 3, TabHelp = 4 };
 	constexpr int32 kPictures = 4;   // indexed by ETab; TabSetup's slot unused
 
@@ -350,9 +384,22 @@ namespace
 		TSharedPtr<SEditableTextBox> PathBox;
 		TSharedPtr<SCheckBox> SecondOrderCheck, CacheCheck;
 		TSharedPtr<STextBlock> LblMaterials, LblMesh, LblCore, LblDisp, LblStress, LblMargins, LblBalance, LblModes, LblTime;
+		// The solve's own status line and marquee in the dialog, and the
+		// buttons that go quiet while it runs.
+		TSharedPtr<STextBlock> LblProgress;
+		TSharedPtr<SProgressBar> ProgressBar;
+		TSharedPtr<SButton> BuildButton, SolveButton, CancelButton;
 
 		// The model, once built (Build Model, or Solve).
 		TSharedPtr<FBuilt> Built;
+		// The solve in flight, if one is.
+		TSharedPtr<FSolveJob> Job;
+		// The tetrahedral meshes of lattice-filled bodies' own grids, keyed
+		// by the surface's bytes and the cell size, so Build Model after a
+		// load or support edit does not run gmsh again (the lattice used to
+		// keep these; they are the dialog's now, since the grid is the
+		// body's, not the lattice's).
+		TMap<FString, TSharedPtr<AerotelicTetGmsh::FResult>> TetCache;
 
 		// The pre-processor pictures: one view per tab, its actors, its caption.
 		TSharedPtr<SAerotelicSceneView> Views[kPictures];
@@ -363,11 +410,51 @@ namespace
 		TSharedPtr<SAerotelicTabStrip> Tabs;
 		bool bSmoke = false;
 
+		// The three ways a lattice-filled body may be analysed (ModelOptions):
+		// shells on its own grid over a homogenised core; the lattice's
+		// skin / core tetrahedra at full resolution; or with the lattice
+		// IGNORED, the body as its Material Properties alone say it is.
 		bool bFullResolution() const { return ModelIndex == 1; }
+		bool bIgnoreLattices() const { return ModelIndex == 2; }
+		bool IsSolving() const { return Job.IsValid() && Job->IsRunning(); }
 
 		void Message(const FText& Text)
 		{
 			AerotelicMessageBox(EAppMsgType::Ok, Text, LOCTEXT("Title", "Structural (Kratos FEA)"));
+		}
+
+		// The tetrahedra of a lattice-filled body's own grid for the
+		// shell / core model: bounded by exactly the body's triangles (gmsh
+		// adds interior nodes only), sized to the lattice cell inside and
+		// not seeded by the surface (the core carries a material card, not
+		// geometry). Cached by the surface's bytes and the cell size.
+		const AerotelicTetGmsh::FResult* TetMeshFor(const aerotelic::TriMesh& Surface, double CellSize, const FString& Label, FString& OutError)
+		{
+			uint32 Crc = FCrc::MemCrc32(Surface.vertices.data(), static_cast<int32>(Surface.vertices.size() * sizeof(Surface.vertices[0])));
+			Crc = FCrc::MemCrc32(Surface.triangles.data(), static_cast<int32>(Surface.triangles.size() * sizeof(Surface.triangles[0])), Crc);
+			const FString Key = FString::Printf(TEXT("%s|%u|%d|%d|%.9g"), *Label, Crc, static_cast<int32>(Surface.vertices.size()), static_cast<int32>(Surface.triangles.size()), CellSize);
+			if (const TSharedPtr<AerotelicTetGmsh::FResult>* Found = TetCache.Find(Key))
+			{
+				return Found->Get();
+			}
+			Status(FText::FromString(FString::Printf(TEXT("Building the model: meshing %s's own grid (%s triangles) at the cell size %.4g..."), *Label, *Thousands((int64)Surface.triangles.size()), CellSize)));
+			AerotelicTetGmsh::FRequest G;
+			G.Outer = &Surface;
+			G.Inner = nullptr;
+			G.CoreSize = CellSize;
+			G.Algorithm = 1;
+			G.bOptimize = true;
+			G.bOptimizeNetgen = true;
+			G.bSizeFromBoundary = false;
+			TSharedPtr<AerotelicTetGmsh::FResult> R = MakeShared<AerotelicTetGmsh::FResult>();
+			if (!AerotelicTetGmsh::Run(G, *R, OutError))
+			{
+				return nullptr;
+			}
+			UE_LOG(LogTemp, Log, TEXT("StructuralFea: %s's own grid (%d triangles) meshed at cell %.4g: %d nodes, %d tetrahedra; %.6g vs body %.6g (relative %.2e); quality min %.3f mean %.3f, %d under 0.1; %.2f s"),
+				*Label, static_cast<int32>(Surface.triangles.size()), CellSize, R->Nodes, R->SkinTets + R->CoreTets, R->SkinVolume + R->CoreVolume, R->OuterVolume, R->VolumeError, R->MinQuality, R->MeanQuality, R->PoorQuality, R->Seconds);
+			TetCache.Add(Key, R);
+			return R.Get();
 		}
 
 		TArray<FAerotelicBodyChoicePtr> ChosenBodies() const
@@ -400,28 +487,36 @@ namespace
 				K.Text = FString::Printf(TEXT("%s: NO STRUCTURAL MATERIAL%s -- set one under Material Properties in the Scene tree"), *C.Label, *From);
 				return K;
 			}
-			K.Lattice = LatticeFilling(Op);
+			// The lattice that fills the body, if one does and the model
+			// does not ignore it. Said plainly on the Set-up tab either way:
+			// the user picked the body, not the lattice, and must see what
+			// the lattice is lending.
+			AAerotelicEntityActor* Filling = LatticeFilling(Op);
+			K.Lattice = bIgnoreLattices() ? nullptr : Filling;
 			const FString Material = UTF8_TO_TCHAR(K.Spec.material.name.c_str());
 			const FString Length = UnitName(Units.LengthName());
+			const bool bTenNode = SecondOrderCheck.IsValid() && SecondOrderCheck->IsChecked();
 			if (K.Lattice != nullptr)
 			{
 				const FAerotelicLatticeModel* M = K.Lattice->GetModelAs<FAerotelicLatticeModel>();
 				const double T = FAerotelicLatticeModel::SkinThicknessFor(Op);
+				const FString Cell = FString::Printf(TEXT("the homogenised %s %s lattice at %.0f%% (cell %.4g %s, %d voxels across)"),
+					UTF8_TO_TCHAR(aerotelic::LatticeFamilyName(M->Spec.family)), UTF8_TO_TCHAR(M->Spec.type.c_str()), 100.0 * M->Spec.volume_fraction, M->Spec.cell_size, *Length, static_cast<int32>(Voxels));
 				K.Text = bFullResolution()
-					? FString::Printf(TEXT("%s: %s%s, filled by %s -- skin tetrahedra of %s over core tetrahedra with the homogenised %s %s lattice at %.0f%% (cell %.4g %s, %d voxels across)"),
-						*C.Label, *Material, *From, *K.Lattice->EntityName, *Material,
-						UTF8_TO_TCHAR(aerotelic::LatticeFamilyName(M->Spec.family)), UTF8_TO_TCHAR(M->Spec.type.c_str()), 100.0 * M->Spec.volume_fraction, M->Spec.cell_size, *Length, static_cast<int32>(Voxels))
-					: FString::Printf(TEXT("%s: %s%s, filled by %s -- shells %.4g %s thick over tetrahedra at the cell size with the homogenised %s %s lattice at %.0f%% (cell %.4g %s, %d voxels across), struts of %s"),
-						*C.Label, *Material, *From, *K.Lattice->EntityName, T, *Length,
-						UTF8_TO_TCHAR(aerotelic::LatticeFamilyName(M->Spec.family)), UTF8_TO_TCHAR(M->Spec.type.c_str()), 100.0 * M->Spec.volume_fraction, M->Spec.cell_size, *Length, static_cast<int32>(Voxels), *Material);
+					? FString::Printf(TEXT("%s: %s%s -- FILLED BY %s (not chosen; it lends its skin / core tetrahedra, meshed on ITS copy of the surface): %s skin tetrahedra of %s over core tetrahedra with %s, %s"),
+						*C.Label, *Material, *From, *K.Lattice->EntityName, bTenNode ? TEXT("10-node") : TEXT("4-node"), *Material, *Cell, bTenNode ? TEXT("10-node too") : TEXT("4-node"))
+					: FString::Printf(TEXT("%s: %s%s -- FILLED BY %s (not chosen; it lends its material card only): shells %.4g %s thick on %s's OWN grid (the Mesh tab's, what the viewport shows) over 4-node tetrahedra at the cell size carrying %s, the struts of %s"),
+						*C.Label, *Material, *From, *K.Lattice->EntityName, T, *Length, *OperandLabel(Op), *Cell, *Material);
 			}
 			else if (K.Spec.skin_thickness > 0.0)
 			{
-				K.Text = FString::Printf(TEXT("%s: %s%s -- a thin-walled body: shells %.4g %s thick on its surface, nothing inside"), *C.Label, *Material, *From, K.Spec.skin_thickness, *Length);
+				K.Text = FString::Printf(TEXT("%s: %s%s -- a thin-walled body: shells %.4g %s thick on its own grid, nothing inside%s"), *C.Label, *Material, *From, K.Spec.skin_thickness, *Length,
+					Filling != nullptr ? *FString::Printf(TEXT(" (%s fills it; ignored, as asked under Model)"), *Filling->EntityName) : TEXT(""));
 			}
 			else
 			{
-				K.Text = FString::Printf(TEXT("%s: %s%s -- a solid: tetrahedra of %s at the element size (no skin thickness set)"), *C.Label, *Material, *From, *Material);
+				K.Text = FString::Printf(TEXT("%s: %s%s -- a solid: %s tetrahedra of %s at the element size (no skin thickness set)%s"), *C.Label, *Material, *From, bTenNode ? TEXT("10-node") : TEXT("4-node"), *Material,
+					Filling != nullptr ? *FString::Printf(TEXT(" (%s fills it; ignored, as asked under Model)"), *Filling->EntityName) : TEXT(""));
 			}
 			K.bOk = true;
 			return K;
@@ -480,6 +575,11 @@ namespace
 
 		bool BuildModel()
 		{
+			if (IsSolving())
+			{
+				Message(LOCTEXT("Busy", "A solve is running: wait for it, or Cancel it."));
+				return false;
+			}
 			const TArray<FAerotelicBodyChoicePtr> Bodies = ChosenBodies();
 			if (Bodies.Num() == 0)
 			{
@@ -519,9 +619,12 @@ namespace
 				const int32 BodyIndex = Choices.IndexOfByKey(C);
 				if (!K.bOk) { B->Problems.Add(K.Text); continue; }
 				const aerotelic::Material& Material = K.Spec.material;
-				// The body's label as the lattice names its meshes and the
-				// regions are reported: "<entity>[ (mirror)][ / <body>]".
-				const std::vector<aerotelic::NamedMesh> Placed = Op.Entity->GetPlacedMeshes(Op.bMirror, FAerotelicBooleanModel::kValidationTolerance);
+				// The body's OWN grid: the triangles its Mesh tab defines and
+				// the viewport shows (GetPlacedMeshes at tolerance 0). The
+				// shells sit on these, the solids and homogenised cores are
+				// meshed inside them. The label as the regions are reported:
+				// "<entity>[ (mirror)][ / <body>]".
+				const std::vector<aerotelic::NamedMesh> Placed = Op.Entity->GetPlacedMeshes(Op.bMirror);
 				if (Placed.empty()) { B->Problems.Add(C->Label + TEXT(": no geometry could be built")); continue; }
 				for (const aerotelic::NamedMesh& NM : Placed)
 				{
@@ -546,17 +649,19 @@ namespace
 							CellIndex = &CellOf.Add(K.Lattice, static_cast<int32>(B->Cells.size()) - 1);
 						}
 						const aerotelic::UnitCellSamples* Cell = B->Cells[*CellIndex].get();
-						const std::vector<FAerotelicLatticeModel::FTetMesh>& Meshes = bFullResolution() ? M->GetTetMeshes() : M->GetStructuralTetMeshes();
-						const FAerotelicLatticeModel::FTetMesh* TM = nullptr;
-						for (const FAerotelicLatticeModel::FTetMesh& X : Meshes) if (X.Label == BodyLabel) { TM = &X; break; }
-						if (TM == nullptr)
-						{
-							B->Problems.Add(FString::Printf(TEXT("%s: %s has no tetrahedral mesh of it (%s)"), *BodyLabel, *K.Lattice->EntityName,
-								*FString::Join(bFullResolution() ? M->GetTetNotes() : M->GetStructuralTetNotes(), TEXT("; "))));
-							continue;
-						}
 						if (bFullResolution())
 						{
+							// The lattice's own skin / core tetrahedra: the one model
+							// that is meshed on the lattice's copy of the surface, since
+							// the skin's inner boundary is MeshLib's offset of that copy.
+							const std::vector<FAerotelicLatticeModel::FTetMesh>& Meshes = M->GetTetMeshes();
+							const FAerotelicLatticeModel::FTetMesh* TM = nullptr;
+							for (const FAerotelicLatticeModel::FTetMesh& X : Meshes) if (X.Label == BodyLabel) { TM = &X; break; }
+							if (TM == nullptr)
+							{
+								B->Problems.Add(FString::Printf(TEXT("%s: %s has no skin / core tetrahedral mesh of it (%s)"), *BodyLabel, *K.Lattice->EntityName, *FString::Join(M->GetTetNotes(), TEXT("; "))));
+								continue;
+							}
 							const int32 SkinId = NextId++, CoreId = NextId++;
 							AppendTets(TM->Result.Mesh, [SkinId, CoreId](int32 Region) { return Region == 2 ? CoreId : SkinId; });
 							AerotelicStructuralFea::FRegion Skin;
@@ -568,12 +673,31 @@ namespace
 						}
 						else
 						{
+							// Shells over a homogenised core, on the body's own grid:
+							// gmsh fills exactly these triangles at the cell size. The
+							// lattice gives the cell (above) and the skin thickness.
+							if (!NM.mesh.IsClosedManifold() || !(NM.mesh.SignedVolume() > 0.0))
+							{
+								B->Problems.Add(BodyLabel + TEXT(": not a closed, outward surface"));
+								continue;
+							}
+							FString Error;
+							const AerotelicTetGmsh::FResult* TR = TetMeshFor(NM.mesh, M->Spec.cell_size, BodyLabel, Error);
+							if (TR == nullptr)
+							{
+								B->Problems.Add(FString::Printf(TEXT("%s: its own grid could not be filled with tetrahedra at the cell size: %s"), *BodyLabel, *Error));
+								continue;
+							}
 							const int32 Id = NextId++;
-							AppendTets(TM->Result.Mesh, [Id](int32) { return Id; });
+							AppendTets(TR->Mesh, [Id](int32) { return Id; });
 							AerotelicStructuralFea::FRegion R;
 							R.Id = Id; R.Label = BodyLabel; R.Body = BodyIndex;
-							R.Skin = Material; R.SkinThickness = TM->SkinThickness > 0.0 ? TM->SkinThickness : FAerotelicLatticeModel::SkinThicknessFor(Op);
+							R.Skin = Material; R.SkinThickness = FAerotelicLatticeModel::SkinThicknessFor(Op);
 							R.Core = Material; R.Cell = Cell;
+							// A material card, not a bending problem: first order,
+							// whatever the checkbox says (it multiplied a fuselage's
+							// nodes by seven for nothing, 2026-11-05).
+							R.SecondOrder = 0;
 							Request.Regions.Add(R);
 						}
 						continue;
@@ -631,8 +755,8 @@ namespace
 			Built = B;
 			if (!Derive()) return false;
 			const FModel& M = B->Model;
-			Status(FText::FromString(FString::Printf(TEXT("Model built: %s nodes, %s tetrahedra, %s wetted faces, %s nodes on the supports -- see the Mesh, Loads and Support tabs"),
-				*Thousands(M.Nodes), *Thousands(M.Tets), *Thousands(M.WettedFaces.Num()), *Thousands(M.SupportNodes.Num()))));
+			Status(FText::FromString(FString::Printf(TEXT("Model built: %s nodes, %s tetrahedra, %s wetted faces, %s nodes on the supports; %s -- see the Mesh, Loads and Support tabs"),
+				*Thousands(M.Nodes), *Thousands(M.Tets), *Thousands(M.WettedFaces.Num()), *Thousands(M.SupportNodes.Num()), *CostText(M))));
 			if (B->Problems.Num() > 0 || B->Dropped.Num() > 0)
 			{
 				TArray<FString> All = B->Problems;
@@ -642,6 +766,29 @@ namespace
 			return true;
 		}
 
+		// What the solve will cost, from the pre-processor's count of the
+		// degrees of freedom (the script's own rule, so the figure is the
+		// one the result will report): which solver "auto" takes, and a
+		// warning past the direct solver's budget.
+		bool OverBudget(const FModel& M) const
+		{
+			return M.Dofs > AerotelicStructuralFea::kAutoDirectDofs;
+		}
+		FString CostText(const FModel& M) const
+		{
+			const bool bDirect = SolverIndex == 1 || (SolverIndex == 0 && M.DirectSolverAuto());
+			FString Text = FString::Printf(TEXT("about %s DOF (%s mid-edge nodes on %s 10-node tetrahedra, %s shell nodes), %s"),
+				*Thousands(M.Dofs), *Thousands(M.MidEdgeNodes), *Thousands(M.SecondOrderTets), *Thousands(M.ShellNodes),
+				bDirect ? TEXT("the direct solver") : TEXT("the iterative solver (amgcl, every core)"));
+			if (OverBudget(M))
+			{
+				Text += FString::Printf(TEXT(" -- OVER the direct solver's budget of %s DOF on a desktop%s: coarsen the bodies' Mesh tab grids or switch off second order"),
+					*Thousands(AerotelicStructuralFea::kAutoDirectDofs),
+					bDirect ? TEXT(" (the direct solver was asked for by name: it may take hours or run out of memory)") : TEXT(" (the force balance says afterwards whether the iterative solver converged)"));
+			}
+			return Text;
+		}
+
 		// The supports and loads applied to the built mesh: the parts with
 		// no load path to any support are left out (a control surface in
 		// its gap, a payload bay inside the fuselage -- they would make the
@@ -649,6 +796,11 @@ namespace
 		bool Derive()
 		{
 			if (!Built.IsValid()) return false;
+			if (IsSolving())
+			{
+				Message(LOCTEXT("Busy", "A solve is running: wait for it, or Cancel it."));
+				return false;
+			}
 			FBuilt& B = *Built;
 			FillInputs(B.Request);
 			B.Mesh = B.FullMesh;
@@ -826,15 +978,17 @@ namespace
 			{
 				FGeom G = Surface([&](const FFace& F) { const int32* I = RegionIndex.Find(F.Region); return RegionColor(I ? *I : 0); });
 				ShowPicture(TabMesh, { &G }, { true });
-				FString Text = FString::Printf(TEXT("%s nodes, %s %s tetrahedra, %s wetted faces (their edges drawn)%s"),
-					*Thousands(M.Nodes), *Thousands(M.Tets), B.Request.bSecondOrder && M.Tets > 0 ? TEXT("10-node") : TEXT("4-node"), *Thousands(M.WettedFaces.Num()),
-					B.Request.bSecondOrder && M.Tets > 0 ? TEXT("; the solver adds a mid-edge node on every tetrahedron edge, not drawn") : TEXT(""));
+				FString Text = FString::Printf(TEXT("%s nodes, %s tetrahedra (%s of them 10-node), %s wetted faces (their edges drawn)%s"),
+					*Thousands(M.Nodes), *Thousands(M.Tets), *Thousands(M.SecondOrderTets), *Thousands(M.WettedFaces.Num()),
+					M.SecondOrderTets > 0 ? TEXT("; the solver adds a mid-edge node on every edge of the 10-node tetrahedra, not drawn") : TEXT(""));
+				Text += TEXT("\nCost: ") + CostText(M);
 				for (int32 i = 0; i < M.Regions.Num(); ++i)
 				{
 					const AerotelicFeaPreprocess::FRegionSummary& R = M.Regions[i];
-					Text += FString::Printf(TEXT("\nregion %d, %s (%s): %s tetrahedra, %s faces, volume %.4g %s^3, area %.4g %s^2"),
-						R.Id, *R.Label, *R.Kind, *Thousands(R.Tets), *Thousands(R.Faces), R.Volume, *LengthUnit, R.Area, *LengthUnit);
+					Text += FString::Printf(TEXT("\nregion %d, %s (%s): %s %s tetrahedra, %s faces, volume %.4g %s^3, area %.4g %s^2"),
+						R.Id, *R.Label, *R.Kind, *Thousands(R.Tets), R.Tets > 0 ? (R.bSecondOrder ? TEXT("10-node") : TEXT("4-node")) : TEXT(""), *Thousands(R.Faces), R.Volume, *LengthUnit, R.Area, *LengthUnit);
 				}
+				Text += TEXT("\nThe faces are each body's OWN grid: the triangles its Mesh tab defines and the viewport shows. A lattice-filled body's lattice lends its material card only.");
 				for (const FString& D : B.Dropped) Text += TEXT("\nLEFT OUT: ") + D;
 				if (Captions[TabMesh].IsValid()) Captions[TabMesh]->SetText(FText::FromString(Text));
 			}
@@ -964,7 +1118,7 @@ namespace
 					*Thousands(NSupport), *Thousands(M.Nodes));
 				if (Stride > 1) Text += FString::Printf(TEXT(" (one marker in %d drawn)"), Stride);
 				if (NSupport < 3) Text += TEXT("\nFEWER THAN THREE NODES: the solver refuses this support. Move a plane onto the geometry (or use the mesh's minimum / maximum) or widen the tolerance.");
-				if (B.Request.bSecondOrder && M.Tets > 0) Text += TEXT("\nThe mid-edge nodes the solver adds between two fixed nodes are fixed with them.");
+				if (M.SecondOrderTets > 0) Text += TEXT("\nThe mid-edge nodes the solver adds between two fixed nodes are fixed with them.");
 				if (B.Dropped.Num() > 0)
 				{
 					Text += TEXT("\nLEFT OUT, no load path to any support (they would make the system singular):");
@@ -984,6 +1138,11 @@ namespace
 
 		void Solve()
 		{
+			if (IsSolving())
+			{
+				Message(LOCTEXT("Busy", "A solve is running: wait for it, or Cancel it."));
+				return;
+			}
 			if (!PathBox.IsValid() || PathBox->GetText().ToString().TrimStartAndEnd().IsEmpty())
 			{
 				Message(LOCTEXT("NoPath", "Name the file the solution is to be written to."));
@@ -1014,20 +1173,118 @@ namespace
 					return;
 				}
 			}
-			Status(FText::FromString(FString::Printf(TEXT("Solving %s tetrahedra and %s wetted faces on Kratos..."),
-				*Thousands((int64)B.Mesh.tets.size()), *Thousands(M.WettedFaces.Num()))));
-			AerotelicStructuralFea::FResult R;
-			FString Error;
-			if (!AerotelicStructuralFea::Run(B.Request, R, Error))
+			// The cost, before anything runs: past the direct solver's budget
+			// the user decides, having been told what will happen.
+			if (OverBudget(M) && !bSmoke)
 			{
-				Status(LOCTEXT("Ready", "Ready"));
-				AerotelicMessageBox(EAppMsgType::Ok, FText::FromString(Error), LOCTEXT("Failed", "Structural Analysis Failed"));
-				return;
+				const bool bDirectByName = SolverIndex == 1;
+				const EAppReturnType::Type Answer = AerotelicMessageBox(EAppMsgType::YesNo,
+					FText::FromString(FString::Printf(TEXT("This model is %s: %s.\n\n%s\n\nSolve anyway?"),
+						*CostText(M),
+						bDirectByName
+							? TEXT("the direct solver was chosen by name, and at this size it can take hours on one thread or run the machine out of memory (a 540,000-DOF fuselage exhausted 32 GB and the page file)")
+							: TEXT("the iterative solver (amgcl) will run instead, on every core; it can stop short on thin shells, which the force balance will report afterwards"),
+						TEXT("A faster, exact solve: coarsen the bodies' Mesh tab grids (the shells and the tetrahedra are built on them), or untick the second-order tetrahedra."))),
+					LOCTEXT("Title", "Structural (Kratos FEA)"));
+				if (Answer != EAppReturnType::Yes) return;
 			}
 
+			// Off the game thread: the script runs for seconds to minutes
+			// and the window must keep painting (and offering Cancel).
+			TSharedPtr<FSolveJob> J = MakeShared<FSolveJob>();
+			J->Built = Built;
+			J->Started = FPlatformTime::Seconds();
+			{
+				TWeakPtr<FSolveJob> WeakJob = J;
+				J->Progress.OnLine = [WeakJob](const FString& Line)
+				{
+					TSharedPtr<FSolveJob> P = WeakJob.Pin();
+					if (!P.IsValid()) return;
+					FScopeLock L(&P->Lock);
+					P->LastLine = Line;
+				};
+			}
+			Job = J;
+			SetSolving(true);
+			ShowProgress(FString::Printf(TEXT("starting the solver on %s tetrahedra and %s wetted faces"), *Thousands((int64)B.Mesh.tets.size()), *Thousands(M.WettedFaces.Num())));
+			Async(EAsyncExecution::Thread, [J]()
+			{
+				J->bOk = AerotelicStructuralFea::Run(J->Built->Request, J->Result, J->Error, &J->Progress);
+				J->bDone = true;
+			});
+			TWeakPtr<FState> Weak = AsShared();
+			J->Ticker = FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda([Weak, J](float)
+			{
+				TSharedPtr<FState> S = Weak.Pin();
+				if (!S.IsValid()) return false;
+				if (J->IsRunning())
+				{
+					S->ShowProgress(J->TakeLastLine());
+					return true;
+				}
+				S->FinishSolve(J);
+				return false;
+			}), 0.25f);
+		}
+
+		// The dialog while a solve runs: Build and Solve quiet, Cancel live,
+		// the marquee on.
+		void SetSolving(bool bOn)
+		{
+			if (BuildButton.IsValid()) BuildButton->SetEnabled(!bOn);
+			if (SolveButton.IsValid()) SolveButton->SetEnabled(!bOn);
+			if (CancelButton.IsValid()) CancelButton->SetEnabled(bOn);
+			if (ProgressBar.IsValid()) ProgressBar->SetVisibility(bOn ? EVisibility::Visible : EVisibility::Collapsed);
+			if (LblProgress.IsValid()) LblProgress->SetVisibility(bOn ? EVisibility::Visible : EVisibility::Collapsed);
+		}
+
+		void ShowProgress(const FString& Line)
+		{
+			const double Elapsed = Job.IsValid() ? FPlatformTime::Seconds() - Job->Started : 0.0;
+			const FString Text = FString::Printf(TEXT("Solving, %.0f s: %s"), Elapsed, Line.IsEmpty() ? TEXT("...") : *Line);
+			Status(FText::FromString(Text));
+			if (LblProgress.IsValid()) LblProgress->SetText(FText::FromString(Text));
+		}
+
+		void CancelSolve()
+		{
+			if (!IsSolving()) return;
+			Job->Progress.bCancel = true;
+			ShowProgress(TEXT("cancelling..."));
+		}
+
+		void FinishSolve(TSharedPtr<FSolveJob> J)
+		{
+			// Called from the ticker itself, which ends by returning false:
+			// the handle is only forgotten here.
+			J->Ticker.Reset();
+			if (Job == J) Job.Reset();
+			SetSolving(false);
+			if (!J->bOk)
+			{
+				if (J->Error == TEXT("cancelled"))
+				{
+					Status(LOCTEXT("Cancelled", "Solve cancelled."));
+				}
+				else
+				{
+					Status(LOCTEXT("Ready", "Ready"));
+					AerotelicMessageBox(EAppMsgType::Ok, FText::FromString(J->Error), LOCTEXT("Failed", "Structural Analysis Failed"));
+				}
+				return;
+			}
+			if (J->Built.IsValid()) ShowResult(*J->Built, J->Result);
+		}
+
+		// The result into the Set-up tab's Result group and the status bar.
+		void ShowResult(const FBuilt& B, const AerotelicStructuralFea::FResult& R)
+		{
+			const FModel& M = B.Model;
+			if (!LblMesh.IsValid()) return;   // the window closed while the solver ran
 			const double L2 = Units.LengthToSI(), S2 = Units.StressToSI(), M2 = Units.MassToSI();
-			LblMesh->SetText(FText::FromString(FString::Printf(TEXT("%s nodes; %s %s tetrahedra + %s shells; %s DOF; %s wetted faces; %s nodes on the supports"),
-				*Thousands(R.Nodes), *Thousands(R.Tets), R.bSecondOrder ? TEXT("10-node") : TEXT("4-node"), *Thousands(R.Shells), *Thousands(R.Dofs), *Thousands(R.WettedFaces), *Thousands(R.SupportNodes))));
+			LblMesh->SetText(FText::FromString(FString::Printf(TEXT("%s nodes; %s tetrahedra (%s) + %s shells; %s DOF; %s wetted faces; %s nodes on the supports"),
+				*Thousands(R.Nodes), *Thousands(R.Tets), R.bSecondOrder ? (M.SecondOrderTets == M.Tets ? TEXT("10-node") : TEXT("10-node solids, 4-node cores")) : TEXT("4-node"),
+				*Thousands(R.Shells), *Thousands(R.Dofs), *Thousands(R.WettedFaces), *Thousands(R.SupportNodes))));
 			FString Core;
 			for (const AerotelicStructuralFea::FRegionResult& G : R.Regions)
 			{
@@ -1085,10 +1342,10 @@ namespace
 			{
 				UE_LOG(LogTemp, Warning, TEXT("StructuralFea: %s"), *W);
 			}
-			if (R.SupportNodes != M.SupportNodes.Num() || R.WettedFaces != M.WettedFaces.Num())
+			if (R.SupportCornerNodes != M.SupportNodes.Num() || R.WettedFaces != M.WettedFaces.Num() || R.Dofs != M.Dofs)
 			{
-				UE_LOG(LogTemp, Warning, TEXT("StructuralFea: the pre-processor counted %d support nodes and %d wetted faces, the solver %d and %d"),
-					M.SupportNodes.Num(), M.WettedFaces.Num(), R.SupportNodes, R.WettedFaces);
+				UE_LOG(LogTemp, Warning, TEXT("StructuralFea: the pre-processor counted %d support nodes, %d wetted faces and %lld DOF, the solver %d, %d and %d"),
+					M.SupportNodes.Num(), M.WettedFaces.Num(), M.Dofs, R.SupportCornerNodes, R.WettedFaces, R.Dofs);
 			}
 			Status(FText::FromString(FString::Printf(TEXT("Structural analysis solved on %s DOF (%s): max displacement %.4g %s, max von Mises %.4g %s%s -> %s%s"),
 				*Thousands(R.Dofs), *R.LinearSolver, R.MaxDisplacement / L2, *UnitName(Units.LengthName()), R.MaxVonMises / S2, *UnitName(Units.StressName()),
@@ -1266,6 +1523,16 @@ namespace
 
 		void Close()
 		{
+			// A solve still running is told to stop; the worker finishes on
+			// its own (it holds the built model, not the dialog).
+			if (Job.IsValid())
+			{
+				Job->Progress.bCancel = true;
+				if (Job->Ticker.IsValid()) { FTSTicker::GetCoreTicker().RemoveTicker(Job->Ticker); Job->Ticker.Reset(); }
+				Job.Reset();
+			}
+			TetCache.Empty();
+			LblProgress.Reset(); ProgressBar.Reset(); BuildButton.Reset(); SolveButton.Reset(); CancelButton.Reset();
 			for (int32 Tab = 0; Tab < kPictures; ++Tab)
 			{
 				for (TWeakObjectPtr<AAerotelicColoredMeshActor>& A : Actors[Tab]) if (A.IsValid()) A->Destroy();
@@ -1320,17 +1587,22 @@ namespace
 		"A linear static finite-element analysis of the chosen solid bodies on KratosMultiphysics' StructuralMechanicsApplication, run as a separate process in the WingDesigner environment. Everything the solver sees is SI (the mesh scaled by the length unit, the materials as they are, loads in newtons and pascals); the dialog converts the results back.\n\n"
 		"BODIES\n"
 		"The picker lists SOLID BODIES, not parameterisations: a wing's main element and its flap, a propeller's spinner and blades, a boolean result's separate shells are each a row. What each body is comes from its Material Properties (a boolean result inherits its first operand's). A body with a skin thickness and no lattice is a thin-walled part: shells of that thickness on its own triangles, nothing inside. A body with no skin thickness and no lattice is a solid: tetrahedra of its material at the element size. "
-		"A lattice-filled body is shells of its skin thickness over tetrahedra at the lattice cell size carrying the lattice's homogenised stiffness, the struts of the body's material; or, at full resolution, the skin tetrahedra as a solid over core tetrahedra with the homogenised lattice. The bodies are not joined to one another: each must reach a support on its own or through a body it was fused with. A body or part of one with no load path to any support -- a control surface in its gap, a payload bay inside the fuselage -- would make the system singular, so it is LEFT OUT automatically and named on the Mesh and Support tabs.\n\n"
+		"A body FILLED BY A LATTICE is said so on the Set-up tab: the lattice was not chosen and lends its material card only -- the cell to homogenise and the skin thickness. The body is then shells of that thickness on its own grid over 4-node tetrahedra at the lattice cell size carrying the lattice's homogenised stiffness, the struts of the body's material; or, at full resolution, the lattice's own skin tetrahedra as a solid over core tetrahedra with the homogenised lattice (the one model meshed on the lattice's copy of the surface, whose inner boundary is the lattice's offset); or, with 'Ignore the lattices' under Model, what its Material Properties alone say. "
+		"The bodies are not joined to one another: each must reach a support on its own or through a body it was fused with. A body or part of one with no load path to any support -- a control surface in its gap, a payload bay inside the fuselage -- would make the system singular, so it is LEFT OUT automatically and named on the Mesh and Support tabs.\n\n"
+		"THE GRID\n"
+		"Every body is analysed on ITS OWN GRID: the triangles its Mesh tab defines, at the viewport's tolerance rule, the same ones the viewport shows and mass properties weigh. The shells are those triangles; the solids and the homogenised cores are tetrahedra filled inside them (gmsh adds interior nodes only, never a point on the surface). So the Mesh tab is where the cost of a solve is set, and the Mesh tab's count is the shell count. Until 2026-11-05 a lattice-filled body was solved on the lattice's private copy of its surface, rebuilt at a quarter of the skin thickness for the hollowing -- eighteen times finer than the fuselage drawn in the viewport -- which is what made a homogenised solve run out of memory.\n\n"
+		"COST\n"
+		"Build Model counts the degrees of freedom the solver will see (the script's own rule: three per node, three more per node carrying shells, a mid-edge node on every edge of the 10-node tetrahedra) and says which solver the automatic choice takes: the direct solver (exact, one thread) up to 150,000 DOF, the iterative solver (amgcl, every core; the force balance checks it afterwards) beyond. Past that budget Solve asks first. Second order (10-node tetrahedra) applies to solids and to the full-resolution skin tetrahedra, where a tetrahedron in bending needs it; a homogenised core stays 4-node whatever the box says, since it carries a material card and the shells carry the bending. For a solve in about a minute on a desktop keep the DOF in the tens of thousands: a few thousand triangles per body.\n\n"
 		"SET-UP\n"
-		"Build Model meshes the bodies (gmsh; a lattice's meshes are kept until it changes) and derives what the solver will be handed for the three tabs that follow, without solving. Solve does the same and then runs Kratos, writing the displacement and stress fields to the VTK file named and the peaks, margins and force balance into the Result group; with a number of natural frequencies set under Model it then solves the same model's eigenvalue problem and lists them too, with the mode shapes written to the VTK.\n\n"
+		"Build Model meshes the bodies (gmsh; a body's tetrahedra are kept while the dialog is open and its grid and the cell size are unchanged) and derives what the solver will be handed for the three tabs that follow, without solving. Solve does the same and then runs Kratos on a worker thread -- the window keeps painting, the status line shows the solver's stage and the elapsed time, and Cancel ends it -- writing the displacement and stress fields to the VTK file named and the peaks, margins and force balance into the Result group; with a number of natural frequencies set under Model it then solves the same model's eigenvalue problem and lists them too, with the mode shapes written to the VTK.\n\n"
 		"MESH\n"
-		"The wetted faces of the model -- the boundary faces of the tetrahedra and the shell-only bodies' triangles -- coloured by region with their edges drawn. Where a region has a skin these faces ARE the shell elements. The caption counts nodes, tetrahedra and faces, each region's kind, volume and area, and what was left out.\n\n"
+		"The wetted faces of the model -- the boundary faces of the tetrahedra and the shell-only bodies' triangles -- coloured by region with their edges drawn. Where a region has a skin these faces ARE the shell elements. The caption counts nodes, tetrahedra (and which are 10-node) and faces, the cost, each region's kind, order, volume and area, and what was left out.\n\n"
 		"LOADS\n"
 		"On the left: the inertial load factor (the model's own mass under that many g along -z; 0 to begin with, so a test load acts alone), a uniform pressure on every wetted face (positive pressing inward), and any number of point forces, each at a point (the corner node nearest it takes the load) with its force in newtons -- add, edit, delete, then Apply. On the right the forces as arrows, each head at its point of application: orange the pressure as the traction on up to ~1500 faces (direction and relative size, not the face force), red each point force at its node, green the inertial load at the centre of mass.\n\n"
 		"SUPPORT\n"
 		"On the left: any number of support planes, each axis = value (or the mesh's minimum or maximum along the axis) with a tolerance (0 is a ten-thousandth of the mesh's diagonal, about how planar a lofted section is); every node within the tolerance of any plane is clamped in every degree of freedom (the shells' rotations too) -- add, edit, delete, then Apply. On the right a red marker on every fixed node, each plane as a blue frame, and the load path: whatever reaches no support is left out and listed.\n\n"
 		"RESULT\n"
-		"Linear static, small displacement, linear elastic, the linear thin shell triangle (its reactions balance the loads exactly; the corotational triangles are options for small-displacement comparisons). The reactions at the supports must balance what was applied: the Force balance line says by how much they miss, and a miss of more than one percent means the linear solver did not converge -- the solution is then reported as NOT converged and nothing in it is to be trusted (the iterative solver can do this on thin shells; the direct solver cannot, which is why the automatic choice takes it up to a million degrees of freedom). Margin is allowable / peak von Mises - 1 for each region's skin, solid or core; a homogenised core's margin is against the material's allowable using the stress estimated in the struts. "
+		"Linear static, small displacement, linear elastic, the linear thin shell triangle (its reactions balance the loads exactly; the corotational triangles are options for small-displacement comparisons). The reactions at the supports must balance what was applied: the Force balance line says by how much they miss, and a miss of more than one percent means the linear solver did not converge -- the solution is then reported as NOT converged and nothing in it is to be trusted (the iterative solver can do this on thin shells; the direct solver cannot, which is why the automatic choice takes it up to 150,000 degrees of freedom). Margin is allowable / peak von Mises - 1 for each region's skin, solid or core; a homogenised core's margin is against the material's allowable using the stress estimated in the struts. "
 		"The natural frequencies (2026-11-04) are the lowest modes of K phi = omega^2 M phi for the same mesh, materials and clamps with no loads: the stiffness the static solve used and the elements' own mass from the densities and skin thicknesses (the core's overlap correction included). They are in hertz whatever the units; under a model scale they are the replica's. Checked on a 1 x 10 x 1 m thin-walled aluminium box: the degenerate first bending pair within 1.5% of the clamped-free beam's frequency corrected for shear, rotary inertia and the tip cap's mass, then the skin panels' own plate modes -- a thin-walled part goes local long before its second beam mode. The VTK holds the displacement, the stresses and the mode shapes (mode_1, mode_2, ... scaled to a unit largest displacement) for ParaView, in SI. No post-processing view yet.");
 }
 
@@ -1366,12 +1638,13 @@ void ShowAerotelicStructuralFeaDialog(TFunction<void(const FText&)> Status)
 	S->Units = Doc != nullptr ? Doc->GetUnits() : aerotelic::UnitSystem{};
 	S->Choices = Choices;
 	S->ModelOptions = {
-		MakeShared<FString>(TEXT("Shells over a homogenised lattice core (for a desktop)")),
-		MakeShared<FString>(TEXT("Skin and core tetrahedra (full resolution)")) };
+		MakeShared<FString>(TEXT("Shells on the body's own grid over a homogenised lattice core (for a desktop)")),
+		MakeShared<FString>(TEXT("The lattice's skin and core tetrahedra (full resolution)")),
+		MakeShared<FString>(TEXT("Ignore the lattices: each body as its Material Properties say (shells or solid)")) };
 	S->SolverOptions = {
-		MakeShared<FString>(TEXT("Automatic (direct up to a million DOF, iterative beyond)")),
-		MakeShared<FString>(TEXT("sparse_lu (direct; exact)")),
-		MakeShared<FString>(TEXT("amgcl (iterative; check the force balance)")) };
+		MakeShared<FString>(FString::Printf(TEXT("Automatic (direct up to %s DOF, iterative beyond)"), *Thousands(AerotelicStructuralFea::kAutoDirectDofs))),
+		MakeShared<FString>(TEXT("sparse_lu (direct; exact; one thread)")),
+		MakeShared<FString>(TEXT("amgcl (iterative; every core; check the force balance)")) };
 	S->ShellOptions = {
 		MakeShared<FString>(TEXT("Linear thin triangle (Kirchhoff; reactions balance exactly)")),
 		MakeShared<FString>(TEXT("Corotational thin triangle (small displacements only)")) };
@@ -1460,7 +1733,7 @@ void ShowAerotelicStructuralFeaDialog(TFunction<void(const FText&)> Status)
 				+ SVerticalBox::Slot().AutoHeight().Padding(0, 4, 0, 0)
 				[
 					MakeInfoLabel(LOCTEXT("BodiesHint",
-						"One row per SOLID BODY: a wing's main element and its flap, a propeller's blades, a boolean result's separate shells. What each is comes from its Material Properties (a boolean result inherits its first operand's): with a skin thickness and no lattice a thin-walled part of shells; with no skin thickness a solid of its material; filled by a lattice, shells over the lattice's homogenised core. "
+						"One row per SOLID BODY: a wing's main element and its flap, a propeller's blades, a boolean result's separate shells. Each is analysed on ITS OWN GRID -- the triangles its Mesh tab defines and the viewport shows. What each is comes from its Material Properties (a boolean result inherits its first operand's): with a skin thickness and no lattice a thin-walled part of shells; with no skin thickness a solid of its material; FILLED BY A LATTICE (said so above: the lattice was not chosen and lends its material card only), shells over a homogenised core, or as the Model group says. "
 						"The bodies are not joined to one another: each must reach a support on its own, or through a body it was fused with. Whatever has no load path to any support -- a control surface in its gap, a bay inside the fuselage -- is left out automatically and named. A boolean result already contains its operands, so those start unchosen."))
 				])
 		]
@@ -1477,7 +1750,8 @@ void ShowAerotelicStructuralFeaDialog(TFunction<void(const FText&)> Status)
 				+ SVerticalBox::Slot().AutoHeight().Padding(0, 2)
 				[
 					SAssignNew(S->SecondOrderCheck, SCheckBox).IsChecked(ECheckBoxState::Checked)
-					[ SNew(STextBlock).Text(LOCTEXT("SecondOrder", "Second-order (10-node) tetrahedra (the shells stay 3-node)")) ]
+					.OnCheckStateChanged_Lambda([S](ECheckBoxState) { S->DescribeModel(); })
+					[ SNew(STextBlock).Text(LOCTEXT("SecondOrder", "Second-order (10-node) tetrahedra for solids and skin tetrahedra (homogenised cores stay 4-node; the shells 3-node)")) ]
 				]
 				+ SVerticalBox::Slot().AutoHeight().Padding(0, 2)
 				[
@@ -1493,7 +1767,8 @@ void ShowAerotelicStructuralFeaDialog(TFunction<void(const FText&)> Status)
 				+ SVerticalBox::Slot().AutoHeight().Padding(0, 4, 0, 0)
 				[
 					MakeInfoLabel(LOCTEXT("ModelHint",
-						"Shells over a homogenised core: a lattice-filled body's own surface triangles become shell elements of its skin thickness, and the inside is tetrahedra at the lattice cell size carrying the lattice's homogenised stiffness -- one unit cell, voxelised at the resolution above, solved under the six unit strains -- the struts of the body's material. The full-resolution model is the skin and core tetrahedra Lattice export writes, the skin a solid of the material and the core homogenised; keep second order on for it. Solid bodies without a lattice are meshed by gmsh at the element size. The direct solver is exact; the iterative one can stop short on thin shells and hand back a solution whose reactions do not balance the loads, so the automatic choice takes the direct solver up to a million degrees of freedom and the force balance is checked after every solve. "
+						"Shells over a homogenised core: a lattice-filled body's OWN surface triangles (its Mesh tab's, what the viewport shows) become shell elements of its skin thickness, and the inside is 4-node tetrahedra at the lattice cell size carrying the lattice's homogenised stiffness -- one unit cell, voxelised at the resolution above, solved under the six unit strains -- the struts of the body's material. The lattice lends that material card only; its own, finer copy of the surface never reaches the solver. The full-resolution model is the skin and core tetrahedra Lattice export writes, on the lattice's copy, the skin a solid of the material and the core homogenised; keep second order on for it. Ignore the lattices analyses every body as its Material Properties alone say. Solid bodies without a lattice are meshed by gmsh at the element size inside their own grid. "
+						"Second order promotes the solids' and skin tetrahedra to 10 nodes (a tetrahedron in bending needs it); a homogenised core stays 4-node regardless, the shells carrying the bending. Build Model reports the degrees of freedom and which solver will run: the direct solver is exact but single-threaded and its cost grows faster than the system, so the automatic choice takes it up to 150,000 degrees of freedom and the iterative solver (amgcl, every core) beyond; the force balance is checked after every solve, since the iterative solver can stop short on thin shells and hand back a solution whose reactions do not balance the loads. "
 						"The linear thin triangle is the shell for a linear static analysis: its reactions balance the loads exactly whatever the displacement. The corotational triangles are geometrically nonlinear elements solved in one step: they agree with it for small displacements and report inconsistent reactions and stresses once the model moves far. "
 						"The natural frequencies are the same model's -- the same mesh, materials and clamps, no loads -- solved after the static case as the eigenvalue problem K phi = omega^2 M phi for the lowest modes asked (Spectra's shift-invert eigensolver, a second or two on a few hundred thousand degrees of freedom). The mass is the elements' own, from the densities and skin thicknesses, so a thin-walled part's spectrum shows its skin panels' plate modes soon after the first beam modes."))
 				])
@@ -1588,13 +1863,25 @@ void ShowAerotelicStructuralFeaDialog(TFunction<void(const FText&)> Status)
 			SNew(SVerticalBox)
 			+ SVerticalBox::Slot().FillHeight(1.0f).Padding(0, 0, 0, 10)
 			[ SAssignNew(S->Tabs, SAerotelicTabStrip, Tabs) ]
-			+ SVerticalBox::Slot().AutoHeight().HAlign(HAlign_Right)
+			+ SVerticalBox::Slot().AutoHeight()
 			[
 				SNew(SHorizontalBox)
+				// The solve's own status: its stage and elapsed time, with a
+				// marquee, while the worker runs; hidden otherwise.
+				+ SHorizontalBox::Slot().FillWidth(1.0f).VAlign(VAlign_Center).Padding(0, 0, 12, 0)
+				[
+					SNew(SVerticalBox)
+					+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 3)
+					[ SAssignNew(S->LblProgress, STextBlock).AutoWrapText(true).Visibility(EVisibility::Collapsed).ColorAndOpacity(FSlateColor(FLinearColor(0.9f, 0.9f, 0.9f))) ]
+					+ SVerticalBox::Slot().AutoHeight()
+					[ SNew(SBox).HeightOverride(8) [ SAssignNew(S->ProgressBar, SProgressBar).Percent(TOptional<float>()).Visibility(EVisibility::Collapsed) ] ]
+				]
 				+ SHorizontalBox::Slot().AutoWidth().Padding(0, 0, 6, 0)
-				[ Button(LOCTEXT("BuildBtn", "Build Model"), [S]() { if (S->BuildModel() && S->Tabs.IsValid()) S->Tabs->SetActiveTab(TabMesh); }) ]
+				[ SAssignNew(S->BuildButton, SButton).Text(LOCTEXT("BuildBtn", "Build Model")).HAlign(HAlign_Center).OnClicked_Lambda([S]() { if (S->BuildModel() && S->Tabs.IsValid()) S->Tabs->SetActiveTab(TabMesh); return FReply::Handled(); }) ]
 				+ SHorizontalBox::Slot().AutoWidth().Padding(0, 0, 6, 0)
-				[ Button(LOCTEXT("SolveBtn", "Solve"), [S]() { S->Solve(); }) ]
+				[ SAssignNew(S->SolveButton, SButton).Text(LOCTEXT("SolveBtn", "Solve")).HAlign(HAlign_Center).OnClicked_Lambda([S]() { S->Solve(); return FReply::Handled(); }) ]
+				+ SHorizontalBox::Slot().AutoWidth().Padding(0, 0, 6, 0)
+				[ SAssignNew(S->CancelButton, SButton).Text(LOCTEXT("CancelBtn", "Cancel")).HAlign(HAlign_Center).IsEnabled(false).OnClicked_Lambda([S]() { S->CancelSolve(); return FReply::Handled(); }) ]
 				+ SHorizontalBox::Slot().AutoWidth()
 				[ Button(LOCTEXT("Close", "Close"), [Window]() { Window->RequestDestroyWindow(); }) ]
 			]

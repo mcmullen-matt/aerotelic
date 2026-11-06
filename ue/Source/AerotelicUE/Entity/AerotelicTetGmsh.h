@@ -40,6 +40,18 @@ namespace AerotelicTetGmsh
 		double CoreSize = 0.0;
 		// Floor on the edge length (0: none).
 		double MinSize = 0.0;
+		// Whether the size grows from the surfaces' own triangle sizes
+		// (gmsh's Mesh.MeshSizeExtendFromBoundary; the default) or is
+		// CoreSize everywhere inside, graded to the surface only by the
+		// Delaunay insertion itself. Off for a homogenised core (2026-11-05):
+		// its tetrahedra carry a material card, not geometry, so a fine
+		// surface need not seed a fine interior. Measured on a 1,280-triangle
+		// unit icosphere at a 0.25 cell (tools/tet_gmsh.py, Netgen on):
+		// 5,531 tetrahedra on 1,275 nodes with, 2,939 on 857 without, the
+		// worst element 0.474 against 0.497 (mean 0.88 against 0.84); on a
+		// 320-triangle sphere the two are identical, the surface being
+		// already coarser than the cell.
+		bool bSizeFromBoundary = true;
 		// Pockets of the offset smaller than this are filled solid rather
 		// than meshed as core: a remesh leaves slivers, and gmsh refuses a
 		// whole body over one bad shell.

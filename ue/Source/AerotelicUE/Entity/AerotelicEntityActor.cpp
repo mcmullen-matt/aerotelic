@@ -1090,12 +1090,31 @@ std::vector<aerotelic::NamedMesh> AAerotelicEntityActor::GetPlacedMeshes(bool bM
 		return Meshes;
 	}
 	// Tolerance is asked for on the placed (replica) mesh; the model is the
-	// full-scale aircraft, so it is meshed that much finer.
-	const double ModelTolerance = Tolerance / GetModelScale();
+	// full-scale aircraft, so it is meshed that much finer. Zero or less is
+	// the body's own grid: the viewport's meshes as they stand, else built
+	// at the viewport's rule (which needs the bounds: a first build at the
+	// fallback tolerance gives them, as the viewport's own first build does).
+	const bool bOwnGrid = !(Tolerance > 0.0);
+	const double ModelTolerance = bOwnGrid ? DisplayTolerance() : Tolerance / GetModelScale();
 	try
 	{
+		if (bOwnGrid && !LastMeshes.empty())
+		{
+			Meshes = LastMeshes;
+		}
+		else if (bOwnGrid && !LastLocalBounds.IsValid)
+		{
+			Meshes = Model->BuildMeshes(ModelTolerance);
+			FBox Local(ForceInit);
+			for (const aerotelic::NamedMesh& M : Meshes) Local += AerotelicMeshing::BoundsOf(M.mesh);
+			if (Local.IsValid)
+			{
+				const double Rule = FMath::Clamp(Local.GetSize().Size() * 0.0015, 1e-4, 1e9);
+				if (!FMath::IsNearlyEqual(Rule, ModelTolerance, 1e-12)) Meshes = Model->BuildMeshes(Rule);
+			}
+		}
 		// The viewport's own meshes when they are at least as fine as asked.
-		if (!LastMeshes.empty() && LastMeshTolerance <= ModelTolerance)
+		else if (!LastMeshes.empty() && LastMeshTolerance <= ModelTolerance)
 		{
 			Meshes = LastMeshes;
 		}
@@ -1154,7 +1173,7 @@ FBox AAerotelicEntityActor::GetPlacedBounds(bool bMirror) const
 		}
 		return Box;
 	}
-	for (const aerotelic::NamedMesh& M : GetPlacedMeshes(bMirror, DisplayTolerance()))
+	for (const aerotelic::NamedMesh& M : GetPlacedMeshes(bMirror))
 	{
 		Box += AerotelicMeshing::BoundsOf(M.mesh);
 	}

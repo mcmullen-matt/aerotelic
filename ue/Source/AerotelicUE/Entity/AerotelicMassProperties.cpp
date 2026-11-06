@@ -195,9 +195,12 @@ FString FormatAerotelicMassReport(const FAerotelicMassReport& Report, const aero
 	const int32 Width = kLabelWidth + 10 * kCellWidth;
 	FString Out;
 	Out += TEXT("MASS PROPERTIES\n");
-	Out += FString::Printf(TEXT("Project units: %s (Geometry > Units). Mass in %s, lengths in %s, inertia in %s. Surfaces meshed at tolerance %.5g %s.\n"),
+	Out += FString::Printf(TEXT("Project units: %s (Geometry > Units). Mass in %s, lengths in %s, inertia in %s. %s\n"),
 		UTF8_TO_TCHAR(Units.Describe().c_str()), UTF8_TO_TCHAR(Units.MassName()), UTF8_TO_TCHAR(Units.LengthName()),
-		UTF8_TO_TCHAR(Units.InertiaName().c_str()), Report.Tolerance, UTF8_TO_TCHAR(Units.LengthName()));
+		UTF8_TO_TCHAR(Units.InertiaName().c_str()),
+		Report.Tolerance > 0.0
+			? *FString::Printf(TEXT("Surfaces meshed at tolerance %.5g %s."), Report.Tolerance, UTF8_TO_TCHAR(Units.LengthName()))
+			: TEXT("Each body weighed on its own grid (its Mesh tab's, the viewport's -- the grid the structural analysis solves on)."));
 	Out += TEXT("Each component's inertia is about its own centre of mass, in the model's X, Y, Z axes; the assembly's is about the assembly's centre, every component carried there by the parallel-axis theorem.\n");
 	Out += TEXT("Ixy, Ixz, Iyz are the products of inertia, the integrals of xy, xz, yz (the tensor's off-diagonals are their negatives).\n\n");
 

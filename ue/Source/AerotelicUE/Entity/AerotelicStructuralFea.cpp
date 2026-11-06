@@ -121,7 +121,7 @@ namespace AerotelicStructuralFea
 		return FPaths::FileExists(Script) ? FPaths::ConvertRelativePathToFull(Script) : FString();
 	}
 
-	bool Run(const FRequest& Request, FResult& Out, FString& OutError)
+	bool Run(const FRequest& Request, FResult& Out, FString& OutError, AerotelicMeshLib::FJobProgress* Progress)
 	{
 		if (Request.Mesh == nullptr || (Request.Mesh->tets.empty() && Request.ShellFaces.Num() == 0))
 		{
@@ -245,8 +245,10 @@ namespace AerotelicStructuralFea
 			{
 				Solid = FString::Printf(TEXT("{\"material\": %s}"), *MaterialJson(R.Core));
 			}
-			Regions += FString::Printf(TEXT("%s{\"id\": %d, \"label\": %s, \"skin\": %s, \"core\": %s, \"solid\": %s}"),
-				i ? TEXT(", ") : TEXT(""), R.Id, *JsonString(R.Label), *Skin, *Core, *Solid);
+			// The region's own element order, or null for the request's.
+			const TCHAR* Order = R.SecondOrder < 0 ? TEXT("null") : (R.SecondOrder > 0 ? TEXT("true") : TEXT("false"));
+			Regions += FString::Printf(TEXT("%s{\"id\": %d, \"label\": %s, \"skin\": %s, \"core\": %s, \"solid\": %s, \"second_order\": %s}"),
+				i ? TEXT(", ") : TEXT(""), R.Id, *JsonString(R.Label), *Skin, *Core, *Solid, Order);
 		}
 
 		if (Request.Supports.Num() == 0)
@@ -290,7 +292,7 @@ namespace AerotelicStructuralFea
 		}
 
 		TSharedPtr<FJsonObject> Result;
-		if (!AerotelicMeshLib::RunJob(Script, Dir, Result, OutError))
+		if (!AerotelicMeshLib::RunJob(Script, Dir, Result, OutError, Progress))
 		{
 			Cleanup();
 			return false;

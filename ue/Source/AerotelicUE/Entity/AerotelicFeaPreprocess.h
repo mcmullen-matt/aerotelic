@@ -48,6 +48,7 @@ namespace AerotelicFeaPreprocess
 		FString Kind;          // "shells", "solid", "shells over a homogenised core", "homogenised core"
 		int32 Tets = 0;
 		int32 Faces = 0;
+		bool bSecondOrder = false;   // its tetrahedra 10-node (FRegion::IsSecondOrder)
 		double Volume = 0.0;   // project units^3
 		double Area = 0.0;     // of its wetted faces, project units^2
 		double Mass = 0.0;     // kg (a homogenised core: estimated)
@@ -60,6 +61,18 @@ namespace AerotelicFeaPreprocess
 		aerotelic::Box3 Bounds;
 		double Diagonal = 0.0;
 		TArray<FFace> WettedFaces;
+		// ---- the system the solver will build (2026-11-05), by the
+		// script's own rules, so the cost is known BEFORE the solve: the
+		// tetrahedra of the second-order regions, the mid-edge nodes the
+		// script adds for them (one per distinct edge of those tetrahedra),
+		// the corner nodes carrying shells (six degrees of freedom; the
+		// rest three), and the degrees of freedom in all. ----
+		int32 SecondOrderTets = 0;
+		int32 MidEdgeNodes = 0;
+		int32 ShellNodes = 0;
+		int64 Dofs = 0;
+		// Which solver "auto" would run at that size (the script's rule).
+		bool DirectSolverAuto() const { return Dofs <= AerotelicStructuralFea::kAutoDirectDofs; }
 		TArray<FVector> FaceCentre;
 		TArray<FVector> FaceNormal;     // unit, outward
 		TArray<double> FaceArea;        // project units^2

@@ -217,6 +217,13 @@ def run_job(job_dir):
                       the mean from 0.655 to 0.687, for 52 s against 15 s:
                       worth it for a mesh that goes into a solver, where
                       one near-flat element spoils the conditioning.
+        size_from_boundary
+                      let the surfaces' own triangle sizes seed the interior
+                      (gmsh's Mesh.MeshSizeExtendFromBoundary; default
+                      true). False makes the size core_size throughout,
+                      graded to a finer surface only by the Delaunay
+                      insertion: for a homogenised core, whose tetrahedra
+                      carry a material card rather than geometry.
         outputs       {mesh, result}: file names to write
 
     Returns the result dictionary (also written to outputs.result).
@@ -233,6 +240,7 @@ def run_job(job_dir):
     algorithm = int(job.get("algorithm", 10))
     optimize = bool(job.get("optimize", True))
     optimize_netgen = bool(job.get("optimize_netgen", True))
+    size_from_boundary = bool(job.get("size_from_boundary", True))
 
     ov, of = read_tri(os.path.join(job_dir, job["outer"]))
     check_closed(ov, of, "the body")
@@ -266,9 +274,13 @@ def run_job(job_dir):
         # field from geometry these discrete surfaces do not have.
         gmsh.option.setNumber("Mesh.MeshSizeFromPoints", 0)
         gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 0)
-        gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 1)
+        gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 1 if size_from_boundary else 0)
         if core_size > 0.0:
             gmsh.option.setNumber("Mesh.MeshSizeMax", core_size)
+            if not size_from_boundary:
+                # No size source but the cap: say so, or gmsh takes its
+                # own default (1) where the boundary would have seeded it.
+                gmsh.option.setNumber("Mesh.MeshSizeMin", min_size if min_size > 0.0 else core_size)
         if min_size > 0.0:
             gmsh.option.setNumber("Mesh.MeshSizeMin", min_size)
         gmsh.model.add("body")

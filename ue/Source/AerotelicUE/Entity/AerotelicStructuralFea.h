@@ -7,6 +7,8 @@
 #include "aerotelic/tet.hpp"
 #include "aerotelic/vec3.hpp"
 
+#include "AerotelicMeshLib.h"
+
 // A linear static finite-element analysis of scene bodies on
 // KratosMultiphysics' StructuralMechanics application
 // (tools/structural_fea.py, run as a separate process in the WingDesigner
@@ -21,13 +23,17 @@
 //     on its own surface triangles, nothing inside (a thin-walled part);
 //   - a body with no skin thickness and no lattice: SOLID tetrahedra of
 //     its material, meshed by gmsh at an element size;
-//   - a lattice-filled body: shells of its skin thickness over tetrahedra
-//     at the lattice cell size carrying the lattice's HOMOGENISED tensor
-//     (one unit cell, aerotelic::SampleUnitCell, voxelised and solved
-//     under the six unit strains by tools/homogenize.py) -- the struts
-//     being of the body's own material, which the lattice inherits; or,
-//     at full resolution, the skin tetrahedra as a solid of the material
-//     over core tetrahedra with the homogenised tensor.
+//   - a lattice-filled body: shells of its skin thickness on ITS OWN
+//     surface triangles (the body's Mesh tab grid, the one the viewport
+//     shows) over tetrahedra at the lattice cell size carrying the
+//     lattice's HOMOGENISED tensor (one unit cell,
+//     aerotelic::SampleUnitCell, voxelised and solved under the six unit
+//     strains by tools/homogenize.py) -- the struts being of the body's
+//     own material, which the lattice inherits. The lattice lends its
+//     material card only; its private, finer copy of the surface (what it
+//     hollows on) never reaches the solver (2026-11-05). Or, at full
+//     resolution, the lattice's own skin tetrahedra as a solid of the
+//     material over core tetrahedra with the homogenised tensor.
 //
 // Everything is handed to the solver in SI: the mesh scaled by LengthToSI,
 // the materials as they are (materials.hpp is SI), the loads in newtons
@@ -39,6 +45,14 @@
 // plane whose nodes are clamped.
 namespace AerotelicStructuralFea
 {
+	// "auto" takes the direct solver (Eigen's SparseLU, one thread) up to
+	// this many degrees of freedom and amgcl beyond -- the script's
+	// AUTO_DIRECT_DOFS, mirrored so the dialog can say before a solve what
+	// will run. A desktop's figure: a 64,056-dof sphere took two minutes
+	// direct; a 540,000-dof fuselage (10-node tetrahedra on a 24,571-node
+	// core, 2026-11-05) ran a 32 GB machine and its page file dry.
+	constexpr int32 kAutoDirectDofs = 150000;
+
 	// One region: the tetrahedra and wetted faces carrying its id.
 	struct FRegion
 	{
@@ -54,6 +68,12 @@ namespace AerotelicStructuralFea
 		aerotelic::Material Core;      // SI
 		const aerotelic::UnitCellSamples* Cell = nullptr;
 		bool bSolid = false;
+		// The order of THIS region's tetrahedra: 1 second-order (10-node,
+		// the mid-edge nodes added by the script), 0 first-order (4-node),
+		// -1 the request's bSecondOrder. A homogenised core is 0: it carries
+		// a material card, the shells on its faces carry the bending, and
+		// promoting it multiplied a fuselage's nodes by seven for nothing.
+		int32 SecondOrder = -1;
 		// The chosen body this region was meshed from (the Structural
 		// dialog's picker index), so a support plane "at the mesh's minimum
 		// / maximum" can be resolved against that body alone (FSupport::Body).
@@ -63,6 +83,7 @@ namespace AerotelicStructuralFea
 		bool HasShells() const { return SkinThickness > 0.0; }
 		bool HasHomogenisedCore() const { return Cell != nullptr; }
 		bool HasTetrahedra() const { return bSolid || Cell != nullptr; }
+		bool IsSecondOrder(bool bRequestDefault) const { return SecondOrder < 0 ? bRequestDefault : SecondOrder > 0; }
 	};
 
 	// A wetted face of a shell-only region: its nodes (into the request
@@ -110,16 +131,17 @@ namespace AerotelicStructuralFea
 		TArray<FRegion> Regions;
 
 		// Second-order (10-node) tetrahedra, the mid-edge nodes added by the
-		// solver script (the shells stay 3-node on the corners). A skin one
-		// tetrahedron thick in bending needs them; first-order tetrahedra
-		// lock. Ignored without tetrahedra.
+		// solver script (the shells stay 3-node on the corners), for the
+		// regions that do not say otherwise (FRegion::SecondOrder). A skin
+		// one tetrahedron thick in bending needs them; first-order
+		// tetrahedra lock. Ignored without tetrahedra.
 		bool bSecondOrder = false;
 
-		// The linear solver: "auto" (the default: the direct solver up to a
-		// million degrees of freedom, amgcl beyond), "sparse_lu" (direct;
-		// exact) or "amgcl" (iterative; it can stop short on thin shells
-		// and return a solution whose reactions do not balance the loads --
-		// FResult::bBalanced says so).
+		// The linear solver: "auto" (the default: the direct solver up to
+		// kAutoDirectDofs degrees of freedom, amgcl beyond), "sparse_lu"
+		// (direct; exact) or "amgcl" (iterative, every core; it can stop
+		// short on thin shells and return a solution whose reactions do not
+		// balance the loads -- FResult::bBalanced says so).
 		FString LinearSolver = TEXT("auto");
 		// The shell element: "ShellThinElement3D3N" (the linear thin
 		// triangle, the default: a linear static analysis is then
@@ -260,6 +282,10 @@ namespace AerotelicStructuralFea
 	// Runs the analysis. False with the reason on failure (no interpreter,
 	// no Kratos, nothing to analyse, a material without stiffness, a region
 	// without a cell or a skin thickness, no node on the support plane, a
-	// solve that did not converge).
-	bool Run(const FRequest& Request, FResult& Out, FString& OutError);
+	// solve that did not converge). Blocks until the script is done: the
+	// dialog calls it on a worker thread and watches Progress (the
+	// script's stage lines as it prints them; a cancel flag that ends the
+	// process and returns false with "cancelled"). Request and Out must
+	// outlive the call; nothing here touches the engine's game thread.
+	bool Run(const FRequest& Request, FResult& Out, FString& OutError, AerotelicMeshLib::FJobProgress* Progress = nullptr);
 }

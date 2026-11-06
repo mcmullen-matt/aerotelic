@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include <atomic>
 #include <vector>
 
 #include "aerotelic/mesh.hpp"
@@ -111,15 +112,29 @@ namespace AerotelicMeshLib
 	// body that is not closed, a boolean MeshLib refused, ...).
 	bool Run(const FRequest& Request, FResult& Out, FString& OutError);
 
+	// What a caller may watch while a job runs (2026-11-05): every complete
+	// line the script prints, as it prints it, on the thread RunJob is
+	// called on (a worker thread when the dialog solves asynchronously);
+	// and a flag that, once set from any thread, ends the process and makes
+	// RunJob return false with "cancelled". Null means neither.
+	struct FJobProgress
+	{
+		TFunction<void(const FString&)> OnLine;
+		std::atomic<bool> bCancel{ false };
+	};
+
 	// Runs `Script` on a job directory in that interpreter, collects its
 	// output into the log and hands back the `result.json` it wrote. False
 	// with the reason the script gave (its "error" field, else its last
 	// "error:" line, else its exit code). Shared by every backend that
 	// works this way -- the lattice's own, the tetrahedral mesher
-	// (AerotelicTetGmsh.h) and the potential flow solver
-	// (AerotelicPotentialFlow.h) -- so that the process plumbing, the
-	// logging and the way a failure is reported are in one place.
-	bool RunJob(const FString& Script, const FString& Dir, TSharedPtr<FJsonObject>& OutResult, FString& OutError);
+	// (AerotelicTetGmsh.h), the potential flow solver
+	// (AerotelicPotentialFlow.h) and the structural solver -- so that the
+	// process plumbing, the logging and the way a failure is reported are
+	// in one place. Blocks the calling thread until the script exits (or
+	// Progress->bCancel is set): callers that must stay responsive run it
+	// on a worker thread and watch Progress.
+	bool RunJob(const FString& Script, const FString& Dir, TSharedPtr<FJsonObject>& OutResult, FString& OutError, FJobProgress* Progress = nullptr);
 
 	// The .tri files (exposed for tests).
 	bool WriteTri(const aerotelic::TriMesh& Mesh, const FString& Path);

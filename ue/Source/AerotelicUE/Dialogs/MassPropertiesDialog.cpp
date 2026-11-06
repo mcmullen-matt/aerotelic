@@ -70,7 +70,9 @@ void ShowAerotelicMassPropertiesDialog(TFunction<void(const FText&)> Status)
 
 	TSharedPtr<SAerotelicBodyPicker> Picker;
 	TSharedPtr<STextBlock> ReportText;
-	double Tolerance = FAerotelicBooleanModel::kValidationTolerance;
+	// 0: each body's own grid (its Mesh tab's, what the viewport shows and
+	// the structural analysis solves on); a figure: that chordal tolerance.
+	double Tolerance = 0.0;
 	FString ReportString;
 	const UAerotelicDocumentSubsystem* DocForUnits = UAerotelicDocumentSubsystem::Get();
 	const aerotelic::UnitSystem Units = DocForUnits != nullptr ? DocForUnits->GetUnits() : aerotelic::UnitSystem{};
@@ -168,15 +170,15 @@ void ShowAerotelicMassPropertiesDialog(TFunction<void(const FText&)> Status)
 						FormRow(LOCTEXT("Tolerance", "Surface tolerance:"),
 							SNew(SAerotelicNumericEntry)
 							.Value_Lambda([&Tolerance]() { return Tolerance; })
-							.MinValue(1e-9).MaxValue(1e9).Delta(0.001)
+							.MinValue(0.0).MaxValue(1e9).Delta(0.001)
 							.Suffix(FText::FromString(FString(TEXT(" ")) + UTF8_TO_TCHAR(Units.LengthName())))
 							.LiveUpdate(false)
-							.OnValueCommitted_Lambda([&Tolerance](double V, ETextCommit::Type) { Tolerance = V; }))
+							.OnValueCommitted_Lambda([&Tolerance](double V, ETextCommit::Type) { Tolerance = FMath::Max(V, 0.0); }))
 					]
 					+ SVerticalBox::Slot().AutoHeight().Padding(0, 4, 0, 0)
 					[
 						MakeInfoLabel(LOCTEXT("ToleranceHint",
-							"The chordal sag the triangles may have from the true surface -- the same tolerance STL export uses. The integrals are exact for the triangles, so this is the accuracy of the volume and the inertia of a curved body. A box is exact at any setting."))
+							"0 weighs each body on ITS OWN GRID -- the triangles its Mesh tab defines and the viewport shows, the same ones the structural analysis solves on. A figure is the chordal sag the triangles may have from the true surface instead (the same tolerance STL export uses). The integrals are exact for the triangles, so this is the accuracy of the volume and the inertia of a curved body. A box is exact at any setting."))
 					])
 			]
 			+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 8).HAlign(HAlign_Left)

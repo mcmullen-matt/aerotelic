@@ -156,6 +156,37 @@ namespace AerotelicFeaPreprocess
 			++R.Tets;
 			R.Volume += TetVolume[t];
 		}
+		// The system's size, the script's way: a mid-edge node on every
+		// distinct edge of the second-order regions' tetrahedra, six degrees
+		// of freedom on a corner node that carries a shell, three elsewhere.
+		{
+			std::map<int32, bool> SecondOrderOf;
+			for (const AerotelicStructuralFea::FRegion& R : Request.Regions) SecondOrderOf[R.Id] = R.IsSecondOrder(Request.bSecondOrder);
+			TArray<uint64> Edges;
+			for (int32 t = 0; t < Out.Tets; ++t)
+			{
+				const int32 Id = t < static_cast<int32>(Mesh.material.size()) ? Mesh.material[t] : 1;
+				const auto It = SecondOrderOf.find(Id);
+				if (It == SecondOrderOf.end() || !It->second) continue;
+				++Out.SecondOrderTets;
+				const auto& T = Mesh.tets[t];
+				for (int32 a = 0; a < 4; ++a)
+				{
+					for (int32 b = a + 1; b < 4; ++b)
+					{
+						const uint32 Lo = static_cast<uint32>(FMath::Min(T[a], T[b])), Hi = static_cast<uint32>(FMath::Max(T[a], T[b]));
+						Edges.Add((static_cast<uint64>(Lo) << 32) | Hi);
+					}
+				}
+			}
+			Edges.Sort();
+			for (int32 i = 0; i < Edges.Num(); ++i) if (i == 0 || Edges[i] != Edges[i - 1]) ++Out.MidEdgeNodes;
+			for (auto& Entry : Regions)
+			{
+				const auto It = SecondOrderOf.find(Entry.first);
+				Entry.second.bSecondOrder = It != SecondOrderOf.end() && It->second && Entry.second.Tets > 0;
+			}
+		}
 		for (int32 i = 0; i < NFaces; ++i)
 		{
 			FRegionSummary& R = Regions[Out.WettedFaces[i].Region];
@@ -205,6 +236,20 @@ namespace AerotelicFeaPreprocess
 			R.Mass = RhoCore * Volume + SkinArealDensity[R.Id] * Area;
 		}
 		for (const auto& Entry : Regions) Out.Regions.Add(Entry.second);
+		{
+			// The corner nodes that carry shells: those of the wetted faces of
+			// the regions with a skin.
+			TArray<bool> OnShell;
+			OnShell.Init(false, Out.Nodes);
+			for (int32 i = 0; i < NFaces; ++i)
+			{
+				const AerotelicStructuralFea::FRegion* Spec = RegionOf(Out.WettedFaces[i].Region);
+				if (Spec == nullptr || !Spec->HasShells()) continue;
+				for (int32 k = 0; k < 3; ++k) OnShell[Out.WettedFaces[i].N[k]] = true;
+			}
+			for (bool B : OnShell) Out.ShellNodes += B ? 1 : 0;
+			Out.Dofs = 3ll * (Out.Nodes + Out.MidEdgeNodes) + 3ll * Out.ShellNodes;
+		}
 
 		// The mass and its centre (project units), mass-weighted over the
 		// tetrahedra and the shells.

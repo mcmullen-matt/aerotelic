@@ -101,6 +101,18 @@ estimated MICRO stress -- the peak voxel von Mises of each element's own
 strain state over the cell's critical voxels (homogenize.py) -- and its
 margin is against the base material's allowable using that.
 
+ELEMENT ORDER PER REGION (2026-11-05). ``second_order`` on a region says
+whether ITS tetrahedra are promoted to 10 nodes (null: the job's flag).
+A homogenised core carries a material card, not a bending problem -- the
+shells on its faces do the bending -- so the application leaves it at
+4 nodes, while a solid body or the full-resolution skin tetrahedra (one
+tetrahedron thick, locking at first order) take 10. The regions are
+independent bodies, so an order per region costs nothing; within one
+body every tetrahedron has the same order. Found the hard way: a
+24,571-node fuselage core promoted to 10 nodes by default was 540,000
+degrees of freedom on the direct solver, which exhausted a 32 GB desktop
+and its page file after eight minutes.
+
 NATURAL FREQUENCIES (2026-11-04). With ``solver.modes`` > 0 the same model
 -- the same mesh, materials and clamps, no loads -- is solved a second
 time as the generalised eigenvalue problem K phi = omega^2 M phi on
@@ -148,8 +160,13 @@ SHELL_PROPERTIES_OFFSET = 1000   # skin properties id = region id + this
 # solution that LOOKS fine -- small displacements, low stresses -- with
 # reactions nowhere near the loads (the hershey_bar wing, 2026-11-01:
 # 11,880 dofs, 75 s to 0.1 mm and reactions of 3 kN against a 1 kN load;
-# sparse_lu took 0.55 s and matched beam theory to 0.2%).
-AUTO_DIRECT_DOFS = 1000000
+# sparse_lu took 0.55 s and matched beam theory to 0.2%). The threshold
+# is a desktop's: Eigen's SparseLU runs on one thread and its factors
+# grow faster than the system (a 64,056-dof sphere took two minutes; a
+# 540,000-dof fuselage ran a 32 GB machine out of memory, 2026-11-05).
+# The application mirrors it (AerotelicFeaPreprocess::kAutoDirectDofs)
+# to warn before a solve is started.
+AUTO_DIRECT_DOFS = 150000
 # The reactions must balance the applied loads to this fraction of the
 # loads' magnitude, or the solution is reported as not converged.
 BALANCE_TOLERANCE = 0.01
@@ -339,27 +356,32 @@ def _write_sub_model_part(w, name, nodes, elements=(), conditions=()):
     w("End SubModelPartConditions\nEnd SubModelPart\n\n")
 
 
-def _write_block(w, kind, name, rows, first_id, prop_of_row):
-    """Begin Elements/Conditions <name> ... End, ids first_id + row."""
+def _write_block(w, kind, name, rows, ids, prop_of_row):
+    """Begin Elements/Conditions <name> ... End, one row per element or
+    condition with its id (0-based here, 1-based in the file)."""
     if len(rows) == 0:
         return
     w("Begin %s %s\n" % (kind, name))
     fmt = "%d %d " + " ".join(["%d"] * rows.shape[1]) + "\n"
     for i, row in enumerate(rows):
-        w(fmt % ((first_id + i + 1, int(prop_of_row[i])) + tuple(int(v) + 1 for v in row)))
+        w(fmt % ((int(ids[i]) + 1, int(prop_of_row[i])) + tuple(int(v) + 1 for v in row)))
     w("End %s\n\n" % kind)
 
 
-def write_mdpa(path, nodes, tets, tet_region, cond_blocks, shells, shell_region, support_nodes, point_loads, property_ids, shell_element, point_prop):
+def write_mdpa(path, nodes, tet_blocks, cond_blocks, shells, shell_region, support_nodes, point_loads, property_ids, shell_element, point_prop):
     """The model: the tetrahedra under their region's Properties (id =
-    region), a shell element on every wetted face of a region with a skin
-    under the region's skin Properties (id = region + SHELL_PROPERTIES_OFFSET),
-    the wetted faces as surface-load conditions (`cond_blocks`: a list of
-    (faces, property per face), written in order with consecutive ids), the
-    point load's node as a point-load condition, and the sub model parts
-    the materials and the parameters refer to (Solid_<id>, Skin_<id>,
-    Support, Wetted, PointLoad)."""
-    nt = len(tets)
+    region) -- `tet_blocks` a list of (connectivity rows, region per row),
+    4-node and 10-node blocks laid end to end, element ids counting on
+    through the blocks -- a shell element on every wetted face of a region
+    with a skin under the region's skin Properties (id = region +
+    SHELL_PROPERTIES_OFFSET), the wetted faces as surface-load conditions
+    (`cond_blocks`: a list of (faces, property per face, 0-based condition
+    id per face), 3-node and 6-node blocks whose ids together are the
+    wetted faces' order, so a pressure per face maps by id), the point
+    load's node as a point-load condition, and the sub model parts the
+    materials and the parameters refer to (Solid_<id>, Skin_<id>, Support,
+    Wetted, PointLoad)."""
+    nt = sum(len(b[0]) for b in tet_blocks)
     n_cond = sum(len(b[0]) for b in cond_blocks)
     with open(path, "w", encoding="utf-8") as f:
         w = f.write
@@ -370,25 +392,36 @@ def write_mdpa(path, nodes, tets, tet_region, cond_blocks, shells, shell_region,
         for i, p in enumerate(nodes):
             w("%d %.17g %.17g %.17g\n" % (i + 1, p[0], p[1], p[2]))
         w("End Nodes\n\n")
-        if nt:
-            _write_block(w, "Elements", "SmallDisplacementElement3D%dN" % tets.shape[1], tets, 0, tet_region)
-        if len(shells):
-            _write_block(w, "Elements", shell_element, shells, nt, shell_region + SHELL_PROPERTIES_OFFSET)
         first = 0
+        for tets_b, region_b in tet_blocks:
+            if len(tets_b):
+                _write_block(w, "Elements", "SmallDisplacementElement3D%dN" % tets_b.shape[1], tets_b, np.arange(first, first + len(tets_b)), region_b)
+            first += len(tets_b)
+        if len(shells):
+            _write_block(w, "Elements", shell_element, shells, np.arange(nt, nt + len(shells)), shell_region + SHELL_PROPERTIES_OFFSET)
         wetted_nodes = []
-        for faces_b, prop_b in cond_blocks:
+        for faces_b, prop_b, ids_b in cond_blocks:
             if len(faces_b):
-                _write_block(w, "Conditions", "SurfaceLoadCondition3D%dN" % faces_b.shape[1], faces_b, first, prop_b)
+                _write_block(w, "Conditions", "SurfaceLoadCondition3D%dN" % faces_b.shape[1], faces_b, ids_b, prop_b)
                 wetted_nodes.append(np.unique(faces_b))
-            first += len(faces_b)
         if point_loads:
             w("Begin Conditions PointLoadCondition3D1N\n")
             for i, (node, _) in enumerate(point_loads):
                 w("%d %d %d\n" % (n_cond + 1 + i, int(point_prop), int(node) + 1))
             w("End Conditions\n\n")
-        for rid in sorted(set(int(v) for v in tet_region)):
-            sel = np.nonzero(tet_region == rid)[0]
-            _write_sub_model_part(w, "Solid_%d" % rid, np.unique(tets[sel]), sel)
+        # The solids' sub model parts: every node and element of the region
+        # over the blocks, the element ids counting on through them.
+        region_all = np.concatenate([b[1] for b in tet_blocks]) if tet_blocks else np.zeros(0, dtype=np.int64)
+        for rid in sorted(set(int(v) for v in region_all)):
+            sel = np.nonzero(region_all == rid)[0]
+            used = []
+            start = 0
+            for tets_b, region_b in tet_blocks:
+                sel_b = np.nonzero(region_b == rid)[0]
+                if len(sel_b):
+                    used.append(np.unique(tets_b[sel_b]))
+                start += len(tets_b)
+            _write_sub_model_part(w, "Solid_%d" % rid, np.unique(np.concatenate(used)) if used else [], sel)
         for rid in sorted(set(int(v) for v in shell_region)):
             sel = np.nonzero(shell_region == rid)[0]
             _write_sub_model_part(w, "Skin_%d" % rid, np.unique(shells[sel]), sel + nt)
@@ -593,6 +626,7 @@ def run_kratos(job_dir, parameters, n_nodes, face_pressure, want_rotations, echo
         KM.Logger.GetDefaultOutput().SetSeverity(KM.Logger.Severity.WARNING)
     model = KM.Model()
     t_solve = time.time()
+    log("  Kratos: reading the model")
     analysis = StructuralMechanicsAnalysis(model, KM.Parameters(json.dumps(parameters)))
     analysis.Initialize()
     structure = model["Structure"]
@@ -603,8 +637,10 @@ def run_kratos(job_dir, parameters, n_nodes, face_pressure, want_rotations, echo
     wetted = structure.GetSubModelPart("Wetted")
     for cond in wetted.Conditions:
         cond.SetValue(KM.POSITIVE_FACE_PRESSURE, float(face_pressure[cond.Id - 1]))
+    log("  Kratos: model read in %.1f s; assembling and solving with %s" % (time.time() - t_solve, parameters["solver_settings"]["linear_solver_settings"]["solver_type"]))
     analysis.RunSolutionLoop()
     analysis.Finalize()
+    log("  Kratos: solved in %.1f s; reading the solution" % (time.time() - t_solve))
     return model, structure, analysis, time.time() - t_solve
 
 
@@ -729,7 +765,7 @@ def core_strains_stresses(structure, n_elements):
     strain_vars = [getattr(KM, n, None) for n in ("STRAIN", "GREEN_LAGRANGE_STRAIN_VECTOR")]
     stress_vars = [getattr(KM, n, None) for n in ("CAUCHY_STRESS_VECTOR", "PK2_STRESS_VECTOR")]
     for elem in structure.Elements:
-        if elem.GetGeometry().PointsNumber() != 4:
+        if elem.GetGeometry().PointsNumber() not in (4, 10):
             continue
         i = elem.Id - 1
         for var in strain_vars:
@@ -854,11 +890,13 @@ def _regions_from_job(job):
     "shell_core" with skin + core regions), with the second-order flag."""
     model = str(job.get("model", "regions"))
     if model == "solid":
-        regions = [{"id": int(m["id"]), "label": m.get("label", ""), "skin": None, "core": None, "solid": {"material": m}}
+        regions = [{"id": int(m["id"]), "label": m.get("label", ""), "skin": None, "core": None, "solid": {"material": m}, "second_order": None}
                    for m in job["materials"]]
         return regions, bool(job.get("second_order", True))
     if model in ("shell_core", "regions"):
-        regions = [{"id": int(r["id"]), "label": r.get("label", ""), "skin": r.get("skin"), "core": r.get("core"), "solid": r.get("solid")}
+        regions = [{"id": int(r["id"]), "label": r.get("label", ""), "skin": r.get("skin"), "core": r.get("core"), "solid": r.get("solid"),
+                    # Per region (2026-11-05): null takes the job's flag.
+                    "second_order": r.get("second_order")}
                    for r in job.get("regions", [])]
         return regions, bool(job.get("second_order", False))
     raise JobError("the model must be regions, shell_core or solid, not '%s'." % model)
@@ -879,16 +917,20 @@ def run_job(job_dir):
                                  material ...},
                                  "cell": {"file", "nx", "ny", "nz", "period"},
                                  "density_correction": true},
-                        "solid": null | {"material": {...}}}],
+                        "solid": null | {"material": {...}},
+                        "second_order": null | true | false}],
                       one per region id in the mesh and the faces: shells of
                       the skin's thickness on the region's wetted faces when
                       it has a skin; its tetrahedra a homogenised lattice
                       (core) or a solid of the material (solid); a region
                       with a skin alone is a thin-walled body of shells. A
                       material is {"name", "density", "youngs_modulus",
-                      "poisson_ratio", "allowable_stress"}, SI.
-        second_order  10-node tetrahedra (default false; the shells stay
-                      3-node on the corner nodes)
+                      "poisson_ratio", "allowable_stress"}, SI. A region's
+                      own "second_order" says whether ITS tetrahedra are
+                      10-node (null: the job's flag below).
+        second_order  10-node tetrahedra for the regions that do not say
+                      (default false; the shells stay 3-node on the corner
+                      nodes)
         model         "regions" (the form above; also read: "solid" with a
                       "materials" list, "shell_core" with skin + core
                       regions -- the two earlier forms)
@@ -950,14 +992,28 @@ def run_job(job_dir):
     # The mesh: the tetrahedra's boundary faces (np.unique order), then the
     # shell-only regions' faces as given.
     nodes, tets, region = read_mesh(os.path.join(job_dir, job["mesh"]))
+    # The order of each region's tetrahedra: its own say, else the job's.
+    # The tetrahedra are then sorted so the 4-node ones come first and the
+    # 10-node ones after, which keeps every per-element array in element
+    # id order with no permutation to carry about (the boundary faces'
+    # order, np.unique's, does not depend on the tetrahedra's).
+    second_of_region = {int(r["id"]): (bool(r["second_order"]) if r.get("second_order") is not None else use_second) for r in regions}
     if len(tets):
         tets, flipped = orient(nodes, tets)
+        is_second = np.array([second_of_region.get(int(rid), use_second) for rid in region], dtype=bool)
+        perm = np.argsort(is_second, kind="stable")
+        tets, region, is_second = tets[perm], region[perm], is_second[perm]
+        n_tet4 = int((~is_second).sum())
         tet_faces, owners = boundary_faces(tets)
         region_of_tet_face = region[owners]
+        face_second = owners >= n_tet4
     else:
         flipped = 0
+        n_tet4 = 0
         tet_faces = np.zeros((0, 3), dtype=np.int64)
         region_of_tet_face = np.zeros(0, dtype=np.int64)
+        face_second = np.zeros(0, dtype=bool)
+    log("  mesh read: %d nodes, %d tetrahedra" % (len(nodes), len(tets)))
     if job.get("faces"):
         extra_faces, extra_region = read_faces(os.path.join(job_dir, job["faces"]))
         if len(extra_faces) and (extra_faces.min() < 0 or extra_faces.max() >= len(nodes)):
@@ -1028,7 +1084,9 @@ def run_job(job_dir):
             raise JobError("'%s' is a solid or a core but has no tetrahedra." % label)
         if not (r.get("skin") or r.get("core") or r.get("solid")):
             raise JobError("'%s' is nothing: no skin, no core, no solid." % label)
-    use_second = use_second and len(tets) > 0
+    n_tet10 = len(tets) - n_tet4
+    second_ids = sorted(rid for rid in ids if rid in present_tets and second_of_region[rid])
+    use_second = n_tet10 > 0
 
     mdpa_base = os.path.join(job_dir, "structure")
     materials_path = os.path.join(job_dir, "materials.json")
@@ -1042,6 +1100,8 @@ def run_job(job_dir):
 
     # The homogenised cores, and every region's densities.
     t0 = time.time()
+    if any(r.get("core") for r in regions):
+        log("  homogenising the lattice cores")
     homog = {}
     material_entries = []
     property_ids = []
@@ -1095,22 +1155,27 @@ def run_job(job_dir):
     seconds_homogenize = time.time() - t0
     mass = float((tet_density * tet_vol).sum() + (skin_density_t * face_area).sum()) if len(tets) else float((skin_density_t * face_area).sum())
 
-    # The elements: the tetrahedra (10-node with the mid-edge nodes added,
-    # and 6-node conditions on their boundary faces, when asked), shells on
-    # the corner nodes of every wetted face of a region with a skin, and a
-    # surface-load condition on every wetted face. The shell-only faces
-    # stay 3-node whatever the order: a mid-edge node there would have a
-    # load and no stiffness.
+    # The elements: the tetrahedra -- the 4-node ones first, then those of
+    # the second-order regions with the mid-edge nodes added, and 6-node
+    # conditions on THEIR boundary faces -- shells on the corner nodes of
+    # every wetted face of a region with a skin, and a surface-load
+    # condition on every wetted face. The shell-only faces and the 4-node
+    # regions' faces stay 3-node: a mid-edge node there would have a load
+    # and no stiffness.
     support_corner_nodes = len(support_nodes)
+    tets4, region4 = tets[:n_tet4], region[:n_tet4]
     if use_second:
-        nodes_all, tets_el, tet_faces_el = second_order(nodes, tets, tet_faces)
+        nodes_all, tets10, tri6 = second_order(nodes, tets[n_tet4:], tet_faces[face_second])
         # The clamp again on EVERY node, the mid-edge ones included: a
         # mid-edge node on the support plane left free (2026-11-02, found on
         # a 1 x 10 x 1 bar at 1.08 then 1.04 of beam theory, converging only
         # at first order) makes the clamp compliant.
         support_nodes, support_planes = _support_nodes(nodes_all, supports)
     else:
-        nodes_all, tets_el, tet_faces_el = nodes, tets, tet_faces
+        nodes_all = nodes
+        tets10 = np.zeros((0, 10), dtype=np.int64)
+        tri6 = np.zeros((0, 6), dtype=np.int64)
+    tet_blocks = [(tets4, region4), (tets10, region[n_tet4:])]
     result["support_nodes"] = int(len(support_nodes))
     result["support_corner_nodes"] = int(support_corner_nodes)
     result["support_planes"] = support_planes
@@ -1126,20 +1191,28 @@ def run_job(job_dir):
     linear_solver = resolve_linear_solver(solver_opts["linear_solver"], dofs)
     result["linear_solver"] = linear_solver
     # A face's condition carries its region's skin Properties when it has
-    # shells, its tetrahedra's otherwise.
+    # shells, its tetrahedra's otherwise. The condition ids are the faces'
+    # order whatever block a face is written in.
     cond_prop = np.where(has_skin, region_of_face + SHELL_PROPERTIES_OFFSET, region_of_face)
-    cond_blocks = [(tet_faces_el, cond_prop[:n_tet_faces]), (extra_faces, cond_prop[n_tet_faces:])]
+    tet_face_ids = np.arange(n_tet_faces)
+    cond_blocks = [(tet_faces[~face_second], cond_prop[:n_tet_faces][~face_second], tet_face_ids[~face_second]),
+                   (tri6, cond_prop[:n_tet_faces][face_second], tet_face_ids[face_second]),
+                   (extra_faces, cond_prop[n_tet_faces:], n_tet_faces + np.arange(len(extra_faces)))]
     point_prop = property_ids[0]
     t0 = time.time()
-    write_mdpa(mdpa_base + ".mdpa", nodes_all, tets_el, region, cond_blocks, shells, shell_region, support_nodes, point_loads,
+    log("  writing the Kratos model: %d nodes (%d mid-edge), %d 4-node + %d 10-node tetrahedra, %d shells, %d dofs"
+        % (len(nodes_all), len(nodes_all) - len(nodes), n_tet4, n_tet10, len(shells), dofs))
+    write_mdpa(mdpa_base + ".mdpa", nodes_all, tet_blocks, cond_blocks, shells, shell_region, support_nodes, point_loads,
                property_ids, solver_opts["shell_element"], point_prop)
     write_materials(materials_path, material_entries)
     seconds_mdpa = time.time() - t0
     parameters = project_parameters(mdpa_base, materials_path, loads, point_loads, echo_level, rotation_dofs, linear_solver)
+    log("  solving %d dofs with %s (%d tetrahedra, %d shells)" % (dofs, linear_solver, len(tets), len(shells)))
     model, structure, analysis, seconds_solve = run_kratos(job_dir, parameters, len(nodes_all), face_pressure, rotation_dofs, echo_level)
     displacement, rotation, reaction = read_nodal(structure, len(nodes_all), rotation_dofs)
-    nt = len(tets_el)
+    nt = len(tets)
     n_elements = nt + len(shells)
+    log("  post-processing: stresses, margins, the force balance")
     von_mises_elem = element_von_mises(structure, n_elements)
     # The micro stress of every homogenised core element from its own
     # strain state; the smeared figure is what the element reports.
@@ -1192,7 +1265,8 @@ def run_job(job_dir):
                                  "mass": float((tet_vol[region == rid] * tet_density[region == rid]).sum()) if len(tets) else 0.0})
     i_vm = int(np.argmax(combined)) if n_elements else 0
     max_vm_region = int(region[i_vm]) if i_vm < nt else int(shell_region[i_vm - nt])
-    result.update({"second_order": use_second, "elements": int(n_elements), "tets": int(nt), "shells": int(len(shells)),
+    result.update({"second_order": use_second, "second_order_regions": second_ids, "tets_second_order": int(n_tet10),
+                   "elements": int(n_elements), "tets": int(nt), "shells": int(len(shells)),
                    "seconds_mdpa": seconds_mdpa, "seconds_homogenize": seconds_homogenize, "regions": region_info})
 
     # The force balance. Gravity on the mass; the pressure's resultant as
@@ -1233,6 +1307,7 @@ def run_job(job_dir):
     frequencies, mode_shapes, eigensolver_used, seconds_modes = np.zeros(0), None, "", 0.0
     if n_modes > 0:
         t0 = time.time()
+        log("  natural frequencies: the lowest %d modes of the same model" % n_modes)
         try:
             frequencies, mode_shapes, eigensolver_used = run_modes(job_dir, mdpa_base, materials_path, len(nodes_all), echo_level, rotation_dofs,
                                                                   n_modes, str(solver_opts.get("eigensolver") or "spectra_sym_g_eigs_shift"))
@@ -1271,8 +1346,9 @@ def run_job(job_dir):
     })
 
     t_vtk = time.time()
-    element_blocks = ([tets_el] if nt else []) + ([shells] if len(shells) else [])
-    cell_types = ([VTK_QUADRATIC_TETRA if use_second else VTK_TETRA] if nt else []) + ([VTK_TRIANGLE] if len(shells) else [])
+    log("  writing the solution to %s" % outputs["vtk"])
+    element_blocks = ([tets4] if n_tet4 else []) + ([tets10] if n_tet10 else []) + ([shells] if len(shells) else [])
+    cell_types = ([VTK_TETRA] if n_tet4 else []) + ([VTK_QUADRATIC_TETRA] if n_tet10 else []) + ([VTK_TRIANGLE] if len(shells) else [])
     kind = np.concatenate([np.zeros(nt, dtype=np.int64), np.ones(len(shells), dtype=np.int64)])
     cell_data = {"material": np.concatenate([region, shell_region]).astype(np.int64), "kind": kind,
                  "von_mises_element": von_mises_elem, "micro_von_mises_element": micro, "micro_von_mises_bound": bound}

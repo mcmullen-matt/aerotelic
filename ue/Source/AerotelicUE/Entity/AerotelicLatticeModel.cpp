@@ -501,58 +501,6 @@ const std::vector<FAerotelicLatticeModel::FTetMesh>& FAerotelicLatticeModel::Get
 	return TetMeshes;
 }
 
-const std::vector<FAerotelicLatticeModel::FTetMesh>& FAerotelicLatticeModel::GetStructuralTetMeshes() const
-{
-	if (bStructuralTetMeshesBuilt)
-	{
-		return StructuralTetMeshes;
-	}
-	bStructuralTetMeshesBuilt = true;
-	StructuralTetMeshes.clear();
-	StructuralTetNotes.Reset();
-	if (TetBodies.empty())
-	{
-		StructuralTetNotes.Add(TEXT("the lattice has not been generated, so its bodies are not available"));
-		return StructuralTetMeshes;
-	}
-	for (const FTetBody& B : TetBodies)
-	{
-		// The body alone: no offset, so no skin region -- every tetrahedron
-		// is the homogenised core, sized to the cell it stands in for. The
-		// boundary is the body's own triangulation, where the shells go.
-		AerotelicTetGmsh::FRequest Request;
-		Request.Outer = &B.Outer;
-		Request.Inner = nullptr;
-		Request.CoreSize = kCoreSizeOverCell * Spec.cell_size;
-		Request.Algorithm = kGmshAlgorithm;
-		Request.bOptimize = true;
-		Request.bOptimizeNetgen = true;
-		FTetMesh M;
-		M.Label = B.Label;
-		M.SkinThickness = B.SkinThickness;
-		FString Error;
-		if (!AerotelicTetGmsh::Run(Request, M.Result, Error))
-		{
-			StructuralTetNotes.Add(FString::Printf(TEXT("%s: not meshed: %s"), *B.Label, *Error));
-			UE_LOG(LogTemp, Warning, TEXT("AerotelicTet: '%s' could not be meshed for the structural model: %s"), *B.Label, *Error);
-			continue;
-		}
-		const AerotelicTetGmsh::FResult& R = M.Result;
-		UE_LOG(LogTemp, Log, TEXT("AerotelicTet: %s (structural): %d nodes, %d tets at cell %.4g; %.6g vs body %.6g (relative %.2e); quality min %.3f mean %.3f, %d under 0.1; %.2f s"),
-			*B.Label, R.Nodes, R.SkinTets + R.CoreTets, Request.CoreSize, R.SkinVolume + R.CoreVolume, R.OuterVolume, R.VolumeError, R.MinQuality, R.MeanQuality, R.PoorQuality, R.Seconds);
-		if (R.VolumeError > 1e-9)
-		{
-			StructuralTetNotes.Add(FString::Printf(TEXT("%s: the tetrahedra do not fill the body exactly (%.9g against %.9g, relative %.2e)"), *B.Label, R.SkinVolume + R.CoreVolume, R.OuterVolume, R.VolumeError));
-		}
-		if (R.Degenerate > 0)
-		{
-			StructuralTetNotes.Add(FString::Printf(TEXT("%s: %d tetrahedra came out with no volume"), *B.Label, R.Degenerate));
-		}
-		StructuralTetMeshes.push_back(std::move(M));
-	}
-	return StructuralTetMeshes;
-}
-
 aerotelic::TetMesh FAerotelicLatticeModel::MergedTets(int Material) const
 {
 	aerotelic::TetMesh Out;

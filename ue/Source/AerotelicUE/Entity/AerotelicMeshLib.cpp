@@ -171,7 +171,7 @@ namespace AerotelicMeshLib
 		return FPaths::FileExists(Script) ? FPaths::ConvertRelativePathToFull(Script) : FString();
 	}
 
-	bool RunJob(const FString& Script, const FString& Dir, TSharedPtr<FJsonObject>& OutResult, FString& OutError)
+	bool RunJob(const FString& Script, const FString& Dir, TSharedPtr<FJsonObject>& OutResult, FString& OutError, FJobProgress* Progress)
 	{
 		const FString Python = FindPython();
 		if (Python.IsEmpty())
@@ -190,21 +190,57 @@ namespace AerotelicMeshLib
 		const bool bStarted = Proc.IsValid();
 		FString Output;
 		int32 Code = -1;
+		bool bCancelled = false;
 		if (bStarted)
 		{
+			// The script's output as it comes, a complete line at a time to
+			// whoever is watching (the structural dialog's status bar).
+			FString Pending;
+			auto Take = [&](bool bFlush)
+			{
+				const FString Chunk = FPlatformProcess::ReadPipe(ReadPipe);
+				if (Chunk.IsEmpty() && !bFlush) return;
+				Output += Chunk;
+				if (Progress == nullptr || !Progress->OnLine) return;
+				Pending += Chunk;
+				int32 Nl = INDEX_NONE;
+				while (Pending.FindChar(TEXT('\n'), Nl))
+				{
+					const FString Line = Pending.Left(Nl).TrimStartAndEnd();
+					Pending.RightChopInline(Nl + 1);
+					if (!Line.IsEmpty()) Progress->OnLine(Line);
+				}
+				if (bFlush && !Pending.TrimStartAndEnd().IsEmpty())
+				{
+					Progress->OnLine(Pending.TrimStartAndEnd());
+					Pending.Empty();
+				}
+			};
 			while (FPlatformProcess::IsProcRunning(Proc))
 			{
-				Output += FPlatformProcess::ReadPipe(ReadPipe);
+				if (Progress != nullptr && Progress->bCancel.load())
+				{
+					FPlatformProcess::TerminateProc(Proc, true);
+					bCancelled = true;
+					break;
+				}
+				Take(false);
 				FPlatformProcess::Sleep(0.02f);
 			}
-			Output += FPlatformProcess::ReadPipe(ReadPipe);
-			FPlatformProcess::GetProcReturnCode(Proc, &Code);
+			Take(true);
+			if (!bCancelled) FPlatformProcess::GetProcReturnCode(Proc, &Code);
 			FPlatformProcess::CloseProc(Proc);
 		}
 		FPlatformProcess::ClosePipe(ReadPipe, WritePipe);
 		if (!bStarted)
 		{
 			OutError = FString::Printf(TEXT("could not start %s"), *Python);
+			return false;
+		}
+		if (bCancelled)
+		{
+			UE_LOG(LogAerotelicMeshLib, Log, TEXT("%s cancelled after %.2f s:\n%s"), *Name, FPlatformTime::Seconds() - T0, *Output);
+			OutError = TEXT("cancelled");
 			return false;
 		}
 		UE_LOG(LogAerotelicMeshLib, Log, TEXT("%s exited with %d after %.2f s:\n%s"), *Name, Code, FPlatformTime::Seconds() - T0, *Output);

@@ -129,27 +129,25 @@ public:
 	// as one mesh holding only the nodes they use, for WriteTetMeshVtk.
 	aerotelic::TetMesh MergedTets(int Material) const;
 
-	// The STRUCTURAL mesh of each filled body, for Analysis > Structural's
-	// shell / core model (AerotelicStructuralFea.h): tetrahedra bounded by
-	// the body's OWN surface alone -- no offset, no skin region -- at the
-	// lattice cell size, since they carry the lattice's homogenised
-	// material rather than its geometry. gmsh adds interior nodes only, so
-	// the boundary faces of this mesh are the body's own triangles exactly,
-	// and the skin's shell elements sit on them. A fraction of the
-	// skin / core mesh above: on p38a's airframe the skin tetrahedra alone
-	// ran to hundreds of thousands, the body's triangles to tens of
-	// thousands. Built on first request and kept until Invalidate(); a
-	// body gmsh refuses is left out, with the reason in
-	// GetStructuralTetNotes().
-	const std::vector<FTetMesh>& GetStructuralTetMeshes() const;
-	const TArray<FString>& GetStructuralTetNotes() const { GetStructuralTetMeshes(); return StructuralTetNotes; }
+	// There is deliberately NO structural mesh here any more (2026-11-05).
+	// Until then the lattice also meshed each filled body's interior for
+	// Analysis > Structural's shell / core model, on the body surface IT
+	// holds -- a private copy rebuilt at a quarter of the skin thickness
+	// so MeshLib's distance field resolves it -- which handed the solver
+	// a surface eighteen times finer than the one the user had set on the
+	// body's Mesh tab and saw in the viewport (28,074 triangles for a
+	// fuselage drawn with 1,574). The structural dialog now meshes the
+	// chosen body's OWN grid itself (StructuralFeaDialog, through
+	// AerotelicTetGmsh) and takes from the lattice only its material card:
+	// Spec (the cell to homogenise) and the skin thickness. FTetBody::Outer
+	// stays private to the hollowing and the full-resolution skin / core
+	// mesh below.
 
 	// Drops the generated mesh so the next build regenerates.
 	void Invalidate()
 	{
 		bValid = false;
 		TetMeshes.clear(); bTetMeshesBuilt = false; TetNotes.Reset();
-		StructuralTetMeshes.clear(); bStructuralTetMeshesBuilt = false; StructuralTetNotes.Reset();
 	}
 	bool IsValid() const { return bValid; }
 
@@ -189,8 +187,5 @@ private:
 	mutable bool bTetMeshesBuilt = false;
 	mutable std::vector<FTetMesh> TetMeshes;
 	mutable TArray<FString> TetNotes;
-	mutable bool bStructuralTetMeshesBuilt = false;
-	mutable std::vector<FTetMesh> StructuralTetMeshes;
-	mutable TArray<FString> StructuralTetNotes;
 	mutable FStats Stats;
 };
