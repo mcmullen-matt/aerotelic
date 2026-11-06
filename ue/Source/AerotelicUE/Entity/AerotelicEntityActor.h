@@ -146,8 +146,24 @@ public:
 	// is what every analysis reads. There is no global default anywhere: a
 	// lattice hollows each body by that body's own skin thickness and takes
 	// its material for the struts.
-	void SetMassSpec(const aerotelic::MassSpec& InSpec) { if (!IsDerived()) MassSpec = InSpec; }
+	//
+	// The skin thickness is GEOMETRY downstream (2026-11-04): a lattice over
+	// this entity is hollowed by it, so a change to it broadcasts
+	// OnSkinThicknessChanged and the document subsystem regenerates those
+	// lattices as it does after an Apply. The material's figures (density,
+	// stiffness, allowable) and an asserted mass are read on demand by the
+	// analyses and the mass report; nothing is built from them, so they
+	// broadcast nothing.
+	void SetMassSpec(const aerotelic::MassSpec& InSpec);
 	const aerotelic::MassSpec& GetMassSpec() const { return MassSpec; }
+	// What a lattice hollows a body of this spec by: the skin thickness
+	// under a material, nothing otherwise (FAerotelicLatticeModel::
+	// SkinThicknessFor reads it through GetEffectiveMassSpec).
+	static double LatticeSkinThickness(const aerotelic::MassSpec& Spec);
+	// Fired after SetMassSpec changed the figure a lattice over this entity
+	// is hollowed by. Static, like OnGeometryChanged.
+	DECLARE_MULTICAST_DELEGATE_OneParam(FOnAerotelicSkinThicknessChanged, AAerotelicEntityActor*);
+	static FOnAerotelicSkinThicknessChanged OnSkinThicknessChanged;
 	// Built on other entities (a boolean result, a lattice): inherits.
 	bool IsDerived() const;
 	// The spec that applies: its own for a parameterisation; the first

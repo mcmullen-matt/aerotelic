@@ -100,6 +100,30 @@ over a cell: the struts carry more. So the core also reports the
 estimated MICRO stress -- the peak voxel von Mises of each element's own
 strain state over the cell's critical voxels (homogenize.py) -- and its
 margin is against the base material's allowable using that.
+
+NATURAL FREQUENCIES (2026-11-04). With ``solver.modes`` > 0 the same model
+-- the same mesh, materials and clamps, no loads -- is solved a second
+time as the generalised eigenvalue problem K phi = omega^2 M phi on
+StructuralMechanicsApplication's ``eigen_value`` solver (the dynamic
+scheme: K the stiffness the static solve used, M the elements' mass
+matrices from the same densities and shell thicknesses, so the
+frequencies are of the part as the static analysis has it, overlap
+correction included). The eigensolver is LinearSolversApplication's
+Spectra shift-invert (``spectra_sym_g_eigs_shift``, the lowest modes
+first) with the subspace solver ``eigen_eigensystem`` as the fallback. The
+result lists ``natural_frequencies`` in hertz, lowest first, and the VTK
+carries each mode shape as the point vector ``mode_k`` scaled to a unit
+largest displacement. Measured on the 1 x 10 x 1 m thin-walled box beam
+of structural_fea_check.py: the degenerate first bending pair at 10.81 Hz
+twice (Euler-Bernoulli 11.71 Hz for the bare beam; with the tip cap's
+mass, the webs' shear flexibility and rotary inertia 10.97 Hz, so the
+shells are within 1.5%), then the 1 m skin panels' own plate modes from
+26 Hz -- a thin-walled part's spectrum is local long before the second
+beam mode. A failure of the eigensolve is a warning on an otherwise good
+static result, not an error. Gotcha: the per-node EIGENVECTOR_MATRIX is
+in the node's dof order, which is by variable KEY (a name hash), and
+ROTATION sorts before DISPLACEMENT -- run_modes picks the displacement
+columns by that same sort.
 """
 
 import hashlib
@@ -388,7 +412,8 @@ def write_materials(path, entries):
         json.dump({"properties": props}, f, indent=1)
 
 
-def project_parameters(mdpa_base, materials_path, loads, point_loads, echo_level, rotation_dofs, linear_solver):
+def _constraint_processes(rotation_dofs):
+    """The clamp at the support, shared by the static and the modal solve."""
     constraints = [{
         "python_module": "assign_vector_variable_process",
         "kratos_module": "KratosMultiphysics",
@@ -415,6 +440,46 @@ def project_parameters(mdpa_base, materials_path, loads, point_loads, echo_level
                 "interval": [0.0, "End"],
             },
         })
+    return constraints
+
+
+def modal_parameters(mdpa_base, materials_path, echo_level, rotation_dofs, count, eigensolver):
+    """The eigenvalue analysis of the same model: the clamp, no loads, the
+    lowest `count` modes of K phi = omega^2 M phi."""
+    settings = {"solver_type": eigensolver, "number_of_eigenvalues": int(count), "max_iteration": 1000, "echo_level": echo_level}
+    if eigensolver == "eigen_eigensystem":
+        settings["tolerance"] = 1e-6
+    return {
+        "problem_data": {
+            "problem_name": "aerotelic_modes",
+            "parallel_type": "OpenMP",
+            "echo_level": echo_level,
+            "start_time": 0.0,
+            "end_time": 1.0,
+        },
+        "solver_settings": {
+            "solver_type": "eigen_value",
+            "model_part_name": "Structure",
+            "domain_size": 3,
+            "echo_level": echo_level,
+            "model_import_settings": {"input_type": "mdpa", "input_filename": mdpa_base},
+            "material_import_settings": {"materials_filename": materials_path},
+            "time_stepping": {"time_step": 1.0},
+            "rotation_dofs": bool(rotation_dofs),
+            "block_builder": True,
+            "eigensolver_settings": settings,
+        },
+        "processes": {
+            "constraints_process_list": _constraint_processes(rotation_dofs),
+            "loads_process_list": [],
+            "list_other_processes": [],
+        },
+        "output_processes": {},
+    }
+
+
+def project_parameters(mdpa_base, materials_path, loads, point_loads, echo_level, rotation_dofs, linear_solver):
+    constraints = _constraint_processes(rotation_dofs)
     load_list = []
     g = float(loads["load_factor"]) * G0
     if g != 0.0:
@@ -541,6 +606,64 @@ def run_kratos(job_dir, parameters, n_nodes, face_pressure, want_rotations, echo
     analysis.RunSolutionLoop()
     analysis.Finalize()
     return model, structure, analysis, time.time() - t_solve
+
+
+def run_modes(job_dir, mdpa_base, materials_path, n_nodes, echo_level, rotation_dofs, count, eigensolver):
+    """The lowest `count` natural frequencies (Hz, ascending) and mode shapes
+    ((count, n_nodes, 3), each scaled to a unit largest displacement) of the
+    model already written to mdpa_base, clamped as the static solve was.
+    Spectra first; the subspace solver if it fails."""
+    import KratosMultiphysics as KM
+    import KratosMultiphysics.StructuralMechanicsApplication as SMA
+    from KratosMultiphysics.StructuralMechanicsApplication.structural_mechanics_analysis import StructuralMechanicsAnalysis
+    import KratosMultiphysics.LinearSolversApplication  # noqa: F401  (the eigensolvers)
+    if echo_level == 0:
+        KM.Logger.GetDefaultOutput().SetSeverity(KM.Logger.Severity.WARNING)
+    solvers = [eigensolver] + [s for s in ("spectra_sym_g_eigs_shift", "eigen_eigensystem") if s != eigensolver]
+    # EIGENVECTOR_MATRIX has a column per degree of freedom of the node IN
+    # THE NODE'S OWN ORDER, which Kratos keeps sorted by variable key -- a
+    # hash of the name, so ROTATION_X/Y/Z (key 9130...) come BEFORE
+    # DISPLACEMENT_X/Y/Z (9385...) on a shell node (found 2026-11-04: the
+    # first three columns read as the mode shape were the rotations, and the
+    # "shape" peaked at mid-span). Sort the same way and pick the
+    # displacements' columns; a solid node has the three displacements only.
+    disp = [KM.DISPLACEMENT_X, KM.DISPLACEMENT_Y, KM.DISPLACEMENT_Z]
+    rot = [KM.ROTATION_X, KM.ROTATION_Y, KM.ROTATION_Z]
+    order6 = sorted(disp + rot, key=lambda v: v.Key())
+    cols6 = [order6.index(v) for v in disp]
+    order3 = sorted(disp, key=lambda v: v.Key())
+    cols3 = [order3.index(v) for v in disp]
+    last = None
+    for solver in solvers:
+        model = KM.Model()
+        try:
+            analysis = StructuralMechanicsAnalysis(model, KM.Parameters(json.dumps(
+                modal_parameters(mdpa_base, materials_path, echo_level, rotation_dofs, count, solver))))
+            analysis.Run()
+        except Exception as exc:  # a solver that is not built in, or did not converge
+            last = "%s: %s" % (solver, exc)
+            log("  modes: %s failed (%s)" % (solver, exc))
+            continue
+        structure = model["Structure"]
+        values = structure.ProcessInfo[SMA.EIGENVALUE_VECTOR]
+        lam = np.array([float(values[i]) for i in range(len(values))])
+        shapes = np.zeros((len(lam), n_nodes, 3))
+        for node in structure.Nodes:
+            m = node.GetValue(SMA.EIGENVECTOR_MATRIX)
+            rows = min(m.Size1(), len(lam))
+            cols = cols6 if m.Size2() == 6 else (cols3 if m.Size2() == 3 else [0, 1, 2])
+            for k in range(rows):
+                shapes[k, node.Id - 1] = (m[k, cols[0]], m[k, cols[1]], m[k, cols[2]])
+        order = np.argsort(lam)
+        lam, shapes = lam[order], shapes[order]
+        # omega^2 to hertz; a tiny negative from round-off on a rigid mode is 0.
+        frequencies = np.sqrt(np.maximum(lam, 0.0)) / (2.0 * np.pi)
+        for k in range(len(lam)):
+            peak = float(np.linalg.norm(shapes[k], axis=1).max())
+            if peak > 0.0:
+                shapes[k] /= peak
+        return frequencies, shapes, solver
+    raise JobError("the natural frequencies could not be computed: %s" % last)
 
 
 def read_nodal(structure, n_nodes, want_rotations):
@@ -786,21 +909,28 @@ def run_job(job_dir):
                       "homogenize_samples": 2000, "homogenize_cache": true,
                       "shell_element": "ShellThinElement3D3N" (the linear
                       thin shell; or ShellThinElementCorotational3D3N /
-                      ShellThickElementCorotational3D3N, see above)}
+                      ShellThickElementCorotational3D3N, see above),
+                      "modes": 0 (how many natural frequencies to compute
+                      after the static solve; 0: none),
+                      "eigensolver": "spectra_sym_g_eigs_shift" (or
+                      "eigen_eigensystem"; either falls back to the other)}
         outputs       {"vtk": the solution file, "result": the statistics}
 
     The result reports the solver used ("linear_solver"), the force
     balance -- "balance_error" = |sum of reactions + applied loads| over
     the loads' magnitude, "balanced" when it is within BALANCE_TOLERANCE
     -- and a "warnings" list; an unbalanced solve is a solver that did not
-    converge, and its fields are not to be trusted.
+    converge, and its fields are not to be trusted. With modes > 0 it
+    also reports "natural_frequencies" (Hz, lowest first; empty with a
+    warning if the eigensolve failed), "eigensolver" and "seconds_modes",
+    and the VTK carries the mode shapes as "mode_1" ... point vectors.
     """
     t_start = time.time()
     with open(os.path.join(job_dir, "job.json"), "r", encoding="utf-8-sig") as f:
         job = json.load(f)
     outputs = job["outputs"]
     solver_opts = {"echo_level": 0, "linear_solver": "auto", "homogenize_samples": 2000, "homogenize_cache": True,
-                   "shell_element": "ShellThinElement3D3N"}
+                   "shell_element": "ShellThinElement3D3N", "modes": 0, "eigensolver": "spectra_sym_g_eigs_shift"}
     solver_opts.update(job.get("solver", {}))
     echo_level = int(solver_opts["echo_level"])
     loads = {"load_factor": 0.0, "pressure": 0.0, "pressure_file": None, "point_force": None, "point_forces": None}
@@ -1097,6 +1227,26 @@ def run_job(job_dir):
     nn /= np.maximum(np.linalg.norm(nn, axis=1), 1e-300)[:, None]
     mean_normal_disp = float(np.einsum("ij,ij->i", displacement[wet_nodes], nn).mean())
 
+    # The natural frequencies of the same model, when asked. A failure here
+    # is a warning on a static result that stands.
+    n_modes = int(solver_opts.get("modes") or 0)
+    frequencies, mode_shapes, eigensolver_used, seconds_modes = np.zeros(0), None, "", 0.0
+    if n_modes > 0:
+        t0 = time.time()
+        try:
+            frequencies, mode_shapes, eigensolver_used = run_modes(job_dir, mdpa_base, materials_path, len(nodes_all), echo_level, rotation_dofs,
+                                                                  n_modes, str(solver_opts.get("eigensolver") or "spectra_sym_g_eigs_shift"))
+        except JobError as exc:
+            warnings.append(str(exc))
+            log("  WARNING: " + warnings[-1])
+        seconds_modes = time.time() - t0
+    result.update({
+        "modes": n_modes,
+        "natural_frequencies": [float(f) for f in frequencies],
+        "eigensolver": eigensolver_used,
+        "seconds_modes": seconds_modes,
+    })
+
     u_mag = np.linalg.norm(displacement, axis=1)
     i_max = int(np.argmax(u_mag))
     result.update({
@@ -1131,6 +1281,9 @@ def run_job(job_dir):
         point_data["rotation"] = rotation
     if homog:
         point_data["micro_von_mises"] = nodal_average(len(nodes_all), element_blocks, micro)
+    if mode_shapes is not None:
+        for k in range(len(frequencies)):
+            point_data["mode_%d" % (k + 1)] = mode_shapes[k]
     write_vtk(outputs["vtk"], nodes_all, element_blocks, cell_types, point_data, cell_data)
     result["seconds_vtk"] = time.time() - t_vtk
     result["seconds"] = time.time() - t_start
@@ -1142,6 +1295,8 @@ def run_job(job_dir):
            reaction_sum[0], reaction_sum[1], reaction_sum[2], applied_gravity[0], applied_gravity[1], applied_gravity[2],
            applied_pressure[0], applied_pressure[1], applied_pressure[2], applied_point[0], applied_point[1], applied_point[2],
            ("balanced to %.2e" % balance_error) if balanced else ("NOT BALANCED (%.1f%%)" % (100.0 * balance_error)), outputs["vtk"]))
+    if n_modes > 0 and len(frequencies):
+        log("  natural frequencies (%s, %.2f s): %s Hz" % (eigensolver_used, seconds_modes, ", ".join("%.4g" % f for f in frequencies)))
     return result
 
 

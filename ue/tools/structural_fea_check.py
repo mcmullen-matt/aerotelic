@@ -29,6 +29,13 @@ Cases with closed forms, each run through the real job (the same
     membrane stress is p a / (2 t) in every direction (von Mises the same),
     the radial displacement -p a^2 (1 - nu) / (2 E t), and the pressure's
     resultant over the closed surface is zero.
+  * NATURAL FREQUENCIES (2026-11-04) on the thin-walled box beam and the
+    10-node bar: a square section's first bending pair is degenerate, and
+    its frequency is the clamped-free beam's beta^2 / (2 pi L^2) sqrt(EI /
+    rho A) lowered for shear flexibility and rotary inertia (Timoshenko)
+    and, on the box, for the tip cap's mass (cantilever_f1 below); the
+    sandwich box checks the eigensolve on mixed shell and solid nodes and
+    that the mode shapes reach the VTK.
 """
 
 import json
@@ -53,6 +60,23 @@ AL = {"name": "Aluminium 2024-T3", "density": 2780.0, "youngs_modulus": 73.1e9, 
 def check(cond, msg):
     print(("PASS " if cond else "FAIL ") + msg)
     return bool(cond)
+
+
+def cantilever_f1(E, rho, I, A, L, nu, shear_area=None, tip_mass=0.0):
+    """The first bending frequency (Hz) of a clamped-free beam: Euler-
+    Bernoulli's beta^2 / (2 pi L^2) sqrt(EI / rho A) with beta L = 1.8751,
+    lowered for shear flexibility and rotary inertia -- Timoshenko to first
+    order in I / (A L^2), the shear over `shear_area` (the webs of a box,
+    kappa A of a solid) -- and for a mass at the free end (Rayleigh: the
+    mode's effective mass, a quarter of the beam's for the shape
+    normalised to its tip, against the tip mass)."""
+    beta2 = 1.8751 ** 2
+    f = beta2 / (2 * np.pi * L ** 2) * np.sqrt(E * I / (rho * A))
+    G = E / (2 * (1 + nu))
+    As = shear_area if shear_area else A
+    f /= np.sqrt(1.0 + beta2 * I / (A * L ** 2) * (1.0 + E * A / (G * As)))
+    m_eff = 0.25 * rho * A * L
+    return f * np.sqrt(m_eff / (m_eff + tip_mass))
 
 
 def write_mesh(path, nodes, tets, region):
@@ -252,11 +276,17 @@ def main(argv):
                          "core": {"material": soft, "cell": solid_cell}}],
             "support": {"axis": "x", "value": "min", "tolerance": 1e-6},
             "loads": {"load_factor": 1.0, "pressure": 0.0, "pressure_file": None, "point_force": None},
-            "solver": {"echo_level": 0, "linear_solver": solver, "homogenize_cache": False},
+            "solver": {"echo_level": 0, "linear_solver": solver, "homogenize_cache": False, "modes": 2},
             "outputs": {"vtk": vtk, "result": "box_result.json"},
         }
         r = run(job_dir, job)
         failures += not check(r["ok"] and r["model"] == "shell_core", "box: the shell / core job ran")
+        # The eigensolve on a model whose shell nodes have six degrees of
+        # freedom and whose core nodes have three: two modes, positive,
+        # ascending, and the shapes in the VTK.
+        f_box = r["natural_frequencies"]
+        failures += not check(r["modes"] == 2 and len(f_box) == 2 and all(np.isfinite(f_box)) and 0.0 < f_box[0] <= f_box[1] and r["eigensolver"] != "",
+                              "box: two natural frequencies on the mixed shell / solid model, ascending (%s Hz, %s in %.2f s)" % (", ".join("%.4g" % f for f in f_box), r["eigensolver"], r["seconds_modes"]))
         # "auto" is the direct solver at this size; the result says which
         # ran and that the reactions balance the loads (2026-11-01: amgcl
         # stopping short on a shell-only wing looked like a stiff, lightly
@@ -305,6 +335,9 @@ def main(argv):
         failures += not check(len(points) == len(nodes) and (cell_types == 10).sum() == len(tets) and (cell_types == 5).sum() == r["shells"],
                               "box: the VTK holds %d tetrahedra and %d triangles" % (len(tets), r["shells"]))
         failures += not check(all(k in pdata for k in ("displacement", "rotation", "von_mises", "micro_von_mises")), "box: the VTK holds displacement, rotation and both stresses per node")
+        failures += not check(all(k in pdata for k in ("mode_1", "mode_2")) and pdata["mode_1"].shape == (len(nodes), 3)
+                              and abs(np.linalg.norm(pdata["mode_1"], axis=1).max() - 1.0) < 1e-6,
+                              "box: the VTK holds both mode shapes as point vectors scaled to a unit largest displacement")
         failures += not check(all(k in cdata for k in ("material", "kind", "von_mises_element", "micro_von_mises_element")), "box: the VTK holds the region, kind and stresses per cell")
         failures += not check(np.isfinite(pdata["displacement"]).all() and np.isfinite(cdata["von_mises_element"]).all(), "box: the solution is finite")
 
@@ -435,7 +468,7 @@ def main(argv):
             "supports": [{"axis": "y", "value": "min", "tolerance": 0.0}],
             "loads": {"load_factor": 0.0, "pressure": 0.0, "pressure_file": None,
                       "point_forces": [{"at": [0.5, 5.0, 0.0], "force": [0.0, 0.0, -P_tip / 2]}, {"at": [-0.5, 5.0, 0.0], "force": [0.0, 0.0, -P_tip / 2]}]},
-            "solver": {"echo_level": 0, "linear_solver": solver, "homogenize_cache": False, "shell_element": "ShellThinElement3D3N"},
+            "solver": {"echo_level": 0, "linear_solver": solver, "homogenize_cache": False, "shell_element": "ShellThinElement3D3N", "modes": 4},
             "outputs": {"vtk": os.path.join(beam_dir, "beam.vtk"), "result": "beam_result.json"},
         }
         rb = run(beam_dir, job_b)
@@ -456,6 +489,24 @@ def main(argv):
         med = float(np.median(cd_b["von_mises_element"][band]))
         failures += not check(abs(med / sigma_b - 1.0) < 0.05, "beam: the flange von Mises is M c / I (median %.4g vs %.4g Pa)" % (med, sigma_b))
         print("  beam: %d dof in %.1f s; tip %.4g m vs %.4g; flange %.4g Pa vs %.4g" % (rb["dofs"], rb["seconds_solve"], -tip_uz, delta_b, med, sigma_b))
+        # The natural frequencies: a square box's first bending pair is
+        # degenerate, at the clamped-free beam's frequency lowered by the
+        # webs' shear flexibility, rotary inertia and the tip cap's mass
+        # (the root cap is clamped). The modes after it are the 1 m skin
+        # panels' own, well below the second beam mode (73 Hz).
+        f_b = rb["natural_frequencies"]
+        cap_mass = AL["density"] * bt * bb * bh
+        f1_b = cantilever_f1(E_b, AL["density"], I_b, 2 * (bb + bh) * bt, bL, nu_b, shear_area=2 * bh * bt, tip_mass=cap_mass)
+        failures += not check(len(f_b) == 4 and abs(f_b[1] / f_b[0] - 1.0) < 0.005, "beam: the first bending pair is degenerate (%.4g and %.4g Hz)" % tuple(f_b[:2]) if len(f_b) >= 2 else "beam: four natural frequencies came back")
+        failures += not check(len(f_b) >= 1 and abs(f_b[0] / f1_b - 1.0) < 0.04,
+                              "beam: the first bending frequency is the clamped-free beam's with shear, rotary inertia and the tip cap, %.4g Hz (got %.4g, %.1f%%)" % (f1_b, f_b[0] if f_b else 0.0, 100 * (f_b[0] / f1_b - 1) if f_b else 0.0))
+        failures += not check(len(f_b) == 4 and f_b[2] > 1.5 * f_b[0] and f_b[3] >= f_b[2], "beam: the modes after the pair are higher and ascending (%s Hz)" % ", ".join("%.4g" % f for f in f_b))
+        pts_m, _, _, pd_m, _ = read_vtk(os.path.join(beam_dir, "beam.vtk"))
+        tip_m = pts_m[:, 1] > pts_m[:, 1].max() - 1e-6
+        root_m = np.abs(pts_m[:, 1] - pts_m[:, 1].min()) < 1e-6
+        failures += not check("mode_1" in pd_m and "mode_4" in pd_m and np.abs(pd_m["mode_1"][root_m]).max() < 1e-9 and np.linalg.norm(pd_m["mode_1"][tip_m], axis=1).max() > 0.9,
+                              "beam: the first mode shape is still at the clamp and largest at the tip")
+        print("  beam modes (%s, %.2f s): %s Hz; theory f1 %.4g" % (rb["eigensolver"], rb["seconds_modes"], ", ".join("%.4g" % f for f in f_b), f1_b))
 
         # The same bar as a solid of 10-node tetrahedra: the clamp must hold
         # the mid-edge nodes on the plane too (left free until 2026-11-02 the
@@ -468,7 +519,7 @@ def main(argv):
             "supports": [{"axis": "x", "value": "min", "tolerance": 0.0}],
             "loads": {"load_factor": 0.0, "pressure": 0.0, "pressure_file": None,
                       "point_forces": [{"at": [bL, 0.5, 0.0], "force": [0.0, 0.0, -P_tip / 2]}, {"at": [bL, -0.5, 0.0], "force": [0.0, 0.0, -P_tip / 2]}]},
-            "solver": {"echo_level": 0, "linear_solver": solver, "homogenize_cache": False},
+            "solver": {"echo_level": 0, "linear_solver": solver, "homogenize_cache": False, "modes": 3},
             "outputs": {"vtk": os.path.join(beam_dir, "bar.vtk"), "result": "bar_result.json"},
         }
         rt = run(beam_dir, job_t)
@@ -484,6 +535,15 @@ def main(argv):
         tip_uz_t = float(pd_t["displacement"][tip_t, 2].mean())
         failures += not check(abs(-tip_uz_t / delta_t - 1.0) < 0.03, "bar (10-node): the tip deflection is Timoshenko's (%.4g vs %.4g m, %.1f%%)" % (-tip_uz_t, delta_t, 100 * (-tip_uz_t / delta_t - 1)))
         print("  bar (10-node): %d dof in %.1f s; tip %.4g m vs %.4g" % (rt["dofs"], rt["seconds_solve"], -tip_uz_t, delta_t))
+        # The solid bar's natural frequencies: the degenerate pair at the
+        # Timoshenko cantilever's first frequency (no tip mass here), on
+        # 10-node tetrahedra whose mass matrix is consistent.
+        f_t = rt["natural_frequencies"]
+        f1_t = cantilever_f1(E_b, AL["density"], I_t, bb * bh, bL, nu_b, shear_area=kappa * bb * bh)
+        failures += not check(len(f_t) == 3 and abs(f_t[1] / f_t[0] - 1.0) < 0.005, "bar (10-node): the first bending pair is degenerate (%s Hz)" % ", ".join("%.4g" % f for f in f_t))
+        failures += not check(len(f_t) >= 1 and abs(f_t[0] / f1_t - 1.0) < 0.03,
+                              "bar (10-node): the first bending frequency is Timoshenko's cantilever, %.4g Hz (got %.4g, %.1f%%)" % (f1_t, f_t[0] if f_t else 0.0, 100 * (f_t[0] / f1_t - 1) if f_t else 0.0))
+        print("  bar modes (%s, %.2f s): %s Hz; theory f1 %.4g" % (rt["eigensolver"], rt["seconds_modes"], ", ".join("%.4g" % f for f in f_t), f1_t))
 
         if keep:
             os.makedirs(keep, exist_ok=True)

@@ -273,13 +273,14 @@ namespace AerotelicStructuralFea
 			TEXT("{\n \"mesh\": \"mesh.bin\",\n \"faces\": %s,\n \"model\": \"regions\",\n \"regions\": [%s],\n \"second_order\": %s,\n")
 			TEXT(" \"supports\": [%s],\n")
 			TEXT(" \"loads\": {\"load_factor\": %s, \"pressure\": %s, \"pressure_file\": %s, \"point_forces\": [%s]},\n")
-			TEXT(" \"solver\": {\"echo_level\": 0, \"linear_solver\": %s, \"homogenize_cache\": %s, \"shell_element\": %s},\n")
+			TEXT(" \"solver\": {\"echo_level\": 0, \"linear_solver\": %s, \"homogenize_cache\": %s, \"shell_element\": %s, \"modes\": %d},\n")
 			TEXT(" \"outputs\": {\"vtk\": %s, \"result\": \"result.json\"}\n}\n"),
 			FacesFile.IsEmpty() ? TEXT("null") : *JsonString(FacesFile), *Regions, Request.bSecondOrder ? TEXT("true") : TEXT("false"),
 			*SupportsJson,
 			*Num(Request.LoadFactor), *Num(Request.Pressure), PressureFile.IsEmpty() ? TEXT("null") : *JsonString(PressureFile), *PointsJson,
 			*JsonString(Request.LinearSolver.IsEmpty() ? FString(TEXT("auto")) : Request.LinearSolver), Request.bHomogenizeCache ? TEXT("true") : TEXT("false"),
 			*JsonString(Request.ShellElement.IsEmpty() ? FString(TEXT("ShellThinElement3D3N")) : Request.ShellElement),
+			FMath::Max(Request.Modes, 0),
 			*JsonString(FPaths::ConvertRelativePathToFull(Request.VtkPath)));
 		if (!FFileHelper::SaveStringToFile(Job, *FPaths::Combine(Dir, TEXT("job.json")), FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM))
 		{
@@ -383,6 +384,17 @@ namespace AerotelicStructuralFea
 			}
 		}
 		Out.MeanNormalDisplacement = Real(TEXT("mean_normal_displacement"));
+		const TArray<TSharedPtr<FJsonValue>>* Frequencies = nullptr;
+		if (Result->TryGetArrayField(TEXT("natural_frequencies"), Frequencies))
+		{
+			for (const TSharedPtr<FJsonValue>& F : *Frequencies)
+			{
+				double V = 0.0;
+				if (F.IsValid() && F->TryGetNumber(V)) Out.NaturalFrequencies.Add(V);
+			}
+		}
+		Result->TryGetStringField(TEXT("eigensolver"), Out.Eigensolver);
+		Out.SecondsModes = Real(TEXT("seconds_modes"));
 		Out.SecondsSolve = Real(TEXT("seconds_solve"));
 		Out.SecondsHomogenize = Real(TEXT("seconds_homogenize"));
 		Out.Seconds = Real(TEXT("seconds"));

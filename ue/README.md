@@ -300,7 +300,9 @@ The layout follows the Python/Qt version's main window (`aerotelic/ui/main_windo
 * **Boolean operations** (Geometry -> Boolean Operation): WingDesigner's
   dialog -- the operands in order (every entity, the mirrored half of each
   mirrored one as its own row, every earlier boolean result), Add / Select
-  All / Remove / Up / Down, the operation (Fuse, Cut = first minus the
+  All / Remove / Remove All (2026-11-04, the reverse of Select All; the
+  same picker serves the exports and the analyses) / Up / Down, the
+  operation (Fuse, Cut = first minus the
   rest, Common) and a unique name ("BoolOp n" by default). The result is a
   new scene item of kind boolean: the operands' placed MESHES folded left
   to right through the core's mesh boolean (`core/include/aerotelic/
@@ -645,7 +647,13 @@ The layout follows the Python/Qt version's main window (`aerotelic/ui/main_windo
   regenerates; a lattice follows an *Apply* on any body it fills (or on an
   operand of a boolean it fills): the document subsystem marks it stale
   and regenerates it a moment later, once per Apply however many bodies
-  changed (see *Apply in the design panels* below). *Regenerate Lattices*
+  changed (see *Apply in the design panels* below). It follows a changed
+  **skin thickness** the same way (2026-11-04): the lattice is hollowed by
+  each body's Material Properties figure, so OK on that dialog with a new
+  thickness broadcasts `AAerotelicEntityActor::OnSkinThicknessChanged`
+  and the subsystem queues the lattices over the entity (lattices only --
+  no boolean reads a material; a density or modulus edited under the same
+  skin queues nothing). *Regenerate Lattices*
   rebuilds every lattice by hand, for one that failed to follow or was
   left as it was. Deleting a filled body deletes the lattice. Lattices
   carry no collision (click-select them in the tree). Measured on p38: the
@@ -2230,6 +2238,57 @@ a diaphragm). The fixes, as Matt chose them:
   commandlet's step "structural fea (a box beam)": a box primitive given
   2 x 20 x 2 cells through a draft, the pre-processor's 9 root nodes and
   the coarse-tolerance flag, the solve within 3% of Timoshenko.
+
+### Natural frequencies (2026-11-04)
+
+The structural dialog's Model group gained *Natural frequencies to
+compute* (6 by default; 0 switches it off) and its Result group a
+*Natural frequencies* line. After the static solve `structural_fea.py`
+solves the SAME model a second time -- the same mesh, materials and
+clamps, no loads -- as the generalised eigenvalue problem K phi =
+omega^2 M phi on StructuralMechanicsApplication's `eigen_value` solver
+(the dynamic scheme: K the stiffness the static case used, M the elements'
+own mass matrices from the densities and shell thicknesses, the core's
+overlap correction included), for the lowest modes asked. The eigensolver
+is LinearSolversApplication's Spectra shift-invert
+(`spectra_sym_g_eigs_shift`), with the subspace solver
+`eigen_eigensystem` as the fallback (either falls back to the other); on
+the 1 x 10 x 1 m box beam Spectra takes 0.2 s against 1.1 s. The result
+carries `natural_frequencies` (hertz, lowest first -- hertz whatever the
+project's units, and a replica's under a model scale), the eigensolver
+used and its seconds; `FResult::NaturalFrequencies`; the VTK carries each
+mode shape as the point vector `mode_k` scaled to a unit largest
+displacement, for ParaView. A failed eigensolve is a warning on a static
+result that stands (the Result line says NOT COMPUTED).
+
+What came out, and why it is right: the thin-walled 1 x 10 x 1 m
+aluminium box (10 mm skin, clamped at one end) gives the degenerate first
+bending pair at **10.81 Hz twice**. Euler-Bernoulli for the bare beam is
+11.71 Hz; the shells are 7.7% under it, and that is three real effects,
+not an error: the tip cap (27.8 kg on a mode whose effective mass is a
+quarter of the beam's 1112 kg) takes 4.7%, the webs' shear flexibility
+and rotary inertia (Timoshenko) 1.8%, and together the estimate is
+10.97 Hz, so the shells are within 1.5%. The modes after the pair -- 26.1,
+27.0, 28.4, 30.3 Hz -- are the 1 m skin panels' own plate modes, well
+below the second beam mode at 73 Hz: a thin-walled part goes local long
+before it bends again, which is the kind of thing this output is for. The
+10-node solid bar of the same proportions has no cap and lands on the
+Timoshenko cantilever frequency.
+
+* **Tests**: `structural_fea_check.py` -- `cantilever_f1` (beta^2 / (2 pi
+  L^2) sqrt(EI / rho A) lowered for shear and rotary inertia to first
+  order and for a tip mass by Rayleigh) against the box beam's pair within
+  4% and the 10-node bar's within 3%, both pairs degenerate to 0.5%, the
+  sandwich box's eigensolve on mixed six- and three-degree-of-freedom
+  nodes, the `mode_k` vectors in the VTK scaled to unit peak; the document
+  commandlet's box-beam step asks for four modes and checks the same.
+* **Also 2026-11-04**: every body picker (booleans, STL / STEP / 3D PDF
+  exports, mass properties, lattices, panel method, potential flow, DUST,
+  structural) has *Remove All*, the reverse of *Select All*; and a changed
+  skin thickness under Material Properties regenerates the lattices over
+  the entity (see *Meshing, distance fields and lattices*), checked in the
+  document commandlet's lattice step (0.05 to 0.08 and back; the same spec
+  again, or a density edit, queues nothing).
 
 ## How the standalone build is put together
 

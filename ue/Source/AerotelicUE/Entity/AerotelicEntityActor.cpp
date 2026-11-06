@@ -547,6 +547,7 @@ FString AAerotelicEntityActor::GetMirrorBodyDisplayName(int32 Index) const
 
 AAerotelicEntityActor::FOnAerotelicBodiesChanged AAerotelicEntityActor::OnBodiesChanged;
 AAerotelicEntityActor::FOnAerotelicGeometryChanged AAerotelicEntityActor::OnGeometryChanged;
+AAerotelicEntityActor::FOnAerotelicSkinThicknessChanged AAerotelicEntityActor::OnSkinThicknessChanged;
 
 FBox AAerotelicEntityActor::GetVisibleWorldBounds() const
 {
@@ -1026,6 +1027,28 @@ double AAerotelicEntityActor::DisplayTolerance() const
 bool AAerotelicEntityActor::IsDerived() const
 {
 	return EntityType == aerotelic::project_yaml::EntityType::Boolean || EntityType == aerotelic::project_yaml::EntityType::Lattice;
+}
+
+double AAerotelicEntityActor::LatticeSkinThickness(const aerotelic::MassSpec& Spec)
+{
+	return Spec.mode == aerotelic::MassMode::Material ? FMath::Max(Spec.skin_thickness, 0.0) : 0.0;
+}
+
+void AAerotelicEntityActor::SetMassSpec(const aerotelic::MassSpec& InSpec)
+{
+	if (IsDerived())
+	{
+		return;
+	}
+	const double Before = LatticeSkinThickness(MassSpec);
+	MassSpec = InSpec;
+	// Only the figure a lattice is built from counts: a density or a
+	// modulus edited under the same skin regenerates nothing (seconds of
+	// work for no change in geometry), and so does the same spec set again.
+	if (!FMath::IsNearlyEqual(Before, LatticeSkinThickness(MassSpec), 1e-15))
+	{
+		OnSkinThicknessChanged.Broadcast(this);
+	}
 }
 
 const AAerotelicEntityActor* AAerotelicEntityActor::GetMassSpecSource() const

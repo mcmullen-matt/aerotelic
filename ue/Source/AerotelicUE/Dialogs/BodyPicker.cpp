@@ -71,7 +71,8 @@ void SAerotelicBodyPicker::Construct(const FArguments& InArgs)
 	TSharedRef<SVerticalBox> Buttons = SNew(SVerticalBox)
 		+ SVerticalBox::Slot().AutoHeight().Padding(0, 2) [ Button(LOCTEXT("Add", "Add →"), &SAerotelicBodyPicker::AddSelectedFromAvailable) ]
 		+ SVerticalBox::Slot().AutoHeight().Padding(0, 2) [ Button(LOCTEXT("AddAll", "Select All →"), &SAerotelicBodyPicker::AddAll) ]
-		+ SVerticalBox::Slot().AutoHeight().Padding(0, 2) [ Button(LOCTEXT("Remove", "← Remove"), &SAerotelicBodyPicker::RemoveSelected) ];
+		+ SVerticalBox::Slot().AutoHeight().Padding(0, 2) [ Button(LOCTEXT("Remove", "← Remove"), &SAerotelicBodyPicker::RemoveSelected) ]
+		+ SVerticalBox::Slot().AutoHeight().Padding(0, 2) [ Button(LOCTEXT("RemoveAll", "← Remove All"), &SAerotelicBodyPicker::RemoveAll) ];
 	if (bReorder)
 	{
 		Buttons->AddSlot().AutoHeight().Padding(0, 2) [ Button(LOCTEXT("Up", "Up"), &SAerotelicBodyPicker::ShiftUp) ];
@@ -147,6 +148,21 @@ void SAerotelicBodyPicker::RemoveSelected()
 	{
 		Chosen.Remove(R);
 	}
+	ChosenList->RequestListRefresh();
+	OnChanged.ExecuteIfBound();
+}
+
+void SAerotelicBodyPicker::RemoveAll()
+{
+	// The reverse of Select All: every chosen row back to available. The
+	// available list never lost them (a row is chosen by membership of
+	// Chosen, not by moving), so emptying Chosen is the whole of it.
+	if (Chosen.Num() == 0)
+	{
+		return;
+	}
+	Chosen.Reset();
+	ChosenList->ClearSelection();
 	ChosenList->RequestListRefresh();
 	OnChanged.ExecuteIfBound();
 }

@@ -138,11 +138,13 @@ void UAerotelicDocumentSubsystem::Initialize(FSubsystemCollectionBase& Collectio
 {
 	Super::Initialize(Collection);
 	GeometryChangedHandle = AAerotelicEntityActor::OnGeometryChanged.AddUObject(this, &UAerotelicDocumentSubsystem::OnEntityGeometryChanged);
+	SkinThicknessChangedHandle = AAerotelicEntityActor::OnSkinThicknessChanged.AddUObject(this, &UAerotelicDocumentSubsystem::OnEntitySkinThicknessChanged);
 }
 
 void UAerotelicDocumentSubsystem::Deinitialize()
 {
 	AAerotelicEntityActor::OnGeometryChanged.Remove(GeometryChangedHandle);
+	AAerotelicEntityActor::OnSkinThicknessChanged.Remove(SkinThicknessChangedHandle);
 	if (RebuildTick.IsValid())
 	{
 		FTSTicker::GetCoreTicker().RemoveTicker(RebuildTick);
@@ -227,7 +229,15 @@ void UAerotelicDocumentSubsystem::OnEntityGeometryChanged(AAerotelicEntityActor*
 	QueueDependentRebuilds(Entity);
 }
 
-void UAerotelicDocumentSubsystem::QueueDependentRebuilds(const AAerotelicEntityActor* Entity)
+void UAerotelicDocumentSubsystem::OnEntitySkinThicknessChanged(AAerotelicEntityActor* Entity)
+{
+	// The lattices over the entity (through any boolean over it: a lattice
+	// filling a fuse inherits the first operand's skin) regenerate; the
+	// booleans themselves read no material and stand.
+	QueueDependentRebuilds(Entity, true);
+}
+
+void UAerotelicDocumentSubsystem::QueueDependentRebuilds(const AAerotelicEntityActor* Entity, bool bLatticesOnly)
 {
 	if (Entity == nullptr)
 	{
@@ -245,6 +255,10 @@ void UAerotelicDocumentSubsystem::QueueDependentRebuilds(const AAerotelicEntityA
 		}
 		const EntityType Type = Weak->GetEntityType();
 		if (Type != EntityType::Boolean && Type != EntityType::Lattice)
+		{
+			continue;
+		}
+		if (bLatticesOnly && Type != EntityType::Lattice)
 		{
 			continue;
 		}

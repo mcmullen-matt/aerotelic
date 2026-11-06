@@ -496,6 +496,34 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 			bool bThrew = false;
 			try { Lattice->GetModel()->BuildSolid(); } catch (const std::exception&) { bThrew = true; }
 			Check(bThrew, "a lattice has no B-rep solid (BuildSolid throws)");
+
+			// A changed skin thickness under Material Properties regenerates
+			// the lattice (2026-11-04): the sphere's 0.05 becomes 0.08, the
+			// document queues the lattice as it does after an Apply, and once
+			// flushed the lattice is hollowed by 0.08. The same spec set again,
+			// or a density edited under the same skin, queues nothing (a
+			// lattice is built from the skin alone).
+			{
+				aerotelic::MassSpec Changed = Primitive->GetMassSpec();
+				Primitive->SetMassSpec(Changed);
+				Check(!Doc->HasPendingRebuilds(), "skin change: the same material properties set again queue nothing");
+				Changed.material.density = 3.0;
+				Primitive->SetMassSpec(Changed);
+				Check(!Doc->HasPendingRebuilds(), "skin change: a density edited under the same skin queues nothing");
+				Changed.material.density = 2.0;
+				Changed.skin_thickness = 0.08;
+				Primitive->SetMassSpec(Changed);
+				Check(Doc->HasPendingRebuilds(), "skin change: a new skin thickness queues the lattice over the sphere");
+				Doc->FlushPendingRebuilds();
+				Check(!Doc->HasPendingRebuilds() && FMath::IsNearlyEqual(M->MinSkinThickness(), 0.08, 1e-12) && M->GetTetBodies().size() == 1 && FMath::IsNearlyEqual(M->GetTetBodies()[0].SkinThickness, 0.08, 1e-12),
+					FString::Printf(TEXT("skin change: the lattice regenerated over the 0.08 skin (hollowed by %.3g)"), M->GetTetBodies().size() == 1 ? M->GetTetBodies()[0].SkinThickness : -1.0));
+				// Back to 0.05 for the steps that follow (the round trip, Apply).
+				Changed.skin_thickness = 0.05;
+				Primitive->SetMassSpec(Changed);
+				Check(Doc->HasPendingRebuilds(), "skin change: back to 0.05 queues the lattice again");
+				Doc->FlushPendingRebuilds();
+				Check(FMath::IsNearlyEqual(M->MinSkinThickness(), 0.05, 1e-12), "skin change: regenerated over the 0.05 skin again");
+			}
 		}
 		AAerotelicEntityActor* Bad = Doc->AddLattice(TEXT("Lattice 1"), Spec, Targets, TArray<FAerotelicBooleanOperand>(), Error);
 		Check(Bad == nullptr && !Error.IsEmpty(), "a duplicate lattice name is refused");
@@ -998,6 +1026,7 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 					F.Force = aerotelic::Vec3{ 0.0, 0.0, -0.5 * P };
 					Request.PointForces.Add(F);
 				}
+				Request.Modes = 4;
 				Request.VtkPath = FPaths::Combine(FPlatformProcess::UserTempDir(), TEXT("aerotelic_document_test_fea_beam.vtk"));
 				IFileManager::Get().Delete(*Request.VtkPath, false, true, true);
 
@@ -1070,6 +1099,31 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 					const double SigmaRoot = P * 10.0 * 0.5 / I;
 					Check(R.Entries.Num() == 1 && R.Entries[0].MaxVonMises > 0.9 * SigmaRoot && R.Entries[0].MaxVonMises < 2.0 * SigmaRoot,
 						FString::Printf(TEXT("fea (beam): the peak von Mises is the root bending stress M c / I, %.4g Pa, up to the clamp's concentration (got %.4g)"), SigmaRoot, R.Entries.Num() ? R.Entries[0].MaxVonMises : 0.0));
+					// The natural frequencies (2026-11-04): a square box's first
+					// bending pair is degenerate, at the clamped-free beam's
+					// beta^2 / (2 pi L^2) sqrt(EI / rho A) lowered for the webs'
+					// shear flexibility and rotary inertia (Timoshenko, first
+					// order) and for the tip cap's mass against the mode's
+					// effective mass, a quarter of the beam's -- the figure
+					// structural_fea_check.py's cantilever_f1 computes.
+					{
+						const double Rho = Al.density, A = 4.0 * 1.0 * 0.01, As = 2.0 * 1.0 * 0.01, Lb = 10.0;
+						const double Beta2 = 1.8751 * 1.8751;
+						double F1 = Beta2 / (2.0 * PI * Lb * Lb) * FMath::Sqrt(E * I / (Rho * A));
+						F1 /= FMath::Sqrt(1.0 + Beta2 * I / (A * Lb * Lb) * (1.0 + E * A / (G * As)));
+						const double CapMass = Rho * 0.01 * 1.0 * 1.0, EffectiveMass = 0.25 * Rho * A * Lb;
+						F1 *= FMath::Sqrt(EffectiveMass / (EffectiveMass + CapMass));
+						const TArray<double>& F = R.NaturalFrequencies;
+						Check(F.Num() == 4 && !R.Eigensolver.IsEmpty() && F[0] > 0.0 && F[1] >= F[0] && F[2] >= F[1] && F[3] >= F[2],
+							FString::Printf(TEXT("fea (beam): four natural frequencies came back ascending from %s in %.2f s (%d)"), *R.Eigensolver, R.SecondsModes, F.Num()));
+						Check(F.Num() >= 2 && FMath::Abs(F[1] / F[0] - 1.0) < 0.01,
+							FString::Printf(TEXT("fea (beam): the first bending pair is degenerate (%.4g and %.4g Hz)"), F.Num() >= 2 ? F[0] : 0.0, F.Num() >= 2 ? F[1] : 0.0));
+						Check(F.Num() >= 1 && FMath::Abs(F[0] / F1 - 1.0) < 0.05,
+							FString::Printf(TEXT("fea (beam): the first bending frequency is the clamped-free beam's with shear, rotary inertia and the tip cap, %.4g Hz (got %.4g, %.1f%%)"), F1, F.Num() ? F[0] : 0.0, F.Num() ? 100.0 * (F[0] / F1 - 1.0) : 0.0));
+						FString Vtk;
+						Check(FFileHelper::LoadFileToString(Vtk, *Request.VtkPath) && Vtk.Contains(TEXT("VECTORS mode_1 double")) && Vtk.Contains(TEXT("VECTORS mode_4 double")),
+							"fea (beam): the VTK carries the four mode shapes as point vectors");
+					}
 					IFileManager::Get().Delete(*Request.VtkPath, false, true, true);
 				}
 			}

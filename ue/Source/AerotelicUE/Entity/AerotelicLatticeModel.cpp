@@ -215,8 +215,9 @@ FBox FAerotelicLatticeModel::TargetBounds() const
 double FAerotelicLatticeModel::SkinThicknessFor(const FAerotelicBooleanOperand& Op)
 {
 	if (!Op.Entity.IsValid()) return 0.0;
-	const aerotelic::MassSpec S = Op.Entity->GetEffectiveMassSpec();
-	return S.mode == aerotelic::MassMode::Material ? FMath::Max(S.skin_thickness, 0.0) : 0.0;
+	// One rule with the actor's: it is the figure whose change broadcasts
+	// OnSkinThicknessChanged and regenerates this lattice.
+	return AAerotelicEntityActor::LatticeSkinThickness(Op.Entity->GetEffectiveMassSpec());
 }
 
 double FAerotelicLatticeModel::MinSkinThickness() const

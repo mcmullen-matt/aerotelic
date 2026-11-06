@@ -146,6 +146,11 @@ public:
 	// rough measure on purpose: every item counts one whatever it costs,
 	// and nothing is timed.
 	//
+	// A changed SKIN THICKNESS under Material Properties (2026-11-04) queues
+	// the same way, lattices only: a lattice is hollowed by the skin of each
+	// body it fills, so it is downstream of that figure as it is of the
+	// body's shape; a boolean result is not (it reads no material).
+	//
 	// FlushPendingRebuilds() drains the queue at once (a commandlet has no
 	// tick), reporting failures as the tick would.
 	bool HasPendingRebuilds() const;
@@ -286,6 +291,7 @@ private:
 
 	// The rebuild queue (see HasPendingRebuilds).
 	FDelegateHandle GeometryChangedHandle;
+	FDelegateHandle SkinThicknessChangedHandle;
 	TArray<TWeakObjectPtr<AAerotelicEntityActor>> RebuildQueue;
 	TArray<FString> RebuildErrors;
 	FTSTicker::FDelegateHandle RebuildTick;
@@ -294,7 +300,11 @@ private:
 	int32 RebuildDone = 0;
 	static constexpr double kLatticeSettleSeconds = 0.3;
 	void OnEntityGeometryChanged(AAerotelicEntityActor* Entity);
-	void QueueDependentRebuilds(const AAerotelicEntityActor* Entity);
+	void OnEntitySkinThicknessChanged(AAerotelicEntityActor* Entity);
+	// Queues what is built over Entity: the boolean results and lattices
+	// (a shape changed), or the lattices alone (bLatticesOnly: a skin
+	// thickness changed, which no boolean reads).
+	void QueueDependentRebuilds(const AAerotelicEntityActor* Entity, bool bLatticesOnly = false);
 	// The next queued item ready to rebuild (dropping dead entries), or
 	// INDEX_NONE; with bRespectSettle a lattice is not ready until the
 	// scene has settled.

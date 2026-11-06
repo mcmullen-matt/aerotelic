@@ -26,10 +26,11 @@ using FAerotelicBodyChoicePtr = TSharedPtr<FAerotelicBodyChoice>;
 // Every body the scene offers, in scene order.
 TArray<FAerotelicBodyChoicePtr> SceneBodyChoices();
 
-// The two-list body picker shared by the boolean and export dialogs
-// (_make_body_picker): available on the left, chosen on the right, with
-// Add / Select All / Remove, and Up / Down when order matters (the
-// boolean operands; exports deliberately do without).
+// The two-list body picker shared by the boolean, export and analysis
+// dialogs (_make_body_picker): available on the left, chosen on the right,
+// with Add / Select All / Remove / Remove All (the reverse of Select All:
+// the chosen list emptied in one click, 2026-11-04), and Up / Down when
+// order matters (the boolean operands; exports deliberately do without).
 class SAerotelicBodyPicker : public SCompoundWidget
 {
 public:
@@ -57,6 +58,7 @@ private:
 	void AddSelectedFromAvailable();
 	void AddAll();
 	void RemoveSelected();
+	void RemoveAll();
 	void Shift(int32 Delta);
 	void ShiftUp();
 	void ShiftDown();

@@ -136,6 +136,14 @@ namespace AerotelicStructuralFea
 		// Reuse a homogenisation of the same cell and material from an
 		// earlier run (the script keeps them under the user's temp folder).
 		bool bHomogenizeCache = true;
+		// How many natural frequencies to compute after the static solve
+		// (2026-11-04): the same model -- mesh, materials, clamps, no loads
+		// -- as the generalised eigenvalue problem K phi = omega^2 M phi,
+		// its lowest Modes modes. 0: none. The frequencies come back in
+		// FResult::NaturalFrequencies (Hz) and the mode shapes go into the
+		// VTK as point vectors mode_1 ... scaled to a unit largest
+		// displacement.
+		int32 Modes = 0;
 
 		// --- supports: every DOF of the nodes within Tolerance of each
 		// plane Axis = Value (project units) is fixed; a node on any of the
@@ -233,7 +241,15 @@ namespace AerotelicStructuralFea
 		// is what a positive pressure must do.
 		double MeanNormalDisplacement = 0.0;
 
-		double Seconds = 0.0, SecondsSolve = 0.0, SecondsHomogenize = 0.0;
+		// The natural frequencies asked for (FRequest::Modes), hertz, lowest
+		// first -- of the replica when a model scale is set, like every
+		// other figure here. Empty when none were asked for, or when the
+		// eigensolve failed (then Warnings says so and the static result
+		// stands). Eigensolver names the one that ran.
+		TArray<double> NaturalFrequencies;
+		FString Eigensolver;
+
+		double Seconds = 0.0, SecondsSolve = 0.0, SecondsHomogenize = 0.0, SecondsModes = 0.0;
 		FString VtkPath;
 	};
 

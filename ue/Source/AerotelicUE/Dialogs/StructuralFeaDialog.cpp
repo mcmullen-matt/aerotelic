@@ -340,6 +340,7 @@ namespace
 		}
 		double Voxels = 32.0;
 		double ElementSize = 0.0;   // solid bodies; 0: a twentieth of the largest extent
+		double Modes = 6.0;         // natural frequencies computed after the static solve; 0: none
 		// The loads and the supports: any number of point forces and of
 		// planes, edited on their tabs and pushed by Apply.
 		double LoadFactor = 0.0, Pressure = 0.0;
@@ -348,7 +349,7 @@ namespace
 		TSharedPtr<SVerticalBox> PointList, SupportList;
 		TSharedPtr<SEditableTextBox> PathBox;
 		TSharedPtr<SCheckBox> SecondOrderCheck, CacheCheck;
-		TSharedPtr<STextBlock> LblMaterials, LblMesh, LblCore, LblDisp, LblStress, LblMargins, LblBalance, LblTime;
+		TSharedPtr<STextBlock> LblMaterials, LblMesh, LblCore, LblDisp, LblStress, LblMargins, LblBalance, LblModes, LblTime;
 
 		// The model, once built (Build Model, or Solve).
 		TSharedPtr<FBuilt> Built;
@@ -471,6 +472,7 @@ namespace
 			static const TCHAR* kShellElements[] = { TEXT("ShellThinElement3D3N"), TEXT("ShellThinElementCorotational3D3N") };
 			Request.ShellElement = kShellElements[FMath::Clamp(ShellIndex, 0, 1)];
 			Request.bHomogenizeCache = CacheCheck.IsValid() && CacheCheck->IsChecked();
+			Request.Modes = FMath::Max(FMath::RoundToInt32(Modes), 0);
 			Request.VtkPath = PathBox.IsValid() ? PathBox->GetText().ToString().TrimStartAndEnd() : FString();
 		}
 
@@ -1057,7 +1059,28 @@ namespace
 				R.Mass / M2, *UnitName(Units.MassName()), R.Reaction[0], R.Reaction[1], R.Reaction[2],
 				R.AppliedGravity[0], R.AppliedGravity[1], R.AppliedGravity[2], R.AppliedPressure[0], R.AppliedPressure[1], R.AppliedPressure[2],
 				R.AppliedPoint[0], R.AppliedPoint[1], R.AppliedPoint[2], *Verdict)));
-			LblTime->SetText(FText::FromString(FString::Printf(TEXT("%.1f s (%.1f homogenising, %.1f solving with %s)"), R.Seconds, R.SecondsHomogenize, R.SecondsSolve, *R.LinearSolver)));
+			// The natural frequencies: hertz whatever the project's units
+			// (of the replica under a model scale, like the rest).
+			if (B.Request.Modes <= 0)
+			{
+				LblModes->SetText(LOCTEXT("NoModes", "(not computed: set the number of natural frequencies under Model)"));
+			}
+			else if (R.NaturalFrequencies.Num() == 0)
+			{
+				LblModes->SetText(LOCTEXT("ModesFailed", "NOT COMPUTED: the eigensolve failed (the log has the solver's words); the static result above stands."));
+			}
+			else
+			{
+				FString Listed;   // not "Modes": that is the member, and a hiding local is an error here
+				for (int32 k = 0; k < R.NaturalFrequencies.Num(); ++k)
+				{
+					Listed += FString::Printf(TEXT("%sf%d = %.4g Hz"), k ? TEXT(", ") : TEXT(""), k + 1, R.NaturalFrequencies[k]);
+				}
+				LblModes->SetText(FText::FromString(FString::Printf(TEXT("%s%s (%s, %.1f s; mode shapes mode_1 .. mode_%d in the VTK)"), *Listed,
+					IsReplica() ? *FString::Printf(TEXT(" -- of the %s replica"), *ScaleText()) : TEXT(""), *R.Eigensolver, R.SecondsModes, R.NaturalFrequencies.Num())));
+			}
+			LblTime->SetText(FText::FromString(FString::Printf(TEXT("%.1f s (%.1f homogenising, %.1f solving with %s%s)"), R.Seconds, R.SecondsHomogenize, R.SecondsSolve, *R.LinearSolver,
+				R.SecondsModes > 0.0 ? *FString::Printf(TEXT(", %.1f on the natural frequencies"), R.SecondsModes) : TEXT(""))));
 			for (const FString& W : R.Warnings)
 			{
 				UE_LOG(LogTemp, Warning, TEXT("StructuralFea: %s"), *W);
@@ -1067,8 +1090,9 @@ namespace
 				UE_LOG(LogTemp, Warning, TEXT("StructuralFea: the pre-processor counted %d support nodes and %d wetted faces, the solver %d and %d"),
 					M.SupportNodes.Num(), M.WettedFaces.Num(), R.SupportNodes, R.WettedFaces);
 			}
-			Status(FText::FromString(FString::Printf(TEXT("Structural analysis solved on %s DOF (%s): max displacement %.4g %s, max von Mises %.4g %s -> %s%s"),
-				*Thousands(R.Dofs), *R.LinearSolver, R.MaxDisplacement / L2, *UnitName(Units.LengthName()), R.MaxVonMises / S2, *UnitName(Units.StressName()), *R.VtkPath,
+			Status(FText::FromString(FString::Printf(TEXT("Structural analysis solved on %s DOF (%s): max displacement %.4g %s, max von Mises %.4g %s%s -> %s%s"),
+				*Thousands(R.Dofs), *R.LinearSolver, R.MaxDisplacement / L2, *UnitName(Units.LengthName()), R.MaxVonMises / S2, *UnitName(Units.StressName()),
+				R.NaturalFrequencies.Num() > 0 ? *FString::Printf(TEXT(", f1 = %.4g Hz"), R.NaturalFrequencies[0]) : TEXT(""), *R.VtkPath,
 				R.bBalanced ? TEXT("") : TEXT(" -- NOT CONVERGED, see the force balance"))));
 			if (Tabs.IsValid()) Tabs->SetActiveTab(TabSetup);
 			if (!R.bBalanced && !bSmoke)
@@ -1253,7 +1277,7 @@ namespace
 			Picker.Reset();
 			PointList.Reset(); SupportList.Reset();
 			PathBox.Reset(); SecondOrderCheck.Reset(); CacheCheck.Reset();
-			LblMaterials.Reset(); LblMesh.Reset(); LblCore.Reset(); LblDisp.Reset(); LblStress.Reset(); LblMargins.Reset(); LblBalance.Reset(); LblTime.Reset();
+			LblMaterials.Reset(); LblMesh.Reset(); LblCore.Reset(); LblDisp.Reset(); LblStress.Reset(); LblMargins.Reset(); LblBalance.Reset(); LblModes.Reset(); LblTime.Reset();
 			Tabs.Reset();
 		}
 	};
@@ -1298,7 +1322,7 @@ namespace
 		"The picker lists SOLID BODIES, not parameterisations: a wing's main element and its flap, a propeller's spinner and blades, a boolean result's separate shells are each a row. What each body is comes from its Material Properties (a boolean result inherits its first operand's). A body with a skin thickness and no lattice is a thin-walled part: shells of that thickness on its own triangles, nothing inside. A body with no skin thickness and no lattice is a solid: tetrahedra of its material at the element size. "
 		"A lattice-filled body is shells of its skin thickness over tetrahedra at the lattice cell size carrying the lattice's homogenised stiffness, the struts of the body's material; or, at full resolution, the skin tetrahedra as a solid over core tetrahedra with the homogenised lattice. The bodies are not joined to one another: each must reach a support on its own or through a body it was fused with. A body or part of one with no load path to any support -- a control surface in its gap, a payload bay inside the fuselage -- would make the system singular, so it is LEFT OUT automatically and named on the Mesh and Support tabs.\n\n"
 		"SET-UP\n"
-		"Build Model meshes the bodies (gmsh; a lattice's meshes are kept until it changes) and derives what the solver will be handed for the three tabs that follow, without solving. Solve does the same and then runs Kratos, writing the displacement and stress fields to the VTK file named and the peaks, margins and force balance into the Result group.\n\n"
+		"Build Model meshes the bodies (gmsh; a lattice's meshes are kept until it changes) and derives what the solver will be handed for the three tabs that follow, without solving. Solve does the same and then runs Kratos, writing the displacement and stress fields to the VTK file named and the peaks, margins and force balance into the Result group; with a number of natural frequencies set under Model it then solves the same model's eigenvalue problem and lists them too, with the mode shapes written to the VTK.\n\n"
 		"MESH\n"
 		"The wetted faces of the model -- the boundary faces of the tetrahedra and the shell-only bodies' triangles -- coloured by region with their edges drawn. Where a region has a skin these faces ARE the shell elements. The caption counts nodes, tetrahedra and faces, each region's kind, volume and area, and what was left out.\n\n"
 		"LOADS\n"
@@ -1306,7 +1330,8 @@ namespace
 		"SUPPORT\n"
 		"On the left: any number of support planes, each axis = value (or the mesh's minimum or maximum along the axis) with a tolerance (0 is a ten-thousandth of the mesh's diagonal, about how planar a lofted section is); every node within the tolerance of any plane is clamped in every degree of freedom (the shells' rotations too) -- add, edit, delete, then Apply. On the right a red marker on every fixed node, each plane as a blue frame, and the load path: whatever reaches no support is left out and listed.\n\n"
 		"RESULT\n"
-		"Linear static, small displacement, linear elastic, the linear thin shell triangle (its reactions balance the loads exactly; the corotational triangles are options for small-displacement comparisons). The reactions at the supports must balance what was applied: the Force balance line says by how much they miss, and a miss of more than one percent means the linear solver did not converge -- the solution is then reported as NOT converged and nothing in it is to be trusted (the iterative solver can do this on thin shells; the direct solver cannot, which is why the automatic choice takes it up to a million degrees of freedom). Margin is allowable / peak von Mises - 1 for each region's skin, solid or core; a homogenised core's margin is against the material's allowable using the stress estimated in the struts. The VTK holds the displacement and the stresses for ParaView, in SI. No post-processing view yet.");
+		"Linear static, small displacement, linear elastic, the linear thin shell triangle (its reactions balance the loads exactly; the corotational triangles are options for small-displacement comparisons). The reactions at the supports must balance what was applied: the Force balance line says by how much they miss, and a miss of more than one percent means the linear solver did not converge -- the solution is then reported as NOT converged and nothing in it is to be trusted (the iterative solver can do this on thin shells; the direct solver cannot, which is why the automatic choice takes it up to a million degrees of freedom). Margin is allowable / peak von Mises - 1 for each region's skin, solid or core; a homogenised core's margin is against the material's allowable using the stress estimated in the struts. "
+		"The natural frequencies (2026-11-04) are the lowest modes of K phi = omega^2 M phi for the same mesh, materials and clamps with no loads: the stiffness the static solve used and the elements' own mass from the densities and skin thicknesses (the core's overlap correction included). They are in hertz whatever the units; under a model scale they are the replica's. Checked on a 1 x 10 x 1 m thin-walled aluminium box: the degenerate first bending pair within 1.5% of the clamped-free beam's frequency corrected for shear, rotary inertia and the tip cap's mass, then the skin panels' own plate modes -- a thin-walled part goes local long before its second beam mode. The VTK holds the displacement, the stresses and the mode shapes (mode_1, mode_2, ... scaled to a unit largest displacement) for ParaView, in SI. No post-processing view yet.");
 }
 
 void ShowAerotelicStructuralFeaDialog(TFunction<void(const FText&)> Status)
@@ -1463,11 +1488,14 @@ void ShowAerotelicStructuralFeaDialog(TFunction<void(const FText&)> Status)
 				[ FormRow(LOCTEXT("Solver", "Linear solver:"), Combo(&FState::SolverOptions, &FState::SolverIndex, false)) ]
 				+ SVerticalBox::Slot().AutoHeight().Padding(0, 2)
 				[ FormRow(LOCTEXT("ShellElement", "Shell element:"), Combo(&FState::ShellOptions, &FState::ShellIndex, false)) ]
+				+ SVerticalBox::Slot().AutoHeight().Padding(0, 2)
+				[ FormRow(LOCTEXT("Modes", "Natural frequencies to compute (0 = none):"), Spin(&FState::Modes, 0.0, 100.0, 1.0, FText::GetEmpty())) ]
 				+ SVerticalBox::Slot().AutoHeight().Padding(0, 4, 0, 0)
 				[
 					MakeInfoLabel(LOCTEXT("ModelHint",
 						"Shells over a homogenised core: a lattice-filled body's own surface triangles become shell elements of its skin thickness, and the inside is tetrahedra at the lattice cell size carrying the lattice's homogenised stiffness -- one unit cell, voxelised at the resolution above, solved under the six unit strains -- the struts of the body's material. The full-resolution model is the skin and core tetrahedra Lattice export writes, the skin a solid of the material and the core homogenised; keep second order on for it. Solid bodies without a lattice are meshed by gmsh at the element size. The direct solver is exact; the iterative one can stop short on thin shells and hand back a solution whose reactions do not balance the loads, so the automatic choice takes the direct solver up to a million degrees of freedom and the force balance is checked after every solve. "
-						"The linear thin triangle is the shell for a linear static analysis: its reactions balance the loads exactly whatever the displacement. The corotational triangles are geometrically nonlinear elements solved in one step: they agree with it for small displacements and report inconsistent reactions and stresses once the model moves far."))
+						"The linear thin triangle is the shell for a linear static analysis: its reactions balance the loads exactly whatever the displacement. The corotational triangles are geometrically nonlinear elements solved in one step: they agree with it for small displacements and report inconsistent reactions and stresses once the model moves far. "
+						"The natural frequencies are the same model's -- the same mesh, materials and clamps, no loads -- solved after the static case as the eigenvalue problem K phi = omega^2 M phi for the lowest modes asked (Spectra's shift-invert eigensolver, a second or two on a few hundred thousand degrees of freedom). The mass is the elements' own, from the densities and skin thicknesses, so a thin-walled part's spectrum shows its skin panels' plate modes soon after the first beam modes."))
 				])
 		]
 		+ SScrollBox::Slot().Padding(0, 0, 0, 8)
@@ -1480,11 +1508,13 @@ void ShowAerotelicStructuralFeaDialog(TFunction<void(const FText&)> Status)
 				+ SVerticalBox::Slot().AutoHeight() [ FormRow(LOCTEXT("StressStat", "Max von Mises:"), Stat(S->LblStress)) ]
 				+ SVerticalBox::Slot().AutoHeight() [ FormRow(LOCTEXT("MarginStat", "Per region:"), Stat(S->LblMargins)) ]
 				+ SVerticalBox::Slot().AutoHeight() [ FormRow(LOCTEXT("BalanceStat", "Force balance:"), Stat(S->LblBalance)) ]
+				+ SVerticalBox::Slot().AutoHeight() [ FormRow(LOCTEXT("ModesStat", "Natural frequencies:"), Stat(S->LblModes)) ]
 				+ SVerticalBox::Slot().AutoHeight() [ FormRow(LOCTEXT("TimeStat", "Took:"), Stat(S->LblTime)) ]
 				+ SVerticalBox::Slot().AutoHeight().Padding(0, 4, 0, 0)
 				[
 					MakeInfoLabel(LOCTEXT("ResultHint",
-						"Linear static, small displacement, linear elastic. The reactions at the supports must balance what was applied -- gravity on the mass, the pressure's resultant (zero over a closed surface), the point forces. Margin is allowable / peak von Mises - 1 for each region's skin, solid or core. A homogenised core's von Mises is a smeared average over a cell, so its margin is taken against the material's allowable using the stress ESTIMATED IN THE STRUTS. The VTK holds the displacement and the stresses for ParaView, in SI."))
+						"Linear static, small displacement, linear elastic. The reactions at the supports must balance what was applied -- gravity on the mass, the pressure's resultant (zero over a closed surface), the point forces. Margin is allowable / peak von Mises - 1 for each region's skin, solid or core. A homogenised core's von Mises is a smeared average over a cell, so its margin is taken against the material's allowable using the stress ESTIMATED IN THE STRUTS. "
+						"The natural frequencies are in hertz whatever the project's units, lowest first, of the structure as clamped (a replica's are the replica's). The VTK holds the displacement, the stresses and each mode shape (mode_1, mode_2, ... as point vectors scaled to a unit largest displacement) for ParaView, in SI."))
 				])
 		]
 		+ SScrollBox::Slot()
