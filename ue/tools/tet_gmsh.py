@@ -222,9 +222,27 @@ def run_job(job_dir):
                       (gmsh's Mesh.MeshSizeExtendFromBoundary; default
                       true). False makes the size core_size throughout,
                       graded to a finer surface only by the Delaunay
-                      insertion: for a homogenised core, whose tetrahedra
-                      carry a material card rather than geometry.
+                      insertion -- which on a fuselage with 5 cm surface
+                      edges and a 60 cm cell put a fan of slivers along the
+                      whole skin (2026-11-05: 12% of the body's tetrahedra
+                      with a dihedral angle under 10 degrees, against 2%
+                      seeded). Use `grading` instead.
+        grading       > 0: a GRADED size field (gmsh Distance + Threshold
+                      fields) in place of either rule above: the size is
+                      the surface's own median edge length at the surface
+                      and grows linearly with the distance from it at this
+                      rate (0.5: half a metre of edge per metre of depth)
+                      until it reaches core_size. The transition layer then
+                      has a bounded edge ratio whatever the cell, and the
+                      deep interior is still the cell. Default 0 (off).
         outputs       {mesh, result}: file names to write
+
+    The result also carries the dihedral angles (`min_dihedral`,
+    `max_dihedral`, degrees) and the counts `tets_dihedral_under_10` /
+    `tets_dihedral_over_160`, the usual acceptance bands for a linear
+    element (Shewchuk 2002: small dihedrals wreck the conditioning, large
+    ones the gradient's accuracy); the application shows them and gates
+    the solve on them.
 
     Returns the result dictionary (also written to outputs.result).
     """
@@ -241,6 +259,7 @@ def run_job(job_dir):
     optimize = bool(job.get("optimize", True))
     optimize_netgen = bool(job.get("optimize_netgen", True))
     size_from_boundary = bool(job.get("size_from_boundary", True))
+    grading = float(job.get("grading", 0.0))
 
     ov, of = read_tri(os.path.join(job_dir, job["outer"]))
     check_closed(ov, of, "the body")
@@ -274,10 +293,11 @@ def run_job(job_dir):
         # field from geometry these discrete surfaces do not have.
         gmsh.option.setNumber("Mesh.MeshSizeFromPoints", 0)
         gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 0)
-        gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 1 if size_from_boundary else 0)
+        graded = grading > 0.0 and core_size > 0.0
+        gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 1 if (size_from_boundary and not graded) else 0)
         if core_size > 0.0:
             gmsh.option.setNumber("Mesh.MeshSizeMax", core_size)
-            if not size_from_boundary:
+            if not size_from_boundary and not graded:
                 # No size source but the cap: say so, or gmsh takes its
                 # own default (1) where the boundary would have seeded it.
                 gmsh.option.setNumber("Mesh.MeshSizeMin", min_size if min_size > 0.0 else core_size)
@@ -320,6 +340,27 @@ def run_job(job_dir):
         gmsh.model.geo.synchronize()
         if inner_shells:
             log("  %d pocket(s) in the body: %s triangles" % (len(inner_shells), ", ".join(str(len(sf)) for _, sf in inner_shells)))
+
+        if graded:
+            # The graded field: the surfaces' median edge at the surfaces,
+            # growing at `grading` per unit distance until it is the core
+            # size. gmsh's Threshold is linear between DistMin and DistMax.
+            e = np.concatenate([ov[of[:, 1]] - ov[of[:, 0]], ov[of[:, 2]] - ov[of[:, 1]], ov[of[:, 0]] - ov[of[:, 2]]])
+            h_surface = float(np.median(np.linalg.norm(e, axis=1)))
+            if min_size > 0.0:
+                h_surface = max(h_surface, min_size)
+            h_surface = min(h_surface, core_size)
+            dist = gmsh.model.mesh.field.add("Distance")
+            gmsh.model.mesh.field.setNumbers(dist, "SurfacesList", list(range(1, tag + 1)))
+            gmsh.model.mesh.field.setNumber(dist, "Sampling", 20)
+            thr = gmsh.model.mesh.field.add("Threshold")
+            gmsh.model.mesh.field.setNumber(thr, "InField", dist)
+            gmsh.model.mesh.field.setNumber(thr, "SizeMin", h_surface)
+            gmsh.model.mesh.field.setNumber(thr, "SizeMax", core_size)
+            gmsh.model.mesh.field.setNumber(thr, "DistMin", 0.0)
+            gmsh.model.mesh.field.setNumber(thr, "DistMax", max((core_size - h_surface) / grading, 1e-9))
+            gmsh.model.mesh.field.setAsBackgroundMesh(thr)
+            log("  graded size field: %.4g at the surface, %.4g at %.4g in, the cell %.4g beyond" % (h_surface, core_size, (core_size - h_surface) / grading, core_size))
 
         t_mesh = time.time()
         gmsh.model.mesh.generate(3)
@@ -371,6 +412,8 @@ def run_job(job_dir):
     skin_volume = float(vol[skin].sum())
     core_volume = float(vol[core].sum())
     write_tet(os.path.join(job_dir, outputs["mesh"]), nodes, tets, material)
+    dih = dihedral_angles(nodes, tets)
+    d_min, d_max = dih.min(axis=1), dih.max(axis=1)
 
     result = {
         "ok": True,
@@ -390,6 +433,10 @@ def run_job(job_dir):
         "min_quality": float(quality.min()),
         "mean_quality": float(quality.mean()),
         "poor_quality": int((quality < 0.1).sum()),
+        "min_dihedral": float(dih.min()) if len(tets) else 0.0,
+        "max_dihedral": float(dih.max()) if len(tets) else 0.0,
+        "tets_dihedral_under_10": int((d_min < 10.0).sum()),
+        "tets_dihedral_over_160": int((d_max > 160.0).sum()),
         "surface_nodes": int(len(ov) + (0 if iv is None else len(iv))),
         "seconds_mesh": seconds_mesh,
         "seconds": time.time() - t_start,
@@ -397,11 +444,32 @@ def run_job(job_dir):
     }
     with open(os.path.join(job_dir, outputs["result"]), "w", encoding="utf-8") as f:
         json.dump(result, f, indent=1)
-    log("  %d nodes, %d skin + %d core tetrahedra; skin %.6g + core %.6g = %.6g vs body %.6g (relative %.2e); quality min %.3f mean %.3f, %d under 0.1; %d flipped, %d degenerate; %.2f s"
+    log("  %d nodes, %d skin + %d core tetrahedra; skin %.6g + core %.6g = %.6g vs body %.6g (relative %.2e); quality min %.3f mean %.3f, %d under 0.1; dihedral %.2f..%.2f deg, %d under 10, %d over 160; %d flipped, %d degenerate; %.2f s"
         % (result["nodes"], result["skin_tets"], result["core_tets"], skin_volume, core_volume,
            skin_volume + core_volume, outer_volume, result["volume_error"], result["min_quality"],
-           result["mean_quality"], result["poor_quality"], flipped, degenerate, result["seconds"]))
+           result["mean_quality"], result["poor_quality"], result["min_dihedral"], result["max_dihedral"],
+           result["tets_dihedral_under_10"], result["tets_dihedral_over_160"], flipped, degenerate, result["seconds"]))
     return result
+
+
+def dihedral_angles(nodes, tets):
+    """The six interior dihedral angles of every tetrahedron, degrees,
+    (n, 6): the angle between the two faces at each edge."""
+    if len(tets) == 0:
+        return np.zeros((0, 6))
+    p = nodes[tets]
+    faces = [(1, 2, 3), (0, 3, 2), (0, 1, 3), (0, 2, 1)]   # face k opposite vertex k
+    n = np.empty((len(tets), 4, 3))
+    for k, (a, b, c) in enumerate(faces):
+        nk = np.cross(p[:, b] - p[:, a], p[:, c] - p[:, a])
+        s = np.einsum("ij,ij->i", nk, p[:, k] - p[:, a])
+        nk[s > 0] *= -1.0                                   # outward
+        n[:, k] = nk / np.maximum(np.linalg.norm(nk, axis=1), 1e-300)[:, None]
+    out = np.empty((len(tets), 6))
+    for j, (a, b) in enumerate([(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)]):
+        c = -np.einsum("ij,ij->i", n[:, a], n[:, b])
+        out[:, j] = np.degrees(np.arccos(np.clip(c, -1.0, 1.0)))
+    return out
 
 
 def _write_failure(job_dir, message):

@@ -133,11 +133,11 @@ namespace AerotelicTetGmsh
 		}
 
 		const FString Job = FString::Printf(
-			TEXT("{\n \"outer\": \"outer.tri\",\n \"inner\": \"%s\",\n \"core_size\": %s,\n \"min_size\": %s,\n \"min_pocket_volume\": %s,\n \"algorithm\": %d,\n \"optimize\": %s,\n \"optimize_netgen\": %s,\n \"size_from_boundary\": %s,\n")
+			TEXT("{\n \"outer\": \"outer.tri\",\n \"inner\": \"%s\",\n \"core_size\": %s,\n \"min_size\": %s,\n \"min_pocket_volume\": %s,\n \"algorithm\": %d,\n \"optimize\": %s,\n \"optimize_netgen\": %s,\n \"size_from_boundary\": %s,\n \"grading\": %s,\n")
 			TEXT(" \"outputs\": {\"mesh\": \"mesh.tet\", \"result\": \"result.json\"}\n}\n"),
 			bHasInner ? TEXT("inner.tri") : TEXT(""), *Num(Request.CoreSize), *Num(Request.MinSize), *Num(Request.MinPocketVolume),
 			Request.Algorithm, Request.bOptimize ? TEXT("true") : TEXT("false"), Request.bOptimizeNetgen ? TEXT("true") : TEXT("false"),
-			Request.bSizeFromBoundary ? TEXT("true") : TEXT("false"));
+			Request.bSizeFromBoundary ? TEXT("true") : TEXT("false"), *Num(FMath::Max(Request.Grading, 0.0)));
 		if (!FFileHelper::SaveStringToFile(Job, *FPaths::Combine(Dir, TEXT("job.json")), FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM))
 		{
 			OutError = TEXT("could not write the gmsh job file");
@@ -172,6 +172,12 @@ namespace AerotelicTetGmsh
 		Out.MinQuality = Result->GetNumberField(TEXT("min_quality"));
 		Out.MeanQuality = Result->GetNumberField(TEXT("mean_quality"));
 		Out.PoorQuality = Int(TEXT("poor_quality"));
+		// The dihedral statistics (2026-11-05): absent from an older script's result.
+		double D = 0.0;
+		Out.MinDihedral = Result->TryGetNumberField(TEXT("min_dihedral"), D) ? D : 0.0;
+		Out.MaxDihedral = Result->TryGetNumberField(TEXT("max_dihedral"), D) ? D : 0.0;
+		Out.TetsDihedralUnder10 = Result->TryGetNumberField(TEXT("tets_dihedral_under_10"), D) ? static_cast<int32>(D) : 0;
+		Out.TetsDihedralOver160 = Result->TryGetNumberField(TEXT("tets_dihedral_over_160"), D) ? static_cast<int32>(D) : 0;
 		Out.Flipped = Int(TEXT("flipped"));
 		Out.Degenerate = Int(TEXT("degenerate"));
 		Out.Seconds = Result->GetNumberField(TEXT("seconds"));

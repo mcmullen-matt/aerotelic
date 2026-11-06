@@ -425,9 +425,11 @@ namespace
 
 		// The tetrahedra of a lattice-filled body's own grid for the
 		// shell / core model: bounded by exactly the body's triangles (gmsh
-		// adds interior nodes only), sized to the lattice cell inside and
-		// not seeded by the surface (the core carries a material card, not
-		// geometry). Cached by the surface's bytes and the cell size.
+		// adds interior nodes only), the size growing from the surface's own
+		// triangles to the lattice cell inside (seeded: tried unseeded on
+		// 2026-11-05 for the count, it lined the skin with slivers -- see
+		// AerotelicTetGmsh::FRequest::bSizeFromBoundary). Cached by the
+		// surface's bytes and the cell size.
 		const AerotelicTetGmsh::FResult* TetMeshFor(const aerotelic::TriMesh& Surface, double CellSize, const FString& Label, FString& OutError)
 		{
 			uint32 Crc = FCrc::MemCrc32(Surface.vertices.data(), static_cast<int32>(Surface.vertices.size() * sizeof(Surface.vertices[0])));
@@ -445,14 +447,15 @@ namespace
 			G.Algorithm = 1;
 			G.bOptimize = true;
 			G.bOptimizeNetgen = true;
-			G.bSizeFromBoundary = false;
+			G.bSizeFromBoundary = true;
 			TSharedPtr<AerotelicTetGmsh::FResult> R = MakeShared<AerotelicTetGmsh::FResult>();
 			if (!AerotelicTetGmsh::Run(G, *R, OutError))
 			{
 				return nullptr;
 			}
-			UE_LOG(LogTemp, Log, TEXT("StructuralFea: %s's own grid (%d triangles) meshed at cell %.4g: %d nodes, %d tetrahedra; %.6g vs body %.6g (relative %.2e); quality min %.3f mean %.3f, %d under 0.1; %.2f s"),
-				*Label, static_cast<int32>(Surface.triangles.size()), CellSize, R->Nodes, R->SkinTets + R->CoreTets, R->SkinVolume + R->CoreVolume, R->OuterVolume, R->VolumeError, R->MinQuality, R->MeanQuality, R->PoorQuality, R->Seconds);
+			UE_LOG(LogTemp, Log, TEXT("StructuralFea: %s's own grid (%d triangles) meshed at cell %.4g: %d nodes, %d tetrahedra; %.6g vs body %.6g (relative %.2e); quality min %.3f mean %.3f, %d under 0.1; dihedral %.2f..%.2f deg, %d under 10, %d over 160; %.2f s"),
+				*Label, static_cast<int32>(Surface.triangles.size()), CellSize, R->Nodes, R->SkinTets + R->CoreTets, R->SkinVolume + R->CoreVolume, R->OuterVolume, R->VolumeError, R->MinQuality, R->MeanQuality, R->PoorQuality,
+				R->MinDihedral, R->MaxDihedral, R->TetsDihedralUnder10, R->TetsDihedralOver160, R->Seconds);
 			TetCache.Add(Key, R);
 			return R.Get();
 		}
@@ -755,8 +758,9 @@ namespace
 			Built = B;
 			if (!Derive()) return false;
 			const FModel& M = B->Model;
-			Status(FText::FromString(FString::Printf(TEXT("Model built: %s nodes, %s tetrahedra, %s wetted faces, %s nodes on the supports; %s -- see the Mesh, Loads and Support tabs"),
-				*Thousands(M.Nodes), *Thousands(M.Tets), *Thousands(M.WettedFaces.Num()), *Thousands(M.SupportNodes.Num()), *CostText(M))));
+			Status(FText::FromString(FString::Printf(TEXT("Model built: %s nodes, %s tetrahedra, %s wetted faces, %s nodes on the supports; %s%s -- see the Mesh, Loads and Support tabs"),
+				*Thousands(M.Nodes), *Thousands(M.Tets), *Thousands(M.WettedFaces.Num()), *Thousands(M.SupportNodes.Num()), *CostText(M),
+				M.MeshIsPoor() ? *FString::Printf(TEXT("; POOR MESH: %s"), *QualityText(M)) : TEXT(""))));
 			if (B->Problems.Num() > 0 || B->Dropped.Num() > 0)
 			{
 				TArray<FString> All = B->Problems;
@@ -773,6 +777,24 @@ namespace
 		bool OverBudget(const FModel& M) const
 		{
 			return M.Dofs > AerotelicStructuralFea::kAutoDirectDofs;
+		}
+		// The tetrahedra's shape: the dihedral angles and how many fall
+		// outside the acceptance band, with the verdict.
+		FString QualityText(const FModel& M) const
+		{
+			if (M.Tets == 0) return TEXT("no tetrahedra (shells only)");
+			FString Text = FString::Printf(TEXT("dihedral angles %.2f to %.2f deg; %s tetrahedra (%.1f%%) with an angle under 10 deg and %s (%.1f%%) over 160"),
+				M.MinDihedral, M.MaxDihedral, *Thousands(M.TetsDihedralUnder10), 100.0 * M.TetsDihedralUnder10 / M.Tets, *Thousands(M.TetsDihedralOver160), 100.0 * M.TetsDihedralOver160 / M.Tets);
+			if (M.MeshIsPoor())
+			{
+				Text += FString::Printf(TEXT(" -- %.1f%% outside the band, more than the %.0f%% a solver should be given: slivers spoil the conditioning and the stresses in them. Look at the bodies' grids on their Mesh tabs (a fuselage's nose and tail pole fans are the usual cause; a surface much finer than the lattice cell the other)"),
+					100.0 * M.PoorTetFraction(), 100.0 * FModel::kPoorTetFraction);
+			}
+			else
+			{
+				Text += FString::Printf(TEXT(" -- within the %.0f%% band"), 100.0 * FModel::kPoorTetFraction);
+			}
+			return Text;
 		}
 		FString CostText(const FModel& M) const
 		{
@@ -982,6 +1004,7 @@ namespace
 					*Thousands(M.Nodes), *Thousands(M.Tets), *Thousands(M.SecondOrderTets), *Thousands(M.WettedFaces.Num()),
 					M.SecondOrderTets > 0 ? TEXT("; the solver adds a mid-edge node on every edge of the 10-node tetrahedra, not drawn") : TEXT(""));
 				Text += TEXT("\nCost: ") + CostText(M);
+				Text += FString::Printf(TEXT("\n%s: %s"), M.MeshIsPoor() ? TEXT("QUALITY, POOR") : TEXT("Quality"), *QualityText(M));
 				for (int32 i = 0; i < M.Regions.Num(); ++i)
 				{
 					const AerotelicFeaPreprocess::FRegionSummary& R = M.Regions[i];
@@ -1185,6 +1208,14 @@ namespace
 							? TEXT("the direct solver was chosen by name, and at this size it can take hours on one thread or run the machine out of memory (a 540,000-DOF fuselage exhausted 32 GB and the page file)")
 							: TEXT("the iterative solver (amgcl) will run instead, on every core; it can stop short on thin shells, which the force balance will report afterwards"),
 						TEXT("A faster, exact solve: coarsen the bodies' Mesh tab grids (the shells and the tetrahedra are built on them), or untick the second-order tetrahedra."))),
+					LOCTEXT("Title", "Structural (Kratos FEA)"));
+				if (Answer != EAppReturnType::Yes) return;
+			}
+			// The mesh's shape: past the sliver band the user decides too.
+			if (M.MeshIsPoor() && !bSmoke)
+			{
+				const EAppReturnType::Type Answer = AerotelicMessageBox(EAppMsgType::YesNo,
+					FText::FromString(FString::Printf(TEXT("The mesh is poor: %s.\n\nThe solve will run, but the stresses in those elements are not to be trusted and the iterative solver may stop short on them.\n\nSolve anyway?"), *QualityText(M))),
 					LOCTEXT("Title", "Structural (Kratos FEA)"));
 				if (Answer != EAppReturnType::Yes) return;
 			}
@@ -1593,6 +1624,8 @@ namespace
 		"Every body is analysed on ITS OWN GRID: the triangles its Mesh tab defines, at the viewport's tolerance rule, the same ones the viewport shows and mass properties weigh. The shells are those triangles; the solids and the homogenised cores are tetrahedra filled inside them (gmsh adds interior nodes only, never a point on the surface). So the Mesh tab is where the cost of a solve is set, and the Mesh tab's count is the shell count. Until 2026-11-05 a lattice-filled body was solved on the lattice's private copy of its surface, rebuilt at a quarter of the skin thickness for the hollowing -- eighteen times finer than the fuselage drawn in the viewport -- which is what made a homogenised solve run out of memory.\n\n"
 		"COST\n"
 		"Build Model counts the degrees of freedom the solver will see (the script's own rule: three per node, three more per node carrying shells, a mid-edge node on every edge of the 10-node tetrahedra) and says which solver the automatic choice takes: the direct solver (exact, one thread) up to 150,000 DOF, the iterative solver (amgcl, every core; the force balance checks it afterwards) beyond. Past that budget Solve asks first. Second order (10-node tetrahedra) applies to solids and to the full-resolution skin tetrahedra, where a tetrahedron in bending needs it; a homogenised core stays 4-node whatever the box says, since it carries a material card and the shells carry the bending. For a solve in about a minute on a desktop keep the DOF in the tens of thousands: a few thousand triangles per body.\n\n"
+		"QUALITY\n"
+		"Build Model also measures every tetrahedron's six dihedral angles and reports the extremes and how many tetrahedra have an angle under 10 degrees or over 160 -- the acceptance band of a linear element (Shewchuk, What Is a Good Linear Finite Element?, 2002: a small dihedral angle wrecks the stiffness matrix's conditioning, a large one the accuracy of the gradient, so of the stress). More than 2 percent outside the band is reported as POOR on the Mesh tab and in the status line, and Solve asks first. The tetrahedra conform to the body's own triangles, so a poor surface makes a poor volume: a fuselage's nose and tail, where the rings shrink to a point while keeping their full count of points, are the usual cause (needle triangles with angles of a degree or two); refine or coarsen the body's grid on its Mesh tab. The interior is seeded from the surface's own triangle sizes and grows to the lattice cell, which keeps the transition layer well shaped; the gmsh and Netgen optimisation passes are always on.\n\n"
 		"SET-UP\n"
 		"Build Model meshes the bodies (gmsh; a body's tetrahedra are kept while the dialog is open and its grid and the cell size are unchanged) and derives what the solver will be handed for the three tabs that follow, without solving. Solve does the same and then runs Kratos on a worker thread -- the window keeps painting, the status line shows the solver's stage and the elapsed time, and Cancel ends it -- writing the displacement and stress fields to the VTK file named and the peaks, margins and force balance into the Result group; with a number of natural frequencies set under Model it then solves the same model's eigenvalue problem and lists them too, with the mode shapes written to the VTK.\n\n"
 		"MESH\n"

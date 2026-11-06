@@ -144,6 +144,41 @@ namespace AerotelicFeaPreprocess
 			}
 		}
 
+		// The tetrahedra's dihedral angles: the six interior angles between
+		// the faces at each edge, from the outward face normals (face k
+		// opposite vertex k; turned outward against the fourth vertex).
+		{
+			Out.MinDihedral = Out.Tets > 0 ? 180.0 : 0.0;
+			Out.MaxDihedral = 0.0;
+			constexpr int32 kFaceOf[4][3] = { {1, 2, 3}, {0, 3, 2}, {0, 1, 3}, {0, 2, 1} };
+			constexpr int32 kPair[6][2] = { {0, 1}, {0, 2}, {0, 3}, {1, 2}, {1, 3}, {2, 3} };
+			for (int32 t = 0; t < Out.Tets; ++t)
+			{
+				const auto& T = Mesh.tets[t];
+				aerotelic::Vec3 N[4];
+				for (int32 k = 0; k < 4; ++k)
+				{
+					const aerotelic::Vec3& A = Mesh.nodes[T[kFaceOf[k][0]]];
+					aerotelic::Vec3 Nk = aerotelic::Cross(Mesh.nodes[T[kFaceOf[k][1]]] - A, Mesh.nodes[T[kFaceOf[k][2]]] - A);
+					if (aerotelic::Dot(Nk, Mesh.nodes[T[k]] - A) > 0.0) Nk = Nk * -1.0;
+					const double NormalLength = aerotelic::Length(Nk);
+					N[k] = NormalLength > 0.0 ? Nk / NormalLength : aerotelic::Vec3{};
+				}
+				double Lo = 180.0, Hi = 0.0;
+				for (const auto& P : kPair)
+				{
+					const double C = FMath::Clamp(-aerotelic::Dot(N[P[0]], N[P[1]]), -1.0, 1.0);
+					const double Deg = FMath::RadiansToDegrees(FMath::Acos(C));
+					Lo = FMath::Min(Lo, Deg);
+					Hi = FMath::Max(Hi, Deg);
+				}
+				Out.MinDihedral = FMath::Min(Out.MinDihedral, Lo);
+				Out.MaxDihedral = FMath::Max(Out.MaxDihedral, Hi);
+				if (Lo < 10.0) ++Out.TetsDihedralUnder10;
+				if (Hi > 160.0) ++Out.TetsDihedralOver160;
+			}
+		}
+
 		// The regions: counts, volumes, areas; the labels, kinds and the
 		// masses from the request. The script's densities are SI and its
 		// volumes metres, so the masses are kg here too.

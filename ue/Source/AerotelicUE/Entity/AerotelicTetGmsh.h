@@ -43,15 +43,23 @@ namespace AerotelicTetGmsh
 		// Whether the size grows from the surfaces' own triangle sizes
 		// (gmsh's Mesh.MeshSizeExtendFromBoundary; the default) or is
 		// CoreSize everywhere inside, graded to the surface only by the
-		// Delaunay insertion itself. Off for a homogenised core (2026-11-05):
-		// its tetrahedra carry a material card, not geometry, so a fine
-		// surface need not seed a fine interior. Measured on a 1,280-triangle
-		// unit icosphere at a 0.25 cell (tools/tet_gmsh.py, Netgen on):
-		// 5,531 tetrahedra on 1,275 nodes with, 2,939 on 857 without, the
-		// worst element 0.474 against 0.497 (mean 0.88 against 0.84); on a
-		// 320-triangle sphere the two are identical, the surface being
-		// already coarser than the cell.
+		// Delaunay insertion itself. Keep it ON for a solver's mesh: tried
+		// off for the homogenised core on 2026-11-05 (fewer tetrahedra, and
+		// on a sphere no worse), it put a fan of slivers along the whole
+		// skin of a fuselage whose 5 cm surface edges met a 60 cm cell --
+		// 12% of the body's tetrahedra with a dihedral angle under 10
+		// degrees against 2% seeded, the median smallest dihedral 26
+		// against 45 degrees -- for 33k tetrahedra against 83k. Quality
+		// beats count; the DOF budget is the Mesh tab's business.
 		bool bSizeFromBoundary = true;
+		// > 0: a graded size field instead (tools/tet_gmsh.py `grading`):
+		// the surface's median edge at the surface, growing at this rate
+		// per unit distance until it reaches CoreSize. Measured on the same
+		// fuselage: 0.25 gives 63k tetrahedra at 7.4% under 10 degrees
+		// (median 39), 0.5 gives 50k at 9.6% (median 33), 1.0 gives 43k at
+		// 11.6% (median 30) -- each a step down from seeded, so it is an
+		// option, not the default.
+		double Grading = 0.0;
 		// Pockets of the offset smaller than this are filled solid rather
 		// than meshed as core: a remesh leaves slivers, and gmsh refuses a
 		// whole body over one bad shell.
@@ -84,6 +92,13 @@ namespace AerotelicTetGmsh
 		// 0 is flat, negative is inverted.
 		double MinQuality = 0.0, MeanQuality = 0.0;
 		int32 PoorQuality = 0;   // under 0.1
+		// The dihedral angles, degrees, and the tetrahedra outside the
+		// usual acceptance band for a linear element (Shewchuk 2002: a
+		// small dihedral wrecks the conditioning, a large one the
+		// gradient's accuracy). AerotelicFeaPreprocess computes the same
+		// over whatever mesh the solver is handed; these are gmsh's run.
+		double MinDihedral = 0.0, MaxDihedral = 0.0;
+		int32 TetsDihedralUnder10 = 0, TetsDihedralOver160 = 0;
 		int32 Flipped = 0;       // handed back the other way round, swapped here
 		int32 Degenerate = 0;    // zero volume even after that
 		double Seconds = 0.0;

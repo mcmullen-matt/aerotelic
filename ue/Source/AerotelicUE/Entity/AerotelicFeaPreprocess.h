@@ -73,6 +73,22 @@ namespace AerotelicFeaPreprocess
 		int64 Dofs = 0;
 		// Which solver "auto" would run at that size (the script's rule).
 		bool DirectSolverAuto() const { return Dofs <= AerotelicStructuralFea::kAutoDirectDofs; }
+		// ---- the tetrahedra's shape (2026-11-05), over whatever mesh the
+		// solver is handed: the extreme dihedral angles (degrees) and the
+		// tetrahedra outside the acceptance band of a linear element --
+		// a dihedral under 10 degrees (the stiffness matrix's conditioning,
+		// Shewchuk 2002) or over 160 (the gradient's, so the stress's,
+		// accuracy). The fraction outside the band against kPoorTetFraction
+		// is the dialog's verdict: shown at Build Model, asked about at
+		// Solve. Found on Center at 100 x 100 (tools in the diagnosis of
+		// 2026-11-05): the nose and tail pole fans of the fuselage grid
+		// give needle triangles no volume mesher can fix, and an interior
+		// not seeded by the surface added a fan of slivers along the skin.
+		double MinDihedral = 0.0, MaxDihedral = 0.0;
+		int32 TetsDihedralUnder10 = 0, TetsDihedralOver160 = 0;
+		static constexpr double kPoorTetFraction = 0.02;
+		double PoorTetFraction() const { return Tets > 0 ? static_cast<double>(TetsDihedralUnder10 + TetsDihedralOver160) / Tets : 0.0; }
+		bool MeshIsPoor() const { return Tets > 0 && PoorTetFraction() > kPoorTetFraction; }
 		TArray<FVector> FaceCentre;
 		TArray<FVector> FaceNormal;     // unit, outward
 		TArray<double> FaceArea;        // project units^2

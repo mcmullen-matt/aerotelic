@@ -775,9 +775,11 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 				G.Algorithm = 1;
 				G.bOptimize = true;
 				G.bOptimizeNetgen = true;
-				G.bSizeFromBoundary = false;
+				G.bSizeFromBoundary = true;
 				FString GmshError;
 				bMeshed = AerotelicTetGmsh::Run(G, S, GmshError);
+				Check(bMeshed && S.MinDihedral > 0.0 && S.MaxDihedral < 180.0 && S.MinDihedral < S.MaxDihedral,
+					FString::Printf(TEXT("fea (shells): gmsh reports the dihedral angles (%.2f to %.2f deg, %d under 10, %d over 160)"), S.MinDihedral, S.MaxDihedral, S.TetsDihedralUnder10, S.TetsDihedralOver160));
 				Check(bMeshed && !S.Mesh.tets.empty(), FString::Printf(TEXT("fea (shells): the body's own grid fills with tetrahedra at the cell size (%s)"), bMeshed ? *FString::Printf(TEXT("%d tetrahedra on %d nodes"), S.SkinTets + S.CoreTets, S.Nodes) : *GmshError));
 			}
 			if (bMeshed && !S.Mesh.tets.empty())
@@ -861,6 +863,15 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 						Check(Pre.SecondOrderTets == 0 && Pre.MidEdgeNodes == 0 && Pre.ShellNodes == static_cast<int32>(Outer.vertices.size()) && Pre.Dofs == R.Dofs && Pre.DirectSolverAuto(),
 							FString::Printf(TEXT("fea (shells, pre-processor): the DOF estimate is the solver's, a 4-node core under 6-dof shell nodes, within the direct solver's budget (%lld vs %d)"), Pre.Dofs, R.Dofs));
 						Check(Pre.Regions.Num() == 1 && !Pre.Regions[0].bSecondOrder, "fea (shells, pre-processor): the region is reported 4-node");
+						// The pre-processor's dihedral statistics are gmsh's own for
+						// the same tetrahedra (two implementations, one answer), and
+						// a sphere's own grid filled seeded from its surface is a
+						// good mesh by the dialog's band.
+						Check(FMath::IsNearlyEqual(Pre.MinDihedral, S.MinDihedral, 1e-6) && FMath::IsNearlyEqual(Pre.MaxDihedral, S.MaxDihedral, 1e-6)
+							&& Pre.TetsDihedralUnder10 == S.TetsDihedralUnder10 && Pre.TetsDihedralOver160 == S.TetsDihedralOver160,
+							FString::Printf(TEXT("fea (shells, pre-processor): the dihedral statistics are gmsh's (%.3f..%.3f vs %.3f..%.3f deg; %d / %d vs %d / %d)"),
+								Pre.MinDihedral, Pre.MaxDihedral, S.MinDihedral, S.MaxDihedral, Pre.TetsDihedralUnder10, Pre.TetsDihedralOver160, S.TetsDihedralUnder10, S.TetsDihedralOver160));
+						Check(!Pre.MeshIsPoor() && Pre.MinDihedral > 5.0, FString::Printf(TEXT("fea (shells, pre-processor): the seeded fill of the sphere is within the sliver band (%.2f%% outside, smallest dihedral %.2f deg)"), 100.0 * Pre.PoorTetFraction(), Pre.MinDihedral));
 						Check(Pre.bMassEstimated && FMath::IsNearlyEqual(Pre.Mass, R.Mass, 0.05 * R.Mass), FString::Printf(TEXT("fea (shells, pre-processor): the estimated mass is near the script's (%.6g vs %.6g)"), Pre.Mass, R.Mass));
 						Check(Pre.Regions.Num() == 1 && Pre.Regions[0].Label == TEXT("sphere") && Pre.Regions[0].Kind.Contains(TEXT("homogenised")), "fea (shells, pre-processor): one region, the body, shells over a homogenised core");
 					}
@@ -981,6 +992,8 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 							FString PreCostError;
 							Check(AerotelicFeaPreprocess::Build(Request, PreCost, PreCostError) && PreCost.ShellNodes == 0 && PreCost.SecondOrderTets == PreCost.Tets && PreCost.Dofs == R.Dofs,
 								FString::Printf(TEXT("fea (solid, pre-processor): the DOF estimate counts the mid-edge nodes of every tetrahedron (%lld vs %d)"), PreCost.Dofs, R.Dofs));
+							Check(PreCost.TetsDihedralUnder10 == TR.TetsDihedralUnder10 && PreCost.TetsDihedralOver160 == TR.TetsDihedralOver160 && FMath::IsNearlyEqual(PreCost.MinDihedral, TR.MinDihedral, 1e-6),
+								FString::Printf(TEXT("fea (solid, pre-processor): the dihedral statistics are gmsh's (%d / %d vs %d / %d; min %.3f vs %.3f)"), PreCost.TetsDihedralUnder10, PreCost.TetsDihedralOver160, TR.TetsDihedralUnder10, TR.TetsDihedralOver160, PreCost.MinDihedral, TR.MinDihedral));
 						}
 						Check(FMath::IsNearlyEqual(R.Mass, ExpectedMass, 1e-6 * ExpectedMass), FString::Printf(TEXT("fea (solid): the mass is rho V (%.6g vs %.6g)"), R.Mass, ExpectedMass));
 						const double Weight = ExpectedMass * 9.80665;

@@ -2400,6 +2400,55 @@ What changed:
   itself), asks for 10 nodes and gets a 4-node core, and checks the
   pre-processor's DOF, order and budget verdict against the solver's.
 
+### The interior grid's quality (2026-11-05, late)
+
+Matt ran Center at a 100 x 100 unrefined grid with the default lattice
+(cell = a tenth of the length, 0.6 m) and found the interior grid ugly.
+Reproduced headlessly (a throwaway extractor against the core library and
+`tools/tet_gmsh.py`, measuring every tetrahedron's dihedral angles, face
+angles, edge and radius ratios; the tools are in `%TEMP%\aerotelic_diag`):
+not compliant, for two separate reasons.
+
+1. **The surface at the nose and tail.** The nose is one apex vertex with
+   a full 100-point ring 26 mm behind it (fan wedges of 3.6 degrees); the
+   tail's last ring is a 3 x 6 cm slit carrying 100 points 1 mm apart with
+   the previous ring 6 cm away (every tail triangle under 10 degrees,
+   median 2.3). 11.8% of the surface's triangles have an angle under 10
+   degrees, and the tetrahedra that conform to them are needles whatever
+   the mesher does: within 0.25 m of either end two thirds of the
+   tetrahedra have a dihedral under 10 degrees. Fewer points round the
+   section does not help (40 x 40 is as bad); refinement does not reach
+   the poles. NOT FIXED here: the fuselage tessellation needs a polar cap
+   that collapses the ring count toward an apex, and the tail slit closed
+   to an apex or a single cap.
+2. **The interior sizing of the morning**: not seeding the interior from
+   the surface (`bSizeFromBoundary` off) halved the tetrahedra but, with
+   5 cm surface edges meeting a 60 cm cell, lined the whole skin with
+   slivers: 12% of the body's tetrahedra under 10 degrees against 2%
+   seeded, median smallest dihedral 26 against 45 degrees, edge ratio
+   median 6.9 against 1.7. A graded size field (`tet_gmsh.py grading`,
+   `FRequest::Grading`: the surface's median edge growing at a rate per
+   unit distance to the cell; gmsh Distance + Threshold fields) was
+   measured at 0.25 / 0.5 / 1 / 2: 63k / 50k / 43k / 35k tetrahedra at
+   7.4 / 9.6 / 11.6 / 15.2% under 10 degrees -- every step a step down
+   from seeded (83k at 5.7%). So **seeded is the default again** and the
+   graded field stays an option. Without Netgen a quarter of the
+   tetrahedra are under 10 degrees; it stays on.
+
+Done for it: `tet_gmsh.py` reports `min_dihedral`, `max_dihedral`,
+`tets_dihedral_under_10`, `tets_dihedral_over_160` (and `grading`);
+`AerotelicTetGmsh::FResult` carries them; `AerotelicFeaPreprocess::FModel`
+computes the same over whatever mesh the solver is handed (so the
+full-resolution lattice tetrahedra are judged too), with
+`kPoorTetFraction` = 2% outside the 10 to 160 degree band as the verdict
+(`MeshIsPoor`); the Mesh caption and Build Model's status line show the
+extremes, the counts and the verdict, and Solve asks before running a
+poor mesh. The document commandlet checks the pre-processor's statistics
+equal gmsh's on the same tetrahedra (two implementations, one answer) for
+the homogenised sphere and the solid sphere, and that the seeded fill of
+the sphere is within the band. The Help tab has a QUALITY section citing
+Shewchuk 2002.
+
 ## How the standalone build is put together
 
 * `Source/AerotelicUE.Target.cs` -- the game target that becomes `AerotelicUE.exe`.
