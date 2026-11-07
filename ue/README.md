@@ -1811,7 +1811,15 @@ no nodes falls back and is flagged).
 **A material is a property of the stuff, not of the units.** The
 presets (`core/include/aerotelic/materials.hpp`: 2024-T3, 7075-T6,
 6061-T6, Ti-6Al-4V, 4130, 17-4PH, AZ31B, quasi-isotropic CFRP and GFRP,
-spruce, a PMI foam) and every custom material are SI -- kg/m^3, Pa --
+spruce, a PMI foam; since 2026-11-06 the 3D-printing polymers too --
+seven photopolymer resins of SLA / LCD printers (Formlabs Grey, Clear,
+Tough 2000, Durable, High Temp, Rigid 10K; Siraya Tech Blu) at their
+data sheets' post-cured figures, and ten FDM thermoplastics (PLA, PETG,
+ABS, ASA, polycarbonate, nylon, two carbon-filled nylons, ULTEM 9085,
+PEEK) at their data sheets' as-printed figures along the layers, with
+the caveat in `materials.cpp` that a printed part is weaker across its
+layers and that the allowable is the sheet's yield or tensile strength)
+and every custom material are SI -- kg/m^3, Pa --
 whatever the project is drawn in; the Material Properties dialog shows
 them in the project's units and converts back on edit, and the analysis
 bridges hand them on as they are. Picking a preset copies its figures in

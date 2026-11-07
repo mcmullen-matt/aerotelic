@@ -251,6 +251,22 @@ void CheckModeNames() {
 	const Material* al = FindMaterialPreset("Aluminium 2024-T3");
 	Check(al != nullptr && al->IsStructural() && al->density == 2780.0 && al->youngs_modulus == 73.1e9, "2024-T3 is a preset with handbook figures");
 	Check(FindMaterialPreset("Unobtainium") == nullptr, "an unknown preset is null");
+	{
+		// Every preset is a structural material with a unique name, and the
+		// 3D-printing polymers are among them.
+		bool all_structural = true, unique = true;
+		const auto& presets = MaterialPresets();
+		for (size_t i = 0; i < presets.size(); ++i) {
+			all_structural = all_structural && presets[i].IsStructural() && presets[i].allowable_stress > 0.0;
+			for (size_t j = 0; j < i; ++j) unique = unique && presets[i].name != presets[j].name;
+		}
+		Check(all_structural, "every preset has density, modulus, a Poisson's ratio below 0.5 and an allowable");
+		Check(unique, "preset names are unique");
+		const Material* resin = FindMaterialPreset("SLA resin, standard (Formlabs Grey V4)");
+		const Material* pla = FindMaterialPreset("FDM PLA (Prusament)");
+		Check(resin != nullptr && resin->youngs_modulus == 2.8e9 && resin->allowable_stress == 65.0e6, "the standard SLA resin preset carries Formlabs' post-cured figures");
+		Check(pla != nullptr && pla->density == 1240.0 && pla->youngs_modulus == 2.3e9, "the FDM PLA preset carries Prusament's as-printed figures");
+	}
 	Material edited = *al;
 	Check(IsMaterialPreset(edited), "a copy of a preset is still the preset");
 	edited.youngs_modulus *= 1.1;
