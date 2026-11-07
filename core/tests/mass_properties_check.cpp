@@ -275,6 +275,11 @@ void CheckModeNames() {
 		for (const Material& m : presets) sourced = sourced && !m.category.empty() && !m.source.empty();
 		Check(sourced, "every preset has a category and a source");
 		Check(al->category == "Metal" && resin->category == "SLA resin" && pla->category == "FDM thermoplastic", "the preset families");
+		// The hobbyist's woods: balsa in its grades and at least five woods.
+		int woods = 0;
+		for (const Material& m : presets) woods += m.category == "Wood" ? 1 : 0;
+		const Material* balsa = FindMaterialPreset("Balsa, medium (160 kg/m^3)");
+		Check(woods >= 5 && balsa != nullptr && balsa->density == 160.0 && balsa->category == "Wood", "at least five woods, balsa among them");
 	}
 	{
 		// The user's library file: a round trip through YAML keeps every

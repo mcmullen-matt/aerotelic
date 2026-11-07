@@ -2557,7 +2557,16 @@ three tabs:
   column header sorts the table (`SHeaderRow` sort mode, ascending then
   descending; ties by name), the figures compared as numbers and the
   text case-insensitively. Hover a row for its full source; double-click
-  one to take it to the Custom tab as a starting point.
+  one to take it to the Custom tab as a starting point. The woods the
+  hobby trade builds from were added the same day: balsa in three grades
+  (contest-light 100, medium 160, hard 240 kg/m^3 -- the Wood Handbook's
+  balsa figures scaled in proportion to density after Borrega & Gibson
+  2015), American basswood, Eastern white pine, yellow-poplar, Coast
+  Douglas-fir (Wood Handbook Table 5-3, 12% moisture, nu_LR from Table
+  5-1, allowable = compression parallel to grain) and two three-ply
+  plywoods -- aircraft birch and poplar lite-ply -- at two-thirds of
+  the solid wood along the face grain (ANC-18), beside the spruce that
+  was already there.
 * **Custom** -- the user's materials on the left; on the right a "Start
   from" list that copies any material's figures into the fields, the
   name, the category, the four figures in the project's units, a

@@ -52,8 +52,39 @@ const std::vector<Material>& MaterialPresets() {
 		{"GFRP quasi-isotropic", 1900.0, 20.0e9, 0.28, 250.0e6, kComposite,
 			"Representative quasi-isotropic E-glass/epoxy laminate (~55% fibre volume), in-plane; allowable = a representative laminate tensile strength"},
 
+		// Woods, along the grain, at 12% moisture: the USDA Wood Handbook's
+		// clear-wood figures (Table 5-3 domestic, 5-5 imported), density from
+		// its specific gravity (oven-dry weight, volume at 12%: SG x 1120),
+		// Poisson's ratio nu_LR from its Table 5-1 where the species is
+		// listed. The allowable is the compression strength parallel to the
+		// grain -- the lower of the two and what a spar cap buckles at. Balsa
+		// comes in grades the hobby trade sells by weight (contest-light,
+		// medium, hard); its modulus and strength go roughly as its density
+		// (Borrega & Gibson 2015), so the lighter and heavier grades are the
+		// Handbook's 180 kg/m^3 figures scaled by density. The two plywoods
+		// are the solid wood's figures at two-thirds, the cross ply of a
+		// three-ply sheet adding little along the face grain (ANC-18's
+		// approach); their nu is an in-plane plywood figure, approximate.
 		{"Spruce (along grain)", 450.0, 10.0e9, 0.37, 40.0e6, kWood,
-			"USDA Wood Handbook (FPL-GTR-190), Sitka spruce at 12% moisture, parallel to grain; allowable ~ compression strength parallel to grain"},
+			"USDA Wood Handbook (FPL-GTR-190) Table 5-3, Sitka spruce at 12% moisture, parallel to grain; nu_LR 0.372 (Table 5-1); allowable ~ compression strength parallel to grain"},
+		{"Balsa, light (100 kg/m^3)", 100.0, 1.9e9, 0.23, 8.3e6, kWood,
+			"USDA Wood Handbook Table 5-5 balsa (SG 0.16, 12% moisture: E 3.4 GPa, compression parallel 14.9 MPa) scaled to a 6 lb/ft^3 contest-light grade in proportion to density after Borrega & Gibson (2015); nu_LR 0.229 (Table 5-1); allowable = compression parallel to grain"},
+		{"Balsa, medium (160 kg/m^3)", 160.0, 3.0e9, 0.23, 13.0e6, kWood,
+			"USDA Wood Handbook Table 5-5 balsa (SG 0.16, 12% moisture: E 3.4 GPa, compression parallel 14.9 MPa) scaled to a 10 lb/ft^3 medium grade in proportion to density after Borrega & Gibson (2015); nu_LR 0.229 (Table 5-1); allowable = compression parallel to grain"},
+		{"Balsa, hard (240 kg/m^3)", 240.0, 4.5e9, 0.23, 20.0e6, kWood,
+			"USDA Wood Handbook Table 5-5 balsa (SG 0.16, 12% moisture: E 3.4 GPa, compression parallel 14.9 MPa) scaled to a 15 lb/ft^3 hard grade in proportion to density after Borrega & Gibson (2015); nu_LR 0.229 (Table 5-1); allowable = compression parallel to grain"},
+		{"Basswood, American (along grain)", 415.0, 10.1e9, 0.36, 32.6e6, kWood,
+			"USDA Wood Handbook Table 5-3, American basswood at 12% moisture (SG 0.37): E 10.1 GPa, MOR 60 MPa; nu_LR 0.364 (Table 5-1); allowable = compression parallel to grain 32.6 MPa"},
+		{"Pine, Eastern white (along grain)", 390.0, 8.5e9, 0.33, 33.1e6, kWood,
+			"USDA Wood Handbook Table 5-3, Eastern white pine at 12% moisture (SG 0.35): E 8.5 GPa, MOR 59 MPa; nu_LR 0.33 as the western white pine of Table 5-1; allowable = compression parallel to grain 33.1 MPa"},
+		{"Yellow-poplar (along grain)", 470.0, 10.9e9, 0.32, 38.2e6, kWood,
+			"USDA Wood Handbook Table 5-3, yellow-poplar at 12% moisture (SG 0.42): E 10.9 GPa, MOR 70 MPa; nu_LR 0.318 (Table 5-1); allowable = compression parallel to grain 38.2 MPa"},
+		{"Douglas-fir, Coast (along grain)", 540.0, 13.4e9, 0.29, 49.9e6, kWood,
+			"USDA Wood Handbook Table 5-3, Douglas-fir (Coast) at 12% moisture (SG 0.48): E 13.4 GPa, MOR 85 MPa; nu_LR 0.292 (Table 5-1); allowable = compression parallel to grain 49.9 MPa"},
+		{"Birch plywood, aircraft 3-ply (face grain)", 690.0, 9.3e9, 0.20, 37.5e6, kWood,
+			"Yellow birch of USDA Wood Handbook Table 5-3 (12% moisture, SG 0.62: E 13.9 GPa, compression parallel 56.3 MPa) at two-thirds for a three-ply sheet of equal veneers along the face grain (ANC-18 Design of Wood Aircraft Structures); nu 0.20 in-plane, approximate; allowable = two-thirds of the compression parallel to grain"},
+		{"Poplar plywood, lite-ply 3-ply (face grain)", 470.0, 7.3e9, 0.20, 25.5e6, kWood,
+			"Yellow-poplar of USDA Wood Handbook Table 5-3 (12% moisture, SG 0.42: E 10.9 GPa, compression parallel 38.2 MPa) at two-thirds for a three-ply sheet of equal veneers along the face grain (ANC-18); nu 0.20 in-plane, approximate; allowable = two-thirds of the compression parallel to grain. Hobby lite-ply is often a lighter poplar: weigh a sheet"},
 		{"Foam, PMI 71 kg/m^3", 71.0, 0.105e9, 0.30, 1.9e6, kFoam,
 			"Evonik ROHACELL 71 IG-F data sheet (nominal 75 kg/m^3 grade): E 105 MPa; allowable between the compressive (1.7 MPa) and tensile (2.8 MPa) strengths"},
 
