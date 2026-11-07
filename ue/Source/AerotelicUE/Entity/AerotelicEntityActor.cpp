@@ -253,7 +253,7 @@ void AAerotelicEntityActor::OnRootTransformed(USceneComponent*, EUpdateTransform
 	{
 		RefreshMirror();
 	}
-	// The placed size may have changed (Geometry > Scale).
+	// The placed size may have changed (Model > Scale).
 	ApplyEdgeOffset();
 	OnGeometryChanged.Broadcast(this);
 }
@@ -1275,7 +1275,7 @@ void AAerotelicEntityActor::ApplyPlacement(const aerotelic::Placement& InPlaceme
 	Placement = InPlacement;
 	aerotelic::SyncPlacementRotation(Placement);
 
-	// The model scale (Geometry > Scale): the replica sits that much
+	// The model scale (Model > Scale): the replica sits that much
 	// closer to the origin, at that fraction of the size. The model itself
 	// is untouched -- it is the full-scale aircraft, drawn smaller.
 	const double Scale = GetModelScale();

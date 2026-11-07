@@ -294,7 +294,7 @@ namespace
 "then the force and the moment, then the reference frame. There is one\n"
 "such file per body as well. The loads are dimensional and in SI: the\n"
 "case is written in metres, kilograms and seconds, converted from the\n"
-"project's units (Geometry > Units), so forces come back in newtons and\n"
+"project's units (Model > Units), so forces come back in newtons and\n"
 "moments in newton-metres whatever the project is drawn in.\n"
 "\n"
 "Expect the first steps to be dominated by the starting transient, and\n"
@@ -462,7 +462,7 @@ void ShowAerotelicDustDialog(TFunction<void(const FText&)> Status)
 				try
 				{
 					// The model is the full-scale propeller; the deflection is
-					// asked for on the replica (Geometry > Scale).
+					// asked for on the replica (Model > Scale).
 					if (Entity->GetModel() != nullptr) Local = Entity->GetModel()->BuildMeshes(Deflection / AAerotelicEntityActor::GetModelScale());
 				}
 				catch (const std::exception& E)
@@ -834,7 +834,7 @@ void ShowAerotelicDustDialog(TFunction<void(const FText&)> Status)
 				+ SVerticalBox::Slot().AutoHeight().Padding(0, 4, 0, 0)
 				[
 					MakeInfoLabel(LOCTEXT("FlowHint",
-						"The flow runs along +x, tilted towards +z by the angle of attack and towards +y by the sideslip. Viscosity only matters with diffusion on. Everything here is in the project's units (Geometry > Units); the case is written in SI."))
+						"The flow runs along +x, tilted towards +z by the angle of attack and towards +y by the sideslip. Viscosity only matters with diffusion on. Everything here is in the project's units (Model > Units); the case is written in SI."))
 				])
 		]
 		+ SVerticalBox::Slot().AutoHeight()

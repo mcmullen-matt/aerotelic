@@ -195,7 +195,7 @@ FString FormatAerotelicMassReport(const FAerotelicMassReport& Report, const aero
 	const int32 Width = kLabelWidth + 10 * kCellWidth;
 	FString Out;
 	Out += TEXT("MASS PROPERTIES\n");
-	Out += FString::Printf(TEXT("Project units: %s (Geometry > Units). Mass in %s, lengths in %s, inertia in %s. %s\n"),
+	Out += FString::Printf(TEXT("Project units: %s (Model > Units). Mass in %s, lengths in %s, inertia in %s. %s\n"),
 		UTF8_TO_TCHAR(Units.Describe().c_str()), UTF8_TO_TCHAR(Units.MassName()), UTF8_TO_TCHAR(Units.LengthName()),
 		UTF8_TO_TCHAR(Units.InertiaName().c_str()),
 		Report.Tolerance > 0.0

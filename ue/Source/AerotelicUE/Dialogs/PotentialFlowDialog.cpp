@@ -309,7 +309,7 @@ void ShowAerotelicPotentialFlowDialog(TFunction<void(const FText&)> Status)
 					+ SVerticalBox::Slot().AutoHeight().Padding(0, 4, 0, 0)
 					[
 						MakeInfoLabel(LOCTEXT("FlowHint",
-							"The flow runs along +x, tilted towards +z by the angle of attack. There is no wake, so there is no circulation and no lift: the pressure distribution is real, the lift is zero by construction. Density and the speed of sound only scale the pressures into forces and set the Mach number for the compressible model. All of this is in the project's units (Geometry > Units); the solver is given SI."))
+							"The flow runs along +x, tilted towards +z by the angle of attack. There is no wake, so there is no circulation and no lift: the pressure distribution is real, the lift is zero by construction. Density and the speed of sound only scale the pressures into forces and set the Mach number for the compressible model. All of this is in the project's units (Model > Units); the solver is given SI."))
 					])
 			]
 			+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 8)

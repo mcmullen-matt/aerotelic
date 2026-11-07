@@ -16,6 +16,7 @@
 #include "Dialogs/PotentialFlowDialog.h"
 #include "Dialogs/HighOrderPanelDialog.h"
 #include "Dialogs/MassPropertiesDialog.h"
+#include "Dialogs/MaterialLibraryDialog.h"
 #include "Dialogs/StructuralFeaDialog.h"
 #include "Dialogs/DustDialog.h"
 #include "Dialogs/ThemeDialog.h"
@@ -440,13 +441,14 @@ void SAerotelicMainShell::BindCommands()
 		}));
 	Commands->MapAction(C.ColorTheme, FExecuteAction::CreateLambda([]() { ShowAerotelicThemeDialog(); }));
 
-	// Geometry
+	// Model
 	Commands->MapAction(C.Airfoils, FExecuteAction::CreateLambda([]() { OpenAerotelicAirfoilLibrary(); }));
 	Commands->MapAction(C.BooleanOperation, FExecuteAction::CreateLambda([this]()
 	{
 		const FText Result = ShowAerotelicBooleanOperationDialog();
 		if (!Result.IsEmpty()) StatusText = Result;
 	}));
+	Commands->MapAction(C.MaterialLibrary, FExecuteAction::CreateLambda([this]() { ShowAerotelicMaterialLibraryDialog([this](const FText& T) { SetStatus(T); }); }));
 
 	// Lattice exports (Generate Lattice and Regenerate are on the Scene
 	// tree's rows: a lattice is made within a body one picks)
@@ -545,7 +547,7 @@ TSharedRef<SWidget> SAerotelicMainShell::BuildMenuBar()
 	FMenuBarBuilder Bar(Commands);
 	Bar.AddPullDownMenu(LOCTEXT("FileMenu", "File"), LOCTEXT("FileMenuTip", "Project files"), PullDown(&SAerotelicMainShell::FillFileMenu));
 	Bar.AddPullDownMenu(LOCTEXT("EditMenu", "Edit"), LOCTEXT("EditMenuTip", "Preferences"), PullDown(&SAerotelicMainShell::FillEditMenu));
-	Bar.AddPullDownMenu(LOCTEXT("GeometryMenu", "Geometry"), LOCTEXT("GeometryMenuTip", "Airfoils and boolean operations"), PullDown(&SAerotelicMainShell::FillGeometryMenu));
+	Bar.AddPullDownMenu(LOCTEXT("ModelMenu", "Model"), LOCTEXT("ModelMenuTip", "The model: airfoils, boolean operations, the materials, the project's units and the model scale"), PullDown(&SAerotelicMainShell::FillModelMenu));
 	Bar.AddPullDownMenu(LOCTEXT("AnalysisMenu", "Analysis"), LOCTEXT("AnalysisMenuTip", "Flow analysis of the scene's geometry"), PullDown(&SAerotelicMainShell::FillAnalysisMenu));
 	Bar.AddPullDownMenu(LOCTEXT("ViewMenu", "View"), LOCTEXT("ViewMenuTip", "3D view"), PullDown(&SAerotelicMainShell::FillViewMenu));
 	Bar.AddPullDownMenu(LOCTEXT("HelpMenu", "Help"), LOCTEXT("HelpMenuTip", "Help"), PullDown(&SAerotelicMainShell::FillHelpMenu));
@@ -589,14 +591,19 @@ void SAerotelicMainShell::FillEditMenu(FMenuBuilder& Menu)
 		}));
 }
 
-void SAerotelicMainShell::FillGeometryMenu(FMenuBuilder& Menu)
+void SAerotelicMainShell::FillModelMenu(FMenuBuilder& Menu)
 {
 	const FAerotelicCommands& C = FAerotelicCommands::Get();
 	Menu.AddMenuEntry(C.Airfoils);
 	Menu.AddMenuSeparator();
 	Menu.AddMenuEntry(C.BooleanOperation);
 	Menu.AddMenuSeparator();
-	// Geometry > Units: length and mass chosen separately, time fixed. A
+	// Model > Material Properties: the library (presets and the user's
+	// own) as a sortable table, a tab to define materials, and the
+	// citations. A body is given one from its Scene tree row.
+	Menu.AddMenuEntry(C.MaterialLibrary);
+	Menu.AddMenuSeparator();
+	// Model > Units: length and mass chosen separately, time fixed. A
 	// radio per unit, reading the document each time the menu opens.
 	Menu.AddSubMenu(LOCTEXT("UnitsMenu", "Units"),
 		LOCTEXT("UnitsMenuTip", "What the project's lengths and masses mean. Changing a unit converts nothing: every number already typed keeps its value and means the new unit from then on. Analysis codes are handed SI."),
@@ -652,7 +659,7 @@ void SAerotelicMainShell::FillGeometryMenu(FMenuBuilder& Menu)
 				FSlateIcon(), FUIAction(FExecuteAction(), FCanExecuteAction::CreateLambda([]() { return false; })));
 			Sub.EndSection();
 		}));
-	// Geometry > Scale: the model scale the vehicle is built at. The
+	// Model > Scale: the model scale the vehicle is built at. The
 	// parameterisations are always the full-scale aircraft; a replica is
 	// built from them at this fraction of the size. A radio per common
 	// model scale, reading the document each time the menu opens, and a
@@ -1017,7 +1024,7 @@ TSharedRef<SWidget> SAerotelicMainShell::BuildStatusBar()
 			[
 				SNew(STextBlock)
 				.Text(this, &SAerotelicMainShell::GetUnitsText)
-				.ToolTipText(LOCTEXT("UnitsReadoutTip", "The project's units: length, mass, time, stress (Geometry > Units); and the model scale when the vehicle is not built full size (Geometry > Scale)"))
+				.ToolTipText(LOCTEXT("UnitsReadoutTip", "The project's units: length, mass, time, stress (Model > Units); and the model scale when the vehicle is not built full size (Model > Scale)"))
 				.ColorAndOpacity_Static(&MutedText)
 			]
 			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)

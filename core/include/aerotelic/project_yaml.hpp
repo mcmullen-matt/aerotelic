@@ -177,7 +177,7 @@ struct ProjectFile {
 	// What every length and mass in the file means (units.hpp). Always
 	// written; absent on load means metres and kilograms.
 	UnitSystem units;
-	// The model scale (Geometry > Scale): the size the vehicle is BUILT at
+	// The model scale (Model > Scale): the size the vehicle is BUILT at
 	// as a fraction of the size it is DRAWN at. The parameterisations and
 	// placements below are always the full-scale aircraft; a replica is this
 	// times smaller, every solid scaled about the origin and every placement

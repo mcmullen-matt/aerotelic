@@ -18,8 +18,10 @@ enum class EAerotelicViewPreset : uint8;
 // The application frame -- the Slate port of main_window.py's QMainWindow
 // layout, laid over the game viewport:
 //
-//   * Menu bar: File / Edit / Geometry / View / Help, same items and
+//   * Menu bar: File / Edit / Model / Analysis / View / Help, same items and
 //     shortcuts as the Qt version (items without a backend yet are disabled).
+//     Model was called Geometry until 2026-11-07; it holds the airfoils,
+//     the booleans, the material library, the units and the model scale.
 //   * Horizontal "Panels" toolbar under it: the add-entity launchers,
 //     grouped WING / FUSELAGE / NACELLE / PROPELLER / PRIMITIVE.
 //   * Vertical "Controls" toolbar on the left edge: Style / Orientation /
@@ -78,7 +80,7 @@ private:
 	TSharedRef<SWidget> BuildMenuBar();
 	void FillFileMenu(FMenuBuilder& Menu);
 	void FillEditMenu(FMenuBuilder& Menu);
-	void FillGeometryMenu(FMenuBuilder& Menu);
+	void FillModelMenu(FMenuBuilder& Menu);
 	void FillAnalysisMenu(FMenuBuilder& Menu);
 	void FillViewMenu(FMenuBuilder& Menu);
 	void FillHelpMenu(FMenuBuilder& Menu);
@@ -124,12 +126,12 @@ private:
 
 	FText GetStatusText() const { return StatusText; }
 	FText GetProjectPathText() const;
-	// "m, kg, s" -- the status bar's readout of Geometry > Units.
+	// "m, kg, s" -- the status bar's readout of Model > Units.
 	FText GetUnitsText() const;
-	// Geometry > Units: sets the project's units, converting nothing, and
+	// Model > Units: sets the project's units, converting nothing, and
 	// says so once if there is anything in the scene to be re-read.
 	void SetUnits(const aerotelic::UnitSystem& Units);
-	// Geometry > Scale: the model scale the vehicle is built at
+	// Model > Scale: the model scale the vehicle is built at
 	// (UAerotelicDocumentSubsystem::SetModelScale), a preset or a typed
 	// number; the status bar says which, and the view reframes.
 	void SetModelScale(double Scale);

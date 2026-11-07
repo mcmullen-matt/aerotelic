@@ -337,7 +337,7 @@ void CheckPlacementRotationSync() {
 	TopoDS_Shape placed = Place(box.BuildSolid(), {0.0, 0.0, 0.0}, {0.0, 0.0, 0.0}, 90.0);
 	CheckClose(Volume(placed), 8.0, 1e-9, "Place with a zero-length axis is a no-op, not a gp_Dir throw");
 
-	// The model scale (Geometry > Scale): the solid a quarter the size
+	// The model scale (Model > Scale): the solid a quarter the size
 	// about the origin, and the placement a quarter as far -- the full-scale
 	// translation is what is handed in.
 	TopoDS_Shape replica = Place(box.BuildSolid(), {8.0, 0.0, 0.0}, {0.0, 0.0, 1.0}, 90.0, 0.25);

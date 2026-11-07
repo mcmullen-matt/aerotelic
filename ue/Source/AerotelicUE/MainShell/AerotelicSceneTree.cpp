@@ -497,7 +497,7 @@ TSharedPtr<SWidget> SAerotelicSceneTree::MakeEntityMenu(FItem Item)
 	if (!bDerived)
 	{
 		Menu.AddMenuEntry(LOCTEXT("MaterialProperties", "Material Properties"),
-			LOCTEXT("MaterialPropertiesTip", "What this parameterisation is made of -- a material (density, Young's modulus, Poisson's ratio, allowable stress) from a preset or typed, with the skin thickness of every body it produces -- or an asserted total mass. Analysis > Mass Properties weighs by it, Analysis > Structural analyses with it, a lattice hollows by its skin thickness; boolean results and lattices built on it inherit it."),
+			LOCTEXT("MaterialPropertiesTip", "What this parameterisation is made of: a material picked from the library (the presets and your own, defined under Model > Material Properties), with the skin thickness of every body it produces -- or an asserted total mass. Shows the material's figures and the entity's enclosed volume, surface area and weight. Analysis > Mass Properties weighs by it, Analysis > Structural analyses with it, a lattice hollows by its skin thickness; boolean results and lattices built on it inherit it."),
 			FSlateIcon(),
 			FUIAction(FExecuteAction::CreateLambda([Entity]() { if (Entity.IsValid()) OpenAerotelicMaterialDialog(Entity.Get()); })));
 	}

@@ -286,7 +286,7 @@ namespace
 		// does not capture a support meant for another.
 		int32 Body = 0;
 		// Typed FULL-SCALE, as the parameterisations are; divided by the model
-		// scale (Geometry > Scale) on the way into the request, whose mesh is
+		// scale (Model > Scale) on the way into the request, whose mesh is
 		// the replica's.
 		double Value = 0.0;
 		double Tolerance = 0.0;
@@ -371,7 +371,7 @@ namespace
 		TSharedPtr<SAerotelicBodyPicker> Picker;
 		TArray<TSharedPtr<FString>> ModelOptions, SolverOptions, ShellOptions, AxisOptions, PlaneOptions, BodyOptions;
 		int32 ModelIndex = 0, SolverIndex = 0, ShellIndex = 0;
-		// The model scale (Geometry > Scale) as it stands: the meshes are the
+		// The model scale (Model > Scale) as it stands: the meshes are the
 		// replica's, the user types full-scale coordinates. Read live, so a
 		// scale changed while the dialog is open is honoured on the next
 		// Build or Apply.
@@ -565,7 +565,7 @@ namespace
 		void FillInputs(AerotelicStructuralFea::FRequest& Request) const
 		{
 			// The rows are typed full-scale; the mesh is the replica's
-			// (Geometry > Scale), so every length goes in times the scale.
+			// (Model > Scale), so every length goes in times the scale.
 			const double Scale = ModelScale();
 			Request.Supports.Reset();
 			for (const TSharedPtr<FSupportRow>& R : SupportRows)
@@ -1303,7 +1303,7 @@ namespace
 				Text += TEXT("\nArrow heads sit at the point of application; forces are newtons whatever the project's units. Edit the loads on the left and Apply.");
 				if (IsReplica())
 				{
-					Text += FString::Printf(TEXT("\nCoordinates here and on the left are the FULL-SCALE aircraft's; the model is built at %s of that size (Geometry > Scale) and the picture shows the replica."), *ScaleText());
+					Text += FString::Printf(TEXT("\nCoordinates here and on the left are the FULL-SCALE aircraft's; the model is built at %s of that size (Model > Scale) and the picture shows the replica."), *ScaleText());
 				}
 				ShowPicture(TabLoads, { &G, &Arrows }, { false, false });
 				if (Captions[TabLoads].IsValid()) Captions[TabLoads]->SetText(FText::FromString(Text));
@@ -1396,7 +1396,7 @@ namespace
 			if (Planes.Num() == 0) Text += TEXT("No support: add a plane on the left and Apply.");
 			if (IsReplica())
 			{
-				Text += FString::Printf(TEXT("\nCoordinates here and on the left are the FULL-SCALE aircraft's; the model is built at %s of that size (Geometry > Scale) and the picture shows the replica."), *ScaleText());
+				Text += FString::Printf(TEXT("\nCoordinates here and on the left are the FULL-SCALE aircraft's; the model is built at %s of that size (Model > Scale) and the picture shows the replica."), *ScaleText());
 			}
 			Text += FString::Printf(TEXT("\nFixed nodes (red): %s of %s, every degree of freedom -- the three displacements and, on the shells, the three rotations: a clamp"),
 				*Thousands(NSupport), *Thousands(M.Nodes));
@@ -2177,7 +2177,7 @@ void ShowAerotelicStructuralFeaDialog(TFunction<void(const FText&)> Status)
 		+ SScrollBox::Slot()
 		[
 			MakeInfoLabel(LOCTEXT("LoadsHint",
-				"The load factor puts the model's own mass under that many g along -z (0 to begin with, so a test load acts alone; 1 is its weight, a 4 g pull-up a real case). The pressure acts on every wetted face, positive pressing inwards -- the place a pressure field from the potential flow or DUST will plug in. Each point force goes to the corner node nearest its point; the picture warns when that node is more than a mesh edge away. Points are typed in FULL-SCALE coordinates, as the parameterisations are; with a model scale set (Geometry > Scale) the dialog scales them to the replica. Forces are newtons whatever the project's units or scale. Apply pushes the loads onto the built model and redraws them."))
+				"The load factor puts the model's own mass under that many g along -z (0 to begin with, so a test load acts alone; 1 is its weight, a 4 g pull-up a real case). The pressure acts on every wetted face, positive pressing inwards -- the place a pressure field from the potential flow or DUST will plug in. Each point force goes to the corner node nearest its point; the picture warns when that node is more than a mesh edge away. Points are typed in FULL-SCALE coordinates, as the parameterisations are; with a model scale set (Model > Scale) the dialog scales them to the replica. Forces are newtons whatever the project's units or scale. Apply pushes the loads onto the built model and redraws them."))
 		];
 
 	// ---- the supports panel ----
@@ -2196,7 +2196,7 @@ void ShowAerotelicStructuralFeaDialog(TFunction<void(const FText&)> Status)
 		+ SScrollBox::Slot()
 		[
 			MakeInfoLabel(LOCTEXT("SupportHint",
-				"Every node within the tolerance of any plane is fixed in every degree of freedom (the shells' rotations too: a clamp). y = 0 is the root of a mirrored half -- the symmetry plane -- which is why it is the one to start with; the mesh's minimum or maximum along an axis clamps a body by its end -- 'Of' says whose end: the whole mesh's, or one body's, so a body that sticks out further does not take a support meant for another. A plane limited to a PATCH fixes only the nodes inside its rectangle: type it, Fit to body, or drag the handles in the picture (the fixed nodes follow live). Values, tolerances and patches are typed in FULL-SCALE coordinates, as the parameterisations are; with a model scale set (Geometry > Scale) the dialog scales them to the replica. A tolerance of 0 is a ten-thousandth of the mesh's diagonal -- about how planar a lofted section comes out, so a root ring is taken whole. Whatever reaches no plane, on its own or through a body it was fused with, is left out of the solve and listed on the right. Apply pushes the supports onto the built model and redraws them."))
+				"Every node within the tolerance of any plane is fixed in every degree of freedom (the shells' rotations too: a clamp). y = 0 is the root of a mirrored half -- the symmetry plane -- which is why it is the one to start with; the mesh's minimum or maximum along an axis clamps a body by its end -- 'Of' says whose end: the whole mesh's, or one body's, so a body that sticks out further does not take a support meant for another. A plane limited to a PATCH fixes only the nodes inside its rectangle: type it, Fit to body, or drag the handles in the picture (the fixed nodes follow live). Values, tolerances and patches are typed in FULL-SCALE coordinates, as the parameterisations are; with a model scale set (Model > Scale) the dialog scales them to the replica. A tolerance of 0 is a ten-thousandth of the mesh's diagonal -- about how planar a lofted section comes out, so a root ring is taken whole. Whatever reaches no plane, on its own or through a body it was fused with, is left out of the solve and listed on the right. Apply pushes the supports onto the built model and redraws them."))
 		];
 
 	TArray<FAerotelicTab> Tabs;

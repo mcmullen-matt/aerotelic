@@ -252,7 +252,7 @@ public:
 	// full-scale translation and rotation as authored, and the project's
 	// model scale (GetModelScale) for Place() to apply.
 	aerotelic::EntityTransform GetEntityTransform() const;
-	// The project's model scale (Geometry > Scale; the document's). The
+	// The project's model scale (Model > Scale; the document's). The
 	// model stays the full-scale aircraft: the actor is placed at the
 	// scaled translation with a uniform scale, so everything read off the
 	// actor's transform -- the viewport, GetPlacedMeshes, GetPlacedBounds,

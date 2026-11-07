@@ -29,9 +29,10 @@ public:
 	// Edit -> Preferences
 	TSharedPtr<FUICommandInfo> ColorTheme;
 
-	// Geometry
+	// Model (was "Geometry" until 2026-11-07)
 	TSharedPtr<FUICommandInfo> Airfoils;
 	TSharedPtr<FUICommandInfo> BooleanOperation;
+	TSharedPtr<FUICommandInfo> MaterialLibrary;
 
 	// Lattice exports (File menu)
 	TSharedPtr<FUICommandInfo> ExportSkinVtk;

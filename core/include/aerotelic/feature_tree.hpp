@@ -45,7 +45,7 @@ TopoDS_Shape ApplyRotation(const TopoDS_Shape& shape, const std::array<double, 3
 // translated. Skips the OCCT round-trip entirely when all are no-ops (see
 // the Python docstring: BRepBuilderAPI_Transform rebuilds the whole shape
 // whether or not the transform does anything). The scale is the project's
-// model scale (Geometry > Scale, project_yaml.hpp ProjectFile::scale): a
+// model scale (Model > Scale, project_yaml.hpp ProjectFile::scale): a
 // replica at 1:4 is every full-scale solid placed at a quarter the size,
 // a quarter as far from the origin -- the parameterisations themselves
 // are never touched. Must be positive.

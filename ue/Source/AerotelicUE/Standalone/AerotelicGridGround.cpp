@@ -69,7 +69,7 @@ void AAerotelicGridGround::FitToContent(const FBox& Content)
 			FMath::Max(FMath::Abs(Content.Min.X), FMath::Abs(Content.Max.X)),
 			FMath::Max(FMath::Abs(Content.Min.Y), FMath::Abs(Content.Max.Y)));
 		// The floor is the content's own size, not an absolute half unit: a
-		// 1:72 replica (Geometry > Scale) is a fraction of a unit across and
+		// 1:72 replica (Model > Scale) is a fraction of a unit across and
 		// wants a grid to match, not one that dwarfs it.
 		const double Size = Content.GetSize().GetMax();
 		Limit = FMath::Max(1.2 * MaxExtent, 0.6 * Size);

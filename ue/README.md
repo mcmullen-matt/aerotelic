@@ -42,7 +42,8 @@ The layout follows the Python/Qt version's main window (`aerotelic/ui/main_windo
   around them rather than the whole application.
 * **Menu bar**: File (New, Save, Save As, Open, Export STEP/STL/3D PDF, Quit), Analysis
   (Potential Flow (Kratos), DUST (Vortex Particle Method)), Edit
-  (Preferences), Geometry (Airfoils, Boolean Operation), View (Isometric /
+  (Preferences), Model (Airfoils, Boolean Operation, Material Properties,
+  Units, Scale; it was called Geometry until 2026-11-07), View (Isometric /
   Top / Front / Side, Ground Grid, Navigation Cube, Show Intermediate
   Features, Rebuild), Help. Same shortcuts as the Qt app (Ctrl+N/S/O,
   Ctrl+Shift+S, F5...). Items whose backend is not in the C++ port yet
@@ -77,7 +78,7 @@ The layout follows the Python/Qt version's main window (`aerotelic/ui/main_windo
   look from there over 0.35 s -- the centre of a face for a face-on view,
   near an edge for a two-axis view, a corner for three (face zone 0.72).
   Drawn entirely in Slate, so styles and sections never touch it.
-* **Airfoils** (Geometry -> Airfoils, and the picker behind a section's
+* **Airfoils** (Model -> Airfoils, and the picker behind a section's
   airfoil button on a wing's Sections tab): WingDesigner's library.
   The UIUC / Selig database (~1,650 airfoils) is downloaded once, on
   request, into `%LOCALAPPDATA%\WingDesigner\selig_db` (shared with the Qt
@@ -297,7 +298,7 @@ The layout follows the Python/Qt version's main window (`aerotelic/ui/main_windo
   `core/build/aerotelic_3d_sample.pdf` to open in Acrobat, which is the
   only thing that can say whether a *reader* draws it.
   KNOWN OPEN: that last step has not been done -- see "Known limits".
-* **Boolean operations** (Geometry -> Boolean Operation): WingDesigner's
+* **Boolean operations** (Model -> Boolean Operation): WingDesigner's
   dialog -- the operands in order (every entity, the mirrored half of each
   mirrored one as its own row, every earlier boolean result), Add / Select
   All / Remove / Remove All (2026-11-04, the reverse of Select All; the
@@ -1594,6 +1595,10 @@ The dialog shows the entity's enclosed volume, surface area, whether the
 surface is closed, the material volume (enclosed, or area times
 thickness) and what the current setting would weigh, so the zero a
 zero-thickness skin encloses is on screen before anyone wonders why.
+Since 2026-11-07 the dialog only PICKS a material (one list: not set, an
+asserted mass, every material of the library) and takes the thickness or
+the mass; the figures themselves are defined under Model > Material
+Properties -- see *The Model menu and the material library* below.
 
 **Analysis > Mass Properties** (`Dialogs/MassPropertiesDialog`) picks
 bodies with the shared two-list picker, meshes each at the chosen
@@ -1636,7 +1641,7 @@ Every number typed into a parameterisation is unit-agnostic to the
 geometry: a wing with a span of 12 is the same shape in feet or metres.
 What the units decide is what those numbers MEAN when they leave the
 geometry -- for a mass report, a STEP file, or an analysis code that
-computes forces. **Geometry > Units** sets them per project, length and
+computes forces. **Model > Units** sets them per project, length and
 mass chosen separately (metres / millimetres / feet; kilograms /
 pounds-mass), time always seconds; the status bar shows the three.
 
@@ -1695,7 +1700,7 @@ pounds, saves, reopens, and reads the file's `units:` line.
 
 The parameterisations are always the **full-scale aircraft**: a wing's
 span is the real wing's, a fuselage's length the real fuselage's, and
-that is what every panel edits and every project file saves. **Geometry >
+that is what every panel edits and every project file saves. **Model >
 Scale** sets the *model scale* -- the size the vehicle is BUILT at as a
 fraction of the size it is drawn at -- so a 1:4 replica is the same
 project with the scale at 0.25, and nothing in any parameterisation
@@ -1830,7 +1835,7 @@ numbers: a figure typed back to the preset's is the preset again). The
 project file writes the figures beside the name so a later change to a
 preset cannot reach into saved projects. Because stress is a force per
 area it is its own unit -- lbm/(ft s^2) would be a poundal per square
-foot -- so **Geometry > Units** gained a *Stress* choice (Pa, MPa, psi,
+foot -- so **Model > Units** gained a *Stress* choice (Pa, MPa, psi,
 ksi; `stress:` in the file's `units:` line) that Young's modulus, the
 allowables and every reported stress use.
 
@@ -2509,6 +2514,87 @@ consistent with the planes the Support panel already has:
   sphere clamped on a quadrant patch of z = min: the script and the
   pre-processor fix the same, smaller set, every fixed node inside the
   rectangle, the quadrant carrying the weight (293 passed).
+
+## The Model menu and the material library (2026-11-07)
+
+**Geometry became Model.** The menu that holds the airfoils, the
+booleans, the units and the scale is called **Model** now (every "Geometry
+> Units" / "Geometry > Scale" in the tooltips, the hints and this README
+reads Model); `FillModelMenu` in `MainShell/AerotelicMainShell.cpp`. It
+gained **Model > Material Properties**, the material library.
+
+**What a material is, where it lives.** `aerotelic::Material`
+(`core/include/aerotelic/materials.hpp`) carries, besides the four
+figures (density, Young's modulus, Poisson's ratio, allowable stress --
+SI as ever), a `category` ("Metal", "Composite", "Wood", "Foam", "SLA
+resin", "FDM thermoplastic", or whatever the user types) and a `source`:
+where the figures came from and the convention they follow, which every
+preset now states (the handbook or data sheet, the condition, what the
+allowable is). The library is the presets followed by the user's own
+materials, kept in ONE file per user --
+`%LOCALAPPDATA%\MS2 Aerodynamics\WingDesigner\materials.yaml`, beside the
+licence (`materials:` a list of `{name, category, density, youngs_modulus,
+poisson_ratio, allowable_stress, source}`; `WriteMaterialsYaml` /
+`ReadMaterialsYaml` in core, `Entity/AerotelicMaterialLibrary` in the UE
+module: `All`, `Custom`, `Find`, `FindMatching`, `SetCustom`, a path
+override for the tests). An entity keeps a COPY of the material it is
+given (name and figures, in the project file as before), so editing or
+removing a library material changes nothing already assigned until it is
+picked again, and a project opens the same on a machine without the
+library. A user's material may not take a preset's name, names are
+unique, and a material needs a positive density and modulus, a Poisson's
+ratio in [0, 0.5) and a non-negative allowable
+(`aerotelic::MaterialProblem`); the file is written on every change, and
+an unreadable one is set aside as `materials.yaml.unreadable` rather than
+overwritten.
+
+**Model > Material Properties** (`Dialogs/MaterialLibraryDialog`) is
+three tabs:
+
+* **Materials** -- one row per material (the user's in bold): name,
+  category, density, Young's modulus, Poisson's ratio, allowable stress
+  (in the project's units; the header says which) and the source. Any
+  column header sorts the table (`SHeaderRow` sort mode, ascending then
+  descending; ties by name), the figures compared as numbers and the
+  text case-insensitively. Hover a row for its full source; double-click
+  one to take it to the Custom tab as a starting point.
+* **Custom** -- the user's materials on the left; on the right a "Start
+  from" list that copies any material's figures into the fields, the
+  name, the category, the four figures in the project's units, a
+  source / notes box, and Add as new / Update selected / Remove selected
+  / Clear fields. Each of the three writes the file at once and says so
+  on the status bar (and in the tab), or says why not.
+* **Help** -- how to use the two tabs, how a material is assigned, the
+  conventions behind each family of presets, and the citations: MMPDS-01
+  and the ASM Handbooks for the metals, the USDA Wood Handbook
+  (FPL-GTR-190) for spruce, Evonik's ROHACELL sheet for the foam, the
+  Formlabs / Siraya Tech / Anycubic data sheets (post-cured; Anycubic's
+  ranges taken at their conservative bounds) for the resins and the
+  Prusament / Bambu Lab / Polymaker / Markforged / Stratasys / 3DXTech
+  sheets (as printed, flat orientation) for the FDM thermoplastics, with
+  the caveat that these are typical values, not design allowables.
+
+**Scene tree > Material Properties slimmed.** The per-entity dialog no
+longer edits figures. One list -- *Not set*, *An asserted mass*, then
+every material of the library, plus the entity's own figures when they
+match nothing in the library (an edited copy, a material since changed
+or removed, a file from elsewhere) -- a skin thickness field (or, for an
+asserted mass, the mass), and two read-only tables: the picked
+material's card (category, the four figures, the source) and the
+entity's geometry (enclosed volume, surface area, closed or open,
+material volume, what it would weigh). Picking copies the library
+material onto the entity; OK stores it as before.
+
+**Tests.** `mass_properties_check` (102): every preset has a category and
+a source; a material round-trips through the library YAML with every
+field; an empty file is an empty library; a nameless entry and a figure
+that is not a number are refused; `SameMaterial` and `MaterialProblem`.
+The document commandlet's new "material library" step points the
+library at a temp file: empty without a file, the presets alone in
+`All`, a user's material accepted, written, found by name and matched by
+figures (an edited copy not), a preset's name / a repeated name / a
+missing modulus refused leaving the library as it was, and the file read
+back with every field.
 
 ## How the standalone build is put together
 

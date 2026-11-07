@@ -506,7 +506,7 @@ namespace
 					try
 					{
 						// The model is the full-scale wing; the references are the
-						// replica's (Geometry > Scale), like the panels.
+						// replica's (Model > Scale), like the panels.
 						const double S = AAerotelicEntityActor::GetModelScale();
 						const aerotelic::WingModel* W = E->GetModelAs<aerotelic::WingModel>();
 						Area += W->planform().PlanformArea() * S * S;

@@ -269,6 +269,36 @@ void CheckModeNames() {
 		const Material* tough = FindMaterialPreset("SLA resin, tough (Anycubic Tough 2.0)");
 		Check(tough != nullptr && tough->density == 1150.0 && tough->youngs_modulus == 0.9e9 && tough->allowable_stress == 30.0e6,
 			"the Anycubic Tough 2.0 preset takes the data sheet's conservative bounds");
+		// Every preset says what family it belongs to and where its figures
+		// came from (the table's Category and Source columns, the Help tab).
+		bool sourced = true;
+		for (const Material& m : presets) sourced = sourced && !m.category.empty() && !m.source.empty();
+		Check(sourced, "every preset has a category and a source");
+		Check(al->category == "Metal" && resin->category == "SLA resin" && pla->category == "FDM thermoplastic", "the preset families");
+	}
+	{
+		// The user's library file: a round trip through YAML keeps every
+		// field; an empty file is an empty library; a nameless entry is refused.
+		std::vector<Material> mine = { {"Balsa, test", 160.0, 3.0e9, 0.30, 10.0e6, "Wood", "a test"} };
+		const std::string text = WriteMaterialsYaml(mine);
+		Check(text.find("materials:") != std::string::npos && text.find("Balsa, test") != std::string::npos, "the library file lists the materials");
+		const std::vector<Material> back = ReadMaterialsYaml(text);
+		Check(back.size() == 1 && back[0].name == "Balsa, test" && back[0].category == "Wood" && back[0].source == "a test"
+			&& back[0].density == 160.0 && back[0].youngs_modulus == 3.0e9 && back[0].poisson_ratio == 0.30 && back[0].allowable_stress == 10.0e6,
+			"a material round-trips through the library file with every field");
+		Check(SameMaterial(back[0], mine[0]) && !SameMaterial(back[0], *al), "SameMaterial: by name and the four figures");
+		Check(ReadMaterialsYaml("").empty() && ReadMaterialsYaml("materials: []\n").empty(), "an empty library file is an empty library");
+		Check(MaterialProblem(mine[0]).empty(), "a complete material has no problem");
+		Check(!MaterialProblem(Material{}).empty(), "a blank material is refused");
+		Material nu = mine[0];
+		nu.poisson_ratio = 0.5;
+		Check(!MaterialProblem(nu).empty(), "a Poisson's ratio of 0.5 is refused");
+		bool refused = false;
+		try { ReadMaterialsYaml("materials:\n  - density: 1\n"); } catch (const std::runtime_error&) { refused = true; }
+		Check(refused, "a library entry without a name is refused");
+		refused = false;
+		try { ReadMaterialsYaml("materials:\n  - name: x\n    density: lots\n"); } catch (const std::runtime_error&) { refused = true; }
+		Check(refused, "a library entry with a figure that is not a number is refused");
 	}
 	Material edited = *al;
 	Check(IsMaterialPreset(edited), "a copy of a preset is still the preset");

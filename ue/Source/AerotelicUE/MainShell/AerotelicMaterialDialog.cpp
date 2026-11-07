@@ -13,6 +13,7 @@
 #include "Entity/AerotelicEntityActor.h"
 #include "Entity/AerotelicBooleanModel.h"
 #include "Entity/AerotelicDocumentSubsystem.h"
+#include "Entity/AerotelicMaterialLibrary.h"
 
 #include "aerotelic/mass_properties.hpp"
 #include "aerotelic/materials.hpp"
@@ -28,20 +29,6 @@ using aerotelic::Material;
 
 namespace
 {
-	const MassMode kModes[3] = { MassMode::Unset, MassMode::Material, MassMode::Asserted };
-	const FString kCustom = TEXT("Custom");
-
-	FText ModeLabel(MassMode Mode)
-	{
-		switch (Mode)
-		{
-		case MassMode::Unset: return LOCTEXT("ModeUnset", "Not set (left out of every analysis)");
-		case MassMode::Material: return LOCTEXT("ModeMaterial", "A material (density, stiffness, strength)");
-		case MassMode::Asserted: return LOCTEXT("ModeAsserted", "An asserted mass");
-		}
-		return FText::GetEmpty();
-	}
-
 	TSharedRef<SWidget> FormRow(const FText& Label, TSharedRef<SWidget> Control)
 	{
 		return SNew(SHorizontalBox)
@@ -54,6 +41,17 @@ namespace
 	{
 		return FText::Format(LOCTEXT("Labelled", "{0} ({1}):"), Label, FText::FromString(UTF8_TO_TCHAR(Unit.c_str())));
 	}
+
+	// One entry of the list: nothing, an asserted mass, a library material,
+	// or the figures this entity already carries that match no library
+	// material (an edited copy, a material since changed or removed in the
+	// library, a file from another machine).
+	struct FChoice
+	{
+		enum EKind { Unset, Asserted, Library, Own } Kind = Unset;
+		Material M;   // Library / Own
+		FString Label;
+	};
 }
 
 void OpenAerotelicMaterialDialog(AAerotelicEntityActor* Entity)
@@ -86,29 +84,53 @@ void OpenAerotelicMaterialDialog(AAerotelicEntityActor* Entity)
 	bool bAccepted = false;
 
 	// Modal, so these locals outlive every widget that points at them.
-	TArray<TSharedPtr<FString>> ModeOptions;
-	for (MassMode Mode : kModes) ModeOptions.Add(MakeShared<FString>(ModeLabel(Mode).ToString()));
-	auto ModeIndex = [&Spec]() { return Spec.mode == MassMode::Material ? 1 : (Spec.mode == MassMode::Asserted ? 2 : 0); };
-
-	// The presets, then Custom. What the combo shows is derived from the
-	// numbers each time: an edited preset reads as Custom.
-	TArray<TSharedPtr<FString>> MaterialOptions;
-	for (const Material& M : aerotelic::MaterialPresets()) MaterialOptions.Add(MakeShared<FString>(UTF8_TO_TCHAR(M.name.c_str())));
-	MaterialOptions.Add(MakeShared<FString>(kCustom));
-	auto MaterialName = [&Spec]() -> FString
+	TArray<TSharedPtr<FChoice>> Choices;
 	{
-		return aerotelic::IsMaterialPreset(Spec.material) ? FString(UTF8_TO_TCHAR(Spec.material.name.c_str())) : kCustom;
-	};
-	auto MaterialOption = [&MaterialOptions, MaterialName]() -> TSharedPtr<FString>
+		TSharedPtr<FChoice> C = MakeShared<FChoice>();
+		C->Kind = FChoice::Unset;
+		C->Label = LOCTEXT("ChoiceUnset", "Not set (left out of every analysis)").ToString();
+		Choices.Add(C);
+		C = MakeShared<FChoice>();
+		C->Kind = FChoice::Asserted;
+		C->Label = LOCTEXT("ChoiceAsserted", "An asserted mass (no material)").ToString();
+		Choices.Add(C);
+		for (const Material& M : AerotelicMaterialLibrary::All())
+		{
+			C = MakeShared<FChoice>();
+			C->Kind = FChoice::Library;
+			C->M = M;
+			C->Label = UTF8_TO_TCHAR(M.name.c_str());
+			Choices.Add(C);
+		}
+		if (Spec.mode == MassMode::Material && AerotelicMaterialLibrary::FindMatching(Spec.material) == nullptr)
+		{
+			C = MakeShared<FChoice>();
+			C->Kind = FChoice::Own;
+			C->M = Spec.material;
+			C->Label = FText::Format(LOCTEXT("ChoiceOwn", "{0} -- this entity's own figures (not in the library)"), FText::FromString(UTF8_TO_TCHAR(Spec.material.name.c_str()))).ToString();
+			Choices.Add(C);
+		}
+	}
+	auto CurrentChoice = [&Spec, &Choices]() -> TSharedPtr<FChoice>
 	{
-		const FString Name = MaterialName();
-		for (const TSharedPtr<FString>& O : MaterialOptions) if (*O == Name) return O;
-		return MaterialOptions.Last();
+		switch (Spec.mode)
+		{
+		case MassMode::Unset: return Choices[0];
+		case MassMode::Asserted: return Choices[1];
+		case MassMode::Material:
+			for (const TSharedPtr<FChoice>& C : Choices)
+			{
+				if ((C->Kind == FChoice::Library || C->Kind == FChoice::Own) && aerotelic::SameMaterial(C->M, Spec.material)) return C;
+			}
+			break;
+		}
+		return Choices[0];
 	};
+	auto SelectedMaterial = [&Spec]() -> const Material* { return Spec.mode == MassMode::Material ? &Spec.material : nullptr; };
 
 	TSharedRef<SWindow> Window = SNew(SWindow)
 		.Title(FText::Format(LOCTEXT("Title", "Material Properties -- {0}"), FText::FromString(Entity->EntityName)))
-		.ClientSize(FVector2D(520, 640))
+		.ClientSize(FVector2D(560, 600))
 		.SupportsMaximize(false)
 		.SupportsMinimize(false);
 
@@ -117,137 +139,123 @@ void OpenAerotelicMaterialDialog(AAerotelicEntityActor* Entity)
 		return SNew(SButton).Text(Label).HAlign(HAlign_Center).ContentPadding(FMargin(14, 3))
 			.OnClicked_Lambda([Fn]() { Fn(); return FReply::Handled(); });
 	};
-
-	// A material figure: SI underneath, the project's unit on screen. An
-	// edit makes the material Custom (by the numbers, so a value typed back
-	// to the preset's is the preset again).
-	auto MaterialField = [&Spec](double Material::* Field, double ToSI, double Delta, double Max)
-	{
-		return SNew(SAerotelicNumericEntry)
-			.Value_Lambda([&Spec, Field, ToSI]() { return (Spec.material.*Field) / ToSI; })
-			.MinValue(0.0).MaxValue(Max).Delta(Delta)
-			.LiveUpdate(true)
-			.OnValueCommitted_Lambda([&Spec, Field, ToSI](double V, ETextCommit::Type)
-			{
-				Spec.material.*Field = V * ToSI;
-				if (!aerotelic::IsMaterialPreset(Spec.material)) Spec.material.name = TCHAR_TO_UTF8(*kCustom);
-			});
-	};
 	auto VisibleWhen = [&Spec](MassMode Mode)
 	{
 		return TAttribute<EVisibility>::CreateLambda([&Spec, Mode]() { return Spec.mode == Mode ? EVisibility::Visible : EVisibility::Collapsed; });
+	};
+	// A figure of the chosen material in the project's units; a dash when
+	// there is no material.
+	auto MaterialFigure = [SelectedMaterial](double Material::* Field, double ToSI, int32 Significant)
+	{
+		return TAttribute<FText>::CreateLambda([SelectedMaterial, Field, ToSI, Significant]()
+		{
+			const Material* M = SelectedMaterial();
+			return M != nullptr ? FormatG((M->*Field) / ToSI, Significant) : DashText();
+		});
+	};
+	auto MaterialText = [SelectedMaterial](std::string Material::* Field)
+	{
+		return TAttribute<FText>::CreateLambda([SelectedMaterial, Field]()
+		{
+			const Material* M = SelectedMaterial();
+			return M != nullptr && !(M->*Field).empty() ? FText::FromString(UTF8_TO_TCHAR((M->*Field).c_str())) : DashText();
+		});
 	};
 
 	Window->SetContent(
 		SNew(SBorder).Padding(12)
 		[
 			SNew(SVerticalBox)
+			// ------------------------------------------------------ the pick
 			+ SVerticalBox::Slot().AutoHeight()
 			[
-				FormRow(LOCTEXT("Approach", "This entity is:"),
-					SNew(SComboBox<TSharedPtr<FString>>)
-					.OptionsSource(&ModeOptions)
-					.InitiallySelectedItem(ModeOptions[ModeIndex()])
-					.OnGenerateWidget_Lambda([](TSharedPtr<FString> S) { return SNew(STextBlock).Text(FText::FromString(*S)); })
-					.OnSelectionChanged_Lambda([&Spec, &ModeOptions](TSharedPtr<FString> S, ESelectInfo::Type)
+				FormRow(LOCTEXT("MadeOf", "This entity is made of:"),
+					SNew(SComboBox<TSharedPtr<FChoice>>)
+					.OptionsSource(&Choices)
+					.InitiallySelectedItem(CurrentChoice())
+					.OnGenerateWidget_Lambda([](TSharedPtr<FChoice> C) { return SNew(STextBlock).Text(FText::FromString(C->Label)); })
+					.OnSelectionChanged_Lambda([&Spec](TSharedPtr<FChoice> C, ESelectInfo::Type)
 					{
-						const int32 Index = ModeOptions.IndexOfByKey(S);
-						if (Index != INDEX_NONE) Spec.mode = kModes[Index];
+						if (!C.IsValid()) return;
+						switch (C->Kind)
+						{
+						case FChoice::Unset: Spec.mode = MassMode::Unset; break;
+						case FChoice::Asserted: Spec.mode = MassMode::Asserted; break;
+						case FChoice::Library:
+						case FChoice::Own:
+							Spec.mode = MassMode::Material;
+							Spec.material = C->M;   // a copy: the name and the figures, as the project file keeps them
+							break;
+						}
 					})
-					[ SNew(STextBlock).Text_Lambda([&Spec]() { return ModeLabel(Spec.mode); }) ])
+					[ SNew(STextBlock).Text_Lambda([CurrentChoice]() { return FText::FromString(CurrentChoice()->Label); }) ])
 			]
-
-			// ------------------------------------------------------ material
-			+ SVerticalBox::Slot().AutoHeight().Padding(0, 8, 0, 0)
+			// A material: its skin thickness. A geometric figure, in the
+			// project's length unit as typed (never converted), like the
+			// asserted mass; it is not part of the material.
+			+ SVerticalBox::Slot().AutoHeight().Padding(0, 6, 0, 0)
 			[
 				SNew(SBox).Visibility(VisibleWhen(MassMode::Material))
 				[
-					SNew(SVerticalBox)
-					+ SVerticalBox::Slot().AutoHeight()
-					[
-						FormRow(LOCTEXT("Material", "Material:"),
-							SNew(SComboBox<TSharedPtr<FString>>)
-							.OptionsSource(&MaterialOptions)
-							.InitiallySelectedItem(MaterialOption())
-							.OnGenerateWidget_Lambda([](TSharedPtr<FString> S) { return SNew(STextBlock).Text(FText::FromString(*S)); })
-							.OnSelectionChanged_Lambda([&Spec](TSharedPtr<FString> S, ESelectInfo::Type)
-							{
-								if (!S.IsValid()) return;
-								if (const Material* P = aerotelic::FindMaterialPreset(TCHAR_TO_UTF8(**S)))
-								{
-									Spec.material = *P;   // the preset's numbers come in with its name
-								}
-								else
-								{
-									Spec.material.name = TCHAR_TO_UTF8(*kCustom);   // Custom: the numbers stay for editing
-								}
-							})
-							[ SNew(STextBlock).Text_Lambda([MaterialName]() { return FText::FromString(MaterialName()); }) ])
-					]
-					+ SVerticalBox::Slot().AutoHeight().Padding(0, 6, 0, 0)
-					[ FormRow(WithUnit(LOCTEXT("Density", "Density"), Units.DensityName()), MaterialField(&Material::density, Units.DensityToSI(), 10.0, 1.0e9)) ]
-					+ SVerticalBox::Slot().AutoHeight()
-					[ FormRow(WithUnit(LOCTEXT("Young", "Young's modulus"), Units.StressName()), MaterialField(&Material::youngs_modulus, Units.StressToSI(), 1.0e9 / Units.StressToSI(), 1.0e15)) ]
-					+ SVerticalBox::Slot().AutoHeight()
-					[ FormRow(LOCTEXT("Poisson", "Poisson's ratio:"), MaterialField(&Material::poisson_ratio, 1.0, 0.01, 0.4999)) ]
-					+ SVerticalBox::Slot().AutoHeight()
-					[ FormRow(WithUnit(LOCTEXT("Allowable", "Allowable stress"), Units.StressName()), MaterialField(&Material::allowable_stress, Units.StressToSI(), 1.0e6 / Units.StressToSI(), 1.0e15)) ]
-					+ SVerticalBox::Slot().AutoHeight().Padding(0, 6, 0, 0)
-					[
-						// The skin thickness is a geometric figure, in the project's
-						// length unit as typed (never converted), like the asserted
-						// mass; it is not part of the material.
-						FormRow(WithUnit(LOCTEXT("SkinThickness", "Skin thickness, 0 = solid"), Units.LengthName()),
-							SNew(SAerotelicNumericEntry)
-							.Value_Lambda([&Spec]() { return Spec.skin_thickness; })
-							.MinValue(0.0).MaxValue(1.0e9).Delta(0.001)
-							.LiveUpdate(true)
-							.OnValueCommitted_Lambda([&Spec](double V, ETextCommit::Type) { Spec.skin_thickness = FMath::Max(V, 0.0); }))
-					]
-					+ SVerticalBox::Slot().AutoHeight().Padding(0, 6, 0, 0)
-					[
-						MakeInfoLabel(LOCTEXT("MaterialHint",
-							"A material is a property of the stuff, not of the project's units: the figures are kept in SI and shown here in the project's units (Geometry > Units). Pick a preset to take its handbook values; edit any figure and it becomes Custom. "
-							"With the skin thickness at zero the density weighs the entity as a uniform solid over the volume its closed surface encloses -- a surface with no thickness weighs nothing this way. "
-							"A positive skin thickness makes every solid body this parameterisation produces a skin of the material that thick: its material volume is the surface area times the thickness, its mass the density times that, spread over the surface as a thin shell (open surfaces included; a mirrored half carries its own). A lattice that fills this entity hollows it by this thickness (the lattice dialog's figure is only the default for bodies without one) and is regenerated over the new thickness when OK changes it, as it is after an Apply; Analysis > Structural gives its shells this thickness. "
-							"Young's modulus, Poisson's ratio and the allowable are what Analysis > Structural uses; the allowable is what a margin is reported against (zero: no margin)."))
-					]
+					FormRow(WithUnit(LOCTEXT("SkinThickness", "Skin thickness, 0 = solid"), Units.LengthName()),
+						SNew(SAerotelicNumericEntry)
+						.Value_Lambda([&Spec]() { return Spec.skin_thickness; })
+						.MinValue(0.0).MaxValue(1.0e9).Delta(0.001)
+						.LiveUpdate(true)
+						.OnValueCommitted_Lambda([&Spec](double V, ETextCommit::Type) { Spec.skin_thickness = FMath::Max(V, 0.0); }))
 				]
 			]
-
-			// ------------------------------------------------------ asserted
-			+ SVerticalBox::Slot().AutoHeight().Padding(0, 8, 0, 0)
+			// An asserted mass: the total, in the project's mass unit.
+			+ SVerticalBox::Slot().AutoHeight().Padding(0, 6, 0, 0)
 			[
 				SNew(SBox).Visibility(VisibleWhen(MassMode::Asserted))
 				[
-					SNew(SVerticalBox)
-					+ SVerticalBox::Slot().AutoHeight()
-					[
-						FormRow(WithUnit(LOCTEXT("Mass", "Mass"), Units.MassName()),
-							SNew(SAerotelicNumericEntry)
-							.Value_Lambda([&Spec]() { return Spec.mass; })
-							.MinValue(0.0).MaxValue(1.0e12).Delta(1.0)
-							.LiveUpdate(true)
-							.OnValueCommitted_Lambda([&Spec](double V, ETextCommit::Type) { Spec.mass = V; }))
-					]
-					+ SVerticalBox::Slot().AutoHeight().Padding(0, 6, 0, 0)
-					[
-						MakeInfoLabel(LOCTEXT("AssertedHint",
-							"The total mass of this parameterisation, in the project's mass unit. When weighed it is spread uniformly over the surface, as a thin shell: the centre of mass and the inertia come from integrating the surface. A multi-body entity (a propeller) shares it between its bodies by area; a mirrored half carries the whole mass again as a part of its own. An asserted mass has no stiffness, so Analysis > Structural leaves it out."))
-					]
+					FormRow(WithUnit(LOCTEXT("Mass", "Mass"), Units.MassName()),
+						SNew(SAerotelicNumericEntry)
+						.Value_Lambda([&Spec]() { return Spec.mass; })
+						.MinValue(0.0).MaxValue(1.0e12).Delta(1.0)
+						.LiveUpdate(true)
+						.OnValueCommitted_Lambda([&Spec](double V, ETextCommit::Type) { Spec.mass = V; }))
 				]
 			]
-			+ SVerticalBox::Slot().AutoHeight().Padding(0, 8, 0, 0)
+			+ SVerticalBox::Slot().AutoHeight().Padding(0, 6, 0, 0)
 			[
-				SNew(SBox).Visibility(VisibleWhen(MassMode::Unset))
-				[
-					MakeInfoLabel(LOCTEXT("UnsetHint",
-						"Nothing is assigned yet: Analysis > Mass Properties and Analysis > Structural leave this entity out and say so. Choose above."))
-				]
+				MakeInfoLabel(LOCTEXT("Hint",
+					"Pick what this parameterisation is made of. The materials are defined under Model > Material Properties (the presets and your own); this entity takes a copy of the one picked. "
+					"With the skin thickness at zero the body is a uniform solid of the material; a positive thickness makes every body of this entity a skin that thick (also what a lattice hollows it by and what Analysis > Structural gives its shells). "
+					"An asserted mass is spread over the surface when weighed and has no stiffness. Boolean results and lattices built on this entity inherit the setting."))
 			]
 
-			// ------------------------------------------------------ readouts
-			+ SVerticalBox::Slot().AutoHeight().Padding(0, 14, 0, 0)
+			// ------------------------------------------------------ results
+			+ SVerticalBox::Slot().AutoHeight().Padding(0, 12, 0, 0)
+			[
+				MakeGroup(LOCTEXT("MaterialGroup", "The material"),
+					SNew(SVerticalBox)
+					+ SVerticalBox::Slot().AutoHeight()
+					[ MakeMetricRow(LOCTEXT("Category", "Category:"), MaterialText(&Material::category)) ]
+					+ SVerticalBox::Slot().AutoHeight()
+					[ MakeMetricRow(WithUnit(LOCTEXT("Density", "Density"), Units.DensityName()), MaterialFigure(&Material::density, Units.DensityToSI(), 4)) ]
+					+ SVerticalBox::Slot().AutoHeight()
+					[ MakeMetricRow(WithUnit(LOCTEXT("Young", "Young's modulus"), Units.StressName()), MaterialFigure(&Material::youngs_modulus, Units.StressToSI(), 4)) ]
+					+ SVerticalBox::Slot().AutoHeight()
+					[ MakeMetricRow(LOCTEXT("Poisson", "Poisson's ratio:"), MaterialFigure(&Material::poisson_ratio, 1.0, 3)) ]
+					+ SVerticalBox::Slot().AutoHeight()
+					[ MakeMetricRow(WithUnit(LOCTEXT("Allowable", "Allowable stress"), Units.StressName()), MaterialFigure(&Material::allowable_stress, Units.StressToSI(), 4)) ]
+					+ SVerticalBox::Slot().AutoHeight().Padding(0, 4, 0, 0)
+					[
+						SNew(STextBlock).AutoWrapText(true)
+						.Font(FCoreStyle::GetDefaultFontStyle("Regular", 8))
+						.ColorAndOpacity(FSlateColor(FLinearColor(0.6f, 0.6f, 0.6f)))
+						.Text_Lambda([SelectedMaterial]()
+						{
+							const Material* M = SelectedMaterial();
+							return M != nullptr && !M->source.empty()
+								? FText::Format(LOCTEXT("SourceLine", "Source: {0}"), FText::FromString(UTF8_TO_TCHAR(M->source.c_str())))
+								: FText::GetEmpty();
+						})
+					])
+			]
+			+ SVerticalBox::Slot().AutoHeight().Padding(0, 10, 0, 0)
 			[
 				MakeGroup(LOCTEXT("Geometry", "This entity's geometry"),
 					SNew(SVerticalBox)

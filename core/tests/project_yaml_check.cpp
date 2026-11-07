@@ -400,7 +400,7 @@ void CheckUnitsRoundTrip() {
 	Check(threw, "units: a time unit other than seconds is refused on load");
 }
 
-// `scale:` (Geometry > Scale) is written only when the vehicle is not
+// `scale:` (Model > Scale) is written only when the vehicle is not
 // built full size, read back, absent means 1, and anything but a positive
 // number is refused both ways. The entities beneath it are the full-scale
 // aircraft whatever it says.

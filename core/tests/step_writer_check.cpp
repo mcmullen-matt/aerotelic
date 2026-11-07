@@ -67,7 +67,7 @@ int main() {
 	const int rc_bad = std::system(("\"\"" AEROTELIC_STEP_WRITER "\" \"" + step + "\" --named \"X\" \"" + dir + "/does_not_exist.brep\"\"").c_str());
 	Check(rc_bad != 0, "a missing .brep is reported with a non-zero exit");
 
-	// --unit: the file DECLARES the length unit (Geometry > Units). Feet
+	// --unit: the file DECLARES the length unit (Model > Units). Feet
 	// is a conversion-based unit named FOOT in STEP; millimetres and metres
 	// are the SI unit with and without the MILLI prefix. Without --unit
 	// OCCT's default, millimetres, applies as it always did.

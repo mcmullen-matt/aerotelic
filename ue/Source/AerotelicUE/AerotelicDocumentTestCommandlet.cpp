@@ -13,6 +13,7 @@
 #include "Entity/AerotelicMassProperties.h"
 #include "Entity/AerotelicStructuralFea.h"
 #include "Entity/AerotelicFeaPreprocess.h"
+#include "Entity/AerotelicMaterialLibrary.h"
 
 #include "aerotelic/materials.hpp"
 #include "aerotelic/primitive_model.hpp"
@@ -251,6 +252,57 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 		Wing->ApplyPlacement(Saved);
 		Check(Wing->GetPlacement().rotation_deg == Saved.rotation_deg && !Wing->GetPlacement().euler.used,
 			"placement: restored for the rest of the run");
+	}
+
+	// Model > Material Properties, minus the dialog: the user's material
+	// library is the presets plus a per-user YAML file (here a temp file),
+	// found by name and by figures, refusing what is not a material.
+	UE_LOG(LogAerotelicDocumentTest, Display, TEXT("step: material library"));
+	{
+		const FString LibPath = FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("materials_test.yaml"));
+		IFileManager::Get().Delete(*LibPath);
+		AerotelicMaterialLibrary::SetFilePathOverride(LibPath);
+		Check(AerotelicMaterialLibrary::Custom().Num() == 0, "library: starts empty when there is no file");
+		Check(AerotelicMaterialLibrary::All().Num() == (int32)aerotelic::MaterialPresets().size(), "library: with nothing custom the list is the presets");
+		Check(AerotelicMaterialLibrary::Find("Aluminium 2024-T3") != nullptr, "library: a preset is found by name");
+
+		aerotelic::Material Mine;
+		Mine.name = "Balsa, test";
+		Mine.category = "Wood";
+		Mine.density = 160.0;
+		Mine.youngs_modulus = 3.0e9;
+		Mine.poisson_ratio = 0.30;
+		Mine.allowable_stress = 10.0e6;
+		Mine.source = "a test";
+		FString Error;
+		Check(AerotelicMaterialLibrary::SetCustom({ Mine }, Error), FString::Printf(TEXT("library: a complete material is accepted (%s)"), *Error));
+		Check(FPaths::FileExists(LibPath), "library: the file was written");
+		Check(AerotelicMaterialLibrary::All().Num() == (int32)aerotelic::MaterialPresets().size() + 1, "library: the list is the presets then the user's");
+		const aerotelic::Material* Found = AerotelicMaterialLibrary::Find("Balsa, test");
+		Check(Found != nullptr && Found->density == 160.0 && Found->category == "Wood", "library: the user's material is found by name");
+		Check(AerotelicMaterialLibrary::FindMatching(Mine) != nullptr, "library: ...and matched by name and figures");
+		aerotelic::Material Edited = Mine;
+		Edited.density = 170.0;
+		Check(AerotelicMaterialLibrary::FindMatching(Edited) == nullptr, "library: an edited copy matches nothing");
+
+		aerotelic::Material Clash = Mine;
+		Clash.name = "Aluminium 2024-T3";
+		Check(!AerotelicMaterialLibrary::SetCustom({ Clash }, Error) && !Error.IsEmpty(), "library: a preset's name is refused");
+		Check(!AerotelicMaterialLibrary::SetCustom({ Mine, Mine }, Error), "library: a repeated name is refused");
+		aerotelic::Material Bad = Mine;
+		Bad.youngs_modulus = 0.0;
+		Check(!AerotelicMaterialLibrary::SetCustom({ Bad }, Error), "library: a material without a modulus is refused");
+		Check(AerotelicMaterialLibrary::Custom().Num() == 1, "library: a refused change leaves the library as it was");
+
+		// Reload from the file: every field comes back.
+		AerotelicMaterialLibrary::SetFilePathOverride(LibPath);
+		const TArray<aerotelic::Material>& Back = AerotelicMaterialLibrary::Custom();
+		Check(Back.Num() == 1 && Back[0].name == "Balsa, test" && Back[0].category == "Wood" && Back[0].source == "a test"
+			&& Back[0].density == 160.0 && Back[0].youngs_modulus == 3.0e9 && Back[0].allowable_stress == 10.0e6,
+			"library: the user's material round-tripped through the file");
+
+		IFileManager::Get().Delete(*LibPath);
+		AerotelicMaterialLibrary::SetFilePathOverride(FString());
 	}
 
 	// Analysis > Mass Properties over real entities: a density weighs the
@@ -1290,7 +1342,7 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 		}
 	}
 
-	// Geometry > Units: set before the save, read back after the reopen.
+	// Model > Units: set before the save, read back after the reopen.
 	{
 		aerotelic::UnitSystem U;
 		U.length = aerotelic::LengthUnit::Foot;
@@ -1299,7 +1351,7 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 		Check(Doc->GetUnits().length == aerotelic::LengthUnit::Foot, "units: set on the document");
 	}
 
-	// Geometry > Scale: a 1:4 replica. The parameterisations and the
+	// Model > Scale: a 1:4 replica. The parameterisations and the
 	// placements stay the full-scale aircraft; the actors, the placed
 	// meshes, bounds and solids are a quarter the size and a quarter as far
 	// out; a skin's mass goes as the area (1/16) while its thickness stays;

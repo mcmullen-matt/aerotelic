@@ -27,9 +27,10 @@ void FAerotelicCommands::RegisterCommands()
 	// Edit -> Preferences
 	UI_COMMAND(ColorTheme, "Color Theme", "Pick the application's colour theme (dark, light and operational palettes)", EUserInterfaceActionType::Button, FInputChord());
 
-	// Geometry
+	// Model
 	UI_COMMAND(Airfoils, "Airfoils", "The airfoil library: the Selig database, NACA codes and .dat files, with a preview (assign one from a wing's Sections tab)", EUserInterfaceActionType::Button, FInputChord());
 	UI_COMMAND(BooleanOperation, "Boolean Operation", "Fuse/Cut/Common two entities (or previously-created boolean results)", EUserInterfaceActionType::Button, FInputChord());
+	UI_COMMAND(MaterialLibrary, "Material Properties", "The materials a body can be made of: a table of every preset (metals, composites, wood, foam, SLA resins, FDM thermoplastics) and of your own, with density, Young's modulus, Poisson's ratio, allowable stress and the source of the figures, sortable by any column; a tab to define your own materials, kept per user for every project; and a Help tab with the conventions and citations. Assign one to an entity with Material Properties on its row in the Scene tree", EUserInterfaceActionType::Button, FInputChord());
 
 	// Lattice exports (File menu; Generate Lattice is on a body's row in the
 	// Scene tree, Regenerate on a lattice's)

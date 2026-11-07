@@ -88,7 +88,7 @@ namespace AerotelicMeshing
 	void PlaceMesh(aerotelic::TriMesh& Mesh, const FTransform& Transform)
 	{
 		// With the scale: an entity actor's transform carries the project's
-		// model scale (Geometry > Scale) as a uniform scale, and a placed
+		// model scale (Model > Scale) as a uniform scale, and a placed
 		// mesh is the replica's.
 		const FMatrix M = Transform.ToMatrixWithScale();
 		// FMatrix is row-vector convention (v' = v * M): M.M[row][col].
