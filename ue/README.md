@@ -1814,7 +1814,9 @@ presets (`core/include/aerotelic/materials.hpp`: 2024-T3, 7075-T6,
 spruce, a PMI foam; since 2026-11-06 the 3D-printing polymers too --
 seven photopolymer resins of SLA / LCD printers (Formlabs Grey, Clear,
 Tough 2000, Durable, High Temp, Rigid 10K; Siraya Tech Blu) at their
-data sheets' post-cured figures, and ten FDM thermoplastics (PLA, PETG,
+data sheets' post-cured figures, seventeen Anycubic LCD / DLP resins at
+the conservative bounds of their data sheets' ranges (lowest modulus
+and strength, highest density), and ten FDM thermoplastics (PLA, PETG,
 ABS, ASA, polycarbonate, nylon, two carbon-filled nylons, ULTEM 9085,
 PEEK) at their data sheets' as-printed figures along the layers, with
 the caveat in `materials.cpp` that a printed part is weaker across its

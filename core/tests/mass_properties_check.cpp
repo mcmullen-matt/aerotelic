@@ -266,6 +266,9 @@ void CheckModeNames() {
 		const Material* pla = FindMaterialPreset("FDM PLA (Prusament)");
 		Check(resin != nullptr && resin->youngs_modulus == 2.8e9 && resin->allowable_stress == 65.0e6, "the standard SLA resin preset carries Formlabs' post-cured figures");
 		Check(pla != nullptr && pla->density == 1240.0 && pla->youngs_modulus == 2.3e9, "the FDM PLA preset carries Prusament's as-printed figures");
+		const Material* tough = FindMaterialPreset("SLA resin, tough (Anycubic Tough 2.0)");
+		Check(tough != nullptr && tough->density == 1150.0 && tough->youngs_modulus == 0.9e9 && tough->allowable_stress == 30.0e6,
+			"the Anycubic Tough 2.0 preset takes the data sheet's conservative bounds");
 	}
 	Material edited = *al;
 	Check(IsMaterialPreset(edited), "a copy of a preset is still the preset");

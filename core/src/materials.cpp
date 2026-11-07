@@ -36,6 +36,35 @@ const std::vector<Material>& MaterialPresets() {
 		{"SLA resin, high-temp (Formlabs High Temp V2)", 1190.0, 2.8e9, 0.35, 58.3e6},
 		{"SLA resin, glass-filled (Formlabs Rigid 10K)", 1700.0, 11.0e9, 0.30, 88.0e6},
 
+		// Anycubic's LCD / DLP resins (2026-11-06). Their data sheets give
+		// RANGES, not values, name no post-cure, and list no tensile
+		// modulus (their "bending strength" and "bending modulus" rows are
+		// labelled the wrong way round); the store pages add a Young's
+		// modulus range. Taken conservatively: the LOWER bound of the
+		// Young's modulus and of the tensile strength (ASTM D638), the UPPER
+		// bound of the density. ABS-Like V2 has no Young's modulus anywhere,
+		// so its lower flexural modulus stands in. Poisson's ratio 0.35 as
+		// for the other acrylates, 0.38 for the ductile Tough 2.0 and 0.42
+		// for Tough Ultra, which at 70-80% elongation and Shore D 71-75 is
+		// nearly an elastomer -- treat its linear results with care.
+		{"SLA resin, standard (Anycubic Standard)", 1200.0, 1.6e9, 0.35, 40.0e6},
+		{"SLA resin, standard (Anycubic Standard V2)", 1250.0, 1.2e9, 0.35, 35.0e6},
+		{"SLA resin, standard (Anycubic 16K Standard)", 1100.0, 1.8e9, 0.35, 40.0e6},
+		{"SLA resin, ABS-like (Anycubic ABS-Like 2.0)", 1090.0, 1.8e9, 0.35, 34.0e6},
+		{"SLA resin, ABS-like (Anycubic ABS-Like V2)", 1200.0, 1.0e9, 0.35, 35.0e6},
+		{"SLA resin, ABS-like (Anycubic ABS-Like 3.0)", 1090.0, 1.3e9, 0.35, 38.0e6},
+		{"SLA resin, ABS-like (Anycubic ABS-Like Pro 2)", 1250.0, 1.6e9, 0.35, 35.0e6},
+		{"SLA resin, water-wash ABS-like (Anycubic Water-Wash ABS-Like 3.0)", 1100.0, 1.8e9, 0.35, 36.0e6},
+		{"SLA resin, water-wash (Anycubic Water-Wash 2.0)", 1090.0, 1.1e9, 0.35, 38.0e6},
+		{"SLA resin, tough (Anycubic Tough 2.0)", 1150.0, 0.9e9, 0.38, 30.0e6},
+		{"SLA resin, soft tough (Anycubic Tough Ultra)", 1250.0, 0.35e9, 0.42, 20.0e6},
+		{"SLA resin, clear (Anycubic High Clear)", 1120.0, 0.7e9, 0.35, 28.0e6},
+		{"SLA resin, fast (Anycubic High Speed 2.0)", 1200.0, 1.3e9, 0.35, 37.0e6},
+		{"SLA resin, plant-based (Anycubic Plant-Based 2.0)", 1100.0, 1.3e9, 0.35, 35.0e6},
+		{"SLA resin, DLP (Anycubic DLP Craftsman)", 1200.0, 1.3e9, 0.35, 36.0e6},
+		{"SLA resin, texture (Anycubic 14K Texture)", 1110.0, 1.3e9, 0.35, 35.0e6},
+		{"SLA resin, bio (Anycubic Bio)", 1150.0, 1.2e9, 0.35, 35.0e6},
+
 		// Thermoplastics of fused-deposition (FDM / FFF) printers: the
 		// filament makers' technical data sheets, AS PRINTED, in the flat
 		// (XY / XZ) orientation, dry. A printed part is weaker across its
