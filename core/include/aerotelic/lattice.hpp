@@ -114,7 +114,13 @@ struct LatticeSpec {
 	// A solid shell of this thickness kept just inside the body surface
 	// (0 = none).
 	double skin_thickness = 0.0;
-	// The lattice is periodic about this point.
+	// The lattice is periodic about this point: the field is evaluated at
+	// p - origin, so these three figures add a constant to the coordinates
+	// the pattern is built on and slide the whole pattern through the
+	// bodies, which stay where they are -- fore/aft in x, left/right in y,
+	// up/down in z (the dialog's Offset x / y / z). A whole cell of offset
+	// changes nothing, the pattern being periodic; a honeycomb ignores the
+	// component along its prism axis.
 	Vec3 origin{0.0, 0.0, 0.0};
 
 	// ---- honeycomb family only ----

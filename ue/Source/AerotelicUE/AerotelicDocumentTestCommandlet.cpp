@@ -460,6 +460,9 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 		Spec.cell_size = 0.5;
 		Spec.volume_fraction = 0.35;
 		Spec.resolution = 6;
+		// Slid a little off the sphere's centre: the offsets travel through
+		// the file (checked after the reopen below).
+		Spec.origin = aerotelic::Vec3{0.1, -0.05, 0.02};
 		// No skin thickness of the lattice's own: the sphere carries 0.05
 		// under Material Properties (set in the mass step) and is hollowed
 		// by that; a body without one is refused by name.
@@ -1547,6 +1550,8 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 			const FAerotelicLatticeModel* M = static_cast<const FAerotelicLatticeModel*>(E->GetModel());
 			Check(M->Spec.type == "Gyroid" && M->Spec.resolution == 6 && FMath::IsNearlyEqual(M->Spec.cell_size, 0.5) && FMath::IsNearlyEqual(M->Spec.volume_fraction, 0.35),
 				"lattice parameters round-tripped");
+			Check(FMath::IsNearlyEqual(M->Spec.origin.x, 0.1, 1e-12) && FMath::IsNearlyEqual(M->Spec.origin.y, -0.05, 1e-12) && FMath::IsNearlyEqual(M->Spec.origin.z, 0.02, 1e-12),
+				"lattice offsets (origin) round-tripped");
 			Check(M->Targets.Num() == 1 && M->Targets[0].Entity.IsValid() && M->Targets[0].Entity->GetEntityType() == aerotelic::project_yaml::EntityType::Primitive,
 				"lattice target resolved to the reopened sphere");
 			Check(M->IsValid() && M->GetStats().Triangles > 0, "lattice regenerated on load");

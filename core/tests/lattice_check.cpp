@@ -3,6 +3,7 @@
 // analytic field, and whole-body generation inside a box and a sphere
 // with a reserved volume.
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -74,6 +75,58 @@ int Run() {
 		Check(CellSolidFraction(g, -0.5, 24) < CellSolidFraction(g, 0.0, 24) && CellSolidFraction(g, 0.0, 24) < CellSolidFraction(g, 0.5, 24),
 			"gyroid network: fraction increases with t");
 		Check(std::fabs(CellSolidFraction(g, 0.0, 32) - 0.5) < 0.01, "gyroid network: t = 0 is half the cell");
+	}
+
+	// ---- origin: the offsets slide the pattern and change nothing else ----
+	{
+		for (LatticeFamily fam : {LatticeFamily::Tpms, LatticeFamily::Strut, LatticeFamily::Honeycomb}) {
+			LatticeSpec plain;
+			plain.family = fam;
+			plain.type = fam == LatticeFamily::Tpms ? "Gyroid" : fam == LatticeFamily::Strut ? "Octet" : "Square";
+			plain.cell_size = 0.5;
+			LatticeSpec moved = plain;
+			moved.origin = Vec3{0.137, -0.291, 0.063};
+			LatticeField f0(plain), f1(moved);
+			char buf[200];
+			std::snprintf(buf, sizeof buf, "%s offset: the calibration does not see the offset (level %.6f vs %.6f)", LatticeFamilyName(fam), f0.level(), f1.level());
+			Check(f0.level() == f1.level(), buf);
+			// A deterministic scatter of points over a few cells.
+			auto scatter = [](int i) { return Vec3{std::sin(1.7 * i) * 1.3, std::cos(2.3 * i) * 1.1, std::sin(0.9 * i + 1.0) * 1.2}; };
+			double worst = 0.0;
+			for (int i = 0; i < 300; ++i) {
+				const Vec3 p = scatter(i);
+				worst = std::max(worst, std::fabs(f1(p) - f0(p - moved.origin)));
+			}
+			std::snprintf(buf, sizeof buf, "%s offset: F(p; origin d) = F(p - d; origin 0), to %.1e", LatticeFamilyName(fam), worst);
+			Check(worst < 1e-9, buf);
+			// A whole cell of offset is no offset at all (along x, which for a
+			// Square honeycomb on the Z axis is a period of the tiling).
+			LatticeSpec cell = plain;
+			cell.origin = Vec3{plain.cell_size, 0.0, 0.0};
+			LatticeField fc(cell);
+			worst = 0.0;
+			for (int i = 0; i < 300; ++i) {
+				const Vec3 p = scatter(i);
+				worst = std::max(worst, std::fabs(fc(p) - f0(p)));
+			}
+			std::snprintf(buf, sizeof buf, "%s offset of one cell along x: the field is unchanged, to %.1e", LatticeFamilyName(fam), worst);
+			Check(worst < 1e-9, buf);
+		}
+		// A honeycomb ignores the offset along its prism axis.
+		LatticeSpec comb;
+		comb.family = LatticeFamily::Honeycomb;
+		comb.type = "Hexagon";
+		comb.cell_size = 0.4;
+		comb.axis = PrismAxis::Z;
+		LatticeSpec along = comb;
+		along.origin = Vec3{0.0, 0.0, 0.3141};
+		LatticeField fh(comb), fa(along);
+		double worst = 0.0;
+		for (int i = 0; i < 300; ++i) {
+			const Vec3 p{std::sin(1.7 * i) * 1.3, std::cos(2.3 * i) * 1.1, std::sin(0.9 * i + 1.0) * 1.2};
+			worst = std::max(worst, std::fabs(fa(p) - fh(p)));
+		}
+		Check(worst < 1e-9, "honeycomb offset along the prism axis: no effect");
 	}
 
 	// ---- marching tetrahedra on an analytic sphere ----

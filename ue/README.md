@@ -575,7 +575,16 @@ The layout follows the Python/Qt version's main window (`aerotelic/ui/main_windo
   exact. The wall is either calibrated to the volume fraction like
   everything else or given outright -- what a printed or bonded core is
   actually specified by. Unlike the other two families these cells are
-  anisotropic on purpose, so the prism axis is part of the spec.
+  anisotropic on purpose, so the prism axis is part of the spec. The
+  spec's `origin` is the point the pattern is periodic about -- the field
+  is evaluated at p - origin -- and since 2026-11-07 the dialog exposes it
+  as **Offset x / y / z** (fore/aft, left/right, up/down): a constant
+  added to the coordinates the pattern is built on, sliding the whole
+  pattern through the bodies while the bodies and skins stay put, to land
+  a strut junction or a wall where a fitting goes. A whole cell of offset
+  changes nothing, and a honeycomb ignores the component along its prism
+  axis (`lattice_check` checks all three facts; the document test
+  round-trips a shifted lattice through the file).
   `GenerateLattice` samples
   the lattice field intersected with the body's distance field (and minus
   the reserved volumes) on a grid of N voxels per cell, skipping whole
