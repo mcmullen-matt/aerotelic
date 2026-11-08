@@ -28,13 +28,6 @@ PlaneAxis ParsePlaneAxis(const std::string& s) {
 	throw std::invalid_argument("unknown plane axis '" + s + "' (x, y, z or custom)");
 }
 
-bool SameLatticeSpec(const LatticeSpec& a, const LatticeSpec& b) {
-	return a.family == b.family && a.type == b.type && a.phase == b.phase && a.cell_size == b.cell_size
-		&& a.volume_fraction == b.volume_fraction && a.wall_thickness == b.wall_thickness && a.resolution == b.resolution
-		&& a.origin.x == b.origin.x && a.origin.y == b.origin.y && a.origin.z == b.origin.z
-		&& a.cell_aspect == b.cell_aspect && a.axis == b.axis && a.wall_sizing == b.wall_sizing;
-}
-
 namespace {
 
 bool SameNetworkGeometry(const PlaneNetwork& a, const PlaneNetwork& b) {
@@ -47,8 +40,6 @@ bool SameNetworkGeometry(const PlaneNetwork& a, const PlaneNetwork& b) {
 
 bool SameStructureGeometry(const BodyStructure& a, const BodyStructure& b) {
 	if (a.skin_thickness != b.skin_thickness) return false;
-	if (a.infill.has_value() != b.infill.has_value()) return false;
-	if (a.infill && !SameLatticeSpec(a.infill->lattice, b.infill->lattice)) return false;
 	if (a.networks.size() != b.networks.size()) return false;
 	for (size_t i = 0; i < a.networks.size(); ++i) {
 		if (!SameNetworkGeometry(a.networks[i], b.networks[i])) return false;
@@ -72,8 +63,8 @@ std::string PlaneNetworkProblem(const PlaneNetwork& n) {
 std::string BodyStructureProblem(const BodyStructure& s) {
 	if (s.skin_thickness < 0.0 || !std::isfinite(s.skin_thickness)) return "the skin thickness cannot be negative";
 	if (s.asserted_mass && (!(*s.asserted_mass >= 0.0) || !std::isfinite(*s.asserted_mass))) return "the asserted mass cannot be negative";
-	if ((s.infill || !s.networks.empty()) && !(s.skin_thickness > 0.0)) {
-		return "an infill or a plane network needs a skin thickness: a solid body has no interior to fill";
+	if (!s.networks.empty() && !(s.skin_thickness > 0.0)) {
+		return "a plane network needs a skin thickness: a solid body has no interior to fill";
 	}
 	for (const PlaneNetwork& n : s.networks) {
 		const std::string why = PlaneNetworkProblem(n);

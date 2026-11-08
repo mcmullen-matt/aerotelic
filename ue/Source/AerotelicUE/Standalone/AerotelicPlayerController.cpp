@@ -105,8 +105,9 @@ void AAerotelicPlayerController::ShowStartupWelcome()
 		return;
 	}
 	// -AerotelicFeaSmoke: the same for Analysis -> Structural (Kratos FEA)
-	// on a project with a lattice (-AerotelicProject): the dialog builds
-	// the model, screenshots its Mesh, Loads and Support tabs and quits.
+	// on a project with a skinned body (-AerotelicProject): the dialog
+	// builds the model, screenshots its Mesh, Loads and Support tabs and
+	// quits.
 	if (FParse::Param(FCommandLine::Get(), TEXT("AerotelicFeaSmoke")))
 	{
 		TWeakPtr<SAerotelicMainShell> WeakShell = Shell;

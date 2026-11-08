@@ -15,8 +15,8 @@ DECLARE_DELEGATE_OneParam(FOnAerotelicStatus, const FText&);
 // each entity is a row, with a child row per solid body it produces (the
 // one solid of a fuselage; a propeller's spinner and blades) and, when the
 // entity is mirrored, a child row per mirrored body. A body whose
-// structure has been generated has a row per layer (skin, infill, ribs)
-// under it, and its mirror likewise.
+// structure has been generated has a row per layer (skin, ribs) under
+// it, and its mirror likewise.
 struct FAerotelicSceneRow
 {
 	enum class EKind : uint8 { Entity, Body, Mirror, Layer, MirrorLayer };

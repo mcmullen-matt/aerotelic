@@ -157,32 +157,36 @@ public class AerotelicUE : ModuleRules
 			}
 		}
 
-		// A body's Generate Structure runs tools/lattice_meshlib.py (the
-		// hollowing, the plane networks and the infill on MeshLib) with the
-		// WingDesigner micromamba environment's python.exe as a separate
-		// process (Entity/AerotelicMeshLib.cpp); the script is staged with
+		// The Python backends, each run with the WingDesigner micromamba
+		// environment's python.exe as a separate process on a job directory
+		// (Entity/AerotelicMeshLib.cpp RunJob); the scripts are staged with
 		// the packaged build, the environment is the user's.
-		string LatticeScript = Path.GetFullPath(Path.Combine(ModuleDirectory, "..", "..", "tools", "lattice_meshlib.py"));
-		if (File.Exists(LatticeScript)) {
-			RuntimeDependencies.Add(LatticeScript, StagedFileType.NonUFS);
-		}
-
-		// File -> Export Tetrahedral Mesh runs tools/tet_gmsh.py (the
-		// skin/core tetrahedral mesh on gmsh) the same way, in the same
-		// environment (Entity/AerotelicTetGmsh.cpp).
-		string TetScript = Path.GetFullPath(Path.Combine(ModuleDirectory, "..", "..", "tools", "tet_gmsh.py"));
-		if (File.Exists(TetScript)) {
-			RuntimeDependencies.Add(TetScript, StagedFileType.NonUFS);
-		}
-
-		// Analysis -> Potential Flow runs tools/potential_flow.py (the fluid
-		// domain on gmsh and the solve on KratosMultiphysics) the same way,
-		// in the same environment (Entity/AerotelicPotentialFlow.cpp). It
-		// imports tet_gmsh.py above for the .tri reader and the surface
-		// checks, which is staged with it.
-		string FlowScript = Path.GetFullPath(Path.Combine(ModuleDirectory, "..", "..", "tools", "potential_flow.py"));
-		if (File.Exists(FlowScript)) {
-			RuntimeDependencies.Add(FlowScript, StagedFileType.NonUFS);
+		//   structure_meshlib.py  a body's Generate Structure: the hollowing
+		//                         and the plane networks' ribs on MeshLib
+		//                         (Entity/AerotelicMeshLib.cpp);
+		//   rib_gmsh.py           the rib shells for the structural analysis
+		//                         on gmsh (Entity/AerotelicRibGmsh.cpp);
+		//   gmsh_common.py        the .tri reader, the DLL bootstrap and the
+		//                         surface checks rib_gmsh.py, potential_flow.py
+		//                         and structural_fea.py import;
+		//   potential_flow.py     Analysis -> Potential Flow: the fluid domain
+		//                         on gmsh, the solve on KratosMultiphysics
+		//                         (Entity/AerotelicPotentialFlow.cpp);
+		//   structural_fea.py     Analysis -> Structural: the shell FEA on
+		//                         KratosMultiphysics (Entity/AerotelicStructuralFea.cpp)
+		//                         -- never staged before 2026-11-08, so a
+		//                         packaged build had no structural solver.
+		// (tools/lattice_meshlib.py and tools/tet_gmsh.py, the lattice infill
+		// and the skin/core tetrahedral mesh, went with those features on
+		// 2026-11-08.)
+		string[] ToolScripts = {
+			"structure_meshlib.py", "rib_gmsh.py", "gmsh_common.py", "potential_flow.py", "structural_fea.py",
+		};
+		foreach (string Script in ToolScripts) {
+			string ScriptPath = Path.GetFullPath(Path.Combine(ModuleDirectory, "..", "..", "tools", Script));
+			if (File.Exists(ScriptPath)) {
+				RuntimeDependencies.Add(ScriptPath, StagedFileType.NonUFS);
+			}
 		}
 	}
 }

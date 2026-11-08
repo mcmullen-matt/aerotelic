@@ -11,7 +11,7 @@
 // its entity's placed mesh (the mirrored half reflected), weighed the way
 // the body's structure says (body_structure.hpp) -- a density times the
 // enclosed volume, a skin as density times area times thickness with the
-// ribs and infill estimated from the figures, or an asserted total spread
+// ribs estimated from the planes' sections, or an asserted total spread
 // over the surface -- or, once its structure has been GENERATED, by its
 // layers exactly (one line per layer, each a solid of its own material).
 // The assembly is the parallel-axis sum of the lines about their joint
@@ -41,7 +41,7 @@ struct FAerotelicMassReport
 	int32 IncludedCount = 0;
 };
 
-// Meshes every body at Tolerance (the STL / lattice tolerance) and weighs
+// Meshes every body at Tolerance (the STL / boolean tolerance) and weighs
 // it in the project's units (a material's SI density is converted to
 // them, since the meshes are in them). A body whose entity has no
 // MassSpec, or no geometry, is listed with the reason and left out of

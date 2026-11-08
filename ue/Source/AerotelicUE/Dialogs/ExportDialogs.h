@@ -9,23 +9,9 @@
 // Status receives the status-bar line.
 void ShowAerotelicExportStlDialog(TFunction<void(const FText&)> Status);
 
-// File -> Export Skin Tetrahedra (VTK): the skin tetrahedra (material 1)
-// of every body whose structure has been generated -- the tetrahedral mesh
-// each body's generated structure builds on request over the body's
-// surface and MeshLib's inward offset at the skin depth (gmsh, conforming
-// to both exactly, so the skin's outer faces tile
-// the body's own triangulation and its inner faces the offset) -- as one
-// legacy VTK unstructured grid, for a finite-element model. Asks for the
-// file; the status line reports the volumes (skin + core against the
-// bodies') so the conformity can be checked; a message lists bodies left
-// out or not conformed exactly.
-void ShowAerotelicExportSkinVtkDialog(TFunction<void(const FText&)> Status);
-
-// File -> Export Tetrahedral Mesh (VTK): the same meshes with both the
-// skin (material 1) and the core (material 2, inside the offset: the
-// volume the infill's material card applies to), as one legacy VTK
-// unstructured grid. Skin + core tile each body exactly.
-void ShowAerotelicExportTetVtkDialog(TFunction<void(const FText&)> Status);
+// (The tetrahedral VTK exports -- Export Skin Tetrahedra, Export
+// Tetrahedral Mesh -- went with the tetrahedra on 2026-11-08: the
+// application models shells only.)
 
 // File -> Export STEP (_export_step_dialog): the same body picker, the
 // loft station tolerance with "Rebuild bodies at this tolerance", and

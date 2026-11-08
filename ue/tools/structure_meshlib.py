@@ -1,20 +1,27 @@
-"""Hollowing and infill for Aerotelic's lattices, on MeshLib.
+"""Hollowing and ribs for Aerotelic's body structures, on MeshLib.
 
 Run by the application (Entity/AerotelicMeshLib.cpp) as a separate process
 in the WingDesigner micromamba environment, where MeshLib is installed
 (``pip install meshlib``)::
 
-    python lattice_meshlib.py <job directory>
+    python structure_meshlib.py <job directory>
 
-The job directory holds ``job.json`` (see ``run_job`` for the keys), the
-bodies as ``.tri`` files and, when there is an infill, the lattice field
-sampled on a grid as raw float32 (``lattice.f32``). The script writes the
-two bodies of the lattice back as ``.tri`` files and ``result.json``.
+The job directory holds ``job.json`` (see ``run_job`` for the keys) and the
+bodies as ``.tri`` files. The script writes the skin, each body's inner
+offset surface and each plane network's ribs back as ``.tri`` files, and
+``result.json``.
 
-What it does, per lattice:
+A body's structure (core body_structure.hpp) is a material, a skin
+thickness and plane networks -- ribs, spars, frames as shells -- over the
+body's own geometry; the generated layers are the skin and the ribs.
+(Until 2026-11-08 the same job also extracted a lattice infill from a
+sampled field and returned it as a third body; the lattice infill was
+removed from the application that day and this script with it.)
 
-1. **Hollowing.** Each body to fill is offset INWARD by the skin thickness
-   with MeshLib's voxel offset (``offsetMesh``: a signed distance field on
+What it does, per body:
+
+1. **Hollowing.** Each body is offset INWARD by the skin thickness with
+   MeshLib's voxel offset (``offsetMesh``: a signed distance field on
    OpenVDB, dual marching cubes back), which cannot self-intersect and
    rounds a concave crease from the inside. The interior is then opened
    (double offset -r, +r, ``inner_opening``: parts thinner than 2r -- the
@@ -23,35 +30,27 @@ What it does, per lattice:
    a fraction of its voxel, and pockets smaller than a few voxels are
    dropped. The **Skin** body is the body's own surface plus the inverted
    offset surface: a closed shell whose outside is exact.
-2. **Infill domain.** The union of the offset interiors (a mesh boolean
-   when they overlap) minus the reserved volumes (mesh boolean
-   difference), so the infill never crosses a payload bay.
-3. **Infill.** The lattice field the application sampled (F <= 0 inside
-   the lattice material: the core's OpenLattice TPMS / strut fields, all
-   36 types) goes through MeshLib's marching cubes, padded so the surface
-   closes, and is intersected with the infill domain by a mesh boolean --
-   an exact cut along the offset surface rather than a resampled one.
-   The **Lattice** body is that intersection.
-4. **Inner surfaces for the tetrahedral mesher.** Each body's offset
-   surface (after the pocket drop and the decimation, optionally
-   remeshed to isotropic triangles of ``inner_remesh_edge``) is written
-   back on its own as ``inner_<i>.tri`` and checked for the constrained
-   Delaunay mesher (core tet.hpp, TetrahedralizeNested): closed, outward,
-   and not touching the body's own surface (MeshLib's triangle collision
-   test). The application meshes body and offset together into skin and
-   core tetrahedra that conform to both exactly. A target that carries an
+2. **The hollow.** The union of the offset interiors (a mesh boolean when
+   they overlap) minus the reserved volumes (mesh boolean difference), so
+   the ribs never cross a payload bay.
+3. **Inner surfaces.** Each body's offset surface (after the pocket drop
+   and the decimation, optionally remeshed to isotropic triangles of
+   ``inner_remesh_edge``) is written back on its own as ``inner_<i>.tri``
+   and checked: closed, outward, not touching the body's own surface
+   (MeshLib's triangle collision test) and not crossing itself. The
+   application keeps it as the hollow's inner boundary for the structural
+   analysis, whose rib shells lie inside it. A target that carries an
    ``inner_file`` of its own (the offset from an earlier run of the same
    body and skin, cached by the application) is not offset again.
-5. **Plane networks (2026-11-08: ribs, spars, frames).** Each network is a
+4. **Plane networks (2026-11-08: ribs, spars, frames).** Each network is a
    family of parallel planes with a thickness: its slabs (boxes about the
-   planes, wide enough to cover the body) are intersected with the infill
-   domain by an exact mesh boolean, so the ribs are the hollow's exact
+   planes, wide enough to cover the body) are intersected with the hollow
+   by an exact mesh boolean, so the ribs are the hollow's exact
    cross-sections, wall to wall; a network with a ``height`` reaches only
    that far in from the surface (the slabs minus the body's deeper offset
    at skin + height: a stringer, a cap). Earlier networks have priority
-   (a spar stays continuous, the ribs after it are notched by it), and
-   the ribs are cut from the domain before the infill is extracted, so
-   the layers are disjoint and their volumes add. Each network's body is
+   (a spar stays continuous, the ribs after it are notched by it), so the
+   layers are disjoint and their volumes add. Each network's body is
    written as ``ribs_<j>.tri``.
 
 The ``.tri`` format is the application's own: 8 bytes ``AEROTRI1``,
@@ -157,9 +156,9 @@ def require_closed_body(mesh, label, role):
     if num_faces(mesh) == 0:
         raise JobError("'%s' (%s) has no triangles." % (label, role))
     if not is_closed(mesh):
-        raise JobError("'%s' (%s) is not a closed surface, so inside and outside cannot be told apart. The lattice was not generated." % (label, role))
+        raise JobError("'%s' (%s) is not a closed surface, so inside and outside cannot be told apart. The structure was not generated." % (label, role))
     if not mesh.volume() > 0.0:
-        raise JobError("'%s' (%s) is turned inside out (its enclosed volume is not positive). The lattice was not generated." % (label, role))
+        raise JobError("'%s' (%s) is turned inside out (its enclosed volume is not positive). The structure was not generated." % (label, role))
 
 
 def mesh_boolean(a, b, operation, what):
@@ -253,11 +252,12 @@ def remesh_edge_floor(area, max_faces=None):
 
 
 def remesh_isotropic(mesh, edge_len):
-    """Remeshes in place toward isotropic triangles of `edge_len` (for a
-    better-conditioned constraint surface), keeping it closed; reverts
-    and returns False if MeshLib's remesh fails or opens the surface. The
-    caller keeps `edge_len` at or above remesh_edge_floor; the split cap
-    here is the backstop for a surface whose area the floor misjudged."""
+    """Remeshes in place toward isotropic triangles of `edge_len` (a
+    better-conditioned bounding surface for the analysis), keeping it
+    closed; reverts and returns False if MeshLib's remesh fails or opens
+    the surface. The caller keeps `edge_len` at or above
+    remesh_edge_floor; the split cap here is the backstop for a surface
+    whose area the floor misjudged."""
     if edge_len <= 0.0 or num_faces(mesh) == 0:
         return False
     backup = mm.Mesh(mesh)
@@ -287,8 +287,8 @@ def open_interior(mesh, radius, voxel):
     then outward by it again (MeshLib's double offset on one voxel grid),
     which removes every part thinner than twice the radius -- the wedge of
     an offset interior tapering to nothing along a trailing edge, whose
-    two sheets, closer than the mesher's triangles, would otherwise split
-    each other without end. Returns the opened mesh (possibly empty)."""
+    two sheets would otherwise lie closer than anything built between
+    them. Returns the opened mesh (possibly empty)."""
     if radius <= 0.0 or num_faces(mesh) == 0:
         return mesh
     params = mm.OffsetParameters()
@@ -301,9 +301,9 @@ def open_interior(mesh, radius, voxel):
 
 
 def inner_surface_report(body, inner, label):
-    """Checks an offset interior as the inner constraint surface of the
-    tetrahedral mesher: closed, outward, clear of the body's own surface
-    and not crossing itself. Returns (ok, note)."""
+    """Checks an offset interior as the hollow's inner boundary: closed,
+    outward, clear of the body's own surface and not crossing itself.
+    Returns (ok, note)."""
     if num_faces(inner) == 0:
         return True, "all skin: no inner surface"
     if not is_closed(inner):
@@ -316,45 +316,13 @@ def inner_surface_report(body, inner, label):
     if len(hits) > 0:
         return False, "%s: the inner surface touches the body's surface (the skin is thinner than the offset's voxel there)" % label
     # Self-intersection: a surface can clear the body and still cross
-    # itself where the offset folds through a thin region, and a
-    # tetrahedral mesher refuses the body over it ("a segment and a facet
-    # intersect"). Found on the P-38 airframe with the offset remeshed at
-    # three skins; two skins is clean.
+    # itself where the offset folds through a thin region, and anything
+    # meshed against it fails there. Found on the P-38 airframe with the
+    # offset remeshed at three skins; two skins is clean.
     self_hits = mm.findSelfCollidingTriangles(mm.MeshPart(inner))
     if len(self_hits) > 0:
         return False, "%s: the inner surface crosses itself in %d place(s) (the offset folds through a thin region; a finer remesh clears it)" % (label, len(self_hits))
     return True, ""
-
-
-def field_volume(spec, job_dir):
-    """The lattice field as a MeshLib SimpleVolume, padded by one positive
-    voxel on every side so marching cubes closes the surface, with the
-    origin that puts voxel (i, j, k) on the application's grid node."""
-    nx, ny, nz = int(spec["nx"]), int(spec["ny"]), int(spec["nz"])
-    h = float(spec["h"])
-    path = os.path.join(job_dir, spec["file"])
-    raw = np.fromfile(path, dtype="<f4")
-    if raw.size != nx * ny * nz:
-        raise JobError("the lattice field holds %d samples, not %d x %d x %d" % (raw.size, nx, ny, nz))
-    # The application writes x fastest: index = (k * ny + j) * nx + i.
-    arr = raw.reshape(nz, ny, nx).transpose(2, 1, 0)
-    pad = np.float32(max(h, float(np.nanmax(np.abs(raw))) if raw.size else h))
-    arr = np.pad(arr, 1, mode="constant", constant_values=pad)
-    vol = mn.simpleVolumeFrom3Darray(np.ascontiguousarray(arr, dtype=np.float32))
-    vol.voxelSize = mm.Vector3f(h, h, h)
-    o = spec["origin"]
-    # Marching cubes puts voxel index i at origin + (i + 0.5) h; the
-    # padding shifts the application's node i to index i + 1.
-    origin = mm.Vector3f(float(o[0]) - 1.5 * h, float(o[1]) - 1.5 * h, float(o[2]) - 1.5 * h)
-    return vol, origin
-
-
-def lattice_surface(vol, origin):
-    params = mm.MarchingCubesParams()
-    params.iso = 0.0
-    params.lessInside = True
-    params.origin = origin
-    return mm.marchingCubes(vol, params)
 
 
 # ---------------------------------------------------------------------------
@@ -489,7 +457,7 @@ def cut_networks(job, job_dir, domain, bodies, targets, voxel, mode, outputs, wa
                         cutter = mesh_boolean(cutter, core, mm.BooleanOperation.DifferenceAB, "limiting the height of '%s'" % label)
                 cut = mesh_boolean(cutter, domain, mm.BooleanOperation.Intersection, "cutting the planes of '%s' to the interior" % label)
                 if num_faces(cut) > 0:
-                    reduced = mesh_boolean(domain, cutter, mm.BooleanOperation.DifferenceAB, "removing the ribs of '%s' from the infill domain" % label)
+                    reduced = mesh_boolean(domain, cutter, mm.BooleanOperation.DifferenceAB, "removing the ribs of '%s' from the hollow" % label)
                 ribs = cut
                 if attempt == 1:
                     warnings.append("%s: the planes were nudged by %.3g for MeshLib's boolean" % (label, nudge))
@@ -541,30 +509,32 @@ def run_job(job_dir):
                             triangles
         targets             [{label, file, skin_thickness?,
                             inner_remesh_edge?, inner_file?}] bodies to
-                            fill (.tri, closed), each optionally with its
+                            hollow (.tri, closed), each optionally with its
                             own skin depth and remesh edge in place of the
                             job's; with inner_file (a .tri in the job
                             directory) the offset is taken from that file
                             as it is rather than computed
-        reserved            [{label, file}] volumes the infill must avoid
+        reserved            [{label, file}] volumes the ribs must avoid
         networks            [{label, planes: [{normal, offset}], thickness,
                             height, centre, half_extent}] plane networks
-                            cut from the interior in order (see the module
+                            cut from the hollow in order (see the module
                             docstring); may be absent
-        field               null, or {file, nx, ny, nz, origin, h}: the
-                            lattice field on the grid (F <= 0 is material)
-        outputs             {skin, lattice, result, inner_prefix,
-                            ribs_prefix}: file names to write; the inner
-                            surface of target i goes to
-                            <inner_prefix>_<i>.tri ("inner" by default),
-                            network j to <ribs_prefix>_<j>.tri ("ribs")
+        outputs             {skin, result, inner_prefix, ribs_prefix}: file
+                            names to write; the inner surface of target i
+                            goes to <inner_prefix>_<i>.tri ("inner" by
+                            default), network j to <ribs_prefix>_<j>.tri
+                            ("ribs")
 
-    Returns the result dictionary (also written to outputs.result). Its
-    "targets" list has, per body in order: label, inner_file,
-    inner_vertices, inner_triangles, inner_components, inner_volume,
-    inner_ok (usable as the mesher's inner constraint surface) and
-    inner_note (why not, or "all skin"); its "networks" list, per network
-    in order: label, file, volume, triangles, planes, note.
+    Returns the result dictionary (also written to outputs.result):
+    ok, skin_vertices, skin_triangles, skin_volume, domain_volume (the
+    hollow before the ribs are taken out), ribs_volume, interiors (how
+    many bodies have one), targets, networks, warnings, timings, seconds,
+    meshlib. Its "targets" list has, per body in order: label,
+    skin_thickness, inner_file, inner_vertices, inner_triangles,
+    inner_components, inner_volume, inner_ok (closed, outward, clear of
+    the body and of itself) and inner_note (why not, or "all skin"); its
+    "networks" list, per network in order: label, file, volume,
+    triangles, planes, note.
     """
     t_start = time.time()
     with open(os.path.join(job_dir, "job.json"), "r", encoding="utf-8") as f:
@@ -596,7 +566,7 @@ def run_job(job_dir):
     for item in targets:
         label = item.get("label", item["file"])
         body = read_tri(os.path.join(job_dir, item["file"]))
-        require_closed_body(body, label, "a body to fill")
+        require_closed_body(body, label, "a body to hollow")
         bodies.append(body)
     # Never a remesh the machine cannot hold: the edge every body is
     # remeshed at is at least the one at which their offset surfaces
@@ -652,8 +622,8 @@ def run_job(job_dir):
         if remeshed and min_pocket_here > 0.0:
             # The remesh can leave its own debris: on the P-38 airframe it
             # made four pockets of about 1e-5 (three self-intersecting)
-            # beside the real one of 17.1, and a tetrahedral mesher refuses
-            # the lot over them. Drop them the same way.
+            # beside the real one of 17.1, and anything meshed against the
+            # surface fails over them. Drop them the same way.
             debris = drop_small_components(inner, min_pocket)
             if debris:
                 warnings.append("%s: %d sliver(s) left by the remesh of the offset surface were dropped" % (label, debris))
@@ -663,12 +633,12 @@ def run_job(job_dir):
             % (label, num_faces(body), body_volume, own_thickness, n_inner, n_dec,
                (", %d after remeshing" % num_faces(inner)) if remeshed else "", n_components, inner_volume))
         if num_faces(inner) == 0:
-            warnings.append("%s is nowhere thicker than two skins: it is all skin, with no infill" % label)
+            warnings.append("%s is nowhere thicker than two skins: it is all skin, with no interior for ribs" % label)
         skin_volume += body_volume - inner_volume
-        # The inner surface on its own, for the tetrahedral mesher.
+        # The inner surface on its own: the hollow's inner boundary.
         inner_ok, inner_note = inner_surface_report(body, inner, label)
         if not inner_ok:
-            warnings.append(inner_note + "; its tetrahedral mesh cannot be built")
+            warnings.append(inner_note + "; the hollow's inner surface cannot be used by the structural analysis")
         inner_file = "%s_%d.tri" % (inner_prefix, index)
         inner_counts = write_tri(os.path.join(job_dir, inner_file), mm.Mesh(inner) if num_faces(inner) > 0 else None)
         target_results.append({
@@ -694,7 +664,7 @@ def run_job(job_dir):
                         % (", ".join("'%s'" % r[0] for r in remesh_raised), remesh_floor, min(r[1] for r in remesh_raised), MAX_INNER_FACES))
     timings["hollowing"] = time.time() - t0
 
-    # 2. The infill domain: the union of the interiors minus the reserved volumes.
+    # 2. The hollow: the union of the interiors minus the reserved volumes.
     t0 = time.time()
     domain = None
     for label, inner in interiors:
@@ -707,52 +677,28 @@ def run_job(job_dir):
         reserved = read_tri(os.path.join(job_dir, item["file"]))
         require_closed_body(reserved, label, "a reserved volume")
         if domain is not None and num_faces(domain) > 0:
-            domain = mesh_boolean(domain, reserved, mm.BooleanOperation.DifferenceAB, "cutting the reserved volume '%s' from the infill domain" % label)
+            domain = mesh_boolean(domain, reserved, mm.BooleanOperation.DifferenceAB, "cutting the reserved volume '%s' from the hollow" % label)
     domain_volume = domain.volume() if domain is not None and num_faces(domain) > 0 else 0.0
     timings["domain"] = time.time() - t0
-    log("  infill domain: %d faces, volume %.6g" % (num_faces(domain), domain_volume))
+    log("  hollow: %d faces, volume %.6g" % (num_faces(domain), domain_volume))
 
-    # 2b. The plane networks: ribs cut from the domain, which loses them.
+    # 3. The plane networks: ribs cut from the hollow.
     t0 = time.time()
     domain, network_results, rib_meshes = cut_networks(job, job_dir, domain, bodies, targets, voxel, mode, outputs, warnings)
     ribs_volume = sum(float(r["volume"]) for r in network_results)
-    infill_domain_volume = domain.volume() if domain is not None and num_faces(domain) > 0 else 0.0
     timings["networks"] = time.time() - t0
-
-    # 3. The infill: the lattice surface cut to the domain.
-    t0 = time.time()
-    lattice = None
-    field = job.get("field")
-    if field is not None and domain is not None and num_faces(domain) > 0:
-        vol, origin = field_volume(field, job_dir)
-        surface = lattice_surface(vol, origin)
-        log("  lattice field %d x %d x %d: %d faces" % (int(field["nx"]), int(field["ny"]), int(field["nz"]), num_faces(surface)))
-        if num_faces(surface) > 0:
-            if not is_closed(surface):
-                raise JobError("the lattice surface did not close (%d holes)." % surface.topology.findNumHoles())
-            lattice = mesh_boolean(surface, domain, mm.BooleanOperation.Intersection, "cutting the lattice to the infill domain")
-            if num_faces(lattice) > 0 and not is_closed(lattice):
-                warnings.append("the infill is not a closed surface (%d holes)" % lattice.topology.findNumHoles())
-    lattice_volume = lattice.volume() if lattice is not None and num_faces(lattice) > 0 else 0.0
-    timings["infill"] = time.time() - t0
 
     # 4. Out.
     t0 = time.time()
     skin_counts = write_tri(os.path.join(job_dir, outputs["skin"]), skin)
-    lattice_counts = write_tri(os.path.join(job_dir, outputs["lattice"]), lattice)
     timings["write"] = time.time() - t0
     result = {
         "ok": True,
         "skin_vertices": skin_counts[0],
         "skin_triangles": skin_counts[1],
-        "lattice_vertices": lattice_counts[0],
-        "lattice_triangles": lattice_counts[1],
         "skin_volume": skin_volume,
         "domain_volume": domain_volume,
-        "infill_domain_volume": infill_domain_volume,
         "ribs_volume": ribs_volume,
-        "lattice_volume": lattice_volume,
-        "achieved_fraction": (lattice_volume / infill_domain_volume) if infill_domain_volume > 0.0 else 0.0,
         "interiors": len(interiors),
         "targets": target_results,
         "networks": network_results,
@@ -763,14 +709,14 @@ def run_job(job_dir):
     }
     with open(os.path.join(job_dir, outputs["result"]), "w", encoding="utf-8") as f:
         json.dump(result, f, indent=1)
-    log("  skin %d triangles (volume %.6g), lattice %d triangles (volume %.6g, %.1f%% of the domain), %.2f s"
-        % (result["skin_triangles"], skin_volume, result["lattice_triangles"], lattice_volume, 100.0 * result["achieved_fraction"], result["seconds"]))
+    log("  skin %d triangles (volume %.6g), hollow %.6g, ribs %.6g over %d network(s), %.2f s"
+        % (result["skin_triangles"], skin_volume, domain_volume, ribs_volume, len(network_results), result["seconds"]))
     return result
 
 
 def main(argv):
     if len(argv) != 2:
-        log("usage: lattice_meshlib.py <job directory>")
+        log("usage: structure_meshlib.py <job directory>")
         return 2
     job_dir = argv[1]
     try:

@@ -3,7 +3,7 @@
 #include "CoreMinimal.h"
 
 #include "AerotelicStructuralFea.h"
-#include "aerotelic/tet.hpp"
+#include "aerotelic/mesh.hpp"
 #include "aerotelic/vec3.hpp"
 
 #include <cmath>
@@ -11,21 +11,19 @@
 // The structural analysis's inputs as the solver will see them, derived
 // here -- headless, from an AerotelicStructuralFea::FRequest and without
 // running anything -- by the same rules tools/structural_fea.py applies
-// when it builds the Kratos model:
+// when it builds the Kratos model (shells only since 2026-11-08):
 //
-//   - the wetted faces: the boundary faces of the tetrahedra (a face that
-//     belongs to one tetrahedron only), outward, in the script's order
-//     (lexicographic by sorted node ids, np.unique's), then the shell-only
-//     regions' faces as given, so that a pressure per face maps face for
-//     face;
+//   - the wetted faces: the skin regions' faces as given, in order, so
+//     that a pressure per face maps face for face;
 //   - the support: every node within the tolerance of the plane
 //     axis = value, "min" / "max" resolved on the mesh, the zero tolerance
 //     resolved to a ten-thousandth of the mesh's diagonal;
-//   - the point force: the corner node nearest the point;
+//   - the point force: the node nearest the point;
 //   - the loads as force vectors in newtons: the pressure on each wetted
 //     face (-p n A), the inertial load on the part's mass at its centre
-//     (a homogenised core's mass estimated from the cell's solid
-//     fraction, before the homogeniser has run), the point force.
+//     (the shells' rho t A and the ribs'), the point force;
+//   - the system's size: every node is a shell node, six degrees of
+//     freedom, so Dofs = 6 x Nodes.
 //
 // The Structural dialog's pre-processor tabs draw this (the mesh, the
 // loads as vectors, the fixed nodes), and the document commandlet checks
@@ -33,12 +31,11 @@
 // cannot drift apart unnoticed.
 namespace AerotelicFeaPreprocess
 {
-	// One wetted face: its nodes wound outward, the tetrahedron it belongs
-	// to (-1 for a shell-only region's face) and its region id.
+	// One face: its nodes wound outward (a wetted face) or as the rib mesher
+	// gave them (a rib face), and its region id.
 	struct FFace
 	{
 		int32 N[3] = { 0, 0, 0 };
-		int32 Tet = -1;
 		int32 Region = 0;
 	};
 
@@ -47,57 +44,34 @@ namespace AerotelicFeaPreprocess
 	{
 		int32 Id = 0;
 		FString Label;
-		FString Kind;          // "shells", "solid", "shells over a homogenised core", "homogenised core", "rib shells"
-		int32 Tets = 0;
-		int32 Faces = 0;
+		FString Kind;          // "shells" or "rib shells"
+		int32 Faces = 0;       // wetted faces (skin shells) of the region
 		int32 RibFaces = 0;    // rib shells of the region (FRequest::RibFaces)
-		bool bSecondOrder = false;   // its tetrahedra 10-node (FRegion::IsSecondOrder)
-		double Volume = 0.0;   // project units^3
 		double Area = 0.0;     // of its wetted faces, project units^2
 		double RibArea = 0.0;  // of its rib faces, project units^2
-		double Mass = 0.0;     // kg (a homogenised core: estimated)
+		double Mass = 0.0;     // kg
 	};
 
 	struct FModel
 	{
 		// ---- the mesh, project units ----
-		int32 Nodes = 0, Tets = 0;
+		int32 Nodes = 0;
 		aerotelic::Box3 Bounds;
 		double Diagonal = 0.0;
 		TArray<FFace> WettedFaces;
 		// The rib faces (2026-11-08): shells inside the body, not wetted --
 		// no pressure, no part in the surface displacement -- but carrying
-		// mass, degrees of freedom and the load path like any shell. Tet is
-		// -1; Region is the rib region's.
+		// mass, degrees of freedom and the load path like any shell. Region
+		// is the rib region's.
 		TArray<FFace> RibFaces;
 		// ---- the system the solver will build (2026-11-05), by the
-		// script's own rules, so the cost is known BEFORE the solve: the
-		// tetrahedra of the second-order regions, the mid-edge nodes the
-		// script adds for them (one per distinct edge of those tetrahedra),
-		// the corner nodes carrying shells (six degrees of freedom; the
-		// rest three), and the degrees of freedom in all. ----
-		int32 SecondOrderTets = 0;
-		int32 MidEdgeNodes = 0;
+		// script's own rules, so the cost is known BEFORE the solve: every
+		// node carries a shell (six degrees of freedom), ShellNodes counts
+		// the ones a face of a skin or rib region actually touches. ----
 		int32 ShellNodes = 0;
 		int64 Dofs = 0;
 		// Which solver "auto" would run at that size (the script's rule).
 		bool DirectSolverAuto() const { return Dofs <= AerotelicStructuralFea::kAutoDirectDofs; }
-		// ---- the tetrahedra's shape (2026-11-05), over whatever mesh the
-		// solver is handed: the extreme dihedral angles (degrees) and the
-		// tetrahedra outside the acceptance band of a linear element --
-		// a dihedral under 10 degrees (the stiffness matrix's conditioning,
-		// Shewchuk 2002) or over 160 (the gradient's, so the stress's,
-		// accuracy). The fraction outside the band against kPoorTetFraction
-		// is the dialog's verdict: shown at Build Model, asked about at
-		// Solve. Found on Center at 100 x 100 (tools in the diagnosis of
-		// 2026-11-05): the nose and tail pole fans of the fuselage grid
-		// give needle triangles no volume mesher can fix, and an interior
-		// not seeded by the surface added a fan of slivers along the skin.
-		double MinDihedral = 0.0, MaxDihedral = 0.0;
-		int32 TetsDihedralUnder10 = 0, TetsDihedralOver160 = 0;
-		static constexpr double kPoorTetFraction = 0.02;
-		double PoorTetFraction() const { return Tets > 0 ? static_cast<double>(TetsDihedralUnder10 + TetsDihedralOver160) / Tets : 0.0; }
-		bool MeshIsPoor() const { return Tets > 0 && PoorTetFraction() > kPoorTetFraction; }
 		TArray<FVector> FaceCentre;
 		TArray<FVector> FaceNormal;     // unit, outward
 		TArray<double> FaceArea;        // project units^2
@@ -133,11 +107,11 @@ namespace AerotelicFeaPreprocess
 		double MedianEdge = 0.0;
 		bool ToleranceIsCoarse(const FPlane& P) const { return MedianEdge > 0.0 && P.Tolerance > 0.25 * MedianEdge; }
 		// The load path: the mesh's connected pieces (nodes joined by a
-		// tetrahedron or a face), and the regions none of whose pieces holds
-		// a support node. Such a region FLOATS -- a linear static solve on
-		// it is singular, and an iterative solver returns rubbish for the
-		// whole model (a mirrored wing chosen beside the boolean that
-		// already contains it was the case that found this).
+		// face), and the regions none of whose pieces holds a support node.
+		// Such a region FLOATS -- a linear static solve on it is singular,
+		// and an iterative solver returns rubbish for the whole model (a
+		// mirrored wing chosen beside the boolean that already contains it
+		// was the case that found this).
 		int32 Components = 0;
 		TArray<int32> NodeComponent;      // per node
 		TArray<bool> ComponentSupported;  // per component: holds a support node
@@ -148,7 +122,7 @@ namespace AerotelicFeaPreprocess
 		TArray<double> FacePressure;    // Pa, one per wetted face
 		FVector PressureResultant = FVector::ZeroVector;   // N, sum of -p n A
 		double MaxFacePressure = 0.0;   // max |p| over the faces, Pa
-		// The point forces, each at its nearest corner node.
+		// The point forces, each at its nearest node.
 		struct FPointLoad
 		{
 			int32 Node = -1;
@@ -162,16 +136,15 @@ namespace AerotelicFeaPreprocess
 		// is not where it was typed: the caption and the Apply status warn.
 		bool SnapIsFar(const FPointLoad& P) const { return MedianEdge > 0.0 && P.SnapDistance > MedianEdge; }
 		FVector PointResultant = FVector::ZeroVector;      // N
-		double Mass = 0.0;              // kg, the part's (see bMassEstimated)
-		bool bMassEstimated = false;    // a homogenised core's density from the cell's solid fraction
+		double Mass = 0.0;              // kg, the part's: the shells' and the ribs'
 		FVector MassCentre = FVector::ZeroVector;           // project units, mass-weighted
 		FVector GravityForce = FVector::ZeroVector;         // N, (0, 0, -m n g)
 	};
 
 	// Derives the model. False with the reason when the request has no
-	// mesh, no region for a tetrahedron or face, or no wetted face at all.
-	// A support with fewer than three nodes is NOT an error here (the
-	// script refuses it; the dialog shows what there is and says so).
+	// nodes, no region for a face, or no wetted face at all. A support
+	// with fewer than three nodes is NOT an error here (the script refuses
+	// it; the dialog shows what there is and says so).
 	bool Build(const AerotelicStructuralFea::FRequest& Request, FModel& Out, FString& OutError);
 
 	// Whether a node lies on a resolved plane: within its tolerance of it,

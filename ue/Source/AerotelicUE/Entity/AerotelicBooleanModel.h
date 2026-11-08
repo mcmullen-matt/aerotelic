@@ -28,7 +28,7 @@ struct FAerotelicBooleanOperand
 // rest; fuse and common are associative. An operand with several bodies
 // (a propeller) is fused into one first. Built like any other entity
 // model, so the result is a normal scene item: body, colour, visibility,
-// section, styles, STL export, a lattice target, a tetrahedral mesh.
+// section, styles, STL export, a body structure (skin and ribs) of its own.
 //
 // No OpenCascade: a boolean result has no B-rep solid, so it is not
 // exported to STEP (export the operands and combine them downstream).
@@ -39,8 +39,8 @@ public:
 	std::string Operation = "fuse";
 	TArray<FAerotelicBooleanOperand> Operands;
 
-	// The tolerance the document validates a new operation at (the lattice
-	// and export tolerance).
+	// The tolerance the document validates a new operation at (the export
+	// tolerance).
 	static constexpr double kValidationTolerance = 2e-3;
 
 	// Throws std::runtime_error: a boolean result is a mesh, not a solid.

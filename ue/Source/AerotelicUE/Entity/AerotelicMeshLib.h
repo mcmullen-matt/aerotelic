@@ -10,14 +10,16 @@
 
 class FJsonObject;
 
-// The MeshLib backend of the lattices' hollowing and infill
-// (tools/lattice_meshlib.py), run as a separate process in the
+// The MeshLib backend of a body's hollowing and ribs
+// (tools/structure_meshlib.py), run as a separate process in the
 // WingDesigner micromamba environment where MeshLib is installed with pip.
 // The bodies travel as .tri files (the application's own indexed format,
-// so the loft's shared vertices survive), the lattice field as raw
-// float32 samples on the generator's grid, and the two result bodies come
-// back as .tri files with a result.json of statistics -- the same
-// separate-process pattern as the STEP writer (Export/AerotelicExport.h).
+// so the loft's shared vertices survive), and the skin, each body's inner
+// offset and each network's ribs come back as .tri files with a
+// result.json of statistics -- the same separate-process pattern as the
+// STEP writer (Export/AerotelicExport.h). Until 2026-11-08 the same job
+// also carried a sampled lattice field and returned an infill body; the
+// lattice infill was removed from the application that day.
 namespace AerotelicMeshLib
 {
 	// A placed, closed body with the name it is reported under. A target
@@ -52,17 +54,6 @@ namespace AerotelicMeshLib
 		double HalfExtent = 0.0;
 	};
 
-	// The lattice field sampled on a regular grid: node (i, j, k) at
-	// Origin + H * (i, j, k), Values[(k * Ny + j) * Nx + i] <= 0 inside the
-	// lattice material.
-	struct FField
-	{
-		int32 Nx = 0, Ny = 0, Nz = 0;
-		aerotelic::Vec3 Origin;
-		double H = 0.0;
-		std::vector<float> Values;
-	};
-
 	struct FRequest
 	{
 		TArray<FBody> Targets;
@@ -86,24 +77,22 @@ namespace AerotelicMeshLib
 		// (0: the decimated surface as it is); a target's own takes
 		// precedence.
 		double InnerRemeshEdge = 0.0;
-		// The infill's field; null for a hollow part with no infill.
-		const FField* Field = nullptr;
 		// The plane networks, in priority order (an earlier one is
-		// continuous, a later one is notched by it); the infill fills what
-		// they leave.
+		// continuous, a later one is notched by it).
 		TArray<FNetwork> Networks;
 	};
 
 	// A target body's offset interior on its own: the inner boundary of
-	// its skin, what the tetrahedral mesher (tet.hpp TetrahedralizeNested)
-	// conforms to inside. Empty where the body is all skin.
+	// its skin, the hollow the ribs are cut from and the surface the
+	// structural analysis lays its rib shells inside. Empty where the body
+	// is all skin.
 	struct FInner
 	{
 		FString Label;
 		aerotelic::TriMesh Mesh;
-		// Closed, outward and clear of the body's own surface (MeshLib's
-		// collision test): usable as the mesher's inner constraint. Note
-		// says why not otherwise.
+		// Closed, outward, clear of the body's own surface (MeshLib's
+		// collision test) and not crossing itself: usable as a bounding
+		// surface downstream. Note says why not otherwise.
 		bool bUsable = false;
 		FString Note;
 		double Volume = 0.0;
@@ -126,7 +115,6 @@ namespace AerotelicMeshLib
 	struct FResult
 	{
 		aerotelic::TriMesh Skin;
-		aerotelic::TriMesh Lattice;
 		// One per request target, in order.
 		TArray<FInner> Inners;
 		// One per request network, in order.
@@ -135,12 +123,7 @@ namespace AerotelicMeshLib
 		// The hollow's volume (the union of the offset interiors less the
 		// reserved volumes), before the ribs are taken out of it.
 		double DomainVolume = 0.0;
-		// ... and after: what the infill fills.
-		double InfillDomainVolume = 0.0;
 		double RibsVolume = 0.0;
-		double LatticeVolume = 0.0;
-		// Lattice volume over the infill domain's.
-		double AchievedFraction = 0.0;
 		int32 Interiors = 0;
 		TArray<FString> Warnings;
 		double Seconds = 0.0;
@@ -150,7 +133,7 @@ namespace AerotelicMeshLib
 	// if set, else the WingDesigner micromamba environment's python.exe.
 	// Empty if none exists.
 	FString FindPython();
-	// tools/lattice_meshlib.py under the project (staged with the packaged
+	// tools/structure_meshlib.py under the project (staged with the packaged
 	// build). Empty if missing.
 	FString FindScript();
 
@@ -173,8 +156,8 @@ namespace AerotelicMeshLib
 	// output into the log and hands back the `result.json` it wrote. False
 	// with the reason the script gave (its "error" field, else its last
 	// "error:" line, else its exit code). Shared by every backend that
-	// works this way -- the lattice's own, the tetrahedral mesher
-	// (AerotelicTetGmsh.h), the potential flow solver
+	// works this way -- the MeshLib backend's own, the rib mesher
+	// (AerotelicRibGmsh.h), the potential flow solver
 	// (AerotelicPotentialFlow.h) and the structural solver -- so that the
 	// process plumbing, the logging and the way a failure is reported are
 	// in one place. Blocks the calling thread until the script exits (or

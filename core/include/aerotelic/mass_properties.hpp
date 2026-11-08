@@ -2,9 +2,8 @@
 
 // Mass, centre of mass and inertia of triangle meshes, and of assemblies
 // of them (Analysis -> Mass Properties...). OCCT-free: it integrates the
-// same placed meshes STL export and the lattice generator consume, so a
-// boolean result or a lattice -- which have no B-rep solid -- weigh the
-// same way a wing does.
+// same placed meshes STL export consumes, so a boolean result -- which
+// has no B-rep solid -- weighs the same way a wing does.
 //
 // Three models of where the mass sits, chosen per parameterisation in the
 // Scene tree's Material Properties dialog (MassSpec):
@@ -120,9 +119,9 @@ void PrincipalInertia(const InertiaTensor& inertia, std::array<double, 3>& momen
 // ---- a body under its structure --------------------------------------------
 
 // One part of a body's weight: its skin, its solid, its asserted total,
-// its infill or one of its rib networks.
+// or one of its rib networks.
 struct StructureMassPart {
-	std::string label;       // "solid", "skin", "asserted", "infill", or the network's name
+	std::string label;       // "solid", "skin", "asserted", or the network's name
 	MassProperties props;
 	bool included = true;    // false: left out, `note` says why
 	bool estimated = false;  // from the spec's figures, not from generated geometry
@@ -140,10 +139,8 @@ struct StructureMassPart {
 //   - a skin: rho t A over the surface; then, ESTIMATED, each network as
 //     thickness x the planes' section areas (or x their perimeters x the
 //     height, for a rib that stops short of the far wall), a point mass at
-//     each section's centroid, and the infill as its volume fraction of
-//     what the skin and the ribs leave of the enclosed volume, spread as a
-//     solid. The planes are placed by (R, T, scale) and reflected in y
-//     when `mirror`, as the body itself is.
+//     each section's centroid. The planes are placed by (R, T, scale) and
+//     reflected in y when `mirror`, as the body itself is.
 // Generated layers replace the estimates with the geometry's own figures
 // (the application does that; this is the rule it falls back on).
 std::vector<StructureMassPart> StructureMassParts(const TriMesh& placed, const BodyStructure& s,

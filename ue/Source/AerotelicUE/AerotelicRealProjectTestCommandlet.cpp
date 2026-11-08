@@ -30,7 +30,7 @@ namespace
 
 	// The per-cell von Mises the solver wrote to its legacy VTK
 	// ("SCALARS von_mises_element double 1" under CELL_DATA), one per
-	// element in the model's order: the tetrahedra, then the shells.
+	// element in the model's order: the skin shells, then the rib shells.
 	bool ReadVtkCellVonMises(const FString& Path, TArray<double>& Out)
 	{
 		TArray<FString> Lines;
@@ -255,10 +255,9 @@ int32 UAerotelicRealProjectTestCommandlet::Main(const FString& Params)
 			if (Main >= 0)
 			{
 				const aerotelic::TriMesh& Airframe = Placed[Main].mesh;
-				aerotelic::TetMesh ShellMesh;
-				ShellMesh.nodes = Airframe.vertices;
+				std::vector<aerotelic::Vec3> ShellNodes = Airframe.vertices;
 				AerotelicStructuralFea::FRequest Request;
-				Request.Mesh = &ShellMesh;
+				Request.Nodes = &ShellNodes;
 				for (const auto& T : Airframe.triangles)
 				{
 					AerotelicStructuralFea::FShellFace F;
@@ -362,7 +361,8 @@ int32 UAerotelicRealProjectTestCommandlet::Main(const FString& Params)
 					// fused body's own structure (a boolean's bodies own theirs) and
 					// built through the shared model builder as the dialog builds
 					// it -- the skin cut along the plane, the spar meshed as shells
-					// on the skin's nodes, no tetrahedra. Held to: the model builds
+					// on the skin's nodes (shells only, as everything is since
+					// 2026-11-08). Held to: the model builds
 					// with rib shells and two regions, the same load solves, and
 					// the tip moves LESS than the skin alone (the web carries the
 					// outer wing's shear and moment through the nacelle cowl that
@@ -389,18 +389,22 @@ int32 UAerotelicRealProjectTestCommandlet::Main(const FString& Params)
 						Check(Bool->SetBodyStructure(Role, S), FString::Printf(TEXT("p38a spar: the spar is set on the fused body '%s'"), *Role));
 
 						AerotelicFeaModelBuilder::FOptions Options;
-						Options.Model = AerotelicFeaModelBuilder::EModel::AsDesigned;
 						AerotelicFeaModelBuilder::FCache Cache;
 						AerotelicFeaModelBuilder::FBuilt Built;
 						FAerotelicBooleanOperand BoolOp;
 						BoolOp.Entity = Bool;
 						const bool bAppended = AerotelicFeaModelBuilder::AppendBody(BoolOp, Role, TEXT("airframe"), 0, Options, Cache, Built);
-						Check(bAppended && Built.RibFaces.Num() > 0 && Built.Regions.Num() == 2 && Built.Mesh.tets.empty(),
-							FString::Printf(TEXT("p38a spar: the airframe builds as skin shells with %d spar shells and no tetrahedra (%s)"), Built.RibFaces.Num(), *FString::Join(Built.Problems, TEXT("; "))));
+						// The builder works on the body's OWN grid (not the 2e-3 mesh
+						// the load case above was run on), the skin's nodes first; the
+						// spar's web must have added interior nodes after them.
+						int32 SkinNodes = 0;
+						for (const AerotelicStructuralFea::FShellFace& F : Built.ShellFaces) SkinNodes = FMath::Max(SkinNodes, FMath::Max3(F.N[0], F.N[1], F.N[2]) + 1);
+						Check(bAppended && Built.RibFaces.Num() > 0 && Built.Regions.Num() == 2 && SkinNodes > 0 && (int32)Built.Nodes.size() > SkinNodes,
+							FString::Printf(TEXT("p38a spar: the airframe builds as skin shells with %d spar shells on %d nodes, %d of them the skin's (%s)"), Built.RibFaces.Num(), (int32)Built.Nodes.size(), SkinNodes, *FString::Join(Built.Problems, TEXT("; "))));
 						if (bAppended && Built.RibFaces.Num() > 0)
 						{
 							AerotelicStructuralFea::FRequest SparRequest;
-							SparRequest.Mesh = &Built.Mesh;
+							SparRequest.Nodes = &Built.Nodes;
 							SparRequest.ShellFaces = Built.ShellFaces;
 							SparRequest.RibFaces = Built.RibFaces;
 							SparRequest.Regions = Built.Regions;
@@ -408,9 +412,9 @@ int32 UAerotelicRealProjectTestCommandlet::Main(const FString& Params)
 							// The same tip load at the same node (the tip is on the
 							// skin, which the cut left in place) and the same clamp.
 							int32 SparTip = 0;
-							for (int32 n = 1; n < static_cast<int32>(Built.Mesh.nodes.size()); ++n) if (Built.Mesh.nodes[n].y > Built.Mesh.nodes[SparTip].y) SparTip = n;
+							for (int32 n = 1; n < static_cast<int32>(Built.Nodes.size()); ++n) if (Built.Nodes[n].y > Built.Nodes[SparTip].y) SparTip = n;
 							AerotelicStructuralFea::FPointForce SparLoad;
-							SparLoad.At = Built.Mesh.nodes[SparTip];
+							SparLoad.At = Built.Nodes[SparTip];
 							SparLoad.Force = aerotelic::Vec3{ 0.0, 0.0, -Force };
 							SparRequest.PointForces.Add(SparLoad);
 							SparRequest.Supports.Add(Centre);

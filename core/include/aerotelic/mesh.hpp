@@ -125,7 +125,7 @@ struct LoftSource {
 	// Thin shells. A body made of two sheets that meet at a knife edge --
 	// an airfoil's upper and lower surfaces at the trailing edge, a cowl's
 	// outer and inner skins at the lip and the trailing edge -- can only be
-	// given a tetrahedral mesh that conforms to it (tet.hpp) if the two
+	// given a volume mesh that conforms to it if the two
 	// sheets' vertex rows face each other exactly. A vertex of one sheet
 	// under the middle of an edge of the other, nearer than that edge's
 	// own sag, leaves the edge no empty circumsphere, and the mesher then
@@ -349,5 +349,8 @@ void CylinderCounts(double radius, double length, double tolerance, int& around,
 LoftSource EllipsoidLoft(double a, double b, double c);
 LoftSource CylinderLoft(double radius, double length);
 LoftSource BoxLoft(double lx, double ly, double lz);
+
+// Writes a triangle mesh as ASCII STL under the given solid name.
+bool WriteStlAscii(const TriMesh& mesh, const std::string& path, const std::string& solid_name = "aerotelic");
 
 } // namespace aerotelic

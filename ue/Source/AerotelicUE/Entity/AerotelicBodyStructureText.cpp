@@ -33,11 +33,6 @@ FString DescribeAerotelicBodyStructure(const aerotelic::BodyStructure& S, const 
 	{
 		Parts.Add(FString::Printf(TEXT("skin %s, no material"), *Len(S.skin_thickness, Units)));
 	}
-	if (S.infill)
-	{
-		const aerotelic::LatticeSpec& L = S.infill->lattice;
-		Parts.Add(FString::Printf(TEXT("%s %.0f%% infill (%s)"), UTF8_TO_TCHAR(L.type.c_str()), 100.0 * L.volume_fraction, *MatName(S.infill->material)));
-	}
 	for (const aerotelic::PlaneNetwork& N : S.networks)
 	{
 		FString Axis = N.axis == aerotelic::PlaneAxis::Custom

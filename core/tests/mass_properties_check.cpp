@@ -368,7 +368,7 @@ void CheckModeNames() {
 }
 
 // A body under its structure (StructureMassParts): the rules, and the
-// estimates of ribs and infill on a box where every figure is analytic.
+// estimates of ribs on a box where every figure is analytic.
 void CheckStructureParts() {
 	const TriMesh box = BoxMesh(2.0, 4.0, 6.0);   // volume 48, area 88
 	const std::array<double, 9> I{1, 0, 0, 0, 1, 0, 0, 0, 1};
@@ -415,24 +415,17 @@ void CheckStructureParts() {
 	cap.material.name = "cap";
 	cap.material.density = 500.0;
 	s.networks = {ribs, cap};
-	InfillSpec infill;
-	infill.material.name = "foam";
-	infill.material.density = 1200.0;
-	infill.lattice.volume_fraction = 0.3;
-	s.infill = infill;
 	parts = StructureMassParts(box, s, I, O, 1.0, false, 1.0);
-	Check(parts.size() == 4 && parts[0].label == "skin" && parts[1].label == "Ribs" && parts[2].label == "Cap" && parts[3].label == "infill",
-		"structure parts: skin, the two networks and the infill, in that order");
-	if (parts.size() == 4) {
+	Check(parts.size() == 3 && parts[0].label == "skin" && parts[1].label == "Ribs" && parts[2].label == "Cap",
+		"structure parts: skin and the two networks, in that order");
+	if (parts.size() == 3) {
 		CheckClose(parts[0].props.mass, 1000.0 * 0.01 * 88.0, 1e-9, "structure parts: skin mass = rho t A");
-		Check(!parts[0].estimated && parts[1].estimated && parts[2].estimated && parts[3].estimated, "structure parts: the interior is estimated, the skin is not");
+		Check(!parts[0].estimated && parts[1].estimated && parts[2].estimated, "structure parts: the interior is estimated, the skin is not");
 		CheckClose(parts[1].props.mass, 500.0 * 0.02 * 12.0 * 3, 1e-9, "structure parts: three full ribs = rho t x three 2 x 6 sections");
 		CheckClose(parts[1].props.centre.y, 0.0, 1e-9, "structure parts: the ribs' centre is the middle plane");
 		CheckClose(parts[1].props.centre.x, 0.0, 1e-9, "structure parts: the ribs' centre is on the box's axis");
 		CheckClose(parts[2].props.mass, 500.0 * 0.01 * 20.0 * 0.1, 1e-9, "structure parts: a height-limited rib = rho t x perimeter x height");
 		CheckClose(parts[2].props.centre.x, 0.0, 1e-9, "structure parts: the cap sits on its plane");
-		const double interior = 48.0 - 88.0 * 0.01 - (0.02 * 12.0 * 3 + 0.01 * 20.0 * 0.1);
-		CheckClose(parts[3].props.mass, 1200.0 * 0.3 * interior, 1e-6, "structure parts: infill = rho x fraction x what the skin and ribs leave");
 		Check(parts[1].note.find("3 of 3") != std::string::npos, "structure parts: the note says how many planes crossed");
 	}
 
@@ -442,7 +435,6 @@ void CheckStructureParts() {
 	miss.start = 10.0;
 	miss.count = 1;
 	s.networks = {miss};
-	s.infill.reset();
 	parts = StructureMassParts(box, s, I, O, 1.0, false, 1.0);
 	Check(parts.size() == 2 && !parts[1].included && parts[1].note.find("crosses") != std::string::npos, "structure parts: a network missing the body is left out with the reason");
 

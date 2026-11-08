@@ -1,7 +1,7 @@
 #pragma once
 
-// A minimal 3-vector for the OCCT-free mesh, distance-field and lattice
-// code (mesh.hpp, sdf.hpp, lattice.hpp). Deliberately a plain aggregate
+// A minimal 3-vector for the OCCT-free mesh, distance-field and boolean
+// code (mesh.hpp, sdf.hpp, mesh_boolean.hpp). Deliberately a plain aggregate
 // with free functions rather than a class with operators on std::vector:
 // these modules run tight loops over millions of points, where the
 // per-element heap traffic of std::vector<double> would dominate.

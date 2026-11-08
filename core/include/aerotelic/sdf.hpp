@@ -5,10 +5,11 @@
 //
 // The distance from a point to a mesh is the minimum over its triangles
 // of the point-triangle distance. Evaluating every triangle for every
-// query is O(triangles) per query -- hopeless for the millions of queries
-// the lattice generator makes against a mesh of tens of thousands of
-// triangles. The BVH is a binary tree of axis-aligned boxes over the
-// triangles; a query descends it nearest-box-first and never enters a box
+// query is O(triangles) per query -- hopeless for the many thousands of
+// queries the mesh boolean (mesh_boolean.hpp) makes against a mesh of
+// tens of thousands of triangles. The BVH is a binary tree of
+// axis-aligned boxes over the triangles; a query descends it
+// nearest-box-first and never enters a box
 // farther away than the best distance found so far, so a query touches
 // O(log triangles) boxes and a handful of triangles.
 //

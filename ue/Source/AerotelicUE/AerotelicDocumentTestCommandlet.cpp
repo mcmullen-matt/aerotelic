@@ -388,8 +388,8 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 			// The same material as a skin: every body a shell of the
 			// thickness, rho t A, its material volume t A rather than the
 			// enclosed volume. The setting stays on for the round trip below
-			// -- and the lattice generated on this sphere below hollows it by
-			// THIS thickness, not the lattice's default.
+			// -- and the structure generated on this sphere below hollows it by
+			// THIS thickness.
 			ByDensity.skin_thickness = 0.05;
 			Primitive->SetMassSpec(ByDensity);
 			const FAerotelicMassReport SkinReport = ComputeAerotelicMassReport({ P }, 2e-3, Doc->GetUnits());
@@ -446,29 +446,15 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 		Check(Dup == nullptr && !Error.IsEmpty(), "a duplicate name is refused");
 	}
 
-	// The sphere's STRUCTURE generated (2026-11-08: the infill is an
-	// attribute of the body, not a scene entity of its own): its 0.05 skin
-	// of the "Custom" density-2 material set in the mass step, a gyroid
-	// infill (a small one: a 2-unit sphere at a 0.5 cell and 6 voxels per
-	// cell) in a material of its own, and two ribs normal to x. Saved under
-	// the body's `bodies:` entry and regenerated on load.
+	// The sphere's STRUCTURE generated (2026-11-08: the structure is an
+	// attribute of the body, not a scene entity of its own; shells only
+	// since the same day -- no infill): its 0.05 skin of the "Custom"
+	// density-2 material set in the mass step, and two ribs normal to x.
+	// Saved under the body's `bodies:` entry and regenerated on load.
 	UE_LOG(LogAerotelicDocumentTest, Display, TEXT("step: BodyStructure"));
 	{
 		aerotelic::BodyStructure S = Primitive->GetBodyStructure(0);
 		Check(S.IsSkin() && FMath::IsNearlyEqual(S.skin_thickness, 0.05, 1e-12) && FMath::IsNearlyEqual(S.material.density, 2.0, 1e-12), "structure: the sphere carries the mass step's 0.05 skin of the density-2 material");
-		aerotelic::InfillSpec Infill;
-		Infill.lattice.family = aerotelic::LatticeFamily::Tpms;
-		Infill.lattice.type = "Gyroid";
-		Infill.lattice.phase = aerotelic::TpmsPhase::Network;
-		Infill.lattice.cell_size = 0.5;
-		Infill.lattice.volume_fraction = 0.35;
-		Infill.lattice.resolution = 6;
-		// Slid a little off the sphere's centre: the offsets travel through
-		// the file (checked after the reopen below).
-		Infill.lattice.origin = aerotelic::Vec3{0.1, -0.05, 0.02};
-		Infill.material.name = "infill foam";
-		Infill.material.density = 0.5;
-		S.infill = Infill;
 		aerotelic::PlaneNetwork Ribs;
 		Ribs.name = "Ribs";
 		Ribs.axis = aerotelic::PlaneAxis::X;
@@ -487,7 +473,7 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 		Check(Wing->GetGeneratedStructure(TEXT("Main")) == nullptr, "structure: nothing is generated for the refused body");
 		// Setting a structure with an interior on a body never generated
 		// queues nothing: Generate is explicit the first time.
-		Check(Primitive->SetBodyStructure(TEXT("Main"), S), "structure: the sphere takes the skin, infill and ribs");
+		Check(Primitive->SetBodyStructure(TEXT("Main"), S), "structure: the sphere takes the skin and ribs");
 		Check(!Doc->HasPendingRebuilds(), "structure: a body never generated is not queued by a structure edit");
 		Check(Doc->GenerateBodyStructure(Primitive, TEXT("Main"), Error), FString::Printf(TEXT("structure: the sphere's structure generated: %s"), *Error));
 		Check(Doc->GetEntities().Num() == 4, "structure: generating adds no scene item -- the layers belong to the body");
@@ -496,27 +482,22 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 		if (G != nullptr && G->IsGenerated())
 		{
 			const std::vector<FAerotelicStructureLayer>& Layers = G->GetLayers();
-			Check(Layers.size() == 3 && Layers[0].Name == TEXT("Skin") && Layers[1].Name == TEXT("Ribs") && Layers[2].Name == TEXT("Infill"),
-				FString::Printf(TEXT("structure: three layers, Skin, Ribs, Infill (%d)"), (int32)Layers.size()));
+			Check(Layers.size() == 2 && Layers[0].Name == TEXT("Skin") && Layers[1].Name == TEXT("Ribs"),
+				FString::Printf(TEXT("structure: two layers, Skin, Ribs (%d)"), (int32)Layers.size()));
 			Check(G->GetStats().Triangles > 0 && FMath::IsNearlyEqual(G->GetStructure().skin_thickness, 0.05, 1e-12), "structure: the layers have triangles and were generated from the 0.05 skin");
-			Check(Primitive->GetLayers().Num() == 3 && Primitive->GetLayers()[0].Kind == FAerotelicStructureLayer::EKind::Skin && Primitive->GetLayers()[1].Kind == FAerotelicStructureLayer::EKind::Ribs,
+			Check(Primitive->GetLayers().Num() == 2 && Primitive->GetLayers()[0].Kind == FAerotelicStructureLayer::EKind::Skin && Primitive->GetLayers()[1].Kind == FAerotelicStructureLayer::EKind::Ribs,
 				"structure: the actor lists the layers under the body");
-			// The materials: the skin the body's, the ribs and the infill
-			// their own.
-			Check(Layers.size() == 3 && Layers[0].Material.name == "Custom" && Layers[1].Material.name == "rib ply" && Layers[2].Material.name == "infill foam",
+			// The materials: the skin the body's, the ribs their own.
+			Check(Layers.size() == 2 && Layers[0].Material.name == "Custom" && Layers[1].Material.name == "rib ply",
 				"structure: each layer carries its own material");
-			// The fraction is of the interior domain (inside the skin, less
-			// the ribs).
-			Check(FMath::Abs(G->GetStats().AchievedFraction - 0.35) < 0.1, FString::Printf(TEXT("structure: the infill's achieved volume fraction (%.3f) is near the 0.35 asked"), G->GetStats().AchievedFraction));
 			// The layers as placed: closed, outward, inside the sphere; the
-			// infill inside the skin's offset; the skin's volume the 0.05
-			// shell of the unit sphere (a few percent under: the sphere is
-			// meshed coarsely at this voxel, and an inscribed polyhedron is
-			// smaller than its sphere); the ribs two discs of the inner sphere
-			// at x = +-0.3, 0.04 thick, less what the infill domain gave up.
+			// skin's volume the 0.05 shell of the unit sphere (a few percent
+			// under: the sphere is meshed coarsely at this voxel, and an
+			// inscribed polyhedron is smaller than its sphere); the ribs two
+			// discs of the inner sphere at x = +-0.3, 0.04 thick.
 			std::vector<aerotelic::NamedMesh> Meshes = Primitive->GetPlacedLayerMeshes(TEXT("Main"), false);
-			Check(Meshes.size() == 3 && Meshes[0].name == "Skin" && Meshes[1].name == "Ribs" && Meshes[2].name == "Infill", "structure: the placed layer meshes are Skin, Ribs, Infill");
-			if (Meshes.size() == 3)
+			Check(Meshes.size() == 2 && Meshes[0].name == "Skin" && Meshes[1].name == "Ribs", "structure: the placed layer meshes are Skin, Ribs");
+			if (Meshes.size() == 2)
 			{
 				const double Shell = 4.0 / 3.0 * PI * (1.0 - 0.95 * 0.95 * 0.95);
 				Check(FMath::Abs(Meshes[0].mesh.SignedVolume() - Shell) < 0.06 * Shell, FString::Printf(TEXT("structure: the skin layer encloses the shell's volume (%.4f vs %.4f)"), Meshes[0].mesh.SignedVolume(), Shell));
@@ -525,21 +506,10 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 				bool bClosed = true;
 				for (const aerotelic::NamedMesh& NM : Meshes) bClosed = bClosed && NM.mesh.IsClosedManifold() && NM.mesh.SignedVolume() > 0.0;
 				Check(bClosed, "structure: every layer is a closed, outward body");
-				double Worst = 0.0, WorstInfill = 0.0;
-				int32 InfillInRibs = 0;
+				double Worst = 0.0;
 				for (const aerotelic::NamedMesh& NM : Meshes)
-					for (const aerotelic::Vec3& V : NM.mesh.vertices)
-					{
-						Worst = FMath::Max(Worst, aerotelic::Length(V) - 1.0);
-						if (NM.name == "Infill")
-						{
-							WorstInfill = FMath::Max(WorstInfill, aerotelic::Length(V) - 0.95);
-							if (FMath::Abs(FMath::Abs(V.x) - 0.3) < 0.02 - 1e-6) ++InfillInRibs;
-						}
-					}
+					for (const aerotelic::Vec3& V : NM.mesh.vertices) Worst = FMath::Max(Worst, aerotelic::Length(V) - 1.0);
 				Check(Worst < 0.1, FString::Printf(TEXT("structure: the layers stay inside the sphere (worst overshoot %.4f)"), Worst));
-				Check(WorstInfill < 0.1, FString::Printf(TEXT("structure: the infill stays inside the skin (worst overshoot %.4f)"), WorstInfill));
-				Check(InfillInRibs == 0, FString::Printf(TEXT("structure: the infill keeps out of the ribs' slabs (%d vertices inside)"), InfillInRibs));
 			}
 			// The mass report weighs the generated layers, each by its own
 			// material, exactly (solids of the layer meshes).
@@ -547,38 +517,16 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 				FAerotelicBooleanOperand POp;
 				POp.Entity = Primitive;
 				const FAerotelicMassReport LayerReport = ComputeAerotelicMassReport({ POp }, 2e-3, Doc->GetUnits());
-				Check(LayerReport.Bodies.Num() == 3 && LayerReport.Bodies[0].Label.Contains(TEXT("Skin")) && LayerReport.Bodies[1].Label.Contains(TEXT("Ribs")) && LayerReport.Bodies[2].Label.Contains(TEXT("Infill")),
+				Check(LayerReport.Bodies.Num() == 2 && LayerReport.Bodies[0].Label.Contains(TEXT("Skin")) && LayerReport.Bodies[1].Label.Contains(TEXT("Ribs")),
 					FString::Printf(TEXT("structure: the mass report has one line per layer (%d)"), LayerReport.Bodies.Num()));
-				if (LayerReport.Bodies.Num() == 3 && Meshes.size() == 3)
+				if (LayerReport.Bodies.Num() == 2 && Meshes.size() == 2)
 				{
 					Check(LayerReport.Bodies[0].bIncluded && FMath::IsNearlyEqual(LayerReport.Bodies[0].Props.mass, 2.0 * Meshes[0].mesh.SignedVolume(), 1e-9 * LayerReport.Bodies[0].Props.mass),
 						"structure: the skin layer weighs the body's density over its own volume");
 					Check(LayerReport.Bodies[1].bIncluded && FMath::IsNearlyEqual(LayerReport.Bodies[1].Props.mass, 1.0 * Meshes[1].mesh.SignedVolume(), 1e-9 * LayerReport.Bodies[1].Props.mass),
 						"structure: the ribs weigh their own material");
-					Check(LayerReport.Bodies[2].bIncluded && FMath::IsNearlyEqual(LayerReport.Bodies[2].Props.mass, 0.5 * Meshes[2].mesh.SignedVolume(), 1e-9 * LayerReport.Bodies[2].Props.mass),
-						"structure: the infill weighs its own material");
 					Check(LayerReport.Bodies[0].Note.Contains(TEXT("skin")) && LayerReport.Bodies[1].Note.Contains(TEXT("rib ply")), "structure: the lines name the layer kind and material");
 				}
-			}
-			// The tetrahedra (Export Skin Tetrahedra / Export Tetrahedral Mesh,
-			// the full-resolution FEA) are built on request over the body and
-			// its MeshLib offset: skin + core fill the sphere's mesh exactly,
-			// the core fills the offset.
-			Check(G->IsInnerUsable() && !G->GetInner().IsEmpty(), "structure: the generation kept the body and a usable offset surface for the tetrahedral mesher");
-			FString Note;
-			const FAerotelicBodyStructure::FTetMesh* TM = G->GetTetMesh(Note);
-			Check(TM != nullptr && TM->Result.SkinTets > 0 && TM->Result.CoreTets > 0, FString::Printf(TEXT("structure: the skin and core tetrahedra can be built for export (%s)"), *Note));
-			if (TM != nullptr)
-			{
-				const AerotelicTetGmsh::FResult& TR = TM->Result;
-				const double Body = G->GetOuter().SignedVolume();
-				const double Inner = G->GetInner().SignedVolume();
-				Check(TR.VolumeError <= 1e-9, FString::Printf(TEXT("structure: skin + core tetrahedra (%.9g) fill the body's volume (%.9g): relative %.2e"), TR.SkinVolume + TR.CoreVolume, Body, TR.VolumeError));
-				Check(FMath::Abs(TR.CoreVolume - Inner) <= 1e-9 * Body, FString::Printf(TEXT("structure: the core tetrahedra (%.9g) fill the offset's volume (%.9g) exactly"), TR.CoreVolume, Inner));
-				Check(TR.Degenerate == 0 && TR.MinQuality > 0.0, FString::Printf(TEXT("structure: no tetrahedron is flat or inverted (%d degenerate, worst quality %.4f)"), TR.Degenerate, TR.MinQuality));
-				Check(TR.Nodes > G->GetOuter().vertices.size() + G->GetInner().vertices.size(),
-					FString::Printf(TEXT("structure: the mesh keeps both surfaces' nodes and adds interior ones (%d nodes over %d on the surfaces)"), TR.Nodes, (int32)(G->GetOuter().vertices.size() + G->GetInner().vertices.size())));
-				Check(FMath::IsNearlyEqual(TM->SkinThickness, 0.05, 1e-12), "structure: the tetrahedral mesh carries the skin thickness it was hollowed by");
 			}
 
 			// A changed skin thickness regenerates the structure: 0.05 becomes
@@ -700,13 +648,14 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 	// The viewport's OCCT-free meshes: every entity's model builds its
 	// bodies straight from its curves, closed and outward.
 	// Structural analysis (Analysis -> Structural (Kratos FEA)) on the
-	// sphere four ways, each held to closed forms. The sphere's skin is the
-	// 0.05 set in the mass step; its generated structure lends the skin /
-	// core tetrahedra. The aluminium skin of a unit sphere over a very
-	// soft core, stood on its bottom under its own weight and 1 bar: the
-	// reactions carry the weight exactly (the pressure's resultant over a
-	// closed surface is zero), the surface moves inward, and the skin's
-	// hoop stress is Lame's thick-shell value, ~1.05 p for a/b = 0.95.
+	// sphere, shells only (2026-11-08: the tetrahedral cases -- the
+	// generated structure's skin / core, a homogenised infill core, a solid
+	// body -- went with the tetrahedra), each held to closed forms. The
+	// sphere's skin is the 0.05 set in the mass step. The aluminium skin of
+	// a unit sphere, stood on its bottom under its own weight and 1 bar:
+	// the reactions carry the weight exactly (the pressure's resultant over
+	// a closed surface is zero), the surface moves inward, and the skin's
+	// stress is the thin shell's membrane value p a / 2t.
 	UE_LOG(LogAerotelicDocumentTest, Display, TEXT("step: structural fea"));
 	if (AerotelicStructuralFea::FindScript().IsEmpty() || AerotelicMeshLib::FindPython().IsEmpty())
 	{
@@ -714,16 +663,7 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 	}
 	else
 	{
-		const FAerotelicBodyStructure* FeaModel = Primitive != nullptr ? Primitive->GetGeneratedStructure(TEXT("Main")) : nullptr;
-		const aerotelic::LatticeSpec FeaCell = FeaModel != nullptr && FeaModel->GetStructure().infill ? FeaModel->GetStructure().infill->lattice : aerotelic::LatticeSpec();
-		FString FeaTetNote;
-		const FAerotelicBodyStructure::FTetMesh* FeaTet = FeaModel != nullptr ? FeaModel->GetTetMesh(FeaTetNote) : nullptr;
 		const aerotelic::Material Al = *aerotelic::FindMaterialPreset("Aluminium 2024-T3 sheet");
-		aerotelic::Material Soft;
-		Soft.name = "soft core";
-		Soft.density = 50.0;
-		Soft.youngs_modulus = 1.0e5;
-		Soft.poisson_ratio = 0.3;
 		auto Support = [](AerotelicStructuralFea::FRequest& Request)
 		{
 			Request.LengthToSI = 1.0;
@@ -736,257 +676,27 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 			Request.Pressure = 1.0e5;
 		};
 
-		// (1) Full resolution: the skin and core tetrahedra, each region a
-		// solid of its material, second order. A direct solve: the skin is
-		// 7e5 times stiffer than this core, which the iterative solver
-		// converges on poorly (its force balance closed to 1.7% and its
-		// peak stress wandered).
-		aerotelic::TetMesh FeaMesh = FeaTet != nullptr ? FeaTet->Result.Mesh : aerotelic::TetMesh();
-		Check(!FeaMesh.tets.empty(), FString::Printf(TEXT("fea: the generated structure's skin and core tetrahedra are the model (%s)"), *FeaTetNote));
-		if (!FeaMesh.tets.empty())
-		{
-			AerotelicStructuralFea::FRequest Request;
-			Request.Mesh = &FeaMesh;
-			Request.LinearSolver = TEXT("sparse_lu");
-			AerotelicStructuralFea::FRegion Skin, Core;
-			Skin.Id = 1; Skin.Label = TEXT("skin"); Skin.Core = Al; Skin.bSolid = true;
-			Core.Id = 2; Core.Label = TEXT("core"); Core.Core = Soft; Core.bSolid = true;
-			Request.Regions.Add(Skin);
-			Request.Regions.Add(Core);
-			Request.bSecondOrder = true;
-			Support(Request);
-			Request.VtkPath = FPaths::Combine(FPlatformProcess::UserTempDir(), TEXT("aerotelic_document_test_fea.vtk"));
-			IFileManager::Get().Delete(*Request.VtkPath, false, true, true);
-			AerotelicStructuralFea::FResult R;
-			FString Error;
-			const bool bSolved = AerotelicStructuralFea::Run(Request, R, Error);
-			Check(bSolved, FString::Printf(TEXT("fea: the sphere solved (%s)"), bSolved ? *FString::Printf(TEXT("%d nodes, %d elements, %d dof, %.1f s"), R.Nodes, R.Elements, R.Dofs, R.Seconds) : *Error));
-			if (bSolved)
-			{
-				const AerotelicTetGmsh::FResult& S = FeaTet->Result;
-				const double ExpectedMass = Al.density *S.SkinVolume + 50.0 * S.CoreVolume;
-				Check(R.bSecondOrder && R.Nodes > static_cast<int32>(FeaMesh.nodes.size()), "fea: solved on 10-node tetrahedra (mid-edge nodes added)");
-				Check(FMath::IsNearlyEqual(R.Mass, ExpectedMass, 1e-6 * ExpectedMass),
-					FString::Printf(TEXT("fea: the mass is the material densities over the regions' volumes (%.6g vs %.6g)"), R.Mass, ExpectedMass));
-				const double Weight = ExpectedMass * 9.80665;
-				Check(FMath::Abs(R.Reaction[2] - Weight) <= 0.02 * Weight && FMath::Abs(R.Reaction[0]) <= 0.02 * Weight && FMath::Abs(R.Reaction[1]) <= 0.02 * Weight,
-					FString::Printf(TEXT("fea: the support carries the weight, %.4g N, and nothing else (reactions %.4g, %.4g, %.4g)"), Weight, R.Reaction[0], R.Reaction[1], R.Reaction[2]));
-				// The script's own verdict on the same balance, and which
-				// solver ran (asked for by name here; "auto" is the dialog's).
-				Check(R.bBalanced && R.BalanceError <= 0.01 && R.Warnings.Num() == 0 && R.LinearSolver == TEXT("sparse_lu"),
-					FString::Printf(TEXT("fea: the result reports a balanced solve (error %.2e, %d warning(s)) by %s"), R.BalanceError, R.Warnings.Num(), *R.LinearSolver));
-				Check(FMath::Abs(R.AppliedPressure[2]) <= 1e-3 * 1.0e5 * 4.0 * PI,
-					FString::Printf(TEXT("fea: a uniform pressure over a closed surface has no resultant (%.3g N)"), R.AppliedPressure[2]));
-				Check(R.MeanNormalDisplacement < 0.0, FString::Printf(TEXT("fea: an external pressure moves the surface inward (mean u.n = %.3g m)"), R.MeanNormalDisplacement));
-				// Lame's hoop stress is 1.05 MPa; the peak sits where the weight
-				// enters the fixed cap, 1.9 MPa with the direct solver.
-				Check(R.Entries.Num() == 2 && R.Entries[0].Kind == TEXT("solid") && R.Entries[0].MaxVonMises > 0.8e6 && R.Entries[0].MaxVonMises < 2.5e6,
-					FString::Printf(TEXT("fea: the skin's peak von Mises is Lame's hoop stress for the shell, ~1.05e6 Pa, up to the support's concentration (got %.4g)"), R.Entries.Num() ? R.Entries[0].MaxVonMises : 0.0));
-				Check(R.Entries.Num() == 2 && R.Entries[1].MaxVonMises < 0.1 * R.Entries[0].MaxVonMises, "fea: the soft core carries almost nothing");
-				Check(R.Entries.Num() == 2 && R.Entries[0].Margin > 100.0, "fea: 2024-T3 at 1 bar has a margin in the hundreds");
-				Check(R.MaxDisplacement > 0.0 && R.MaxDisplacement < 2e-2, FString::Printf(TEXT("fea: the displacement is small and finite (%.3g m)"), R.MaxDisplacement));
-				Check(IFileManager::Get().FileSize(*Request.VtkPath) > 0, FString::Printf(TEXT("fea: the solution was written to %s"), *Request.VtkPath));
-				IFileManager::Get().Delete(*Request.VtkPath, false, true, true);
-
-				// The pre-processor (the dialog's Mesh / Loads / Support tabs)
-				// derives the same model the script built.
-				AerotelicFeaPreprocess::FModel Pre;
-				FString PreError;
-				const bool bPre = AerotelicFeaPreprocess::Build(Request, Pre, PreError);
-				Check(bPre, FString::Printf(TEXT("fea (pre-processor): the model derives (%s)"), *PreError));
-				if (bPre)
-				{
-					Check(Pre.WettedFaces.Num() == R.WettedFaces, FString::Printf(TEXT("fea (pre-processor): the wetted faces are the script's (%d vs %d)"), Pre.WettedFaces.Num(), R.WettedFaces));
-					Check(Pre.SupportNodes.Num() == R.SupportCornerNodes, FString::Printf(TEXT("fea (pre-processor): the fixed corner nodes are the script's (%d vs %d)"), Pre.SupportNodes.Num(), R.SupportCornerNodes));
-					// Second order: the mid-edge nodes on the plane are clamped too
-					// (left free until 2026-11-02, a compliant clamp).
-					Check(R.SupportNodes > R.SupportCornerNodes, FString::Printf(TEXT("fea (pre-processor): the solver clamped the mid-edge nodes on the plane as well (%d nodes, %d corners)"), R.SupportNodes, R.SupportCornerNodes));
-					// The cost estimate (2026-11-05): the mid-edge nodes and the
-					// degrees of freedom counted before the solve are the script's.
-					Check(Pre.SecondOrderTets == Pre.Tets && Pre.Nodes + Pre.MidEdgeNodes == R.Nodes && Pre.Dofs == R.Dofs,
-						FString::Printf(TEXT("fea (pre-processor): the DOF estimate is the solver's (%lld vs %d; %d mid-edge nodes)"), Pre.Dofs, R.Dofs, Pre.MidEdgeNodes));
-					bool bOnPlane = Pre.SupportNodes.Num() > 0 && Pre.SupportPlanes.Num() == 1 && Pre.SupportPlanes[0].Axis == 2;
-					for (int32 N : Pre.SupportNodes) bOnPlane = bOnPlane && FMath::Abs(FeaMesh.nodes[N].z - Pre.SupportPlanes[0].Value) <= Pre.SupportPlanes[0].Tolerance;
-					Check(bOnPlane && FMath::IsNearlyEqual(Pre.SupportPlanes[0].Value, Pre.Bounds.min.z, 1e-12), "fea (pre-processor): every fixed node lies within the tolerance of z = the mesh's minimum");
-					Check(Pre.Regions.Num() == 2 && Pre.Regions[0].Label == TEXT("skin") && Pre.Regions[1].Label == TEXT("core") && Pre.Regions[0].Kind == TEXT("solid"), "fea (pre-processor): a region per material, labelled, solids");
-					Check(!Pre.bMassEstimated && FMath::IsNearlyEqual(Pre.Mass, R.Mass, 1e-6 * R.Mass), FString::Printf(TEXT("fea (pre-processor): the mass is the script's (%.6g vs %.6g)"), Pre.Mass, R.Mass));
-					Check(FMath::IsNearlyEqual(Pre.GravityForce.Z, R.AppliedGravity[2], 1e-6 * FMath::Abs(R.AppliedGravity[2])) && Pre.GravityForce.X == 0.0 && Pre.GravityForce.Y == 0.0,
-						FString::Printf(TEXT("fea (pre-processor): the inertial load is the script's applied gravity (%.6g vs %.6g N)"), Pre.GravityForce.Z, R.AppliedGravity[2]));
-					Check(Pre.PressureResultant.Size() <= 1e-3 * 1.0e5 * 4.0 * PI && Pre.MaxFacePressure == 1.0e5,
-						FString::Printf(TEXT("fea (pre-processor): the pressure's resultant over the closed surface is zero (%.3g N)"), Pre.PressureResultant.Size()));
-					Check(Pre.PointLoads.Num() == 0 && Pre.MassCentre.Size() < 0.05, FString::Printf(TEXT("fea (pre-processor): no point force; the centre of mass is near the sphere's centre (%.3g)"), Pre.MassCentre.Size()));
-					bool bOutward = true;
-					for (int32 i = 0; i < Pre.WettedFaces.Num(); ++i) bOutward = bOutward && FVector::DotProduct(Pre.FaceNormal[i], Pre.FaceCentre[i]) > 0.0;
-					Check(bOutward, "fea (pre-processor): the wetted faces are wound outward");
-				}
-			}
-		}
-
-		// (2) Shells over a homogenised core, on the body's OWN grid
-		// (2026-11-05): the sphere's placed mesh at tolerance 0 -- its Mesh
-		// tab's grid at the viewport's rule, exactly what the viewport
-		// shows -- is filled by gmsh at the lattice cell size with the
-		// surface left as it is, as the structural dialog does; the lattice
-		// lends its cell and skin thickness only. Shells of the 0.05 skin on
-		// those triangles over tetrahedra carrying the gyroid's homogenised
-		// stiffness, the gyroid made of PMI foam here (the API takes any
-		// base material; in the app the struts are the body's). Closed
-		// forms: the mass is rho t A of the skin plus the core's effective
-		// density, less the overlap, over the volume; the support carries
-		// the weight; the membrane stress of a thin shell under an external
-		// pressure is p a / 2t = 1.0 MPa.
-		UE_LOG(LogAerotelicDocumentTest, Display, TEXT("step: structural fea (shells over a homogenised core)"));
-		if (FeaModel != nullptr && Primitive != nullptr)
-		{
-			// A light closed-cell foam for the core, in round figures (the
-			// data-sheet presets are no longer shipped: see materials.cpp).
-			aerotelic::Material Foam;
-			Foam.name = "test foam";
-			Foam.density = 70.0;
-			Foam.youngs_modulus = 0.1e9;
-			Foam.poisson_ratio = 0.30;
-			Foam.allowable_stress = 1.5e6;
-			const std::vector<aerotelic::NamedMesh> OwnGrid = Primitive->GetPlacedMeshes(false);
-			const std::vector<aerotelic::NamedMesh> Finer = Primitive->GetPlacedMeshes(false, 1e-3);
-			Check(OwnGrid.size() == 1 && OwnGrid[0].mesh.IsClosedManifold() && OwnGrid[0].mesh.SignedVolume() > 0.0, "fea (shells): the body's own grid (tolerance 0) is one closed, outward body");
-			Check(OwnGrid.size() == 1 && Finer.size() == 1 && OwnGrid[0].mesh.triangles.size() < Finer[0].mesh.triangles.size(),
-				FString::Printf(TEXT("fea (shells): the own grid is the viewport's, coarser than a finer tolerance asks for (%d vs %d triangles)"), OwnGrid.size() ? (int32)OwnGrid[0].mesh.triangles.size() : -1, Finer.size() ? (int32)Finer[0].mesh.triangles.size() : -1));
-			// The generation's private copy, hollowed at a quarter of the skin,
-			// is NOT what the solver gets: its triangle count differs from the
-			// grid's.
-			Check(!FeaModel->GetOuter().IsEmpty() && FeaModel->GetOuter().IsClosedManifold() && !FeaModel->GetInner().IsEmpty(), "fea (shells): the generation keeps its hollowed copy of the body (and its offset) to itself");
-			AerotelicTetGmsh::FResult S;
-			bool bMeshed = false;
-			if (OwnGrid.size() == 1)
-			{
-				AerotelicTetGmsh::FRequest G;
-				G.Outer = &OwnGrid[0].mesh;
-				G.Inner = nullptr;
-				G.CoreSize = FeaCell.cell_size;
-				G.Algorithm = 1;
-				G.bOptimize = true;
-				G.bOptimizeNetgen = true;
-				G.bSizeFromBoundary = true;
-				FString GmshError;
-				bMeshed = AerotelicTetGmsh::Run(G, S, GmshError);
-				Check(bMeshed && S.MinDihedral > 0.0 && S.MaxDihedral < 180.0 && S.MinDihedral < S.MaxDihedral,
-					FString::Printf(TEXT("fea (shells): gmsh reports the dihedral angles (%.2f to %.2f deg, %d under 10, %d over 160)"), S.MinDihedral, S.MaxDihedral, S.TetsDihedralUnder10, S.TetsDihedralOver160));
-				Check(bMeshed && !S.Mesh.tets.empty(), FString::Printf(TEXT("fea (shells): the body's own grid fills with tetrahedra at the cell size (%s)"), bMeshed ? *FString::Printf(TEXT("%d tetrahedra on %d nodes"), S.SkinTets + S.CoreTets, S.Nodes) : *GmshError));
-			}
-			if (bMeshed && !S.Mesh.tets.empty())
-			{
-				const aerotelic::TriMesh& Outer = OwnGrid[0].mesh;
-				Check(S.VolumeError <= 1e-9, FString::Printf(TEXT("fea (shells): the core tetrahedra fill the body exactly (relative %.2e)"), S.VolumeError));
-				Check(S.SkinTets + S.CoreTets < static_cast<int32>(FeaMesh.tets.size()), FString::Printf(TEXT("fea (shells): fewer tetrahedra than the skin / core mesh (%d vs %d)"), S.SkinTets + S.CoreTets, (int32)FeaMesh.tets.size()));
-				aerotelic::TetMesh CoreMesh = S.Mesh;
-				CoreMesh.material.assign(CoreMesh.tets.size(), 1);
-				aerotelic::UnitCellSamples Cell;
-				bool bSampled = true;
-				try { Cell = aerotelic::SampleUnitCell(FeaCell, 24); } catch (const std::exception&) { bSampled = false; }
-				Check(bSampled && Cell.nx == 24 && FMath::Abs(Cell.solid_fraction - 0.35) < 0.05, FString::Printf(TEXT("fea (shells): the gyroid cell voxelises near its 0.35 fraction (%.3f)"), Cell.solid_fraction));
-				AerotelicStructuralFea::FRequest Request;
-				Request.Mesh = &CoreMesh;
-				AerotelicStructuralFea::FRegion Region;
-				Region.Id = 1;
-				Region.Label = TEXT("sphere");
-				Region.Skin = Al;
-				Region.SkinThickness = Primitive->GetEffectiveMassSpec().skin_thickness;
-				Region.Core = Foam;
-				Region.Cell = &Cell;
-				// A homogenised core is first order whatever the request says:
-				// the dialog's rule, exercised here against a request asking
-				// for 10 nodes.
-				Region.SecondOrder = 0;
-				Request.Regions.Add(Region);
-				Request.bSecondOrder = true;
-				Request.bHomogenizeCache = false;
-				Support(Request);
-				Request.VtkPath = FPaths::Combine(FPlatformProcess::UserTempDir(), TEXT("aerotelic_document_test_fea_shells.vtk"));
-				IFileManager::Get().Delete(*Request.VtkPath, false, true, true);
-				Check(FMath::IsNearlyEqual(Region.SkinThickness, 0.05, 1e-12), "fea (shells): the shells take the body's own skin thickness");
-				AerotelicStructuralFea::FResult R;
-				FString Error;
-				const bool bSolved = bSampled && AerotelicStructuralFea::Run(Request, R, Error);
-				Check(bSolved, FString::Printf(TEXT("fea (shells): the sphere solved (%s)"), bSolved ? *FString::Printf(TEXT("%d nodes, %d tetrahedra + %d shells, %d dof, %.1f s"), R.Nodes, R.Tets, R.Shells, R.Dofs, R.Seconds) : *Error));
-				if (bSolved)
-				{
-					Check(R.Shells == static_cast<int32>(Outer.triangles.size()) && R.Tets == S.SkinTets + S.CoreTets, "fea (shells): a shell on each of the body's own triangles, a tetrahedron for each of gmsh's");
-					Check(!R.bSecondOrder && R.Nodes == static_cast<int32>(CoreMesh.nodes.size()) && R.Dofs > 3 * R.Nodes, "fea (shells): the core stayed 4-node under a request for 10 (no mid-edge nodes), with rotations on the shell nodes");
-					Check(R.Regions.Num() == 1 && R.Regions[0].RelativeDensity > 0.25 && R.Regions[0].RelativeDensity < 0.45,
-						FString::Printf(TEXT("fea (shells): the homogenised core has the gyroid's relative density (%.3f)"), R.Regions.Num() ? R.Regions[0].RelativeDensity : 0.0));
-					if (R.Regions.Num() == 1)
-					{
-						const AerotelicStructuralFea::FRegionResult& G = R.Regions[0];
-						const double Ratio = G.E[0] / Foam.youngs_modulus;
-						Check(Ratio > 0.05 && Ratio < G.RelativeDensity && FMath::Abs(G.E[0] - G.E[1]) < 0.05 * G.E[0] && FMath::Abs(G.E[0] - G.E[2]) < 0.05 * G.E[0],
-							FString::Printf(TEXT("fea (shells): the gyroid's effective modulus is cubic and between the bending and stretching bounds (E/E_s = %.3f, %.3f, %.3f)"), G.E[0] / Foam.youngs_modulus, G.E[1] / Foam.youngs_modulus, G.E[2] / Foam.youngs_modulus));
-						Check(G.Amplification >= 1.0 && G.CoreMaxMicroVonMises >= G.CoreMaxVonMises, FString::Printf(TEXT("fea (shells): the strut stress is estimated above the smeared core stress (%.3g vs %.3g Pa, bound x%.1f)"), G.CoreMaxMicroVonMises, G.CoreMaxVonMises, G.Amplification));
-						double Area = 0.0;
-						for (const auto& T : Outer.triangles)
-						{
-							Area += 0.5 * aerotelic::Length(aerotelic::Cross(Outer.vertices[T[1]] - Outer.vertices[T[0]], Outer.vertices[T[2]] - Outer.vertices[T[0]]));
-						}
-						const double Volume = Outer.SignedVolume();
-						const double ExpectedMass = Al.density * 0.05 * Area + Foam.density * G.RelativeDensity * (1.0 - Area * 0.05 / Volume) * Volume;
-						Check(FMath::IsNearlyEqual(R.Mass, ExpectedMass, 1e-4 * ExpectedMass),
-							FString::Printf(TEXT("fea (shells): the mass is the skin's rho t A plus the overlap-corrected core (%.6g vs %.6g)"), R.Mass, ExpectedMass));
-						const double Weight = R.Mass * 9.80665;
-						Check(FMath::Abs(R.Reaction[2] - Weight) <= 0.02 * Weight && FMath::Abs(R.Reaction[0]) <= 0.02 * Weight && FMath::Abs(R.Reaction[1]) <= 0.02 * Weight,
-							FString::Printf(TEXT("fea (shells): the support carries the weight, %.4g N, shells included (reactions %.4g, %.4g, %.4g)"), Weight, R.Reaction[0], R.Reaction[1], R.Reaction[2]));
-						Check(FMath::Abs(R.AppliedPressure[2]) <= 1e-3 * 1.0e5 * 4.0 * PI, FString::Printf(TEXT("fea (shells): a uniform pressure over a closed surface has no resultant (%.3g N)"), R.AppliedPressure[2]));
-						Check(R.MeanNormalDisplacement < 0.0, FString::Printf(TEXT("fea (shells): an external pressure moves the surface inward (mean u.n = %.3g m)"), R.MeanNormalDisplacement));
-						Check(G.SkinMaxVonMises > 0.8e6 && G.SkinMaxVonMises < 2.0e6, FString::Printf(TEXT("fea (shells): the skin's peak von Mises is the membrane stress p a / 2t, 1.0e6 Pa, up to the support (got %.4g)"), G.SkinMaxVonMises));
-						Check(G.SkinMargin > 100.0 && G.CoreMargin != 0.0, FString::Printf(TEXT("fea (shells): margins against the skin's and the foam's allowables (%.1f, %.2f)"), G.SkinMargin, G.CoreMargin));
-						Check(R.Entries.Num() == 2 && R.Entries[0].Kind == TEXT("skin") && R.Entries[1].Kind == TEXT("core"), "fea (shells): a skin entry and a core entry");
-					}
-					Check(R.MaxDisplacement > 0.0 && R.MaxDisplacement < 1e-3, FString::Printf(TEXT("fea (shells): the displacement is small and finite (%.3g m)"), R.MaxDisplacement));
-					Check(IFileManager::Get().FileSize(*Request.VtkPath) > 0, FString::Printf(TEXT("fea (shells): the solution was written to %s"), *Request.VtkPath));
-					IFileManager::Get().Delete(*Request.VtkPath, false, true, true);
-
-					AerotelicFeaPreprocess::FModel Pre;
-					FString PreError;
-					const bool bPre = AerotelicFeaPreprocess::Build(Request, Pre, PreError);
-					Check(bPre, FString::Printf(TEXT("fea (shells, pre-processor): the model derives (%s)"), *PreError));
-					if (bPre)
-					{
-						Check(Pre.WettedFaces.Num() == R.Shells && Pre.WettedFaces.Num() == R.WettedFaces, FString::Printf(TEXT("fea (shells, pre-processor): a wetted face per shell (%d vs %d)"), Pre.WettedFaces.Num(), R.Shells));
-						Check(Pre.SupportNodes.Num() == R.SupportCornerNodes, FString::Printf(TEXT("fea (shells, pre-processor): the fixed nodes are the script's (%d vs %d)"), Pre.SupportNodes.Num(), R.SupportCornerNodes));
-						Check(Pre.SecondOrderTets == 0 && Pre.MidEdgeNodes == 0 && Pre.ShellNodes == static_cast<int32>(Outer.vertices.size()) && Pre.Dofs == R.Dofs && Pre.DirectSolverAuto(),
-							FString::Printf(TEXT("fea (shells, pre-processor): the DOF estimate is the solver's, a 4-node core under 6-dof shell nodes, within the direct solver's budget (%lld vs %d)"), Pre.Dofs, R.Dofs));
-						Check(Pre.Regions.Num() == 1 && !Pre.Regions[0].bSecondOrder, "fea (shells, pre-processor): the region is reported 4-node");
-						// The pre-processor's dihedral statistics are gmsh's own for
-						// the same tetrahedra (two implementations, one answer), and
-						// a sphere's own grid filled seeded from its surface is a
-						// good mesh by the dialog's band.
-						Check(FMath::IsNearlyEqual(Pre.MinDihedral, S.MinDihedral, 1e-6) && FMath::IsNearlyEqual(Pre.MaxDihedral, S.MaxDihedral, 1e-6)
-							&& Pre.TetsDihedralUnder10 == S.TetsDihedralUnder10 && Pre.TetsDihedralOver160 == S.TetsDihedralOver160,
-							FString::Printf(TEXT("fea (shells, pre-processor): the dihedral statistics are gmsh's (%.3f..%.3f vs %.3f..%.3f deg; %d / %d vs %d / %d)"),
-								Pre.MinDihedral, Pre.MaxDihedral, S.MinDihedral, S.MaxDihedral, Pre.TetsDihedralUnder10, Pre.TetsDihedralOver160, S.TetsDihedralUnder10, S.TetsDihedralOver160));
-						Check(!Pre.MeshIsPoor() && Pre.MinDihedral > 5.0, FString::Printf(TEXT("fea (shells, pre-processor): the seeded fill of the sphere is within the sliver band (%.2f%% outside, smallest dihedral %.2f deg)"), 100.0 * Pre.PoorTetFraction(), Pre.MinDihedral));
-						Check(Pre.bMassEstimated && FMath::IsNearlyEqual(Pre.Mass, R.Mass, 0.05 * R.Mass), FString::Printf(TEXT("fea (shells, pre-processor): the estimated mass is near the script's (%.6g vs %.6g)"), Pre.Mass, R.Mass));
-						Check(Pre.Regions.Num() == 1 && Pre.Regions[0].Label == TEXT("sphere") && Pre.Regions[0].Kind.Contains(TEXT("homogenised")), "fea (shells, pre-processor): one region, the body, shells over a homogenised core");
-					}
-				}
-			}
-		}
-
-		// (3) A thin-walled body with no lattice: the sphere's own
-		// triangles as shells of its 0.05 aluminium skin and nothing inside
-		// -- what Analysis > Structural makes of any body with a skin
-		// thickness. Closed forms: mass rho t A, the weight carried, the
-		// membrane stress p a / 2t = 1.0 MPa, the surface moving inward.
+		// (1) A thin-walled body: the sphere's own triangles (its placed
+		// mesh at tolerance 0 -- its Mesh tab's grid at the viewport's rule,
+		// exactly what the viewport shows) as shells of its 0.05 aluminium
+		// skin and nothing inside -- what Analysis > Structural makes of any
+		// body with a skin thickness. Closed forms: mass rho t A, the weight
+		// carried, the membrane stress p a / 2t = 1.0 MPa, the surface
+		// moving inward.
 		UE_LOG(LogAerotelicDocumentTest, Display, TEXT("step: structural fea (a thin-walled body)"));
 		if (Primitive != nullptr)
 		{
 			const std::vector<aerotelic::NamedMesh> Placed = Primitive->GetPlacedMeshes(false);
+			const std::vector<aerotelic::NamedMesh> Finer = Primitive->GetPlacedMeshes(false, 1e-3);
 			Check(Placed.size() == 1 && Placed[0].mesh.IsClosedManifold(), "fea (shells only): the sphere is one closed body");
+			Check(Placed.size() == 1 && Finer.size() == 1 && Placed[0].mesh.triangles.size() < Finer[0].mesh.triangles.size(),
+				FString::Printf(TEXT("fea (shells only): the own grid is the viewport's, coarser than a finer tolerance asks for (%d vs %d triangles)"), Placed.size() ? (int32)Placed[0].mesh.triangles.size() : -1, Finer.size() ? (int32)Finer[0].mesh.triangles.size() : -1));
 			if (Placed.size() == 1)
 			{
 				const aerotelic::TriMesh& Surface = Placed[0].mesh;
-				aerotelic::TetMesh ShellMesh;
-				ShellMesh.nodes = Surface.vertices;
+				std::vector<aerotelic::Vec3> ShellNodes = Surface.vertices;
 				AerotelicStructuralFea::FRequest Request;
-				Request.Mesh = &ShellMesh;
+				Request.Nodes = &ShellNodes;
 				for (const auto& T : Surface.triangles)
 				{
 					AerotelicStructuralFea::FShellFace F;
@@ -1000,7 +710,6 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 				Region.Skin = Al;
 				Region.SkinThickness = Primitive->GetEffectiveMassSpec().skin_thickness;
 				Request.Regions.Add(Region);
-				Request.bSecondOrder = true;   // no tetrahedra: ignored
 				Support(Request);
 				Request.VtkPath = FPaths::Combine(FPlatformProcess::UserTempDir(), TEXT("aerotelic_document_test_fea_thin.vtk"));
 				IFileManager::Get().Delete(*Request.VtkPath, false, true, true);
@@ -1011,7 +720,14 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 				Check(bSolved, FString::Printf(TEXT("fea (shells only): the thin-walled sphere solved (%s)"), bSolved ? *FString::Printf(TEXT("%d nodes, %d shells, %d dof, %.1f s"), R.Nodes, R.Shells, R.Dofs, R.Seconds) : *Error));
 				if (bSolved)
 				{
-					Check(R.Tets == 0 && R.Shells == static_cast<int32>(Surface.triangles.size()) && !R.bSecondOrder && R.Dofs == 6 * R.Nodes, "fea (shells only): shells on every triangle and no tetrahedra, six degrees of freedom a node");
+					Check(R.Shells == static_cast<int32>(Surface.triangles.size()) && R.Nodes == static_cast<int32>(Surface.vertices.size()) && R.Dofs == 6 * R.Nodes, "fea (shells only): a shell on every triangle, a node per vertex, six degrees of freedom a node");
+					// The script's own verdict on the balance, and which solver
+					// ran ("auto" here, as the dialog's default: the direct solver
+					// within its budget).
+					Check(R.bBalanced && R.BalanceError <= 0.01 && R.Warnings.Num() == 0 && R.LinearSolver == TEXT("sparse_lu"),
+						FString::Printf(TEXT("fea (shells only): the result reports a balanced solve (error %.2e, %d warning(s)) by %s"), R.BalanceError, R.Warnings.Num(), *R.LinearSolver));
+					Check(FMath::Abs(R.AppliedPressure[2]) <= 1e-3 * 1.0e5 * 4.0 * PI,
+						FString::Printf(TEXT("fea (shells only): a uniform pressure over a closed surface has no resultant (%.3g N)"), R.AppliedPressure[2]));
 					const double ExpectedMass = Al.density *0.05 * Surface.SurfaceArea();
 					Check(FMath::IsNearlyEqual(R.Mass, ExpectedMass, 1e-6 * ExpectedMass), FString::Printf(TEXT("fea (shells only): the mass is rho t A (%.6g vs %.6g)"), R.Mass, ExpectedMass));
 					const double Weight = ExpectedMass * 9.80665;
@@ -1025,9 +741,27 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 					AerotelicFeaPreprocess::FModel Pre;
 					FString PreError;
 					const bool bPre = AerotelicFeaPreprocess::Build(Request, Pre, PreError);
-					Check(bPre && Pre.Tets == 0 && Pre.WettedFaces.Num() == R.WettedFaces && Pre.SupportNodes.Num() == R.SupportCornerNodes && Pre.Regions.Num() == 1 && Pre.Regions[0].Kind == TEXT("shells"),
+					Check(bPre && Pre.WettedFaces.Num() == R.WettedFaces && Pre.SupportNodes.Num() == R.SupportCornerNodes && Pre.Regions.Num() == 1 && Pre.Regions[0].Kind == TEXT("shells"),
 						FString::Printf(TEXT("fea (shells only, pre-processor): the faces and the fixed nodes are the script's (%d / %d faces, %d / %d nodes; %s)"), bPre ? Pre.WettedFaces.Num() : -1, R.WettedFaces, bPre ? Pre.SupportNodes.Num() : -1, R.SupportCornerNodes, *PreError));
+					// The cost estimate (2026-11-05): six degrees of freedom on
+					// every node, the script's figure, within the direct solver's
+					// budget.
+					Check(bPre && Pre.ShellNodes == Pre.Nodes && Pre.Dofs == R.Dofs && Pre.DirectSolverAuto(),
+						FString::Printf(TEXT("fea (shells only, pre-processor): the DOF estimate is the solver's, every node a shell node (%lld vs %d)"), bPre ? Pre.Dofs : -1, R.Dofs));
 					Check(bPre && FMath::IsNearlyEqual(Pre.Mass, R.Mass, 1e-6 * R.Mass), "fea (shells only, pre-processor): the mass is rho t A");
+					Check(bPre && FMath::IsNearlyEqual(Pre.GravityForce.Z, R.AppliedGravity[2], 1e-6 * FMath::Abs(R.AppliedGravity[2])) && Pre.GravityForce.X == 0.0 && Pre.GravityForce.Y == 0.0,
+						FString::Printf(TEXT("fea (shells only, pre-processor): the inertial load is the script's applied gravity (%.6g vs %.6g N)"), bPre ? Pre.GravityForce.Z : 0.0, R.AppliedGravity[2]));
+					Check(bPre && Pre.PressureResultant.Size() <= 1e-3 * 1.0e5 * 4.0 * PI && Pre.MaxFacePressure == 1.0e5,
+						FString::Printf(TEXT("fea (shells only, pre-processor): the pressure's resultant over the closed surface is zero (%.3g N)"), bPre ? Pre.PressureResultant.Size() : -1.0));
+					Check(bPre && Pre.PointLoads.Num() == 0 && Pre.MassCentre.Size() < 0.05, FString::Printf(TEXT("fea (shells only, pre-processor): no point force; the centre of mass is near the sphere's centre (%.3g)"), bPre ? Pre.MassCentre.Size() : -1.0));
+					{
+						bool bOnPlane = bPre && Pre.SupportNodes.Num() > 0 && Pre.SupportPlanes.Num() == 1 && Pre.SupportPlanes[0].Axis == 2;
+						for (int32 N : (bPre ? Pre.SupportNodes : TArray<int32>())) bOnPlane = bOnPlane && FMath::Abs(ShellNodes[N].z - Pre.SupportPlanes[0].Value) <= Pre.SupportPlanes[0].Tolerance;
+						Check(bOnPlane && FMath::IsNearlyEqual(Pre.SupportPlanes[0].Value, Pre.Bounds.min.z, 1e-12), "fea (shells only, pre-processor): every fixed node lies within the tolerance of z = the mesh's minimum");
+						bool bOutward = bPre;
+						for (int32 i = 0; bPre && i < Pre.WettedFaces.Num(); ++i) bOutward = bOutward && FVector::DotProduct(Pre.FaceNormal[i], Pre.FaceCentre[i]) > 0.0;
+						Check(bOutward, "fea (shells only, pre-processor): the wetted faces are wound outward");
+					}
 
 					// A support PATCH (2026-11-05): the same plane z = min limited
 					// to a quadrant, x and y from -1 to 0.15 (the in-plane axes of a
@@ -1054,7 +788,7 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 						bool bInside = bPreP;
 						for (int32 N : (bPreP ? PreP.SupportNodes : TArray<int32>()))
 						{
-							const aerotelic::Vec3& P = ShellMesh.nodes[N];
+							const aerotelic::Vec3& P = ShellNodes[N];
 							bInside = bInside && P.x >= -1.0 && P.x <= 0.15 && P.y >= -1.0 && P.y <= 0.15;
 						}
 						Check(bInside, "fea (patch, pre-processor): every fixed node lies inside the patch's rectangle");
@@ -1066,80 +800,38 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 			}
 		}
 
-		// (4) A solid body with no lattice: the sphere meshed by gmsh at an
-		// element size, tetrahedra of its aluminium, under its own weight.
-		// Closed forms: mass rho V, the weight carried, a displacement of
-		// the order rho g a^2 / E (a few hundred nanometres).
-		UE_LOG(LogAerotelicDocumentTest, Display, TEXT("step: structural fea (a solid body)"));
-		if (Primitive != nullptr)
+		// (2) A body with NO skin thickness is refused (2026-11-08: the
+		// analysis models shells only; until then such a body was filled
+		// with solid tetrahedra). The wing, which deliberately carries no
+		// setting, is given a structural material and no skin for the
+		// moment: the builder's Describe and AppendBody both name the skin
+		// thickness as what is missing, and nothing is added to the model.
+		UE_LOG(LogAerotelicDocumentTest, Display, TEXT("step: structural fea (a body with no skin thickness)"));
+		if (Wing != nullptr)
 		{
-			const std::vector<aerotelic::NamedMesh> Placed = Primitive->GetPlacedMeshes(false, 2e-3);
-			if (Placed.size() == 1)
-			{
-				AerotelicTetGmsh::FRequest G;
-				G.Outer = &Placed[0].mesh;
-				G.Inner = nullptr;
-				G.CoreSize = 0.15;
-				G.Algorithm = 1;
-				G.bOptimize = true;
-				G.bOptimizeNetgen = true;
-				AerotelicTetGmsh::FResult TR;
-				FString GmshError;
-				const bool bMeshed = AerotelicTetGmsh::Run(G, TR, GmshError);
-				Check(bMeshed && !TR.Mesh.tets.empty() && TR.VolumeError <= 1e-9, FString::Printf(TEXT("fea (solid): gmsh fills the sphere at an element size (%s)"), bMeshed ? *FString::Printf(TEXT("%d tetrahedra, relative volume error %.2e"), (int32)TR.Mesh.tets.size(), TR.VolumeError) : *GmshError));
-				if (bMeshed && !TR.Mesh.tets.empty())
-				{
-					aerotelic::TetMesh SolidMesh = TR.Mesh;
-					SolidMesh.material.assign(SolidMesh.tets.size(), 1);
-					AerotelicStructuralFea::FRequest Request;
-					Request.Mesh = &SolidMesh;
-					AerotelicStructuralFea::FRegion Region;
-					Region.Id = 1;
-					Region.Label = TEXT("sphere");
-					Region.Core = Al;
-					Region.bSolid = true;
-					Request.Regions.Add(Region);
-					Request.bSecondOrder = true;
-					Support(Request);
-					Request.Pressure = 0.0;
-					Request.VtkPath = FPaths::Combine(FPlatformProcess::UserTempDir(), TEXT("aerotelic_document_test_fea_solid.vtk"));
-					IFileManager::Get().Delete(*Request.VtkPath, false, true, true);
-					AerotelicStructuralFea::FResult R;
-					FString Error;
-					const bool bSolved = AerotelicStructuralFea::Run(Request, R, Error);
-					Check(bSolved, FString::Printf(TEXT("fea (solid): the solid sphere solved (%s)"), bSolved ? *FString::Printf(TEXT("%d nodes, %d tetrahedra, %d dof, %.1f s"), R.Nodes, R.Tets, R.Dofs, R.Seconds) : *Error));
-					if (bSolved)
-					{
-						const double ExpectedMass = Al.density *(TR.SkinVolume + TR.CoreVolume);
-						Check(R.Shells == 0 && R.bSecondOrder && R.Dofs == 3 * R.Nodes, "fea (solid): 10-node tetrahedra and no shells, three degrees of freedom a node");
-						{
-							AerotelicFeaPreprocess::FModel PreCost;
-							FString PreCostError;
-							Check(AerotelicFeaPreprocess::Build(Request, PreCost, PreCostError) && PreCost.ShellNodes == 0 && PreCost.SecondOrderTets == PreCost.Tets && PreCost.Dofs == R.Dofs,
-								FString::Printf(TEXT("fea (solid, pre-processor): the DOF estimate counts the mid-edge nodes of every tetrahedron (%lld vs %d)"), PreCost.Dofs, R.Dofs));
-							Check(PreCost.TetsDihedralUnder10 == TR.TetsDihedralUnder10 && PreCost.TetsDihedralOver160 == TR.TetsDihedralOver160 && FMath::IsNearlyEqual(PreCost.MinDihedral, TR.MinDihedral, 1e-6),
-								FString::Printf(TEXT("fea (solid, pre-processor): the dihedral statistics are gmsh's (%d / %d vs %d / %d; min %.3f vs %.3f)"), PreCost.TetsDihedralUnder10, PreCost.TetsDihedralOver160, TR.TetsDihedralUnder10, TR.TetsDihedralOver160, PreCost.MinDihedral, TR.MinDihedral));
-						}
-						Check(FMath::IsNearlyEqual(R.Mass, ExpectedMass, 1e-6 * ExpectedMass), FString::Printf(TEXT("fea (solid): the mass is rho V (%.6g vs %.6g)"), R.Mass, ExpectedMass));
-						const double Weight = ExpectedMass * 9.80665;
-						Check(FMath::Abs(R.Reaction[2] - Weight) <= 0.02 * Weight && FMath::Abs(R.Reaction[0]) <= 0.02 * Weight && FMath::Abs(R.Reaction[1]) <= 0.02 * Weight,
-							FString::Printf(TEXT("fea (solid): the support carries the weight, %.4g N (reactions %.4g, %.4g, %.4g)"), Weight, R.Reaction[0], R.Reaction[1], R.Reaction[2]));
-						Check(R.MaxDisplacement > 0.0 && R.MaxDisplacement < 1e-5, FString::Printf(TEXT("fea (solid): the displacement under its own weight is of the order rho g a^2 / E (%.3g m)"), R.MaxDisplacement));
-						Check(R.Entries.Num() == 1 && R.Entries[0].Kind == TEXT("solid") && R.Entries[0].MaxVonMises > 0.0 && R.Entries[0].MaxVonMises < 1.0e6,
-							FString::Printf(TEXT("fea (solid): the stress under its own weight is of the order rho g a (%.4g Pa)"), R.Entries.Num() ? R.Entries[0].MaxVonMises : 0.0));
-						IFileManager::Get().Delete(*Request.VtkPath, false, true, true);
-						AerotelicFeaPreprocess::FModel Pre;
-						FString PreError;
-						const bool bPre = AerotelicFeaPreprocess::Build(Request, Pre, PreError);
-						Check(bPre && Pre.WettedFaces.Num() == R.WettedFaces && Pre.SupportNodes.Num() == R.SupportCornerNodes && R.SupportNodes > R.SupportCornerNodes && Pre.Regions.Num() == 1 && Pre.Regions[0].Kind == TEXT("solid") && FMath::IsNearlyEqual(Pre.Mass, R.Mass, 1e-6 * R.Mass),
-							FString::Printf(TEXT("fea (solid, pre-processor): the faces, the fixed nodes and the mass are the script's (%s)"), *PreError));
-					}
-				}
-			}
+			const aerotelic::MassSpec Saved = Wing->GetMassSpec();
+			aerotelic::MassSpec NoSkin;
+			NoSkin.mode = aerotelic::MassMode::Material;
+			NoSkin.material = Al;
+			NoSkin.skin_thickness = 0.0;
+			Wing->SetMassSpec(NoSkin);
+			AerotelicFeaModelBuilder::FOptions Options;
+			AerotelicFeaModelBuilder::FCache Cache;
+			AerotelicFeaModelBuilder::FBuilt Built;
+			FAerotelicBooleanOperand WingOp;
+			WingOp.Entity = Wing;
+			bool bOk = true;
+			const FString Line = AerotelicFeaModelBuilder::Describe(WingOp, FString(), Wing->EntityName, Options, Doc->GetUnits(), &bOk);
+			Check(!bOk && Line.Contains(TEXT("skin thickness")), FString::Printf(TEXT("fea (no skin): the Set-up line says a body without a skin thickness cannot be modelled (%s)"), *Line));
+			const bool bAppended = AerotelicFeaModelBuilder::AppendBody(WingOp, FString(), Wing->EntityName, 0, Options, Cache, Built);
+			Check(!bAppended && Built.Problems.Num() == 1 && Built.Problems[0].Contains(TEXT("skin thickness")) && Built.Problems[0].Contains(Wing->EntityName),
+				FString::Printf(TEXT("fea (no skin): AppendBody refuses the body by name for its skin thickness (%s)"), *FString::Join(Built.Problems, TEXT("; "))));
+			Check(Built.Nodes.empty() && Built.ShellFaces.Num() == 0 && Built.RibFaces.Num() == 0 && Built.Regions.Num() == 0, "fea (no skin): nothing was added to the model");
+			Wing->SetMassSpec(Saved);
 		}
 	}
 
-	// (5) A box primitive as a thin-walled cantilever against beam theory
+	// (3) A box primitive as a thin-walled cantilever against beam theory
 	// (2026-11-02): the 1 x 10 x 1 m box of ue/Projects/simple_beam.yaml,
 	// 10 mm aluminium shells, its grid 2 x 20 x 2 cells from the Mesh tab,
 	// clamped at y = min, two 500 N loads at the tip on the webs' mid-height.
@@ -1177,10 +869,9 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 			if (Placed.size() == 1)
 			{
 				const aerotelic::TriMesh& Surface = Placed[0].mesh;
-				aerotelic::TetMesh ShellMesh;
-				ShellMesh.nodes = Surface.vertices;
+				std::vector<aerotelic::Vec3> ShellNodes = Surface.vertices;
 				AerotelicStructuralFea::FRequest Request;
-				Request.Mesh = &ShellMesh;
+				Request.Nodes = &ShellNodes;
 				for (const auto& T : Surface.triangles)
 				{
 					AerotelicStructuralFea::FShellFace F;
@@ -1309,7 +1000,7 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 					IFileManager::Get().Delete(*Request.VtkPath, false, true, true);
 				}
 
-				// (6) The same box with RIBS (2026-11-08): three plane networks'
+				// (4) The same box with RIBS (2026-11-08): three plane networks'
 				// worth of structure on the body -- a 10 mm aluminium skin and a
 				// network of three ribs normal to y at y = -2.4, 0.05, 2.5 (OFF
 				// the grid rows, so the cut must split triangles), 5 mm thick --
@@ -1367,7 +1058,6 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 
 					// The model through the builder.
 					AerotelicFeaModelBuilder::FOptions Options;
-					Options.Model = AerotelicFeaModelBuilder::EModel::AsDesigned;
 					AerotelicFeaModelBuilder::FCache Cache;
 					AerotelicFeaModelBuilder::FBuilt Built;
 					FAerotelicBooleanOperand BeamOp;
@@ -1379,10 +1069,10 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 					Check(bAppended, FString::Printf(TEXT("fea (ribs): the ribbed beam builds (%s)"), *FString::Join(Built.Problems, TEXT("; "))));
 					if (bAppended)
 					{
-						Check(Built.Mesh.tets.empty() && Built.ShellFaces.Num() > ExpectedTriangles && Built.RibFaces.Num() > 0 && Built.Regions.Num() == 2,
-							FString::Printf(TEXT("fea (ribs): shells on the cut surface (%d > %d), %d rib shells, two regions (skin and ribs), no tetrahedra (%d)"), Built.ShellFaces.Num(), ExpectedTriangles, Built.RibFaces.Num(), (int32)Built.Mesh.tets.size()));
+						Check(!Built.Nodes.empty() && Built.ShellFaces.Num() > ExpectedTriangles && Built.RibFaces.Num() > 0 && Built.Regions.Num() == 2,
+							FString::Printf(TEXT("fea (ribs): shells on the cut surface (%d > %d), %d rib shells, two regions (skin and ribs) on %d nodes"), Built.ShellFaces.Num(), ExpectedTriangles, Built.RibFaces.Num(), (int32)Built.Nodes.size()));
 						const AerotelicStructuralFea::FRegion* RibRegion = Built.Regions.FindByPredicate([](const AerotelicStructuralFea::FRegion& X) { return X.HasRibs(); });
-						Check(RibRegion != nullptr && !RibRegion->HasShells() && !RibRegion->HasTetrahedra() && FMath::IsNearlyEqual(RibRegion->RibThickness, 0.005, 1e-12) && RibRegion->Label.Contains(TEXT("Ribs")),
+						Check(RibRegion != nullptr && !RibRegion->HasShells() && FMath::IsNearlyEqual(RibRegion->RibThickness, 0.005, 1e-12) && RibRegion->Label.Contains(TEXT("Ribs")),
 							"fea (ribs): the rib region carries the network's thickness and material and nothing else");
 						// Every rib rim node is a skin node: a rib face node with
 						// |x| = 0.5 or |z| = 0.5 appears in some shell face.
@@ -1394,7 +1084,7 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 						{
 							for (int32 k = 0; k < 3; ++k)
 							{
-								const aerotelic::Vec3& Node = Built.Mesh.nodes[F.N[k]];
+								const aerotelic::Vec3& Node = Built.Nodes[F.N[k]];
 								const bool bOnSkin = FMath::IsNearlyEqual(FMath::Abs(Node.x), 0.5, 1e-9) || FMath::IsNearlyEqual(FMath::Abs(Node.z), 0.5, 1e-9);
 								if (bOnSkin) { ++RimNodes; bRims = bRims && SkinNodes.Contains(F.N[k]); }
 								else { ++InteriorNodes; bRims = bRims && !SkinNodes.Contains(F.N[k]); }
@@ -1404,13 +1094,13 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 						double RibArea = 0.0;
 						for (const auto& F : Built.RibFaces)
 						{
-							const aerotelic::Vec3& A = Built.Mesh.nodes[F.N[0]];
-							RibArea += 0.5 * aerotelic::Length(aerotelic::Cross(Built.Mesh.nodes[F.N[1]] - A, Built.Mesh.nodes[F.N[2]] - A));
+							const aerotelic::Vec3& A = Built.Nodes[F.N[0]];
+							RibArea += 0.5 * aerotelic::Length(aerotelic::Cross(Built.Nodes[F.N[1]] - A, Built.Nodes[F.N[2]] - A));
 						}
 						Check(FMath::IsNearlyEqual(RibArea, 3.0, 1e-6), FString::Printf(TEXT("fea (ribs): the rib shells tile three unit discs (area %.6g)"), RibArea));
 
 						AerotelicStructuralFea::FRequest RibRequest;
-						RibRequest.Mesh = &Built.Mesh;
+						RibRequest.Nodes = &Built.Nodes;
 						RibRequest.ShellFaces = Built.ShellFaces;
 						RibRequest.RibFaces = Built.RibFaces;
 						RibRequest.Regions = Built.Regions;
@@ -1570,8 +1260,8 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 	// placements stay the full-scale aircraft; the actors, the placed
 	// meshes, bounds and solids are a quarter the size and a quarter as far
 	// out; a skin's mass goes as the area (1/16) while its thickness stays;
-	// the boolean and the lattice follow. Set before the save, read back
-	// after the reopen.
+	// the boolean and the generated structure follow. Set before the save,
+	// read back after the reopen.
 	UE_LOG(LogAerotelicDocumentTest, Display, TEXT("step: scale"));
 	double FullSpan = 0.0, FullMass = 0.0;
 	FBox FullBounds(ForceInit);
@@ -1766,22 +1456,16 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 		}
 	}
 	Check(bFoundWing && bFoundFuselage && bFoundPrimitive && bFoundBoolean, "all three entity types and the boolean survived the round trip");
-	// The sphere's structure came back with it -- the infill's parameters
-	// (its offsets included) and the ribs -- and was regenerated on load,
-	// since it has an interior.
+	// The sphere's structure came back with it -- the ribs -- and was
+	// regenerated on load, since it has an interior (a skin and networks).
 	if (ReopenedPrimitive != nullptr)
 	{
 		const aerotelic::BodyStructure& S = ReopenedPrimitive->GetBodyStructure(0);
-		Check(S.infill.has_value() && S.infill->lattice.type == "Gyroid" && S.infill->lattice.resolution == 6 && FMath::IsNearlyEqual(S.infill->lattice.cell_size, 0.5) && FMath::IsNearlyEqual(S.infill->lattice.volume_fraction, 0.35),
-			"structure: the infill's lattice parameters round-tripped");
-		Check(S.infill.has_value() && FMath::IsNearlyEqual(S.infill->lattice.origin.x, 0.1, 1e-12) && FMath::IsNearlyEqual(S.infill->lattice.origin.y, -0.05, 1e-12) && FMath::IsNearlyEqual(S.infill->lattice.origin.z, 0.02, 1e-12),
-			"structure: the infill's offsets (origin) round-tripped");
-		Check(S.infill.has_value() && S.infill->material.name == "infill foam" && FMath::IsNearlyEqual(S.infill->material.density, 0.5, 1e-12), "structure: the infill's own material round-tripped");
 		Check(S.networks.size() == 1 && S.networks[0].name == "Ribs" && S.networks[0].axis == aerotelic::PlaneAxis::X && S.networks[0].count == 2
 			&& FMath::IsNearlyEqual(S.networks[0].start, -0.3, 1e-12) && FMath::IsNearlyEqual(S.networks[0].spacing, 0.6, 1e-12) && FMath::IsNearlyEqual(S.networks[0].thickness, 0.04, 1e-12)
 			&& S.networks[0].material.name == "rib ply", "structure: the plane network round-tripped");
 		const FAerotelicBodyStructure* G = ReopenedPrimitive->GetGeneratedStructure(TEXT("Main"));
-		Check(G != nullptr && G->IsGenerated() && G->GetLayers().size() == 3, "structure: regenerated on load (three layers)");
+		Check(G != nullptr && G->IsGenerated() && G->GetLayers().size() == 2, "structure: regenerated on load (two layers)");
 	}
 
 	// Deleting an operand cascades to the result built on it.

@@ -21,7 +21,6 @@
 #include "Widgets/CurveTabControls.h"
 #include "Widgets/NumericEntry.h"
 #include "Export/AerotelicExport.h"
-#include "aerotelic/tet.hpp"
 
 // Last: OCCT's Handle() macro vs engine headers.
 #include "Entity/AerotelicDocumentSubsystem.h"
@@ -79,149 +78,12 @@ namespace
 	}
 }
 
-// --------------------------- tetrahedra of the generated structures (VTK)
-
-namespace
-{
-	// The tetrahedral meshes of every body whose structure has been
-	// generated, built on request (FAerotelicBodyStructure::GetTetMesh: gmsh
-	// over the body and MeshLib's offset) and merged for one VTK file.
-	// Material < 0 takes both materials, 1 the skin only. The status line
-	// follows the meshing; Notes collects what the bodies report (left out,
-	// faces not conformed, all skin).
-	struct FTetExport
-	{
-		aerotelic::TetMesh Merged;
-		int32 Lattices = 0, Bodies = 0;
-		int64 SkinTets = 0, CoreTets = 0;
-		double SkinVolume = 0.0, CoreVolume = 0.0, BodyVolume = 0.0;
-		// Largest |skin + core - body| / body over the bodies: the
-		// conformity check, zero to rounding when all is well.
-		double WorstVolumeError = 0.0;
-		// Worst element quality over the bodies (signed inverse condition
-		// number: 1 regular, 0 flat, negative inverted).
-		double WorstQuality = 0.0;
-		TArray<FString> Notes;
-	};
-
-	FTetExport CollectTets(int Material, TFunction<void(const FText&)> Status)
-	{
-		FTetExport Out;
-		UAerotelicDocumentSubsystem* Doc = UAerotelicDocumentSubsystem::Get();
-		if (Doc == nullptr)
-		{
-			return Out;
-		}
-		for (auto& Weak : Doc->GetEntities())
-		{
-			if (!Weak.IsValid()) continue;
-			for (const FAerotelicBody& Body : Weak->GetBodies())
-			{
-				if (!Body.Generated.IsValid() || !Body.Generated->IsGenerated()) continue;
-				const FString Label = Weak->GetBodies().Num() > 1 ? FString::Printf(TEXT("%s / %s"), *Weak->EntityName, *Body.Name) : Weak->EntityName;
-				Status(FText::FromString(FString::Printf(TEXT("Meshing %s with tetrahedra..."), *Label)));
-				FString Note;
-				const FAerotelicBodyStructure::FTetMesh* M = Body.Generated->GetTetMesh(Note);
-				if (!Note.IsEmpty()) Out.Notes.Add(Label + TEXT(": ") + Note);
-				if (M == nullptr) continue;
-				const AerotelicTetGmsh::FResult& S = M->Result;
-				Out.SkinTets += S.SkinTets;
-				Out.CoreTets += S.CoreTets;
-				Out.SkinVolume += S.SkinVolume;
-				Out.CoreVolume += S.CoreVolume;
-				Out.BodyVolume += S.OuterVolume;
-				Out.WorstVolumeError = FMath::Max(Out.WorstVolumeError, S.VolumeError);
-				Out.WorstQuality = Out.Bodies == 0 ? S.MinQuality : FMath::Min(Out.WorstQuality, S.MinQuality);
-				++Out.Bodies;
-				// Only the nodes the chosen tetrahedra use.
-				const aerotelic::TetMesh& Mesh = S.Mesh;
-				std::vector<int> Remap(Mesh.nodes.size(), -1);
-				for (size_t K = 0; K < Mesh.tets.size(); ++K)
-				{
-					if (Material >= 0 && Mesh.material[K] != Material) continue;
-					for (int I = 0; I < 4; ++I)
-					{
-						int& R = Remap[Mesh.tets[K][I]];
-						if (R < 0)
-						{
-							R = static_cast<int>(Out.Merged.nodes.size());
-							Out.Merged.nodes.push_back(Mesh.nodes[Mesh.tets[K][I]]);
-						}
-					}
-					const auto& T = Mesh.tets[K];
-					Out.Merged.tets.push_back({Remap[T[0]], Remap[T[1]], Remap[T[2]], Remap[T[3]]});
-					Out.Merged.constrained.push_back(Mesh.constrained.empty() ? 0 : Mesh.constrained[K]);
-					Out.Merged.material.push_back(Mesh.material[K]);
-				}
-				++Out.Lattices;
-			}
-		}
-		Out.Merged.neighbors.assign(Out.Merged.tets.size(), {{-1, -1, -1, -1}});
-		return Out;
-	}
-
-	bool WriteTetExport(const FTetExport& Export, const FString& Title, const FText& TitleText, const FString& What, TFunction<void(const FText&)> Status)
-	{
-		TSharedPtr<SWindow> Active = FSlateApplication::Get().GetActiveTopLevelWindow();
-		TSharedRef<SWidget> Parent = Active.IsValid() ? StaticCastSharedRef<SWidget>(Active.ToSharedRef()) : SNullWidget::NullWidget;
-		FString Path;
-		if (!AskSavePath(Parent, Title, TEXT("VTK Files (*.vtk)|*.vtk"), TEXT(".vtk"), Path))
-		{
-			Status(LOCTEXT("Ready", "Ready"));
-			return false;
-		}
-		if (!aerotelic::WriteTetMeshVtk(Export.Merged, TCHAR_TO_UTF8(*Path)))
-		{
-			Status(LOCTEXT("Ready", "Ready"));
-			AerotelicMessageBox(EAppMsgType::Ok, FText::FromString(FString::Printf(TEXT("Could not write %s"), *Path)), LOCTEXT("ExportError", "Export Error"));
-			return false;
-		}
-		Status(FText::FromString(FString::Printf(TEXT("Exported %s of %d bodies (skin %.6g + core %.6g = %.6g vs bodies %.6g, worst mismatch %.2e, worst element quality %.3f) to %s"),
-			*What, Export.Bodies, Export.SkinVolume, Export.CoreVolume, Export.SkinVolume + Export.CoreVolume, Export.BodyVolume, Export.WorstVolumeError, Export.WorstQuality, *Path)));
-		if (Export.Notes.Num() > 0)
-		{
-			AerotelicMessageBox(EAppMsgType::Ok, FText::FromString(FString::Join(Export.Notes, TEXT("\n"))), TitleText);
-		}
-		return true;
-	}
-}
-
-void ShowAerotelicExportSkinVtkDialog(TFunction<void(const FText&)> Status)
-{
-	FTetExport Export = CollectTets(1, Status);
-	if (Export.Merged.tets.empty())
-	{
-		Status(LOCTEXT("Ready", "Ready"));
-		FString Text = TEXT("No skin to export: generate a body's structure first (Scene tree > body > Generate Structure; the body is then meshed with tetrahedra on request, conforming to its surface outside and to its MeshLib offset at the skin depth inside).");
-		if (Export.Notes.Num() > 0) Text += TEXT("\n\n") + FString::Join(Export.Notes, TEXT("\n"));
-		AerotelicMessageBox(EAppMsgType::Ok, FText::FromString(Text), LOCTEXT("SkinTitle", "Export Skin Tetrahedra"));
-		return;
-	}
-	WriteTetExport(Export, TEXT("Export Skin Tetrahedra"), LOCTEXT("SkinTitle", "Export Skin Tetrahedra"),
-		FString::Printf(TEXT("%s skin tetrahedra"), *Thousands(Export.SkinTets)), Status);
-}
-
-void ShowAerotelicExportTetVtkDialog(TFunction<void(const FText&)> Status)
-{
-	FTetExport Export = CollectTets(-1, Status);
-	if (Export.Merged.tets.empty())
-	{
-		Status(LOCTEXT("Ready", "Ready"));
-		FString Text = TEXT("No body to export: generate a body's structure first (Scene tree > body > Generate Structure; the body is then meshed with tetrahedra on request, skin and core).");
-		if (Export.Notes.Num() > 0) Text += TEXT("\n\n") + FString::Join(Export.Notes, TEXT("\n"));
-		AerotelicMessageBox(EAppMsgType::Ok, FText::FromString(Text), LOCTEXT("TetTitle", "Export Tetrahedral Mesh"));
-		return;
-	}
-	WriteTetExport(Export, TEXT("Export Tetrahedral Mesh"), LOCTEXT("TetTitle", "Export Tetrahedral Mesh"),
-		FString::Printf(TEXT("%s skin + %s core tetrahedra"), *Thousands(Export.SkinTets), *Thousands(Export.CoreTets)), Status);
-}
-
 // -------------------------------------------------------------------- STL
 
 void ShowAerotelicExportStlDialog(TFunction<void(const FText&)> Status)
 {
-	// The bodies, then every generated structure layer (a skin shell, an
-	// infill, a network's ribs) as a part of its own.
+	// The bodies, then every generated structure layer (a skin shell, a
+	// network's ribs) as a part of its own.
 	TArray<FAerotelicBodyChoicePtr> Choices = SceneBodyChoices();
 	Choices.Append(SceneLayerChoices());
 	if (Choices.Num() == 0)
@@ -527,8 +389,8 @@ namespace
 void ShowAerotelicExport3DPdfDialog(TFunction<void(const FText&)> Status)
 {
 	// Every scene body, as STL export takes them: a 3D PDF carries a
-	// triangulation, so a boolean result and a lattice are as exportable
-	// as a solid (unlike STEP, which needs a B-rep).
+	// triangulation, so a boolean result and a generated structure layer
+	// are as exportable as a solid (unlike STEP, which needs a B-rep).
 	TArray<FAerotelicBodyChoicePtr> Choices = SceneBodyChoices();
 	if (Choices.Num() == 0)
 	{

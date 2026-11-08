@@ -34,10 +34,6 @@ public:
 	TSharedPtr<FUICommandInfo> BooleanOperation;
 	TSharedPtr<FUICommandInfo> MaterialLibrary;
 
-	// Tetrahedral exports of the generated structures (File menu)
-	TSharedPtr<FUICommandInfo> ExportSkinVtk;
-	TSharedPtr<FUICommandInfo> ExportTetVtk;
-
 	// Analysis
 	TSharedPtr<FUICommandInfo> MassProperties;
 	TSharedPtr<FUICommandInfo> StructuralFea;

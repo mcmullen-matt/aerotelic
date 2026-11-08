@@ -313,7 +313,7 @@ void CheckMassSpecRoundTrip() {
 }
 
 // `bodies:` on an entity: each solid body's structure -- material, skin,
-// infill, plane networks, exclusions, asserted mass -- round-trips with
+// plane networks, exclusions, asserted mass -- round-trips with
 // only the keys that were set, a body with nothing set is not written, a
 // boolean result's bodies carry theirs too, and a structure that cannot
 // be used is refused with the body named.
@@ -340,16 +340,6 @@ void CheckBodiesRoundTrip() {
 	flap.color = std::array<double, 3>{0.2, 0.4, 0.6};
 	flap.structure.material = *FindMaterialPreset("Balsa, medium (160 kg/m^3)");
 	flap.structure.skin_thickness = 0.0015;
-	InfillSpec infill;
-	infill.material = *FindMaterialPreset("Aluminium 2024-T3 sheet");
-	infill.lattice.family = LatticeFamily::Tpms;
-	infill.lattice.type = "Gyroid";
-	infill.lattice.phase = TpmsPhase::Sheet;
-	infill.lattice.cell_size = 0.02;
-	infill.lattice.volume_fraction = 0.3;
-	infill.lattice.resolution = 12;
-	infill.lattice.origin = Vec3{0.1, -0.05, 0.02};
-	flap.structure.infill = infill;
 	PlaneNetwork ribs;
 	ribs.name = "Ribs";
 	ribs.axis = PlaneAxis::Y;
@@ -383,15 +373,6 @@ void CheckBodiesRoundTrip() {
 	const BodyStructure& s = f.structure;
 	Check(s.IsSkin() && s.HasInterior() && s.material.name == "Balsa, medium (160 kg/m^3)" && s.material.density == 160.0, "bodies: the flap's skin material");
 	CheckClose(s.skin_thickness, 0.0015, 1e-15, "bodies: the skin thickness");
-	Check(s.infill.has_value(), "bodies: the infill is there");
-	if (s.infill) {
-		Check(s.infill->lattice.family == LatticeFamily::Tpms && s.infill->lattice.type == "Gyroid" && s.infill->lattice.phase == TpmsPhase::Sheet
-			&& s.infill->lattice.resolution == 12, "bodies: the infill lattice family, type, phase, resolution");
-		CheckClose(s.infill->lattice.cell_size, 0.02, 1e-15, "bodies: the infill cell size");
-		CheckClose(s.infill->lattice.volume_fraction, 0.3, 1e-15, "bodies: the infill volume fraction");
-		CheckClose(s.infill->lattice.origin.y, -0.05, 1e-15, "bodies: the infill lattice offsets");
-		Check(s.infill->material.name == "Aluminium 2024-T3 sheet" && s.infill->lattice.skin_thickness == 0.0, "bodies: the infill's own material; the lattice's skin is the body's, not its own");
-	}
 	Check(s.networks.size() == 2, "bodies: two plane networks");
 	if (s.networks.size() == 2) {
 		const PlaneNetwork& r = s.networks[0];
@@ -602,11 +583,11 @@ void CheckScaleRoundTrip() {
 	Check(threw, "scale: zero is refused on save");
 }
 
-// A file from before 2026-11-08 with a `lattices:` section: the lattice
-// entity kind no longer exists, so the entries are skipped by name (the
-// rest of the file loads) and never written back. The lattice PARAMETERS
-// still round-trip as a body's infill (CheckBodiesRoundTrip): the
-// honeycomb's three figures of its own are checked here through that.
+// A file from before 2026-11-08 with a `lattices:` section: lattices are
+// no longer supported at all, so the entries are skipped by name (the
+// rest of the file loads) and never written back. A body whose entry
+// carries the `infill:` key of the same era loads with the infill dropped
+// and is reported by "<entity> / <body>" in ignored_infill.
 void CheckUnsupportedLattices() {
 	const std::string path = AEROTELIC_TESTS_DIR "/project_yaml_check_tmp.yaml";
 	{
@@ -658,46 +639,50 @@ void CheckUnsupportedLattices() {
 	try { LoadProjectYaml(path); } catch (const std::invalid_argument&) { threw = true; }
 	Check(threw, "old lattices: an entity of type lattice is refused");
 
-	// A honeycomb infill keeps its cross-section, its prism axis and how its
-	// wall is sized -- the three things no other family has -- and a cell
-	// that is not in the family's list is refused.
-	ProjectFile pf;
-	ProjectEntity wing;
-	wing.name = "Wing";
-	wing.type = EntityType::Wing;
-	wing.model = WingModelSpec{};
-	ProjectBody body;
-	body.name = "Main";
-	body.structure.material = *FindMaterialPreset("Aluminium 2024-T3 sheet");
-	body.structure.skin_thickness = 0.002;
-	InfillSpec infill;
-	infill.lattice.family = LatticeFamily::Honeycomb;
-	infill.lattice.type = "Hexagon";
-	infill.lattice.cell_size = 0.02;
-	infill.lattice.cell_aspect = 1.75;
-	infill.lattice.axis = PrismAxis::Y;
-	infill.lattice.wall_sizing = WallSizing::Thickness;
-	infill.lattice.wall_thickness = 0.03;
-	infill.material = body.structure.material;
-	body.structure.infill = infill;
-	wing.bodies.push_back(body);
-	pf.entities.push_back(wing);
-	SaveProjectYaml(pf, path);
-	const ProjectFile hb = LoadProjectYaml(path);
-	Check(hb.entities.size() == 1 && hb.entities[0].bodies.size() == 1 && hb.entities[0].bodies[0].structure.infill.has_value(), "honeycomb infill: round-trips");
-	if (hb.entities.size() == 1 && hb.entities[0].bodies.size() == 1 && hb.entities[0].bodies[0].structure.infill) {
-		const LatticeSpec& hc = hb.entities[0].bodies[0].structure.infill->lattice;
-		Check(hc.family == LatticeFamily::Honeycomb && hc.type == "Hexagon", "honeycomb infill: family and cell");
-		CheckClose(hc.cell_aspect, 1.75, 1e-12, "honeycomb infill: cell aspect");
-		Check(hc.axis == PrismAxis::Y, "honeycomb infill: prism axis");
-		Check(hc.wall_sizing == WallSizing::Thickness, "honeycomb infill: wall sizing");
-		CheckClose(hc.wall_thickness, 0.03, 1e-12, "honeycomb infill: wall thickness");
+	// A body with an `infill:` key, as a file of 2026-11-08 wrote one: the
+	// infill is dropped, the body's skin and network load, the file is
+	// otherwise intact, and the body is reported by its owner and name.
+	{
+		std::ofstream out(path);
+		out << "units: {length: m, mass: kg, time: s, stress: Pa}\n"
+		       "entities:\n"
+		       "  - name: Wing\n"
+		       "    type: primitive\n"
+		       "    model: {shape: sphere, name: Wing, radius: 1.0}\n"
+		       "    bodies:\n"
+		       "      - name: Main\n"
+		       "        material: {name: Balsa, density: 160.0, youngs_modulus: 3.0e9, poisson_ratio: 0.3, allowable_stress: 1.0e7}\n"
+		       "        skin_thickness: 0.002\n"
+		       "        infill:\n"
+		       "          material: {name: PLA, density: 1240.0, youngs_modulus: 3.5e9, poisson_ratio: 0.36, allowable_stress: 5.0e7}\n"
+		       "          lattice: {family: honeycomb, type: Hexagon, cell_size: 0.02, cell_aspect: 1.75, axis: y, wall_sizing: thickness, wall_thickness: 0.03}\n"
+		       "        networks:\n"
+		       "          - {name: Ribs, axis: y, start: 0.05, spacing: 0.1, count: 3, thickness: 0.002, material: {name: Ply, density: 680.0, youngs_modulus: 9.0e9, poisson_ratio: 0.3, allowable_stress: 3.0e7}}\n"
+		       "      - name: Other\n"
+		       "        material: {name: Balsa, density: 160.0, youngs_modulus: 3.0e9, poisson_ratio: 0.3, allowable_stress: 1.0e7}\n";
 	}
-	pf.entities[0].bodies[0].structure.infill->lattice.type = "Gyroid";
-	SaveProjectYaml(pf, path);
+	ProjectFile inf;
 	threw = false;
-	try { LoadProjectYaml(path); } catch (const std::invalid_argument&) { threw = true; }
-	Check(threw, "honeycomb infill: a TPMS name is not a honeycomb cell");
+	try { inf = LoadProjectYaml(path); } catch (const std::exception& e) { threw = true; std::cerr << e.what() << "\n"; }
+	Check(!threw, "old infill: a body with an infill: key still loads");
+	Check(inf.entities.size() == 1 && inf.entities[0].bodies.size() == 2, "old infill: the entity and both bodies load");
+	if (inf.entities.size() == 1 && inf.entities[0].bodies.size() == 2) {
+		const BodyStructure& s = inf.entities[0].bodies[0].structure;
+		Check(s.IsSkin() && s.HasInterior() && s.material.name == "Balsa", "old infill: the body's skin material survives");
+		CheckClose(s.skin_thickness, 0.002, 1e-15, "old infill: the skin thickness survives");
+		Check(s.networks.size() == 1 && s.networks[0].name == "Ribs" && s.networks[0].count == 3, "old infill: the plane network survives");
+		Check(!inf.entities[0].bodies[1].structure.HasInterior(), "old infill: the other body is a plain solid");
+	}
+	Check(inf.ignored_infill.size() == 1 && inf.ignored_infill[0] == "Wing / Main",
+		"old infill: the body whose infill was dropped is reported as '<entity> / <body>'");
+	Check(inf.unsupported_lattices.empty(), "old infill: an infill: key is not a lattices: entry");
+	SaveProjectYaml(inf, path);
+	{
+		std::ifstream in(path);
+		std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+		Check(text.find("infill") == std::string::npos, "old infill: nothing is written back under infill:");
+	}
+	Check(LoadProjectYaml(path).ignored_infill.empty(), "old infill: the re-saved file has none to report");
 }
 
 void CheckRealPythonProjectFile() {
@@ -749,8 +734,8 @@ void CheckRealPythonProjectFile() {
 	}
 	Check(true, "p38.yaml: every entity constructed and the sampled ones built real solids without throwing");
 
-	// Every body's own mesh is a closed, outward manifold -- what the
-	// lattice generator's distance field needs for its sign. The booms end
+	// Every body's own mesh is a closed, outward manifold -- what a signed
+	// distance field (sdf.hpp) needs for its sign. The booms end
 	// in knife edges (zero width, some height), the tailplane's tip chord
 	// closes to zero: both must come out closed.
 	for (auto& e : project.entities) {

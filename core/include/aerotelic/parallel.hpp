@@ -1,7 +1,7 @@
 #pragma once
 
 // A minimal parallel-for over [0, n) on std::thread, for the distance
-// field and lattice sampling loops. Chunks are handed out dynamically so
+// field sampling loops. Chunks are handed out dynamically so
 // uneven work (blocks near a body's surface cost far more than blocks
 // deep inside or outside it) balances across threads.
 

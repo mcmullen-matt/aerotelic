@@ -30,7 +30,6 @@
 #include "aerotelic/body_structure.hpp"
 #include "aerotelic/feature_tree.hpp"
 #include "aerotelic/fuselage_model.hpp"
-#include "aerotelic/lattice.hpp"
 #include "aerotelic/mass_properties.hpp"
 #include "aerotelic/units.hpp"
 #include "aerotelic/lofted_nacelle_model.hpp"
@@ -87,8 +86,8 @@ Placement DecodePlacement(const YAML::Node& node);
 // the others (listed, coloured, hidden, saved), but it is never an entry
 // under `entities:` -- it lives under `booleans:` (ProjectBoolean).
 // (Until 2026-11-08 a Lattice kind existed too, a lattice infill generated
-// in other bodies and saved under `lattices:`; the infill is an attribute
-// of a body now -- ProjectBody::structure -- and the old entries are
+// in other bodies and saved under `lattices:`; lattice infill was removed
+// altogether in favour of shell structure only, and the old entries are
 // skipped on load, see ProjectFile::unsupported_lattices.)
 enum class EntityType { Wing, Fuselage, Nacelle, LoftedNacelle, Propeller, Primitive, Boolean };
 const char* EntityTypeName(EntityType t);
@@ -98,7 +97,7 @@ using EntityModelSpec = std::variant<WingModelSpec, FuselageSpec, NacelleSpec, L
 
 // One solid body of an entity or a boolean result (`bodies:`), by its role
 // name: its display overrides (colour, hidden) and what it is made of and
-// built with -- its skin, infill, plane networks, asserted mass
+// built with -- its skin, plane networks, asserted mass
 // (body_structure.hpp). Written only when something is set.
 struct ProjectBody {
 	std::string name;
@@ -157,16 +156,17 @@ YAML::Node EncodeMaterial(const Material& m);
 Material DecodeMaterial(const YAML::Node& node);
 YAML::Node Encode(const PlaneNetwork& n);
 PlaneNetwork DecodePlaneNetwork(const YAML::Node& node);
-YAML::Node Encode(const InfillSpec& s);
-InfillSpec DecodeInfillSpec(const YAML::Node& node);
-// The structure's keys -- material, skin_thickness, infill, networks,
-// exclusions, asserted_mass -- the non-default ones only, written into
-// `into` (a body's own mapping). Decode throws std::invalid_argument when
-// the structure cannot be used (BodyStructureProblem).
+// The structure's keys -- material, skin_thickness, networks, exclusions,
+// asserted_mass -- the non-default ones only, written into `into` (a
+// body's own mapping). Decode throws std::invalid_argument when the
+// structure cannot be used (BodyStructureProblem). A legacy `infill:` key
+// (a lattice infill, removed 2026-11-08) is ignored; `had_infill`, when
+// given, is set to true if one was met so the caller can report it
+// (ProjectFile::ignored_infill).
 void EncodeBodyStructure(const BodyStructure& s, YAML::Node& into);
-BodyStructure DecodeBodyStructure(const YAML::Node& node);
+BodyStructure DecodeBodyStructure(const YAML::Node& node, bool* had_infill = nullptr);
 YAML::Node Encode(const ProjectBody& b);
-ProjectBody DecodeProjectBody(const YAML::Node& node);
+ProjectBody DecodeProjectBody(const YAML::Node& node, bool* had_infill = nullptr);
 
 struct ProjectBoolean {
 	std::string name;
@@ -187,12 +187,9 @@ YAML::Node EncodeMassSpec(const MassSpec& m);
 MassSpec DecodeMassSpec(const YAML::Node& node);
 
 YAML::Node Encode(const ProjectBoolean& b);
-ProjectBoolean DecodeProjectBoolean(const YAML::Node& node);
-
-// The OpenLattice parameters of an infill (lattice.hpp), as a body's
-// `infill: {lattice: ...}` writes them.
-YAML::Node Encode(const LatticeSpec& spec);
-LatticeSpec DecodeLatticeSpec(const YAML::Node& node);
+// `ignored_infill`, when given, collects "<boolean> / <body>" for every
+// body whose entry carried a legacy `infill:` key (see ProjectFile).
+ProjectBoolean DecodeProjectBoolean(const YAML::Node& node, std::vector<std::string>* ignored_infill = nullptr);
 
 struct ProjectFile {
 	// What every length and mass in the file means (units.hpp). Always
@@ -210,11 +207,17 @@ struct ProjectFile {
 	// In build order; every operand names something listed before it.
 	std::vector<ProjectBoolean> booleans;
 	// The names of the `lattices:` entries of a file from before 2026-11-08,
-	// NOT decoded: a lattice scene entity no longer exists (the infill is
-	// a body's attribute), so the loader skips them like any dependency
-	// that cannot be satisfied and the application reports them by name.
-	// Never written.
+	// NOT decoded: lattices are no longer supported at all (the structure
+	// is shells only -- skins and plane networks), so the loader skips them
+	// like any dependency that cannot be satisfied and the application
+	// reports them by name. Never written.
 	std::vector<std::string> unsupported_lattices;
+	// The bodies -- "<entity or boolean> / <body>" -- whose entry carried
+	// an `infill:` key (a lattice infill of the interior, which a file from
+	// 2026-11-08 could hold): the key is dropped, the rest of the body's
+	// structure loads, and the application reports the loss by name. Never
+	// written.
+	std::vector<std::string> ignored_infill;
 };
 
 ProjectFile LoadProjectYaml(const std::string& path);

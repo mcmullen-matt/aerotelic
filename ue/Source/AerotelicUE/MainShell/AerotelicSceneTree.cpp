@@ -532,19 +532,19 @@ TSharedPtr<SWidget> SAerotelicSceneTree::MakeEntityMenu(FItem Item)
 			FUIAction(FExecuteAction::CreateLambda([Entity]() { if (Entity.IsValid()) OpenAerotelicTransformDialog(Entity.Get()); })));
 	}
 
-	// The structure -- material, skin, infill, plane networks, asserted
-	// mass -- belongs to each BODY (2026-11-08): an entity with one body
+	// The structure -- material, skin, plane networks, asserted mass --
+	// belongs to each BODY (2026-11-08): an entity with one body
 	// offers it here too; one with several has it on each body's row. A
 	// boolean result's bodies own theirs and can start from an operand's.
 	if (Entity->GetBodies().Num() == 1)
 	{
 		const FString Role = Entity->GetBodies()[0].Name;
 		Menu.AddMenuEntry(LOCTEXT("Structure", "Structure..."),
-			LOCTEXT("StructureTip", "What this body is made of and built with: its material and skin thickness, a lattice infill, networks of cutting planes (ribs, spars, frames) and their materials, or an asserted mass. Analysis > Mass Properties weighs by it; Analysis > Structural analyses with it."),
+			LOCTEXT("StructureTip", "What this body is made of and built with: its material and skin thickness, networks of cutting planes (ribs, spars, frames) and their materials, or an asserted mass. Analysis > Mass Properties weighs by it; Analysis > Structural analyses with it."),
 			FSlateIcon(),
 			FUIAction(FExecuteAction::CreateLambda([Entity, Role]() { if (Entity.IsValid()) OpenAerotelicStructureDialog(Entity.Get(), Role); })));
 		Menu.AddMenuEntry(Entity->GetGeneratedStructure(Role) != nullptr ? LOCTEXT("RegenerateStructure", "Regenerate Structure") : LOCTEXT("GenerateStructure", "Generate Structure"),
-			LOCTEXT("GenerateStructureTip", "Build this body's skin shell, infill and ribs from its structure (seconds of MeshLib work): they appear as layers under the body, and its mirrored half's, and follow every later edit of the body."),
+			LOCTEXT("GenerateStructureTip", "Build this body's skin shell and ribs from its structure (seconds of MeshLib work): they appear as layers under the body, and its mirrored half's, and follow every later edit of the body."),
 			FSlateIcon(),
 			FUIAction(FExecuteAction::CreateLambda([this, Entity, Role]() { if (Entity.IsValid()) GenerateStructure(Entity.Get(), Role); })));
 	}
@@ -629,12 +629,12 @@ TSharedPtr<SWidget> SAerotelicSceneTree::MakeBodyMenu(FItem Item)
 		{
 			const FString Role = Entity->GetBodies()[Body].Name;
 			Menu.AddMenuEntry(LOCTEXT("BodyStructure", "Structure..."),
-				LOCTEXT("BodyStructureTip", "What this body is made of and built with: its material and skin thickness, a lattice infill, networks of cutting planes (ribs, spars, frames) and their materials, or an asserted mass. Its mirrored half shares it. Analysis > Mass Properties weighs by it; Analysis > Structural analyses with it."),
+				LOCTEXT("BodyStructureTip", "What this body is made of and built with: its material and skin thickness, networks of cutting planes (ribs, spars, frames) and their materials, or an asserted mass. Its mirrored half shares it. Analysis > Mass Properties weighs by it; Analysis > Structural analyses with it."),
 				FSlateIcon(),
 				FUIAction(FExecuteAction::CreateLambda([Entity, Role]() { if (Entity.IsValid()) OpenAerotelicStructureDialog(Entity.Get(), Role); })));
 			const bool bGenerated = Entity->GetGeneratedStructure(Role) != nullptr;
 			Menu.AddMenuEntry(bGenerated ? LOCTEXT("RegenerateStructure", "Regenerate Structure") : LOCTEXT("GenerateStructure", "Generate Structure"),
-				LOCTEXT("GenerateBodyStructureTip", "Build this body's skin shell, infill and ribs from its structure (seconds of MeshLib work): they appear as layers under the body, and its mirrored half's, and follow every later edit of the body."),
+				LOCTEXT("GenerateBodyStructureTip", "Build this body's skin shell and ribs from its structure (seconds of MeshLib work): they appear as layers under the body, and its mirrored half's, and follow every later edit of the body."),
 				FSlateIcon(),
 				FUIAction(FExecuteAction::CreateLambda([this, Entity, Role]() { if (Entity.IsValid()) GenerateStructure(Entity.Get(), Role); })));
 			if (bGenerated)
@@ -684,7 +684,7 @@ TSharedPtr<SWidget> SAerotelicSceneTree::MakeLayerMenu(FItem Item)
 	{
 		Menu.AddMenuEntry(LOCTEXT("Color", "Color"), LOCTEXT("LayerColorTip", "Pick this layer's colour (its mirror follows it)."), FSlateIcon(),
 			FUIAction(FExecuteAction::CreateLambda([this, Entity, Layer]() { if (Entity.IsValid()) PickLayerColor(Entity.Get(), Layer); })));
-		Menu.AddMenuEntry(LOCTEXT("LayerDefaultColor", "Default Color"), LOCTEXT("LayerDefaultColorTip", "Back to the layer kind's colour: the skin the body's, the infill amber, ribs steel blue"), FSlateIcon(),
+		Menu.AddMenuEntry(LOCTEXT("LayerDefaultColor", "Default Color"), LOCTEXT("LayerDefaultColorTip", "Back to the layer kind's colour: the skin the body's, ribs steel blue"), FSlateIcon(),
 			FUIAction(FExecuteAction::CreateLambda([Entity, Layer]() { if (Entity.IsValid()) Entity->SetLayerColor(Layer, TOptional<FLinearColor>()); }),
 				FCanExecuteAction::CreateLambda([Entity, Layer]() { return Entity.IsValid() && Entity->GetLayers().IsValidIndex(Layer) && Entity->GetLayers()[Layer].bHasColor; })));
 	}

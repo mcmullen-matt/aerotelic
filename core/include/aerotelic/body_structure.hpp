@@ -4,23 +4,24 @@
 // attributes a parameterisation's bodies carry one by one (a wing's
 // "Main" and each flap, a propeller's spinner and blades, a boolean
 // result's "Body k"), since 2026-11-08. Before that one MassSpec per
-// parameterisation gave every body the same material and skin, and a
-// lattice was a scene entity of its own that targeted whole entities.
+// parameterisation gave every body the same material and skin.
 //
-// A BodyStructure says:
-//   - the material the body (or its skin) is made of, and whether the
-//     body is SOLID (skin_thickness 0: a uniform solid of the material) or
-//     a SKIN of that thickness enclosing an interior;
-//   - what fills the interior of a skinned body: an optional lattice
-//     INFILL (an OpenLattice spec, lattice.hpp, in a material of its own)
-//     and any number of PLANE NETWORKS -- families of parallel cutting
-//     planes whose intersection with the interior gives ribs, spars and
-//     frames, each network with its own thickness and material, spanning
-//     wall to wall or reaching only a given height in from the surface
-//     (a stringer, a spar cap);
-//   - reserved volumes (scene names) the interior structure must avoid;
-//   - or an asserted total mass that stands in for all of the above in
+// The application's structural elements are SHELLS: the skin, and the
+// ribs, spars and frames cut from plane networks. A BodyStructure says:
+//   - the MATERIAL the body (or its skin) is made of;
+//   - whether the body is SOLID (skin_thickness 0: a uniform solid of the
+//     material) or a SKIN of that thickness enclosing an interior;
+//   - the PLANE NETWORKS in the interior of a skinned body -- families of
+//     parallel cutting planes whose intersection with the interior gives
+//     ribs, spars and frames, each network with its own thickness and
+//     material, spanning wall to wall or reaching only a given height in
+//     from the surface (a stringer, a spar cap);
+//   - EXCLUSIONS: reserved volumes (scene names) the interior structure
+//     must avoid (a payload bay);
+//   - or an ASSERTED total mass that stands in for all of the above in
 //     the mass report.
+// (A lattice infill of the interior existed until 2026-11-08; it was
+// removed in favour of shell structure only.)
 //
 // Units, as elsewhere: materials are SI (materials.hpp); skin thickness,
 // a network's thickness and height are PHYSICAL build figures in the
@@ -30,16 +31,15 @@
 // frame -- plane k is normal . x = start + k * spacing there -- and are
 // placed, scaled and mirrored with the body like a chord or a station.
 //
-// The structure's generated geometry (the skin shell, the infill, the
-// ribs) and its finite-element model are built elsewhere from these
-// figures; this header is the data and the plane geometry both share.
+// The structure's generated geometry (the skin shell, the ribs) and its
+// finite-element model are built elsewhere from these figures; this
+// header is the data and the plane geometry both share.
 
 #include <array>
 #include <optional>
 #include <string>
 #include <vector>
 
-#include "aerotelic/lattice.hpp"
 #include "aerotelic/materials.hpp"
 #include "aerotelic/mesh.hpp"
 #include "aerotelic/vec3.hpp"
@@ -71,13 +71,6 @@ struct PlaneNetwork {
 	Material material;   // SI
 };
 
-// The lattice filling a skinned body's interior, in its own material.
-// The spec's own skin_thickness is ignored: the body's rules.
-struct InfillSpec {
-	LatticeSpec lattice;
-	Material material;   // SI
-};
-
 struct BodyStructure {
 	// The solid's material, or the skin's. A material without a density
 	// means nothing has been assigned (the body is left out of the mass
@@ -85,9 +78,8 @@ struct BodyStructure {
 	Material material;
 	// 0: a uniform solid of `material`. Positive: a skin of this thickness
 	// (project length unit, not scaled) enclosing an interior that the
-	// infill and the networks fill.
+	// networks fill.
 	double skin_thickness = 0.0;
-	std::optional<InfillSpec> infill;
 	std::vector<PlaneNetwork> networks;
 	// Scene names of the volumes the interior structure leaves alone (a
 	// payload bay). Default none.
@@ -99,15 +91,13 @@ struct BodyStructure {
 
 	bool IsSet() const { return material.HasDensity() || asserted_mass.has_value(); }
 	bool IsSkin() const { return material.HasDensity() && skin_thickness > 0.0; }
-	bool HasInterior() const { return skin_thickness > 0.0 && (infill.has_value() || !networks.empty()); }
+	bool HasInterior() const { return skin_thickness > 0.0 && !networks.empty(); }
 };
 
-// Every figure of the two specs equal (name and type included).
-bool SameLatticeSpec(const LatticeSpec& a, const LatticeSpec& b);
 // True when regenerating the structure's geometry would give the same
-// result: skin thickness, infill lattice, every network's planes,
-// thickness and height, the exclusions. Materials and the asserted mass
-// do not count (they change the weights, not the shapes).
+// result: skin thickness, every network's planes, thickness and height,
+// the exclusions. Materials and the asserted mass do not count (they
+// change the weights, not the shapes).
 bool SameStructureGeometry(const BodyStructure& a, const BodyStructure& b);
 
 // Why the network cannot be built, or empty: no planes, a non-positive
@@ -116,8 +106,9 @@ bool SameStructureGeometry(const BodyStructure& a, const BodyStructure& b);
 // normal.
 std::string PlaneNetworkProblem(const PlaneNetwork& n);
 // Why the structure cannot be used, or empty: a negative skin thickness
-// or asserted mass, an interior (infill or networks) on a solid body, or a
-// network's problem prefixed with its name.
+// or asserted mass, an interior (networks on a body with skin_thickness 0,
+// a solid that has no interior), or a network's problem prefixed with its
+// name.
 std::string BodyStructureProblem(const BodyStructure& s);
 
 // ---- plane geometry -------------------------------------------------------

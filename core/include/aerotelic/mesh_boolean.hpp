@@ -40,8 +40,8 @@
 //      result must come out a closed manifold.
 //   5. Seam slivers. Where the intersection curve passes close to a vertex
 //      or an edge of a triangle it cuts, the cut leaves a sliver piece --
-//      the one kind of triangle a tetrahedral mesh of the result cannot
-//      conform to (tet.hpp). Sliver triangles touching the seam are
+//      the one kind of triangle a volume mesh of the result cannot
+//      conform to. Sliver triangles touching the seam are
 //      removed worst first: a needle by collapsing its shortest edge onto
 //      its seam end (an original vertex onto the seam point on its own
 //      edge, which moves nothing off either surface and moves the body's

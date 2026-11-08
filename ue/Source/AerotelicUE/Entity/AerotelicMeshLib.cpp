@@ -198,7 +198,7 @@ namespace AerotelicMeshLib
 
 	FString FindScript()
 	{
-		const FString Script = FPaths::Combine(FPaths::ProjectDir(), TEXT("tools"), TEXT("lattice_meshlib.py"));
+		const FString Script = FPaths::Combine(FPaths::ProjectDir(), TEXT("tools"), TEXT("structure_meshlib.py"));
 		return FPaths::FileExists(Script) ? FPaths::ConvertRelativePathToFull(Script) : FString();
 	}
 
@@ -323,7 +323,7 @@ namespace AerotelicMeshLib
 		const FString Script = FindScript();
 		if (Script.IsEmpty())
 		{
-			OutError = TEXT("tools\\lattice_meshlib.py was not found beside the application.");
+			OutError = TEXT("tools\\structure_meshlib.py was not found beside the application.");
 			return false;
 		}
 		if (Request.Targets.Num() == 0)
@@ -332,8 +332,8 @@ namespace AerotelicMeshLib
 			return false;
 		}
 
-		// The job folder: the bodies, the field and job.json.
-		const FString Dir = FPaths::Combine(FPlatformProcess::UserTempDir(), TEXT("aerotelic_lattice_") + FGuid::NewGuid().ToString(EGuidFormats::Short));
+		// The job folder: the bodies and job.json.
+		const FString Dir = FPaths::Combine(FPlatformProcess::UserTempDir(), TEXT("aerotelic_structure_") + FGuid::NewGuid().ToString(EGuidFormats::Short));
 		IFileManager::Get().MakeDirectory(*Dir, true);
 		auto Cleanup = [&Dir]() { IFileManager::Get().DeleteDirectory(*Dir, false, true); };
 
@@ -343,33 +343,12 @@ namespace AerotelicMeshLib
 			Cleanup();
 			return false;
 		}
-		FString FieldJson = TEXT("null");
-		if (Request.Field != nullptr && Request.Field->Nx > 0)
-		{
-			const FField& F = *Request.Field;
-			const size_t Count = static_cast<size_t>(F.Nx) * F.Ny * F.Nz;
-			if (F.Values.size() != Count)
-			{
-				OutError = TEXT("the lattice field's sample count does not match its grid");
-				Cleanup();
-				return false;
-			}
-			const TArrayView64<const uint8> Raw(reinterpret_cast<const uint8*>(F.Values.data()), static_cast<int64>(Count * sizeof(float)));
-			if (!FFileHelper::SaveArrayToFile(Raw, *FPaths::Combine(Dir, TEXT("lattice.f32"))))
-			{
-				OutError = TEXT("could not write the lattice field for MeshLib");
-				Cleanup();
-				return false;
-			}
-			FieldJson = FString::Printf(TEXT("{\"file\": \"lattice.f32\", \"nx\": %d, \"ny\": %d, \"nz\": %d, \"origin\": [%s, %s, %s], \"h\": %s}"),
-				F.Nx, F.Ny, F.Nz, *Num(F.Origin.x), *Num(F.Origin.y), *Num(F.Origin.z), *Num(F.H));
-		}
 		const FString Job = FString::Printf(
 			TEXT("{\n \"skin_thickness\": %s,\n \"offset_voxel\": %s,\n \"offset_mode\": %s,\n \"decimate_tolerance\": %s,\n \"min_pocket_volume\": %s,\n \"inner_opening\": %s,\n \"inner_remesh_edge\": %s,\n")
-			TEXT(" \"targets\": %s,\n \"reserved\": %s,\n \"networks\": %s,\n \"field\": %s,\n")
-			TEXT(" \"outputs\": {\"skin\": \"skin.tri\", \"lattice\": \"lattice.tri\", \"result\": \"result.json\", \"inner_prefix\": \"inner\", \"ribs_prefix\": \"ribs\"}\n}\n"),
+			TEXT(" \"targets\": %s,\n \"reserved\": %s,\n \"networks\": %s,\n")
+			TEXT(" \"outputs\": {\"skin\": \"skin.tri\", \"result\": \"result.json\", \"inner_prefix\": \"inner\", \"ribs_prefix\": \"ribs\"}\n}\n"),
 			*Num(Request.SkinThickness), *Num(Request.OffsetVoxel), *JsonString(Request.OffsetMode), *Num(Request.DecimateTolerance), *Num(Request.MinPocketVolume), *Num(Request.InnerOpening), *Num(Request.InnerRemeshEdge),
-			*TargetsJson, *ReservedJson, *NetworksJson(Request.Networks), *FieldJson);
+			*TargetsJson, *ReservedJson, *NetworksJson(Request.Networks));
 		if (!FFileHelper::SaveStringToFile(Job, *FPaths::Combine(Dir, TEXT("job.json")), FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM))
 		{
 			OutError = TEXT("could not write the MeshLib job file");
@@ -386,7 +365,7 @@ namespace AerotelicMeshLib
 		}
 
 		FString ReadError;
-		if (!ReadTri(FPaths::Combine(Dir, TEXT("skin.tri")), Out.Skin, ReadError) || !ReadTri(FPaths::Combine(Dir, TEXT("lattice.tri")), Out.Lattice, ReadError))
+		if (!ReadTri(FPaths::Combine(Dir, TEXT("skin.tri")), Out.Skin, ReadError))
 		{
 			OutError = ReadError;
 			Cleanup();
@@ -394,12 +373,8 @@ namespace AerotelicMeshLib
 		}
 		Out.SkinVolume = Result->GetNumberField(TEXT("skin_volume"));
 		Out.DomainVolume = Result->GetNumberField(TEXT("domain_volume"));
-		Out.InfillDomainVolume = Out.DomainVolume;
-		Result->TryGetNumberField(TEXT("infill_domain_volume"), Out.InfillDomainVolume);
 		Out.RibsVolume = 0.0;
 		Result->TryGetNumberField(TEXT("ribs_volume"), Out.RibsVolume);
-		Out.LatticeVolume = Result->GetNumberField(TEXT("lattice_volume"));
-		Out.AchievedFraction = Result->GetNumberField(TEXT("achieved_fraction"));
 		Out.Interiors = static_cast<int32>(Result->GetNumberField(TEXT("interiors")));
 		Out.Seconds = Result->GetNumberField(TEXT("seconds"));
 		Out.Warnings.Reset();

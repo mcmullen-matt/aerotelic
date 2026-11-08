@@ -55,11 +55,6 @@ add_library(aerotelic_core STATIC
 	src/step_export.cpp
 	src/mesh.cpp
 	src/sdf.cpp
-	src/lattice.cpp
-	src/shell.cpp
-	src/tet.cpp
-	src/tet_skin.cpp
-	src/tet_improve.cpp
 	src/mesh_boolean.cpp
 	src/pdf3d.cpp
 	src/dust_case.cpp
@@ -114,11 +109,6 @@ foreach(lib TKernel TKMath TKG2d TKG3d TKGeomBase TKGeomAlgo TKBRep TKTopAlgo
 		TKDE TKXSBase TKDESTEP TKCDF TKLCAF TKXCAF TKVCAF TKV3d TKService)
 	target_link_libraries(aerotelic_step_writer PRIVATE "${OCCT_ROOT}/lib/${lib}.lib")
 endforeach()
-
-# Voxelises one period of a lattice for ue/tools/homogenize_check.py (see
-# src/tools/lattice_cell.cpp); the application samples in-process.
-add_executable(aerotelic_lattice_cell src/tools/lattice_cell.cpp)
-target_link_libraries(aerotelic_lattice_cell PRIVATE aerotelic_core)
 
 add_executable(step_writer_check tests/step_writer_check.cpp)
 target_link_libraries(step_writer_check PRIVATE aerotelic_core)
@@ -193,15 +183,6 @@ target_link_libraries(mesh_check PRIVATE aerotelic_core)
 
 add_executable(sdf_check tests/sdf_check.cpp)
 target_link_libraries(sdf_check PRIVATE aerotelic_core)
-
-add_executable(shell_check tests/shell_check.cpp)
-target_link_libraries(shell_check PRIVATE aerotelic_core)
-
-add_executable(lattice_check tests/lattice_check.cpp)
-target_link_libraries(lattice_check PRIVATE aerotelic_core)
-
-add_executable(tet_check tests/tet_check.cpp)
-target_link_libraries(tet_check PRIVATE aerotelic_core)
 
 add_executable(mesh_boolean_check tests/mesh_boolean_check.cpp)
 target_link_libraries(mesh_boolean_check PRIVATE aerotelic_core)

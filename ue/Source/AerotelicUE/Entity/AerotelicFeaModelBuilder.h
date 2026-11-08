@@ -1,82 +1,65 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include <memory>
 #include <vector>
 
 #include "aerotelic/body_structure.hpp"
-#include "aerotelic/lattice.hpp"
-#include "aerotelic/tet.hpp"
 #include "aerotelic/units.hpp"
+#include "aerotelic/vec3.hpp"
 
 #include "AerotelicBooleanModel.h"
+#include "AerotelicRibGmsh.h"
 #include "AerotelicStructuralFea.h"
-#include "AerotelicTetGmsh.h"
 
 class AAerotelicEntityActor;
 
 // The structural model of a BODY from its structure (body_structure.hpp),
 // shared by the Structural dialog, the commandlets and the smoke run
-// (2026-11-08) so the three cannot drift apart:
+// (2026-11-08) so the three cannot drift apart. The model is SHELLS ONLY
+// -- the application dropped tetrahedral FEA and lattice infill on
+// 2026-11-08 -- so a body is:
 //
-//   - skin 0: SOLID tetrahedra of the material at the element size;
-//   - skin > 0, no infill in the model: SHELLS of the skin on the body's
-//     own grid, nothing inside;
-//   - skin > 0 with an infill: shells of the skin material over 4-node
-//     tetrahedra at the lattice cell carrying the HOMOGENISED cell of the
-//     INFILL material (the two materials distinct); or, at full
-//     resolution, the generated structure's skin / core tetrahedra;
-//   - the body's PLANE NETWORKS: the body's surface is first cut by every
-//     plane (core mesh_cut.hpp), so the rims of the ribs are the skin's own
-//     nodes; the ribs are then meshed by gmsh as planar shells embedded in
-//     the tetrahedra (or hanging on the skin shells alone), one region per
-//     network with its material and thickness, unloaded. Not in the
-//     full-resolution model (the generation's offset surface knows nothing
-//     of them): said so in Problems.
+//   - its SKIN: shells of the skin thickness and material on the body's
+//     own grid (the triangles its Mesh tab defines and the viewport
+//     shows, GetPlacedMeshes at tolerance 0), nothing inside;
+//   - its PLANE NETWORKS: the surface is first cut by every plane (core
+//     mesh_cut.hpp), so the rims of the ribs are the skin's own nodes;
+//     the ribs are then meshed by gmsh as planar discs on those rims
+//     (AerotelicRibGmsh.h), one region per network with its material and
+//     thickness, unloaded.
 //
-// Every length is the placed (replica) body's, project units; the skin,
-// rib thicknesses and heights are the structure's physical figures.
+// A body with NO skin thickness cannot be modelled -- there is nothing to
+// make shells of -- and is refused with a Problem that says to give it one
+// under Structure... in the Scene tree. (Until 2026-11-08 such a body was
+// filled with solid tetrahedra; that path is gone.)
+//
+// Every length is the placed (replica) body's, project units; the skin
+// and rib thicknesses and heights are the structure's physical figures.
 namespace AerotelicFeaModelBuilder
 {
-	enum class EModel : uint8
-	{
-		AsDesigned = 0,       // shells, homogenised infill, rib shells
-		FullResolution = 1,   // the generated structure's skin / core tetrahedra
-		IgnoreInterior = 2,   // the body as its skin and material alone say
-	};
-
 	struct FOptions
 	{
-		EModel Model = EModel::AsDesigned;
-		// Voxels across the infill cell for the homogeniser.
-		double Voxels = 32.0;
-		// Element size of a solid body (0: a twentieth of the chosen bodies'
-		// largest extent, which the caller resolves to a figure).
-		double ElementSize = 0.0;
 		// Target edge inside the ribs (0: the surface's median edge).
 		double RibSize = 0.0;
-		// The request's second-order flag, for the description only.
-		bool bSecondOrder = false;
 		// Progress lines ("meshing ...").
 		TFunction<void(const FString&)> Status;
 	};
 
-	// gmsh's tetrahedral meshes by the surface's bytes, the cell size and
-	// the ribs, so Build Model after a support edit runs gmsh again for
+	// gmsh's rib meshes by the surface's bytes, the rib size and the
+	// planes, so Build Model after a support edit runs gmsh again for
 	// nothing. Owned by the caller (the dialog's state) across builds.
 	struct FCache
 	{
-		TMap<FString, TSharedPtr<AerotelicTetGmsh::FResult>> Tets;
+		TMap<FString, TSharedPtr<AerotelicRibGmsh::FResult>> Ribs;
 	};
 
-	// What AppendBody accumulates: one mesh over every body, the shell-only
-	// bodies' faces, the rib faces, the regions, and what was left out.
+	// What AppendBody accumulates: one node list over every body, the skin
+	// faces, the rib faces, the regions, and what was left out.
 	struct FBuilt
 	{
-		aerotelic::TetMesh Mesh;
+		std::vector<aerotelic::Vec3> Nodes;
 		TArray<AerotelicStructuralFea::FShellFace> ShellFaces;
 		TArray<AerotelicStructuralFea::FShellFace> RibFaces;
-		std::vector<std::unique_ptr<aerotelic::UnitCellSamples>> Cells;
 		TArray<AerotelicStructuralFea::FRegion> Regions;
 		TArray<FString> Problems;
 		int32 NextId = 1;

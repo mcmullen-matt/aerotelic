@@ -693,7 +693,8 @@ bool UAerotelicDocumentSubsystem::SetModelScale(double InScale)
 	// Every entity's actor transform is its full-scale placement under
 	// the model scale: re-applying the placements moves and resizes them,
 	// which (OnRootTransformed) refreshes the mirrors and queues every
-	// boolean and lattice over them, as a Transform dialog's Apply does.
+	// boolean and generated structure over them, as a Transform dialog's
+	// Apply does.
 	for (auto& Weak : Entities)
 	{
 		if (Weak.IsValid() && !Weak->IsDerived())
@@ -950,7 +951,7 @@ bool UAerotelicDocumentSubsystem::GenerateBodyStructure(AAerotelicEntityActor* E
 	}
 
 	// The body's own generation object is reused: it keeps the offset of the
-	// last run, so editing the planes or the infill costs the booleans alone.
+	// last run, so editing the planes costs the booleans alone.
 	TSharedPtr<FAerotelicBodyStructure> G;
 	if (const FAerotelicBodyStructure* Existing = Entity->GetGeneratedStructure(Role))
 	{
@@ -1005,6 +1006,8 @@ void UAerotelicDocumentSubsystem::GenerateStructuresWithInterior(TArray<FString>
 		TArray<FString> Roles;
 		for (const FAerotelicBody& Body : Weak->GetBodies())
 		{
+			// HasInterior: a skin with plane networks (the only interior
+			// structure since the lattice infill went, 2026-11-08).
 			if (Body.Structure.IsSkin() && Body.Structure.HasInterior()) Roles.Add(Body.Name);
 		}
 		for (const FString& Role : Roles)
@@ -1372,13 +1375,19 @@ bool UAerotelicDocumentSubsystem::OpenProjectPath(const FString& InPath, bool bA
 	ModelScale = Project.scale;
 	// Anything that could not be built: entities whose model refuses (a
 	// wing with a negative chord), boolean operations, body structures,
-	// and the lattice entities of an older file (a kind that no longer
-	// exists). Reported together at the end; the rest of the project still
-	// opens.
+	// and what an older file carried that the application no longer
+	// supports (2026-11-08): lattice entities (a kind that no longer
+	// exists) and a body's lattice infill (the `infill:` key the loader
+	// dropped; the body keeps the rest of its structure). Reported together
+	// at the end; the rest of the project still opens.
 	TArray<FString> Failures;
 	for (const std::string& Name : Project.unsupported_lattices)
 	{
-		Failures.Add(FString::Printf(TEXT("%s: lattice entities are no longer supported and this one was skipped; a lattice is now an attribute of a body (Scene tree > body > Structure... > Infill)"), UTF8_TO_TCHAR(Name.c_str())));
+		Failures.Add(FString::Printf(TEXT("%s: lattice entities are no longer supported and this one was skipped; a body's structure is its skin and its plane networks (Scene tree > body > Structure...)"), UTF8_TO_TCHAR(Name.c_str())));
+	}
+	for (const std::string& Body : Project.ignored_infill)
+	{
+		Failures.Add(FString::Printf(TEXT("%s: its lattice infill was dropped -- infill is no longer supported; the body keeps its skin and plane networks"), UTF8_TO_TCHAR(Body.c_str())));
 	}
 	for (const ProjectEntity& Entity : Project.entities)
 	{
@@ -1464,9 +1473,9 @@ bool UAerotelicDocumentSubsystem::OpenProjectPath(const FString& InPath, bool bA
 			Actor->SetEntityVisible(false);
 		}
 	}
-	// The structures with an interior (an infill, plane networks), generated
-	// over the bodies now in the scene -- the generated geometry is not
-	// saved, only what describes it.
+	// The structures with an interior (plane networks behind a skin),
+	// generated over the bodies now in the scene -- the generated geometry
+	// is not saved, only what describes it.
 	GenerateStructuresWithInterior(Failures);
 	if (Failures.Num() > 0 && !IsRunningCommandlet() && !FApp::IsUnattended())
 	{

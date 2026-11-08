@@ -23,7 +23,6 @@
 #include "Widgets/CurveTabControls.h"
 #include "Widgets/AerotelicDialogWindow.h"
 #include "Widgets/MaterialPicker.h"
-#include "Widgets/LatticeSpecControls.h"
 #include "Widgets/MessageBox.h"
 
 #include "aerotelic/body_structure.hpp"
@@ -73,9 +72,6 @@ namespace
 		// The body's own geometry, once.
 		double Volume = 0.0, Area = 0.0;
 		bool bClosed = true;
-
-		// Infill: the lattice controls' draft, mirrored into S.infill.
-		TSharedRef<FAerotelicLatticeSpecDraft> Lattice = MakeShared<FAerotelicLatticeSpecDraft>();
 
 		// Planes: the networks list and the one being edited.
 		TArray<TSharedPtr<int32>> NetworkItems;
@@ -144,8 +140,6 @@ namespace
 			{
 				S = BodyStructure{};
 			}
-			if (S.infill) Lattice->Spec = S.infill->lattice;
-			Lattice->SyncFromSpec();
 			bDirty = false;
 			RebuildNetworkItems();
 			PushPreview();
@@ -256,7 +250,7 @@ void OpenAerotelicStructureDialog(AAerotelicEntityActor* Entity, const FString& 
 		[
 			MakeInfoLabel(LOCTEXT("SkinHint",
 				"The material this body is made of -- its solid when the skin thickness is zero, its skin otherwise. Materials are defined under Model > Material Properties (the presets and your own); the body takes a copy of the one picked. "
-				"A skin thickness is a build figure in the project's length unit, not scaled with the model: it is what the body is hollowed by, what Analysis > Structural gives its shells, and what the mass report weighs as rho t A. Behind a skin the Infill and Planes tabs fill the interior; a solid body has none."))
+				"A skin thickness is a build figure in the project's length unit, not scaled with the model: it is what the body is hollowed by, what Analysis > Structural gives its shells, and what the mass report weighs as rho t A. Behind a skin the Planes tab puts ribs, spars and frames in the interior; a solid body has none."))
 		]
 		+ SVerticalBox::Slot().AutoHeight().Padding(0, 12, 0, 0)
 		[
@@ -272,55 +266,6 @@ void OpenAerotelicStructureDialog(AAerotelicEntityActor* Entity, const FString& 
 						return D->S.skin_thickness > 0.0 ? FormatG(D->Area * D->S.skin_thickness, 5) : FormatG(D->Volume, 5);
 					}))
 				])
-		];
-
-	// ---------------------------------------------------------------- Infill
-	TSharedRef<SWidget> LatticeControls = MakeAerotelicLatticeSpecControls(D->Lattice, FSimpleDelegate::CreateLambda([D]()
-	{
-		if (D->S.infill) { D->S.infill->lattice = D->Lattice->Spec; D->Touch(); }
-	}));
-	TSharedRef<SWidget> InfillTab =
-		SNew(SVerticalBox)
-		+ SVerticalBox::Slot().AutoHeight()
-		[
-			SNew(SCheckBox)
-			.IsChecked_Lambda([D]() { return D->S.infill ? ECheckBoxState::Checked : ECheckBoxState::Unchecked; })
-			.OnCheckStateChanged_Lambda([D](ECheckBoxState State)
-			{
-				if (State == ECheckBoxState::Checked)
-				{
-					aerotelic::InfillSpec I;
-					I.lattice = D->Lattice->Spec;
-					if (D->S.infill) I = *D->S.infill;
-					D->S.infill = I;
-				}
-				else
-				{
-					D->S.infill.reset();
-				}
-				D->Touch();
-			})
-			[ SNew(STextBlock).Text(LOCTEXT("InfillOn", "Fill the interior with a lattice")) ]
-		]
-		+ SVerticalBox::Slot().AutoHeight().Padding(0, 6, 0, 0)
-		[
-			SNew(SBox).IsEnabled_Lambda([D]() { return D->S.infill.has_value(); })
-			[
-				SNew(SVerticalBox)
-				+ SVerticalBox::Slot().AutoHeight()
-				[
-					FormRow(LOCTEXT("InfillMaterial", "Infill material:"),
-						SNew(SAerotelicMaterialPicker)
-						.Current_Lambda([D]() { return D->S.infill ? D->S.infill->material : Material{}; })
-						.AllowNone(false)
-						.OnPicked_Lambda([D](const Material& M) { if (D->S.infill) { D->S.infill->material = M; D->Touch(); } }))
-				]
-				+ SVerticalBox::Slot().AutoHeight().Padding(0, 6, 0, 0) [ LatticeControls ]
-			]
-		]
-		+ SVerticalBox::Slot().AutoHeight().Padding(0, 6, 0, 0)
-		[
-			MakeInfoLabel(LOCTEXT("InfillHint", "The lattice fills what the skin encloses, less the ribs of the Planes tab and the reserved volumes, in a material of its own (a plastic infill under a balsa skin). It needs a skin thickness. Its struts weigh by the volume fraction; Analysis > Structural homogenises its unit cell into the core's material card."))
 		];
 
 	// ---------------------------------------------------------------- Planes
@@ -521,7 +466,7 @@ void OpenAerotelicStructureDialog(AAerotelicEntityActor* Entity, const FString& 
 		]
 		+ SVerticalBox::Slot().AutoHeight().Padding(0, 6, 0, 0)
 		[
-			MakeInfoLabel(LOCTEXT("MassHint", "An asserted mass is spread over the body's surface when weighed and has no stiffness; it replaces every computed figure. Otherwise the body weighs by its structure: the skin or solid exactly, the ribs and the infill estimated from the planes' sections and the volume fraction until the structure is generated."))
+			MakeInfoLabel(LOCTEXT("MassHint", "An asserted mass is spread over the body's surface when weighed and has no stiffness; it replaces every computed figure. Otherwise the body weighs by its structure: the skin or solid exactly, the ribs estimated from the planes' sections until the structure is generated."))
 		]
 		+ SVerticalBox::Slot().AutoHeight().Padding(0, 12, 0, 0)
 		[
@@ -571,7 +516,7 @@ void OpenAerotelicStructureDialog(AAerotelicEntityActor* Entity, const FString& 
 		]
 		+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
 		[
-			SNew(SButton).Text(LOCTEXT("Generate", "Generate")).ToolTipText(LOCTEXT("GenerateTip", "Apply, then build the body's skin shell, infill and ribs from this structure (seconds of MeshLib work). They appear as layers under the body in the Scene tree, and its mirrored half's, and follow every later edit of the body."))
+			SNew(SButton).Text(LOCTEXT("Generate", "Generate")).ToolTipText(LOCTEXT("GenerateTip", "Apply, then build the body's skin shell and ribs from this structure (seconds of MeshLib work). They appear as layers under the body in the Scene tree, and its mirrored half's, and follow every later edit of the body."))
 			.IsEnabled_Lambda([D, Weak]() { return Weak.IsValid() && aerotelic::BodyStructureProblem(D->S).empty() && D->S.IsSkin(); })
 			.OnClicked_Lambda([D]()
 			{
@@ -589,7 +534,6 @@ void OpenAerotelicStructureDialog(AAerotelicEntityActor* Entity, const FString& 
 
 	TArray<FAerotelicTab> Tabs;
 	Tabs.Add({ LOCTEXT("SkinTab", "Skin"), SkinTab });
-	Tabs.Add({ LOCTEXT("InfillTab", "Infill"), InfillTab });
 	Tabs.Add({ LOCTEXT("PlanesTab", "Planes"), PlanesTab });
 	Tabs.Add({ LOCTEXT("MassTab", "Mass"), MassTab });
 

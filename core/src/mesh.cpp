@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <limits>
 #include <stdexcept>
@@ -98,7 +99,7 @@ bool QuadConvex(const Vec3& p, const Vec3& q, const Vec3& r, const Vec3& s) {
 // diagonals Delaunay, the ruled quads of a surface of revolution) takes the
 // shorter diagonal. On a non-planar quad this is the usual approximation,
 // and it is what makes the strip's own triangulation Delaunay within its
-// sheet, so that a tetrahedral mesh (tet.hpp) finds every strip edge in
+// sheet, so that a volume mesh finds every strip edge in
 // the Delaunay tetrahedralization of the vertices instead of having to
 // split it: a diagonal that is not locally Delaunay has a vertex of its
 // own sheet inside its circumcircle, and no sphere through it can be empty.
@@ -1343,6 +1344,23 @@ TriMesh CylinderMesh(double radius, double length, double tolerance) {
 	int around = 0, along = 0, cap_rings = 0;
 	CylinderCounts(radius, length, tolerance, around, along, cap_rings);
 	return CylinderMesh(radius, length, around, along, cap_rings);
+}
+
+bool WriteStlAscii(const TriMesh& mesh, const std::string& path, const std::string& solid_name) {
+	FILE* f = std::fopen(path.c_str(), "w");
+	if (!f) return false;
+	std::fprintf(f, "solid %s\n", solid_name.c_str());
+	for (const auto& t : mesh.triangles) {
+		const Vec3& a = mesh.vertices[t[0]];
+		const Vec3& b = mesh.vertices[t[1]];
+		const Vec3& c = mesh.vertices[t[2]];
+		Vec3 n = Normalized(Cross(b - a, c - a));
+		std::fprintf(f, "  facet normal %.9g %.9g %.9g\n    outer loop\n      vertex %.9g %.9g %.9g\n      vertex %.9g %.9g %.9g\n      vertex %.9g %.9g %.9g\n    endloop\n  endfacet\n",
+			n.x, n.y, n.z, a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z);
+	}
+	std::fprintf(f, "endsolid %s\n", solid_name.c_str());
+	std::fclose(f);
+	return true;
 }
 
 } // namespace aerotelic

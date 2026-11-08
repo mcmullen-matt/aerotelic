@@ -6,7 +6,6 @@
 #include <memory>
 
 #include "aerotelic/project_yaml.hpp"
-#include "aerotelic/lattice.hpp"
 #include "AerotelicEntityActor.h"
 
 #include "AerotelicDocumentSubsystem.generated.h"
@@ -94,8 +93,8 @@ public:
 	// scale (AAerotelicEntityActor::ApplyPlacement), so the viewport, the
 	// placed meshes and solids, the booleans, the generated structures and
 	// every analysis see the replica -- a 1:4 model at 0.25. The structures'
-	// build figures (skin, rib thickness, lattice cell) are not scaled: they
-	// are what the replica is to be built from. Saved with the project
+	// build figures (skin, rib thickness) are not scaled: they are what the
+	// replica is to be built from. Saved with the project
 	// (written when it is not 1); New resets it to 1, Open takes the file's.
 	// SetModelScale re-places every entity, which rebuilds the booleans and
 	// regenerates the structures over them; false, and nothing changed, for
@@ -131,12 +130,12 @@ public:
 	FString NextBooleanName() const;
 
 	// ---- Generated structure (per body, 2026-11-08) ----
-	// Generates the structure of one body -- its skin shell, infill and
-	// ribs as its BodyStructure describes them (FAerotelicBodyStructure) --
-	// over the body as it now stands and the reserved volumes its
-	// exclusions name, and hands the layers to the entity (shown under the
-	// body in the Scene tree, weighed by the mass report, exported as STL,
-	// meshed for the analyses). Synchronous (seconds). False with OutError
+	// Generates the structure of one body -- its skin shell and ribs as
+	// its BodyStructure describes them (FAerotelicBodyStructure) -- over
+	// the body as it now stands and the reserved volumes its exclusions
+	// name, and hands the layers to the entity (shown under the body in
+	// the Scene tree, weighed by the mass report, exported as STL, the
+	// hollow kept for the structural analysis). Synchronous (seconds). False with OutError
 	// when the body has no skin (a solid has nothing to generate; what was
 	// generated is dropped), is not closed, or MeshLib refuses; the layers
 	// it had are kept then. An exclusion that names nothing in the scene is
@@ -161,8 +160,8 @@ public:
 	// been rebuilt -- 1 when nothing is waiting. A rough measure on purpose:
 	// every item counts one whatever it costs, and nothing is timed.
 	//
-	// A changed body STRUCTURE whose geometry differs (a skin thickness, an
-	// infill, a network's planes; AAerotelicEntityActor::OnBodyStructureChanged
+	// A changed body STRUCTURE whose geometry differs (a skin thickness, a
+	// network's planes; AAerotelicEntityActor::OnBodyStructureChanged
 	// with bGeometry) queues that body's regeneration the same way when it
 	// has been generated; a body never generated waits for the dialog's
 	// Generate. A boolean result reads no material and stands.
@@ -351,6 +350,7 @@ private:
 	void RebuildAt(int32 Index);
 	void FinishRebuilds();
 	// Generates the structure of every body that has an interior (a skin
-	// with an infill or networks), as on load; failures into OutFailures.
+	// with plane networks, BodyStructure::HasInterior), as on load;
+	// failures into OutFailures.
 	void GenerateStructuresWithInterior(TArray<FString>& OutFailures);
 };

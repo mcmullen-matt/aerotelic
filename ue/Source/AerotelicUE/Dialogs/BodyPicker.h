@@ -20,8 +20,8 @@ struct FAerotelicBodyChoice
 	// "Body 2"); empty means the operand's every body. The structural
 	// analysis picks bodies, the rest pick operands.
 	FString Body;
-	// One generated layer of that body ("Skin", "Infill", a network's
-	// name; AAerotelicEntityActor::GetLayers): STL export offers the layers
+	// One generated layer of that body ("Skin", a network's name;
+	// AAerotelicEntityActor::GetLayers): STL export offers the layers
 	// beside the bodies. Empty means the body itself.
 	FString Layer;
 };

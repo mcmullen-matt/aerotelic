@@ -49,7 +49,7 @@ struct Pdf3dPart {
 	// Linear RGB in 0..1, the scene colour of the body.
 	double colour[3] = {0.72, 0.74, 0.78};
 	// 1 is opaque. Below 1 the part is drawn blended, which is how a
-	// skin over a lattice is made readable.
+	// skin over its ribs is made readable.
 	double opacity = 1.0;
 };
 

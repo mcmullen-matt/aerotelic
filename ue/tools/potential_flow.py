@@ -47,7 +47,7 @@ operation (``Define3DWakeOperation``) which needs the trailing edge
 identified and a wake sheet shed from it; hooking that up is the next step,
 not this prototype.
 
-``.tri`` is the application's own format (tools/tet_gmsh.py).
+``.tri`` is the application's own format (tools/gmsh_common.py).
 """
 
 import json
@@ -57,11 +57,11 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 # The .tri reader, the closed-surface checks, the connected-shell split and
-# the discrete-surface helper are the skin/core mesher's: one fluid body is
-# the same kind of object as one pocket of a hollowed body. Importing it
-# also bootstraps the environment's Library\bin onto PATH (numpy's BLAS and
-# gmsh's DLLs) before numpy and gmsh come in.
-import tet_gmsh as tg  # noqa: E402
+# the discrete-surface helper are the gmsh scripts' shared base
+# (gmsh_common.py, once the head of the skin/core mesher tet_gmsh.py).
+# Importing it also bootstraps the environment's Library\bin onto PATH
+# (numpy's BLAS and gmsh's DLLs) before numpy and gmsh come in.
+import gmsh_common as tg  # noqa: E402
 
 import numpy as np  # noqa: E402
 import gmsh  # noqa: E402
@@ -162,7 +162,7 @@ def mesh_fluid_domain(body_shells, lo, hi, far_size, near_size, near_distance, g
         gmsh.option.setNumber("Mesh.Algorithm3D", algorithm)
         gmsh.option.setNumber("Mesh.Optimize", 1 if optimize else 0)
         gmsh.option.setNumber("Mesh.OptimizeNetgen", 1 if optimize_netgen else 0)
-        # As in tet_gmsh.py: the sizes come from the surfaces that went in
+        # As the skin/core mesher did: the sizes come from the surfaces that went in
         # and from the field below alone. These surfaces have no curves or
         # curvature for gmsh to size from.
         gmsh.option.setNumber("Mesh.MeshSizeFromPoints", 0)
@@ -242,7 +242,7 @@ def mesh_fluid_domain(body_shells, lo, hi, far_size, near_size, near_distance, g
         gmsh.finalize()
 
     # The application's convention is a positive volume; gmsh hands back a
-    # few the other way round, so they are swapped, not dropped (tet_gmsh.py).
+    # few the other way round, so they are swapped, not dropped.
     vol = tg.tet_volumes(nodes, tets)
     flipped = int((vol < 0.0).sum())
     if flipped:

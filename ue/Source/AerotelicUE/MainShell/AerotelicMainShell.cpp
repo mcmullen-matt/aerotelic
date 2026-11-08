@@ -449,11 +449,6 @@ void SAerotelicMainShell::BindCommands()
 	}));
 	Commands->MapAction(C.MaterialLibrary, FExecuteAction::CreateLambda([this]() { ShowAerotelicMaterialLibraryDialog([this](const FText& T) { SetStatus(T); }); }));
 
-	// Tetrahedral exports of the generated structures (Generate Structure
-	// is on the Scene tree's body rows and in the Structure dialog)
-	Commands->MapAction(C.ExportSkinVtk, FExecuteAction::CreateLambda([this]() { ShowAerotelicExportSkinVtkDialog([this](const FText& T) { SetStatus(T); }); }));
-	Commands->MapAction(C.ExportTetVtk, FExecuteAction::CreateLambda([this]() { ShowAerotelicExportTetVtkDialog([this](const FText& T) { SetStatus(T); }); }));
-
 	// Analysis
 	Commands->MapAction(C.MassProperties, FExecuteAction::CreateLambda([this]() { ShowAerotelicMassPropertiesDialog([this](const FText& T) { SetStatus(T); }); }));
 	Commands->MapAction(C.StructuralFea, FExecuteAction::CreateLambda([this]() { ShowAerotelicStructuralFeaDialog([this](const FText& T) { SetStatus(T); }); }));
@@ -565,8 +560,6 @@ void SAerotelicMainShell::FillFileMenu(FMenuBuilder& Menu)
 	Menu.AddMenuEntry(C.ExportStep);
 	Menu.AddMenuEntry(C.ExportStl);
 	Menu.AddMenuEntry(C.Export3DPdf);
-	Menu.AddMenuEntry(C.ExportSkinVtk);
-	Menu.AddMenuEntry(C.ExportTetVtk);
 	Menu.AddMenuSeparator();
 	Menu.AddMenuEntry(C.Quit, NAME_None, TAttribute<FText>(), TAttribute<FText>(), FSlateIcon(), NAME_None);
 }

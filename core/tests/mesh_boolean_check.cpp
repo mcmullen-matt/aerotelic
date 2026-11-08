@@ -13,8 +13,6 @@
 #include "aerotelic/mesh_boolean.hpp"
 #include "aerotelic/project_yaml.hpp"
 #include "aerotelic/sdf.hpp"
-#include "aerotelic/shell.hpp"
-#include "aerotelic/tet.hpp"
 #include "aerotelic/wing_model.hpp"
 
 using namespace aerotelic;
@@ -220,25 +218,6 @@ int main() {
 		Check(result.SignedVolume() < sum && result.SignedVolume() > 0.5 * sum, "p38 airframe: fused volume is below the sum of the bodies and above half of it");
 		WriteStlAscii(result, "C:\\Users\\Matt\\devel_1\\aerotelic\\core\\build\\bool_p38_airframe.stl", "p38");
 		std::printf("p38 airframe: wrote core\\build\\bool_p38_airframe.stl\n");
-		// The union through the tetrahedral mesher. KNOWN OPEN: the seam
-		// pass removes the slivers, but the mesher still degrades on the
-		// union (the far corners of the coarse body's cut triangles fan to
-		// the dense seam, which no Delaunay tetrahedralization holds; see
-		// MeshBooleanOptions::refine_min_angle_deg). Reported, not required.
-		MeshSdf sdf(result);
-		SkinCoreOptions o;
-		o.thickness = 0.0294;
-		o.core_spacing = 0.0;
-		SkinCoreStats s;
-		auto t1 = std::chrono::steady_clock::now();
-		TetMesh tm = BuildSkinCoreMesh(result, sdf, o, &s);
-		double dt2 = std::chrono::duration<double>(std::chrono::steady_clock::now() - t1).count();
-		TriMesh iface = tm.InterfaceFaces(1, 2);
-		int outside = 0;
-		for (const auto& p : iface.vertices) if (sdf.Distance(p) > 1e-6) ++outside;
-		std::printf("p38 airframe tets: %d skin + %d core tets, %d segments abandoned, %d faces abandoned, %d edge Steiner, volume %.9g vs %.9g, %d interface nodes outside, %.2f s\n", s.n_skin_tets, s.n_core_tets, s.conforming.n_segments_abandoned, s.conforming.n_faces_abandoned, s.conforming.n_edge_steiner, s.conforming.mesh_volume, s.conforming.surface_volume, outside, dt2);
-		if (s.conforming.n_faces_abandoned > 0) std::printf("KNOWN OPEN: p38 airframe tets: the union does not conform exactly (%d faces abandoned)\n", s.conforming.n_faces_abandoned);
-		Check(std::fabs(s.conforming.mesh_volume - s.conforming.surface_volume) <= 1e-3 * s.conforming.surface_volume, Fmt("p38 airframe tets: tetrahedra volume %.9g is within 0.1%% of the union's %.9g", s.conforming.mesh_volume, s.conforming.surface_volume));
 	});
 
 	std::printf("RESULT: %d failure(s)\n", g_failures);

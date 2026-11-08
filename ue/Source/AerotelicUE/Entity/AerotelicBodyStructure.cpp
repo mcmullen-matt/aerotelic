@@ -5,32 +5,21 @@
 #include <cmath>
 #include <stdexcept>
 
-#include "aerotelic/parallel.hpp"
-
 namespace
 {
-	// The lattice field grid is refused beyond this many samples (as the
-	// core's GenerateLattice).
-	constexpr size_t kMaxGridNodes = 150000000;
 	// The offset's distance field is kept under about this many voxels
 	// across the body's bounds (sparse, so the real count is far lower).
 	constexpr double kMaxOffsetVoxels = 60.0e6;
 	// The offset surface is remeshed to isotropic triangles of this many
-	// skin thicknesses (see the history in the lattice model this replaces:
+	// skin thicknesses (see the history in the lattice model this replaced:
 	// two skins is clean and meshes in seconds, one skin is not) ...
 	constexpr double kInnerRemeshEdgeOverSkin = 2.0;
 	// ... and never finer than this many offset voxels.
 	constexpr double kInnerRemeshEdgeOverVoxel = 2.0;
-	// The core's target edge, as a multiple of the infill cell: the core
-	// carries the cell's homogenised card, so it needs no finer a mesh.
-	constexpr double kCoreSizeOverCell = 1.0;
-	// gmsh's Mesh.Algorithm3D: Delaunay beat HXT on every body tried.
-	constexpr int32 kGmshAlgorithm = 1;
 	// The slabs reach this far from the body's centre in the plane: the
 	// bounding sphere's radius with margin.
 	constexpr double kSlabHalfExtentOverDiag = 0.75;
 
-	const FLinearColor kInfillColor(0.95f, 0.65f, 0.15f);   // amber
 	const FLinearColor kRibsColor(0.35f, 0.55f, 0.85f);     // steel blue
 
 	void RequireClosedBody(const aerotelic::TriMesh& Mesh, const FString& Label, const TCHAR* Role)
@@ -47,47 +36,6 @@ namespace
 				TEXT("'%s' (%s) is turned inside out (its enclosed volume is not positive), so inside and outside cannot be told apart."),
 				*Label, Role)));
 		}
-	}
-
-	// The lattice field of the spec sampled on the grid the core would plan
-	// over `Bounds`, F <= 0 inside the material.
-	AerotelicMeshLib::FField SampleLatticeField(const aerotelic::LatticeSpec& Spec, const aerotelic::Box3& Bounds)
-	{
-		aerotelic::LatticeSpec Sampled = Spec;
-		Sampled.skin_thickness = 0.0; // the skin is MeshLib's, not the sampled field's
-		const aerotelic::LatticeGrid Grid = aerotelic::PlanLatticeGrid(Sampled, Bounds);
-		if (Grid.Nodes() > kMaxGridNodes)
-		{
-			throw std::runtime_error("the lattice grid would need " + std::to_string(Grid.Nodes()) + " samples (limit " + std::to_string(kMaxGridNodes) +
-				"): use a larger cell size or a lower resolution");
-		}
-		const std::string Unresolvable = aerotelic::LatticeResolutionWarning(Sampled, Grid);
-		if (!Unresolvable.empty())
-		{
-			throw std::runtime_error(Unresolvable);
-		}
-		const aerotelic::LatticeField Lattice(Sampled);
-		AerotelicMeshLib::FField Field;
-		Field.Nx = Grid.nx + 1;
-		Field.Ny = Grid.ny + 1;
-		Field.Nz = Grid.nz + 1;
-		Field.Origin = Grid.origin;
-		Field.H = Grid.h;
-		Field.Values.resize(Grid.Nodes());
-		const int NX = Field.Nx, NY = Field.Ny;
-		aerotelic::ParallelFor(static_cast<size_t>(Field.Nz), [&](size_t K)
-		{
-			float* Row = Field.Values.data() + K * static_cast<size_t>(NY) * NX;
-			for (int J = 0; J < NY; ++J)
-			{
-				for (int I = 0; I < NX; ++I)
-				{
-					const aerotelic::Vec3 P = Grid.origin + aerotelic::Vec3{I * Grid.h, J * Grid.h, static_cast<double>(K) * Grid.h};
-					Row[static_cast<size_t>(J) * NX + I] = static_cast<float>(Lattice(P));
-				}
-			}
-		});
-		return Field;
 	}
 
 	// A key for the offset cache: the body's bytes, the skin and the voxel.
@@ -126,7 +74,6 @@ FLinearColor FAerotelicStructureLayer::DefaultColor(EKind Kind, const FLinearCol
 {
 	switch (Kind)
 	{
-	case EKind::Infill: return kInfillColor;
 	case EKind::Ribs: return kRibsColor;
 	case EKind::Skin:
 	default: return BodyColor;
@@ -137,7 +84,6 @@ const TCHAR* FAerotelicStructureLayer::KindName(EKind Kind)
 {
 	switch (Kind)
 	{
-	case EKind::Infill: return TEXT("infill");
 	case EKind::Ribs: return TEXT("ribs");
 	case EKind::Skin:
 	default: return TEXT("skin");
@@ -148,12 +94,8 @@ double FAerotelicBodyStructure::BodyTolerance(const aerotelic::BodyStructure& S)
 {
 	// The body mesh is the skin's outer surface as it stands, and the
 	// offset's distance field sees it to a fraction of its voxel, so it is
-	// built a few voxels finer than the skin and than the infill's grid.
-	double Tolerance = S.skin_thickness > 0.0 ? 0.25 * S.skin_thickness : 1e-3;
-	if (S.infill)
-	{
-		Tolerance = FMath::Min(Tolerance, 0.25 * aerotelic::LatticeVoxelSize(S.infill->lattice));
-	}
+	// built a few voxels finer than the skin.
+	const double Tolerance = S.skin_thickness > 0.0 ? 0.25 * S.skin_thickness : 1e-3;
 	return FMath::Max(Tolerance, 1e-5);
 }
 
@@ -191,20 +133,12 @@ bool FAerotelicBodyStructure::Generate(const FInputs& In, FString& OutError)
 		const aerotelic::Box3 Bounds = In.Body.Bounds();
 		const double Diag = FMath::Max(Bounds.Diagonal(), 1e-9);
 
-		// The infill's field over the body's bounds, when there is one.
-		AerotelicMeshLib::FField Field;
-		if (S.infill)
-		{
-			Field = SampleLatticeField(S.infill->lattice, Bounds);
-		}
-
 		// The job. The offset's voxel is a quarter of the skin (so the
-		// shell's thickness is resolved) and no coarser than the infill's
-		// voxel, capped by a voxel budget across the bounds.
+		// shell's thickness is resolved), capped by a voxel budget across
+		// the bounds.
 		AerotelicMeshLib::FRequest Request;
 		{
 			double Voxel = 0.25 * S.skin_thickness;
-			if (S.infill) Voxel = FMath::Min(Voxel, aerotelic::LatticeVoxelSize(S.infill->lattice));
 			const aerotelic::Vec3 Ext = Bounds.Extent() + aerotelic::Vec3{2.0, 2.0, 2.0} * S.skin_thickness;
 			const double Volume = Ext.x * Ext.y * Ext.z;
 			if (Volume / (Voxel * Voxel * Voxel) > kMaxOffsetVoxels)
@@ -222,7 +156,7 @@ bool FAerotelicBodyStructure::Generate(const FInputs& In, FString& OutError)
 		Target.InnerRemeshEdge = RemeshEdge;
 		// The offset from the last run of the same body at the same skin
 		// is handed back: the distance field is the slow step, and editing
-		// the planes or the infill does not change it.
+		// the planes does not change it.
 		if (Key == InnerKey && !Inner.IsEmpty())
 		{
 			Target.PrecomputedInner = &Inner;
@@ -241,7 +175,6 @@ bool FAerotelicBodyStructure::Generate(const FInputs& In, FString& OutError)
 		Request.MinPocketVolume = FMath::Pow(4.0 * Request.OffsetVoxel, 3.0);
 		Request.InnerOpening = 0.0;
 		Request.InnerRemeshEdge = RemeshEdge;
-		Request.Field = S.infill ? &Field : nullptr;
 		// The networks: each plane placed with the body (the normal rotated,
 		// the offset scaled and carried), the thickness and height as typed.
 		for (int32 n = 0; n < static_cast<int32>(S.networks.size()); ++n)
@@ -278,7 +211,7 @@ bool FAerotelicBodyStructure::Generate(const FInputs& In, FString& OutError)
 		}
 
 		// Take the results: the layers in the body's frame, the hollowing's
-		// surfaces as they are for the tetrahedral mesher.
+		// surfaces as they are for the structural analysis.
 		std::vector<FAerotelicStructureLayer> NewLayers;
 		{
 			FAerotelicStructureLayer Skin;
@@ -304,17 +237,6 @@ bool FAerotelicBodyStructure::Generate(const FInputs& In, FString& OutError)
 			if (Ribs.Mesh.IsEmpty() && Ribs.Note.IsEmpty()) Ribs.Note = TEXT("the planes miss the interior");
 			NewLayers.push_back(std::move(Ribs));
 		}
-		if (S.infill)
-		{
-			FAerotelicStructureLayer Infill;
-			Infill.Name = UniqueLayerName(TEXT("Infill"), NewLayers);
-			Infill.Kind = FAerotelicStructureLayer::EKind::Infill;
-			Infill.Mesh = std::move(Result.Lattice);
-			Infill.Material = S.infill->material;
-			Infill.Volume = Result.LatticeVolume;
-			if (Infill.Mesh.IsEmpty()) Infill.Note = TEXT("the infill came out empty: the cell is larger than the interior, or the volume fraction too small to resolve");
-			NewLayers.push_back(std::move(Infill));
-		}
 		for (FAerotelicStructureLayer& L : NewLayers)
 		{
 			if (!L.Mesh.IsEmpty() && !L.Mesh.IsClosedManifold())
@@ -331,29 +253,20 @@ bool FAerotelicBodyStructure::Generate(const FInputs& In, FString& OutError)
 		bInnerUsable = Result.Inners[0].bUsable;
 		InnerNote = Result.Inners[0].Note;
 		InnerKey = Key;
-		MinPocketVolume = Request.MinPocketVolume;
-		InfillCell = S.infill ? S.infill->lattice.cell_size : 0.0;
 		SkinThickness = S.skin_thickness;
-		bTetBuilt = false;
-		bTetOk = false;
-		TetNote.Empty();
-		Tet = FTetMesh();
 
 		Stats = FStats();
 		for (const FAerotelicStructureLayer& L : Layers) Stats.Triangles += static_cast<int64>(L.Mesh.triangles.size());
-		Stats.GridNodes = static_cast<int64>(Field.Values.size());
 		Stats.SkinVolume = Result.SkinVolume;
 		Stats.DomainVolume = Result.DomainVolume;
-		Stats.InfillVolume = Result.LatticeVolume;
 		Stats.RibsVolume = Result.RibsVolume;
-		Stats.AchievedFraction = Result.AchievedFraction;
 		Stats.Warnings = Result.Warnings;
 		Stats.Seconds = FPlatformTime::Seconds() - T0;
 		bGenerated = true;
 		bStale = false;
-		UE_LOG(LogTemp, Log, TEXT("AerotelicBodyStructure: %s: %d layer(s), %lld triangles, offset voxel %.4g, skin %.5g, interior %.5g, ribs %.5g, infill %.5g (fraction %.3f), %.2f s (MeshLib %.2f s)"),
-			*In.Label, static_cast<int32>(Layers.size()), Stats.Triangles, Request.OffsetVoxel, Stats.SkinVolume, Stats.DomainVolume, Stats.RibsVolume, Stats.InfillVolume,
-			Stats.AchievedFraction, Stats.Seconds, Result.Seconds);
+		UE_LOG(LogTemp, Log, TEXT("AerotelicBodyStructure: %s: %d layer(s), %lld triangles, offset voxel %.4g, skin %.5g, interior %.5g, ribs %.5g, %.2f s (MeshLib %.2f s)"),
+			*In.Label, static_cast<int32>(Layers.size()), Stats.Triangles, Request.OffsetVoxel, Stats.SkinVolume, Stats.DomainVolume, Stats.RibsVolume,
+			Stats.Seconds, Result.Seconds);
 		return true;
 	}
 	catch (const std::exception& e)
@@ -361,56 +274,4 @@ bool FAerotelicBodyStructure::Generate(const FInputs& In, FString& OutError)
 		OutError = UTF8_TO_TCHAR(e.what());
 		return false;
 	}
-}
-
-const FAerotelicBodyStructure::FTetMesh* FAerotelicBodyStructure::GetTetMesh(FString& OutNote, double CoreSize) const
-{
-	if (!bGenerated)
-	{
-		OutNote = TEXT("the structure has not been generated, so the body's surface and its offset are not available");
-		return nullptr;
-	}
-	if (bTetBuilt)
-	{
-		OutNote = TetNote;
-		return bTetOk ? &Tet : nullptr;
-	}
-	bTetBuilt = true;
-	bTetOk = false;
-	if (!Inner.IsEmpty() && !bInnerUsable)
-	{
-		TetNote = FString::Printf(TEXT("not meshed: %s"), *InnerNote);
-		OutNote = TetNote;
-		return nullptr;
-	}
-	AerotelicTetGmsh::FRequest Request;
-	Request.Outer = &Outer;
-	Request.Inner = Inner.IsEmpty() ? nullptr : &Inner;
-	if (CoreSize > 0.0) Request.CoreSize = CoreSize;
-	else if (InfillCell > 0.0) Request.CoreSize = kCoreSizeOverCell * InfillCell;
-	else Request.CoreSize = FMath::Max(4.0 * SkinThickness, Outer.Bounds().Diagonal() / 40.0);
-	Request.Algorithm = kGmshAlgorithm;
-	Request.bOptimize = true;
-	Request.bOptimizeNetgen = true;
-	Request.MinPocketVolume = MinPocketVolume;
-	FString Error;
-	if (!AerotelicTetGmsh::Run(Request, Tet.Result, Error))
-	{
-		TetNote = FString::Printf(TEXT("not meshed: %s"), *Error);
-		UE_LOG(LogTemp, Warning, TEXT("AerotelicBodyStructure: the body could not be meshed with tetrahedra: %s"), *Error);
-		OutNote = TetNote;
-		return nullptr;
-	}
-	Tet.SkinThickness = SkinThickness;
-	const AerotelicTetGmsh::FResult& R = Tet.Result;
-	UE_LOG(LogTemp, Log, TEXT("AerotelicBodyStructure: tetrahedra: %d nodes, %d skin + %d core; skin %.6g + core %.6g = %.6g vs body %.6g (relative %.2e); quality min %.3f mean %.3f; %.2f s"),
-		R.Nodes, R.SkinTets, R.CoreTets, R.SkinVolume, R.CoreVolume, R.SkinVolume + R.CoreVolume, R.OuterVolume, R.VolumeError, R.MinQuality, R.MeanQuality, R.Seconds);
-	TArray<FString> Notes;
-	if (R.VolumeError > 1e-9) Notes.Add(FString::Printf(TEXT("the tetrahedra do not fill the body exactly (relative %.2e)"), R.VolumeError));
-	if (R.Degenerate > 0) Notes.Add(FString::Printf(TEXT("%d tetrahedra came out with no volume"), R.Degenerate));
-	if (Inner.IsEmpty()) Notes.Add(TEXT("nowhere thicker than two skins: every tetrahedron is skin"));
-	TetNote = FString::Join(Notes, TEXT("; "));
-	OutNote = TetNote;
-	bTetOk = true;
-	return &Tet;
 }

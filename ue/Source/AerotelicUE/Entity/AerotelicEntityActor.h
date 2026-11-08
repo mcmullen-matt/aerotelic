@@ -42,13 +42,13 @@ struct FAerotelicBody
 	FLinearColor Color = FLinearColor::White;
 
 	// What the body is made of and built with (body_structure.hpp): its
-	// material, skin, infill, plane networks, asserted mass. Per body since
+	// material, skin, plane networks, asserted mass. Per body since
 	// 2026-11-08; kept by role name across rebuilds like the display state,
 	// saved under the entity's `bodies:`. Not reflected (a plain C++ value).
 	aerotelic::BodyStructure Structure;
 
-	// The structure's GENERATED geometry -- the skin shell, the infill, the
-	// ribs (AerotelicBodyStructure.h) -- once the document has generated it;
+	// The structure's GENERATED geometry -- the skin shell and the ribs
+	// (AerotelicBodyStructure.h) -- once the document has generated it;
 	// null until then. Kept by role across rebuilds and marked stale by
 	// them (the document regenerates); not saved (regenerated on load for
 	// a body with an interior). Not reflected.
@@ -115,8 +115,8 @@ public:
 
 	// Rebuilds the tessellated mesh (or the wireframe-box fallback) from the
 	// model's current BuildSolid() geometry. Called when a design panel's
-	// draft is applied (ReplaceModel), when a lattice is regenerated, and on
-	// load.
+	// draft is applied (ReplaceModel), when a boolean result over it is
+	// rebuilt, and on load.
 	void RefreshProxy();
 	// Why the last RefreshProxy() could not build the model (its exception's
 	// message, e.g. a wing with a negative chord), empty after a successful
@@ -168,7 +168,7 @@ public:
 	// ---- structure (per body, 2026-11-08) ----
 
 	// What each body is made of and built with -- its material, skin
-	// thickness, lattice infill, plane networks, exclusions, asserted mass
+	// thickness, plane networks, exclusions, asserted mass
 	// (aerotelic::BodyStructure) -- addressed by the body's role name. Kept
 	// by role across rebuilds like the display state; a role that vanishes
 	// (a flap removed, a blade count lowered) parks its structure and gets
@@ -177,9 +177,9 @@ public:
 	// body is given its structure directly).
 	//
 	// SetBodyStructure broadcasts OnBodyStructureChanged with bGeometry true
-	// when a regeneration would give different geometry (the skin, the
-	// infill lattice, a network's planes, the exclusions -- see
-	// SameStructureGeometry); a material or an asserted mass alone is read
+	// when a regeneration would give different geometry (the skin, a
+	// network's planes, the exclusions -- see SameStructureGeometry); a
+	// material or an asserted mass alone is read
 	// on demand by the analyses and the mass report and broadcasts false.
 	int32 FindBodyIndex(const FString& BodyRole) const;
 	// Null when there is no such body (or the role is empty and the entity
@@ -218,7 +218,7 @@ public:
 	bool IsMirrorLayerVisible(int32 Layer) const;
 	void SetLayerColor(int32 Layer, TOptional<FLinearColor> InColor);
 	// Its own colour, else the layer kind's default (the skin the body's
-	// colour, the infill amber, ribs steel blue).
+	// colour, ribs steel blue).
 	FLinearColor GetLayerDisplayColor(int32 Layer) const;
 	// A body's generated layers as placed (or mirrored) meshes, named by
 	// layer -- what STL export and the mass report take. Empty when the
@@ -283,7 +283,7 @@ public:
 
 	// Fired after an entity's placed geometry changed (a rebuild after an
 	// applied edit, or a move). The document subsystem queues every boolean
-	// result and lattice over it and rebuilds them one per tick
+	// result and generated structure over it and rebuilds them one per tick
 	// (feature_tree.py's dirty propagation, paced so the window repaints).
 	DECLARE_MULTICAST_DELEGATE_OneParam(FOnAerotelicGeometryChanged, AAerotelicEntityActor*);
 	static FOnAerotelicGeometryChanged OnGeometryChanged;
@@ -301,7 +301,7 @@ public:
 	// Tolerance of the surface: the model's own OCCT-free meshes
 	// (ISolidModel::BuildMeshes, reusing the viewport's when they are fine
 	// enough), else the OCCT solid tessellated. What STL export and the
-	// lattice generator consume. Empty if nothing can be built.
+	// structure's hollowing consume. Empty if nothing can be built.
 	//
 	// A Tolerance of 0 or less asks for THE BODY'S OWN GRID (2026-11-05):
 	// the mesh the viewport shows, built by the entity's Mesh tab spec at
@@ -309,7 +309,7 @@ public:
 	// diagonal) -- so an analysis that asks for it solves on exactly the
 	// triangles the user sees and set. The structural analysis, mass
 	// properties and the material dialog ask for it; a caller with a
-	// tolerance of its own (STL export, the lattice's hollowing, which
+	// tolerance of its own (STL export, the structure's hollowing, which
 	// needs the surface finer than its distance field's voxel) gets a
 	// private copy at that tolerance and must not hand it to a solver.
 	std::vector<aerotelic::NamedMesh> GetPlacedMeshes(bool bMirror, double Tolerance = 0.0) const;
@@ -394,7 +394,7 @@ private:
 	UPROPERTY()
 	TArray<TObjectPtr<class UMaterialInstanceDynamic>> MirrorEdgeMaterials;
 
-	// The generated structure's layers (skin shells, infill, ribs), one
+	// The generated structure's layers (skin shells, ribs), one
 	// section per layer, in the body's frame under the actor like ProxyMesh
 	// -- the layers are generated in the body's own frame, so a move needs
 	// no rebuild -- and the mirrored copy in world space like MirrorMesh.
@@ -454,8 +454,8 @@ private:
 	// builds it on demand then.
 	TopoDS_Shape LastSolid;
 	// The model's own meshes from the last RefreshProxy() (unplaced), at
-	// LastMeshTolerance; the mirror, export and the lattice generator reuse
-	// them.
+	// LastMeshTolerance; the mirror, export and the structure's hollowing
+	// reuse them.
 	std::vector<aerotelic::NamedMesh> LastMeshes;
 	double LastMeshTolerance = 0.0;
 	FString LastBuildError;

@@ -26,7 +26,7 @@ namespace AerotelicExport
 	// "<entity>/<body>/<layer>" ("Wing/Flap 1/Skin", "Wing/Flap 1/Ribs"): an
 	// ASCII STL is written as one `solid` per part, so a mesher or FE
 	// pre-processor can pick the parts up separately (and give a body's
-	// shell, infill and ribs different materials). Binary STL has no parts.
+	// shell and ribs different materials). Binary STL has no parts.
 	struct FStlPart
 	{
 		FString Name;
@@ -78,7 +78,8 @@ namespace AerotelicExport
 	// The shape to write for one body (_step_body_shape): an entity rebuilt
 	// at StationTol (unset: as it stands) and then placed; a mirror
 	// reflected from its source built the same way; a boolean result as it
-	// stands. A lattice has no B-rep (it is a mesh: export it as STL).
+	// stands. A generated structure layer has no B-rep (it is a mesh:
+	// export it as STL).
 	TopoDS_Shape StepBodyShape(const FAerotelicBooleanOperand& Operand, TOptional<double> StationTol, FString& OutError);
 
 	// Writes the bodies to one STEP file through aerotelic_step_writer, a

@@ -122,9 +122,9 @@ The layout follows the Python/Qt version's main window (`aerotelic/ui/main_windo
   only be a guess at how far; it is selected and its design panel opened,
   so Transform or an edit is the next move), and keeps the source's
   placement, mirror flag, colour and hidden state.
-  **Only parameterisations can be copied.** A boolean result or a lattice
-  is a solid built *from* other entities with no parameterisation of its
-  own -- there is nothing to hand a constructor, and a "copy" could only
+  **Only parameterisations can be copied.** A boolean result (and, until
+  2026-11-08, a lattice) is a solid built *from* other entities with no
+  parameterisation of its own -- there is nothing to hand a constructor, and a "copy" could only
   point at the same operands, which is the link this is meant not to be.
   Copy stays *enabled* for them so Ctrl+C can say why in the status bar
   rather than doing nothing without a word; the tree row's menu simply
@@ -268,7 +268,7 @@ The layout follows the Python/Qt version's main window (`aerotelic/ui/main_windo
   interactive model on a PDF page -- drag to orbit, and the reader's
   model tree lists the bodies by name, each in its scene colour and
   separately hideable. Same dialog bones as Export STL: the shared body
-  picker (lattices and boolean results included -- a 3D PDF carries
+  picker (boolean results included -- a 3D PDF carries
   triangles, so anything that meshes exports), one mesh density with the
   statistics recomputed on every change, then the document title (the
   project's name by default), the page size (A4 / Letter / A3, portrait
@@ -331,15 +331,17 @@ The layout follows the Python/Qt version's main window (`aerotelic/ui/main_windo
   the 495 remain, where neither is possible). Pieces are classified by
   connected region rather than one by one, so a sliver hugging the seam
   cannot be misjudged. The whole P-38 airframe fuses in half a second
-  (`core/tests/mesh_boolean_check.cpp`). KNOWN OPEN: the tetrahedral
-  mesher still degrades on the union (the coarse body's cut triangles fan
-  from a far corner to the dense seam, edges no Delaunay sphere can hold);
-  the experimental in-plane refinement behind
-  `MeshBooleanOptions::refine_min_angle_deg` (off) fixes some junctions
-  and worsens others -- see the header. The result is drawn in
+  (`core/tests/mesh_boolean_check.cpp`). (Known open while the
+  tetrahedral mesher existed, to 2026-11-08: it degraded on the union --
+  the coarse body's cut triangles fan from a far corner to the dense seam,
+  edges no Delaunay sphere can hold; the experimental in-plane refinement
+  behind `MeshBooleanOptions::refine_min_angle_deg` (off) fixed some
+  junctions and worsened others -- see the header. The fans are still
+  there and still matter to a shell grid, which is why the option stays.)
+  The result is drawn in
   lilac as one body, shown, coloured, renamed and deleted like any row
-  (no design panel, placement or mirror of its own), is a lattice target
-  and a tetrahedral-mesh body like any other, and has no B-rep: it is not
+  (no design panel, placement or mirror of its own), carries a per-body
+  structure (skin, ribs) like any other body, and has no B-rep: it is not
   exported to STEP (export the operands and combine them downstream). The
   operands stay in the scene, so hide them to see the result alone. It
   follows its operands: editing or moving one rebuilds it, deleting one
@@ -508,7 +510,7 @@ The layout follows the Python/Qt version's main window (`aerotelic/ui/main_windo
   angles. See *The Transform dialog* below.
 * **Status bar**: last action on the left, project path on the right.
 
-## Meshing, distance fields and lattices (2026-10-11)
+## Meshing and distance fields (2026-10-11)
 
 * **OCCT-free triangulation** (`core/include/aerotelic/mesh.hpp`,
   `src/mesh.cpp`): every lofted body is a chain of ruled surfaces between
@@ -551,81 +553,18 @@ The layout follows the Python/Qt version's main window (`aerotelic/ui/main_windo
   feature the closest point lies on (Baerentzen & Aanaes). Measured: 2.3 us
   per query on a 2,700-triangle wing, BVH equal to brute force on every
   tested point, sign equal to ray parity on every tested point
-  (`tests/sdf_check.cpp`).
-* **Lattices** (`lattice.hpp`, `src/lattice.cpp`), after Gayir, Ozdilek,
-  Ozdemir, Simsek, Sendur and Kiziltas, *OpenLattice* (SSRN 6210543),
-  section 2: the 27 TPMS level-set functions of the paper's Table 3 in
-  network, sheet (matrix) and iso-surface (wall thickness) phases, with the
-  level-set parameter calibrated to the volume fraction by bisection on a
-  sampled unit cell; the strut-based and auxetic cells (BCC, FCC, G7, Grid,
-  Octet, Tesseract, Vintiles, X-lattice, Re-entrant) as the paper's
-  periodic strut distance field (nearest periodic copy by rounding,
-  distance to the segment, normalised by the strut radius, minimum over
-  struts), the radius calibrated the same way. Honeycomb (prismatic) cells
-  are ours, not the paper's: a 2D tiling's walls extruded along a chosen
-  axis -- Square, Rectangle, Hexagon and Triangle, the cell size being the
-  side of a square or triangle, the width of a rectangle or a hexagon's
-  size across the flats, with a cell aspect stretching the cross-section's
-  second dimension. Square, Rectangle and Triangle are the exact distance
-  to two or three families of parallel lines through the tiling's lattice
-  points; Hexagon is the distance to those points' Voronoi edges, taken as
-  the nearest point's bisector half-planes (inside a convex cell the
-  distance to the boundary is the least distance to its edges' own lines),
-  so every cell's field is a true signed distance and the aspect stays
-  exact. The wall is either calibrated to the volume fraction like
-  everything else or given outright -- what a printed or bonded core is
-  actually specified by. Unlike the other two families these cells are
-  anisotropic on purpose, so the prism axis is part of the spec. The
-  spec's `origin` is the point the pattern is periodic about -- the field
-  is evaluated at p - origin -- and since 2026-11-07 the dialog exposes it
-  as **Offset x / y / z** (fore/aft, left/right, up/down): a constant
-  added to the coordinates the pattern is built on, sliding the whole
-  pattern through the bodies while the bodies and skins stay put, to land
-  a strut junction or a wall where a fitting goes. A whole cell of offset
-  changes nothing, and a honeycomb ignores the component along its prism
-  axis (`lattice_check` checks all three facts; the document test
-  round-trips a shifted lattice through the file).
-  `GenerateLattice` samples
-  the lattice field intersected with the body's distance field (and minus
-  the reserved volumes) on a grid of N voxels per cell, skipping whole
-  blocks far from the body surface (a 1-Lipschitz field lets one
-  evaluation classify a block), and extracts the surface with marching
-  tetrahedra (vertex-shared, outward, parallel by slabs). With a skin
-  thickness it extracts TWO bodies from the same samples: `skin`, the solid
-  shell between each body's surface and its inward offset (a reserved
-  volume keeps a wall too), and `mesh`, the lattice clipped to that offset;
-  they meet on the offset surface vertex for vertex, and are kept apart so
-  an analysis can give shell and infill different materials. A region
-  thinner than two skins comes out solid shell, which is what a thin
-  trailing edge should be: the sampled field cannot represent a wedge
-  thinner than a voxel, and without a skin the infill's struts simply end
-  wherever they last met the skin, raggedly on a swept edge.
-  A wall set apart from its cell (a honeycomb's, or a TPMS iso-surface's)
-  can be asked for thinner than a voxel, and then it falls between the
-  samples and is simply not there; `LatticeResolutionWarning` says so, the
-  dialog shows it while the numbers are being chosen, and generation throws
-  rather than return a holed mesh.
-  `tests/lattice_check.cpp` calibrates every type, checks the marching
-  tetrahedra on a sphere, and generates in a box and in a sphere with a
-  reserved sphere and a skin (both bodies closed, the shell's volume right).
-  The honeycomb cells are checked against closed forms -- the void is each
-  cell shrunk inward by half the wall, so a cell with an incircle gives
-  (1 - t/2r)^2 and a rectangle (A-t)(B-t)/AB -- plus a stretched hexagon
-  against a patch many cells across (converging on the one-tile figure, so
-  the tile is the right fundamental domain), the field's being prismatic,
-  periodic and 1-Lipschitz, and a hexagonal fill of a box whose mesh volume
-  matches the field's own share of that box. Note that the share of a small
-  box runs under the fraction asked for by order 1 / cells across, the
-  boundary cutting the tiling; the calibration is exact, the box is not.
+  (`tests/sdf_check.cpp`). The distance field stays because the mesh
+  boolean needs it; the lattice fields that were its first customer
+  (`lattice.hpp`, OpenLattice's TPMS / strut / honeycomb cells, the
+  marching-tetrahedra extractor) were removed on 2026-11-08 -- see
+  *Shells only* under *Materials and the structural analysis*.
 * **Per-body structure** (2026-11-08; replaces the Lattice menu and the
-  lattice scene entity of 2026-10-11..11-04, whose history follows). The
+  lattice scene entity of 2026-10-11..11-04). The
   structure of a solid BODY -- a wing's Main and each flap, a propeller's
   spinner and blades, a boolean result's Body k -- is an attribute of
   that body (`core/include/aerotelic/body_structure.hpp`, saved under the
   entity's `bodies:` list): its material and skin thickness (0 = a
-  solid), an optional lattice INFILL in a material of its own (the
-  OpenLattice spec as before: family, type, phase, cell, fraction or wall,
-  resolution, origin offsets), any number of PLANE NETWORKS (ribs, spars,
+  solid), any number of PLANE NETWORKS (ribs, spars,
   frames: planes normal to x, y, z or a custom axis, a start, a spacing,
   a count, a thickness, a material, and a height -- 0 spans the interior
   wall to wall, positive stops that far in from the surface), reserved
@@ -636,131 +575,99 @@ The layout follows the Python/Qt version's main window (`aerotelic/ui/main_windo
   result bodies own their structure (no inheritance; *Copy Structure From
   Operand* on the result's row is the starting point). The Scene tree's
   body rows (and a single-body entity's row) have *Structure...*: a
-  modeless dialog with Skin / Infill / Planes / Mass tabs, Apply, Revert
+  modeless dialog with Skin / Planes / Mass tabs, Apply, Revert
   and *Generate*; while the Planes tab is edited the 3D view shows every
   plane as a translucent rectangle over the body (the one being edited
   amber), through `Standalone/AerotelicPlanePreviewActor` and the
   document's structure preview. *Generate* (also on the row menu) runs the
-  MeshLib job for that body alone and gives it LAYERS -- "Skin", one per
-  network, "Infill" -- drawn under the body (and its mirrored half) in
+  MeshLib job for that body alone and gives it LAYERS -- "Skin" and one
+  per network -- drawn under the body (and its mirrored half) in
   the body's frame, listed under its row with their own visibility and
-  colour, exported as STL parts, weighed exactly by the mass report (a
-  solid of each layer's material) and meshed with tetrahedra for the
-  exports and the full-resolution FEA; the body's own section hides while
+  colour, exported as STL parts and weighed exactly by the mass report (a
+  solid of each layer's material); the body's own section hides while
   its Skin layer shows. No scene entity is created. A generated body
   follows every later edit of its body, of the booleans over it and of
   the volumes its exclusions name (the document's rebuild queue, by
   (entity, body)); a structure edit that changes the geometry regenerates
   a generated body; bodies with an interior are regenerated on load. The
-  ribs are cut inside the MeshLib job (`lattice_meshlib.py` `networks:`):
+  ribs are cut inside the MeshLib job (`tools/structure_meshlib.py`
+  `networks:`):
   slabs about the planes intersected with the hollow, a limited height by
   subtracting the body's deeper offset, earlier networks continuous and
-  later ones notched by them, the infill filling what the ribs leave --
+  later ones notched by them --
   the SLAB is subtracted from the domain, never the rib (MeshLib's boolean
   fails on coincident faces). Old files' `lattices:` entries are skipped
-  by name and listed in "Project Opened With Problems".
+  by name, and a body's `infill:` key (the lattice infill the structure
+  carried for a few days) is dropped; both are listed in "Project Opened
+  With Problems".
 * **Structural analysis of a structured body** (Analysis > Structural):
   `Entity/AerotelicFeaModelBuilder` builds every chosen body the same way
-  for the dialog and the commandlets. A skinned body with an infill is
-  skin shells (the skin's material) over 4-node tetrahedra at the cell
-  size carrying the homogenised cell of the INFILL's material -- the two
-  materials distinct at last. Its plane networks enter as RIB SHELLS: the
+  for the dialog and the commandlets, and every element it builds is a
+  SHELL. The body's skin is shells of the skin's material and thickness
+  on the body's own grid. Its plane networks enter as RIB SHELLS: the
   body's own grid is first cut by every plane (`core/mesh_cut.hpp`
   `CutMeshByPlanes`: triangles split at the planes, one crossing point per
   edge, vertices within a tolerance snapped onto the plane, closed in and
-  out), so each rib's rim is a loop of skin nodes; `tools/tet_gmsh.py`
-  meshes each rib's disc in a scratch model from the rim (transfinite rim
-  lines, no new rim nodes), splits it along the chords where networks
+  out), so each rib's rim is a loop of skin nodes; `tools/rib_gmsh.py`
+  (`Entity/AerotelicRibGmsh`, a separate process in the WingDesigner
+  environment where gmsh is pip-installed) meshes each rib's disc in 2-D
+  in a scratch model from the rim (transfinite rim
+  lines, no new rim nodes) and splits it along the chords where networks
   cross (the same transfinite node count on both discs, so they share
-  their chord nodes), and makes the discs WALLS of the body: every disc
-  partitions the body into compartments, each a gmsh volume bounded by its
-  piece of the skin and the walls round it, so the tetrahedra conform to
-  the ribs by construction (embedding the discs in one volume crashed
-  gmsh). A limited height reports only the part of the disc within it as
-  rib faces; the rest of the wall stays as an interface between
-  tetrahedra of one material. In `structural_fea.py` rib faces are shells
+  their chord nodes). A limited height reports only the part of the disc
+  within it as rib faces. In `structural_fea.py` rib faces are shells
   of their region's `rib` material and thickness and nothing else: not
   wetted, no surface load, no part in the mean normal displacement; their
   mass counts; their peak stress is a `kind: "rib"` entry and the VTK
-  marks them `kind` 2. A thin-walled body with ribs (no infill) gets the
-  rib discs on its skin's nodes with no tetrahedra at all (`volume:
-  false`). The full-resolution model (the generated structure's skin /
-  core tetrahedra) does not carry ribs yet and says so. Checks:
-  `core/tests/mesh_cut_check.cpp`, `tools/tet_gmsh_check.py` (the 1 x 10 x
-  1 box with three ribs and a crossing spar: every rib face a face of two
-  tetrahedra, area 13 exact, chord nodes shared), and the document
+  marks them `kind` 2. One region per body and one per network. A body
+  whose skin thickness is 0 (a solid) is refused -- "shells only; give it
+  a skin thickness" -- there being no solid elements left to give it.
+  Checks:
+  `core/tests/mesh_cut_check.cpp`, `tools/rib_gmsh_check.py` (the 1 x 10 x
+  1 box with three ribs and a crossing spar: area 13 exact, chord nodes
+  shared, every rim node a skin node), and the document
   commandlet's "a box beam with ribs" step (the cut's volume, one
   unit-square rim loop per plane on the skin, the mass rho t A of skin
   plus ribs, the clamp's reactions, the tip deflection a little under the
   unribbed Timoshenko box, a "rib" entry, kind-2 VTK cells).
-* **Lattice menu** (2026-10-11 to 2026-11-07, superseded above; kept for
-  the record) -- *Generate Lattice* opened a dialog: family (TPMS /
-  Strut-based / Auxetic / Honeycomb), type, TPMS phase, prism axis and cell
-  aspect (honeycomb), unit cell size, volume fraction or wall thickness
-  (whichever the honeycomb's "wall set by" chooses; wall thickness for the
-  iso-surface phase), voxels per cell (the
-  paper's mesh density), NO skin thickness of the lattice's own -- since
-  2026-10-31 the skin thickness was PER BODY and came from the body
-  alone: each body to fill was hollowed by the skin thickness of its
-  effective Material Properties (`MassSpec::skin_thickness`; a boolean
-  result inherited its first operand's), the dialog listed what each
-  chosen body got and named one that lacked it, and the generation
-  refused such a body by name (there was a default for a few hours that
-  day; Matt's rule is that there are no global defaults). The thinnest
-  skin sized the surface tolerance and the offset's voxel, the thickest
-  padded the domain, and the MeshLib job carries `skin_thickness` and
-  `inner_remesh_edge` per target (`result.json` reports each target's).
-  The result was a scene item of kind *lattice* with two bodies, "Skin"
-  (the outer shell) and "Lattice" (the infill), saved under `lattices:`
-  in the project file and regenerated on load; it followed an *Apply* on
-  any body it filled and a changed skin thickness. Every body filled or
-  reserved must be a closed, outward mesh: the distance field's sign is
-  meaningless on an open one (it reported "inside" in whole regions
-  behind the P-38's boom tails before the knife-edge fix), so generation
-  is refused naming the body. Measured on p38: the default cell (a tenth
-  of the largest extent) generated in 0.2 s; a 0.4-unit cell (19.5 M
-  samples) in well under a minute.
-* **Hollowing and infill on MeshLib** (2026-10-14; `Entity/AerotelicMeshLib.h`,
-  `tools/lattice_meshlib.py`, `tools/lattice_meshlib_check.py`). The
+* **Hollowing and ribs on MeshLib** (2026-10-14; `Entity/AerotelicMeshLib.h`,
+  `tools/structure_meshlib.py`, `tools/structure_meshlib_check.py`; the
+  scripts were `lattice_meshlib*.py` until 2026-11-08). The
   sampled skin and the tetrahedra-bounded skin both showed visible faults
-  (uneven skin thickness, stair-step artefacts where the infill met the
-  offset surface, a ragged interior volume), so the lattice's two bodies
-  are now made by MeshLib (pip `meshlib` in the WingDesigner micromamba
+  (uneven skin thickness, stair-step artefacts where the interior met the
+  offset surface, a ragged interior volume), so the body's layers
+  are made by MeshLib (pip `meshlib` in the WingDesigner micromamba
   environment), run as a separate process the way the STEP writer is:
   the application writes the placed bodies as `.tri` files (its own
-  indexed format, so the loft's shared vertices survive) and the lattice
-  field -- still the core's `LatticeField`, all 36 OpenLattice types,
-  calibrated as before -- as raw float32 on the generator's grid, and
-  reads the two bodies back. *Hollowing*: each body is offset inward by
+  indexed format, so the loft's shared vertices survive) and
+  reads the layers back. *Hollowing*: each body is offset inward by
   the skin thickness on MeshLib's OpenVDB distance field (voxel a quarter
-  of the skin, no coarser than the lattice voxel, capped by a voxel
+  of the skin, capped by a voxel
   budget), which cannot self-intersect and rounds a concave crease from
   the inside; the offset surface is decimated within a fifth of its voxel
   and pockets smaller than four voxels cubed (slivers along a trailing
   edge barely thicker than two skins) are filled solid; "Skin" is the
   body's own surface outside and the inverted offset inside, so its
-  outer surface is exact. *Infill domain*: the union of the offset
+  outer surface is exact. *Interior*: the union of the offset
   interiors (a mesh boolean where they overlap) minus the reserved
-  volumes (mesh boolean difference). *Infill*: the field goes through
-  MeshLib's marching cubes, padded so the surface closes, and is cut to
-  the domain by an exact mesh boolean, so "Lattice" meets the offset
-  surface along a true intersection curve rather than a resampled one.
-  The achieved fraction reported is lattice volume over domain volume.
+  volumes (mesh boolean difference) is the hollow the rib slabs are cut
+  from (see *Per-body structure*). Until 2026-11-08 a lattice field,
+  sampled by the core and sent as raw float32, went through MeshLib's
+  marching cubes and was cut to that hollow by an exact mesh boolean as
+  the "Lattice" / "Infill" layer; that step is gone.
   The interpreter is `AEROTELIC_MESHLIB_PYTHON` if set, else the
   WingDesigner environment's `python.exe` (the script puts the
   environment's `Library\bin` on its own DLL path: numpy's BLAS lives
   there); without MeshLib, generation is refused with a message saying
-  so. The script's self-check (`python tools\lattice_meshlib_check.py
+  so. The script's self-check (`python tools\structure_meshlib_check.py
   [body.stl] [--keep DIR]`) runs the pipeline on a unit sphere or an STL
-  and checks both bodies are closed and outward, the skin's volume is
-  body minus interior, the infill stays inside the skin and the fraction
-  is near the one asked: the sphere in 0.35 s, the P-38 port wing in
-  0.19 s; on the default sphere it then runs a second, hollow-only job of
+  and checks the layers are closed and outward and the skin's volume is
+  body minus interior (measured with the infill step still in: the
+  sphere in 0.35 s, the P-38 port wing in 0.19 s); on the default sphere
+  it then runs a second, hollow-only job of
   two spheres, one carrying its own `skin_thickness` of 0.05 and one on
   the job's 0.10, and checks each is hollowed to its own figure (the
-  per-body skin of 2026-10-31). *Export Skin Tetrahedra* still writes the skin as the
-  tetrahedral mesher's skin tetrahedra, built on request rather than with
-  the lattice.
+  per-body skin of 2026-10-31).
 * **The offset remesh cannot run away** (2026-11-01). Generating a lattice
   on p38's `BoolOp 1` (six shells, every body carrying the FEA work's
   1 mm skin) hung the application: 15 minutes, 18 GB, the machine in
@@ -769,25 +676,29 @@ The layout follows the Python/Qt version's main window (`aerotelic/ui/main_windo
   bounds, so a 19.5 mm marching-cubes surface was being remeshed to a
   2 mm edge over ~148 m^2: ~85 M triangles, which MeshLib's split cap
   stopped at 20 M per body (the night before, one body took 932 s). Two
-  guards now: `FAerotelicLatticeModel` floors the remesh edge at two
+  guards now (the hollowing is the same step today, so both still
+  apply): `FAerotelicBodyStructure` (then `FAerotelicLatticeModel`)
+  floors the remesh edge at two
   offset voxels (`kInnerRemeshEdgeOverVoxel`: the surface carries no
   detail finer than its voxel, so a finer remesh only multiplies
   triangles; p38a's measured "two skins" was eight voxels), and
-  `lattice_meshlib.py` holds a job's inner surfaces together under
+  `structure_meshlib.py` holds a job's inner surfaces together under
   `MAX_INNER_FACES` (1 M) by raising every body's edge to the one at
   which the bodies' total area fits, saying so in the result's warnings
   (the budget is the job's, not each body's: six shells at 2 M each were
-  still 12 minutes in). The same job now takes 33 s as the application
+  still 12 minutes in). The same job then took 33 s as the application
   sent it (1.18 M skin + 413 k lattice triangles) and 5 s with the voxel
   floor (430 k + 163 k), the same 29.7% fraction either way; the sphere
   self-check has a `check_remesh_budget` that lowers the budget to trip
   the guard. The 1 mm skin itself is still thinner than that voxel, which
   the result reports as before ("the inner surface touches the body's
-  surface"; no skin tetrahedra for those bodies), and the job folder in
-  `%TEMP%\aerotelic_lattice_*` survives a killed editor -- as does the
+  surface"), and the job folder in
+  `%TEMP%\aerotelic_structure_*` (then `aerotelic_lattice_*`) survives a
+  killed editor -- as does the
   child `python.exe`, which keeps running until stopped.
 * **Explicit skin layer** (`shell.hpp`, `src/shell.cpp`, 2026-10-11
-  afternoon; the first step of the tetrahedral route Matt chose): the
+  afternoon; the first step of the tetrahedral route Matt chose; REMOVED
+  with that route on 2026-11-08, kept here as the record): the
   body's surface triangulation offset inward by the skin thickness as a
   layer of prisms split into tetrahedra (Dompierre's lowest-index rule, so
   the tets are conformal across prisms), the inner surface left as the
@@ -814,9 +725,8 @@ The layout follows the Python/Qt version's main window (`aerotelic/ui/main_windo
   the body, skin volume within 1.1% of the field-integrated shell, the
   interior domain a closed manifold enclosing wing minus skin; writes
   `build/p38_port_wing_skin.vtk` and the inner/outer STLs). SUPERSEDED in
-  the application (2026-10-12 night): the lattice's "Skin" body is now the
-  boundary of the skin tetrahedra the tetrahedral mesher builds
-  (`tet.hpp`, see "Tetrahedral mesh of the bodies"): the body's own
+  the application (2026-10-12 night) by the skin tetrahedra of the
+  tetrahedral mesher (`tet.hpp`, since removed): the body's own
   surface triangles outside, the exact iso-surface of its distance field
   at the skin depth inside. The offset copy could not represent an inward
   offset across a concave crease -- where the tailplane's leading edge
@@ -824,16 +734,12 @@ The layout follows the Python/Qt version's main window (`aerotelic/ui/main_windo
   corner and came out through the leading edge by 10 to 13 mm (the wing's
   trailing edge at the boom, 9 mm) -- nor at a leading edge sharper than
   the skin, where it folded. The iso-surface rounds a concave corner from
-  the inside and cannot self-intersect. The lattice is sampled where the
-  body's field is deeper than the skin (the generator's own sampled skin,
-  which needed the voxel finer than half the thickness, is no longer
-  used), the achieved fraction reported is that of the interior, and
-  *Lattice -> Export Skin Tetrahedra (VTK)* writes every lattice's skin
-  tetrahedra (material 1 of those meshes) as one legacy VTK unstructured
-  grid. `shell.hpp` remains the source of the mesher's offset nodes only.
-  SUPERSEDED AGAIN (2026-10-14): the viewport's "Skin" and "Lattice" are
-  MeshLib's (see "Hollowing and infill on MeshLib" above); the skin
-  tetrahedra are built only for *Export Skin Tetrahedra*.
+  the inside and cannot self-intersect, which is the lesson that
+  survives: an inward offset is a distance-field operation, not a copy of
+  the surface, and that is what MeshLib's OpenVDB hollowing has done
+  since 2026-10-14 (see *Hollowing and ribs on MeshLib* above). With the
+  tetrahedra gone on 2026-11-08 `shell.hpp` had no caller left and went
+  with them.
   Also fixed on the way: `WingModel::AirfoilAt` now recognises
   two sections holding the same curve (as a reloaded project has them) and
   no longer re-fits a blend whose different parameterisation made the
@@ -851,169 +757,20 @@ The layout follows the Python/Qt version's main window (`aerotelic/ui/main_windo
 * **STL export** now writes the models' own meshes at the linear
   deflection (OCCT's tessellation, with the angular deflection, only for
   bodies that need it). An ASCII STL holds one `solid <entity>/<body>` per
-  body (spaces as underscores), so a lattice's shell and infill arrive as
+  body (spaces as underscores), so a body's Skin and Rib layers arrive as
   separate parts; binary STL has no parts and holds the union.
 
-### Tetrahedral mesh of the bodies (2026-10-12)
+### Tetrahedral mesh of the bodies (2026-10-12; removed 2026-11-08)
 
-`core/include/aerotelic/tet.hpp` is a tetrahedral mesher for the finite-
-element route: **Lattice -> Export Tetrahedral Mesh (VTK)** meshes every
-body a lattice fills and writes one legacy VTK unstructured grid with cell
-data `material` = 1 for the skin (the lattice's skin thickness) and 2 for
-the core (the volume the lattice's orthotropic material card applies to).
-
-* **Exact conformity.** The outer faces of the mesh are the body's own
-  surface triangles (or sub-triangles of them: Steiner points lie on
-  surface edges only), no node lies outside the body, and the kept
-  tetrahedra's volume equals the surface's enclosed volume to rounding --
-  `core/tests/tet_check.cpp` asserts this on the P-38's bodies. It is a
-  constrained Delaunay tetrahedralization: incremental Bowyer-Watson on
-  Shewchuk's exact predicates (`core/third_party/predicates`, public
-  domain, the double version compiled as C with `/fp:strict`), segment
-  recovery by splitting at the reference point (Si / TetGen), face
-  recovery by cavity re-tetrahedralization (Si & Gartner), exterior
-  removal by crossing parity. Planar regions (end caps) are facets: their
-  interior edges are free and the mesh's own in-plane triangulation is
-  adopted. Three things the surface itself needed: planar caps are
-  re-triangulated to their in-plane Delaunay triangulation; the loft
-  samples each ring at its own density and adds stations wherever a
-  strip is much longer than its rings' point spacing (`LoftOptions::
-  max_aspect`), which also cuts triangle counts (the Boom from 17k to 7k);
-  and a thin body's two sheets are sampled at MATCHED rows
-  (`LoftSource::mirror_v` for an airfoil's upper and lower surfaces at the
-  same chordwise station, `mirror_u` for a cowl's outer and inner skins at
-  the same x). A vertex of one sheet under the middle of an edge of the
-  other, nearer than that edge's own sag, leaves the edge no empty
-  circumsphere, and the mesher splits it, and its pieces, down the wedge to
-  the length floor -- which is what degraded the nacelle (2026-10-12: it
-  now conforms exactly, with no Steiner point at all). The mesher keeps
-  rows matched as it adds points: an edge point planted on one sheet of a
-  thin region gets a twin straight across the thickness on the other
-  (a BVH ray cast, `MeshSdf::Raycast`).
-* **Skin / core.** The surface's inward offset nodes (the shell walk) and a
-  body-centred cubic lattice of core points (spacing = the lattice cell)
-  are in the point set; after meshing, every edge straddling the distance-
-  field iso-surface b = -t is split where it crosses (or an interior node
-  near the crossing is snapped onto it), so the skin/core interface is a
-  conforming surface on the iso-surface and skin + core = the body's
-  volume exactly.
-* **Degradation.** Where no splitting rule conforms, segments are abandoned
-  under a Steiner budget, their triangles left unrecovered, the interior
-  classified by the distance field instead of parity, and the export
-  reports how many faces were abandoned. The P-38's wing, tails, both
-  fuselages, the nacelle and the spinner conform exactly; the propeller
-  blades still degrade (volumes match to 1e-7): a blade is thin, twisted
-  and tapered, so consecutive rings shear against each other and the strip
-  edges between matched parameters are not locally Delaunay within their
-  sheet while the opposite sheet is nearer than their sag. A flip pass over
-  the loft and a thickness-driven station refinement were both tried and
-  rejected (the first breaks the boom's mirror-symmetric knife edge, the
-  second triples the point counts without curing the blade); the open
-  direction is a surface graded to the local thickness along the span.
-* **Quality (2026-10-12).** Two passes, both keeping the surface, the
-  skin/core interface and the material volumes exactly as they are:
-  Delaunay refinement of the interior (`ConformingOptions::
-  refine_radius_edge`, 2 in the export): tetrahedra whose circumradius
-  exceeds twice their shortest edge are split at their circumcentre; one
-  whose circumcentre falls outside the body splits the surface face its
-  circumsphere escapes through instead (a point on the face -- still the
-  input's sub-triangles), after cushioning a near-flat tetrahedron on
-  either side of that face with a point half a face size away (exterior
-  cushions are dropped with the exterior). Then `ImproveTetMesh`: 2-3 and
-  3-2 flips that never cross a constrained or interface face, and
-  optimisation smoothing of the free nodes toward the centroid of their
-  neighbours, accepted only where the worst dihedral angle of their
-  tetrahedra improves. On the P-38's port wing (skin 0.029) the pass
-  removes about a quarter of the tetrahedra under 15 degrees and half the
-  slivers under 5. The minimum dihedral angle stays near zero: the skin is
-  one tetrahedron thick under surface triangles ten times wider than it,
-  and a sliver whose four nodes all lie on the surface or the interface
-  can neither be flipped nor moved. The way forward there is surface
-  sizing (triangles a few skin thicknesses wide), not more passes.
-* **The tetrahedral mesher is gmsh (2026-10-15).** The application no
-  longer tetrahedralizes with `core/src/tet.cpp`. *Export Skin Tetrahedra*
-  and *Export Tetrahedral Mesh* now go through `tools/tet_gmsh.py`
-  (`Entity/AerotelicTetGmsh.cpp`, a separate process in the WingDesigner
-  environment where gmsh is pip-installed, the same bridge pattern as the
-  MeshLib lattice backend). The body's surface and MeshLib's offset go in
-  as gmsh DISCRETE entities, one per closed shell, and the two volumes are
-  bounded by them: the skin is the body's loop with every pocket as a
-  hole, each pocket is a core volume. gmsh therefore adds interior nodes
-  ONLY and never re-triangulates a boundary, which is what the old mesher
-  could not guarantee. The outer faces of the skin tetrahedra are the
-  body's own triangles, with no Steiner points on them at all; the
-  skin/core interface is the offset's own triangles; and skin + core =
-  the body's enclosed volume to rounding. Measured on the case that
-  defeated the old mesher, p38a's 13-operand airframe fuse: exact to
-  3.5e-15 in 15 s, 609k tetrahedra, no inverted or flat elements, where
-  the old mesher abandoned 295,157 of about 414,580 constraint faces and
-  was still cascading after 11 minutes. The sphere of the document test
-  meshes in 0.16 s, exact to 2e-16, worst element quality 0.284.
-  Settings that came out of measuring, not guessing: gmsh's Delaunay
-  algorithm beat HXT on both time and quality on every body tried; the
-  core's target edge length is the lattice cell, since the core carries
-  the lattice's material card rather than its geometry; and the MeshLib
-  offset is remeshed at TWO skin thicknesses, because the raw
-  marching-cubes offset and a three-skin remesh both touch the body or
-  cross themselves and are refused ("a segment and a facet intersect"),
-  while one skin costs 350 s against 15 s for the same exact answer. The
-  lattice job's usability check now also tests the offset for
-  self-intersection, so a surface gmsh would refuse is reported by name
-  first. Two workarounds that existed only for the old mesher are gone:
-  the hollow is no longer opened by a skin thickness (that cost up to 94%
-  of the hollow on a thick-skinned wing), and the mesh is no longer
-  refined to a radius-edge bound. `core/src/tet.cpp` and its tests stay as
-  they are, no longer on the application's path.
-* **Nested surfaces: the skin's inner boundary is MeshLib's offset
-  (2026-10-14, SUPERSEDED the next day by the gmsh route above).**
-  `TetrahedralizeNested(outer, inner)` /
-  `BuildNestedSkinCoreMesh` take the body's own triangulation and a closed
-  surface strictly inside it as ONE constraint set (the inner inverted, so
-  the pair is a hollow body for steps 1-3), conform to both exactly, and
-  classify by crossing depth instead of parity: depth one is the skin
-  (material 1), depth two the core (material 2). The skin/core interface
-  is therefore the inner surface's own (sub-)triangles, and skin + core
-  tile the body: skin + core = the outer's volume, core = the inner's, to
-  rounding (`tet_check`: a sphere in a sphere, a box in a box, two pockets
-  in a box, an all-skin body, an inner poking out refused). The inner
-  surface the application uses is the lattice job's inward offset
-  (`tools/lattice_meshlib.py` steps 1 and 4), which at the time was
-  opened by a skin thickness and remeshed at one skin (both settings
-  changed when gmsh took over; `inner_opening` is now zero and
-  `inner_remesh_edge` two skins). It is remeshed by MeshLib to
-  isotropic triangles (`inner_remesh_edge`),
-  checked closed, outward and clear of the body (MeshLib's triangle
-  collision test) and returned as `inner_<i>.tri`;
-  `FAerotelicLatticeModel` keeps each body's surface and offset from the
-  generation (`GetTetBodies`) and meshes them on first request
-  (`GetTetMeshes`: core points at the lattice cell, radius-edge
-  refinement 2, improvement; a mesh that comes out invalid is left out
-  with a note). Both *Export Skin Tetrahedra (VTK)* and
-  *Export Tetrahedral Mesh (VTK)* now write that one mesh (material 1 only,
-  or both), and the status line prints skin + core against the bodies'
-  volume with the worst relative mismatch, so the conformity can be read
-  off; a message lists bodies left out (an offset that touches its body)
-  or faces not conformed exactly. `tet_check nested <outer.tri>
-  <inner.tri> [cell] [out.vtk] [radius-edge]` runs the nested mesher on
-  two application .tri files; `write-wing` / `write-bodies` write the
-  P-38's bodies as double-precision .tri fixtures.
-  Two pitfalls found on the way, both in the mesher's segment recovery,
-  not in the nesting: (1) any surface that went through float32 (an STL,
-  or MeshLib's own output) loses the planar-cap detection (1e-9 of the
-  diagonal), so a loft's ear-clipped caps become needle constraints and
-  recovery splits them to the length floor -- the outer surface must be
-  the app's double-precision loft (it is), only the inner may come from
-  MeshLib; (2) an inner surface whose two sheets are closer than about
-  twice its triangles (the offset of a wing near the trailing edge, a thin
-  cowl wall) or that has pole fans splits without end too -- hence the
-  opening (the P-38 nacelle conformed exactly opened by one skin and
-  cascaded at half a skin) and the isotropic remesh -- and a segment lost
-  during face recovery is now recovered again rather than aborting the
-  mesh. Restricting the snap rule to adjacent nodes and casting twins on
-  the combined surface were both tried and rejected: they cured nothing
-  and made the Boom cascade. With the final settings every P-38 body a
-  lattice fills conforms exactly in nested mode except the propeller
-  blades, which degrade as they do in plain mode.
+The constrained Delaunay tetrahedral mesher of 2026-10-12 (`tet.hpp`,
+Bowyer-Watson on Shewchuk's predicates, segment and face recovery, the
+skin / core split on the distance field's iso-surface, its Delaunay
+refinement and improvement passes, the nested-surface mode of 2026-10-14
+and the gmsh route of 2026-10-15 that replaced it on the application's
+path) was removed on 2026-11-08 (see *Shells only* under *Materials and
+the structural analysis*); its matched-row loft rule
+(`LoftSource::mirror_v` / `mirror_u`) survives in `mesh.hpp` because the
+mesh boolean and the panel grids still benefit from it.
 
 ## High order panel method (2026-10-25)
 
@@ -1026,7 +783,7 @@ is untouched.
 
 The dialog (`Dialogs/HighOrderPanelDialog.cpp`) opens with the two-list
 body picker the export dialogs use, offering every wing, fuselage, nacelle
-and primitive (one row per entity; a boolean result or lattice is a
+and primitive (one row per entity; a boolean result is a
 triangle mesh with no sections to spline, and a propeller is left out).
 A wing is paneled by `WingNetworks` -- the sections round as a closed
 surface with the interior potential held at zero and the sources
@@ -1202,16 +959,21 @@ The route, and where each piece lives:
 * `Entity/AerotelicPotentialFlow.cpp` -- the bridge: the bodies as `.tri`
   files, the settings as `job.json`, `tools/potential_flow.py` run in the
   WingDesigner micromamba environment, statistics back as `result.json`.
-  The same pattern as the lattice's MeshLib backend and the tetrahedral
-  mesher; the process plumbing those three shared by copy is now one
+  The same pattern as the body structure's MeshLib backend and the rib
+  mesher (`AerotelicRibGmsh`; the tetrahedral mesher, when this was
+  written); the process plumbing those three shared by copy is now one
   function, `AerotelicMeshLib::RunJob`.
 * `tools/potential_flow.py` -- the fluid domain, the solve and the output.
 
-**The fluid domain is the other mesh.** The structural route meshes the
-inside of a body; this one meshes the air, so the domain is a far-field box
-with the bodies as holes. The box is triangulated at the far-field element
-size and each body goes in as a gmsh DISCRETE surface, exactly as
-`tet_gmsh.py` does it, so gmsh adds interior nodes only: **the wetted
+**The fluid domain is the other mesh.** The structural route puts shells
+on a body's surface and rib discs inside it; this one meshes the air, so
+the domain is a far-field box with the bodies as holes -- the one place
+the application still builds tetrahedra, and a CFD mesh, nothing to do
+with the structure. The box is triangulated at the far-field element
+size and each body goes in as a gmsh DISCRETE surface, through the
+`.tri` reader and discrete-surface helpers of `tools/gmsh_common.py`
+(shared with `rib_gmsh.py` and `structural_fea.py`; they were
+`tet_gmsh.py`'s until 2026-11-08), so gmsh adds interior nodes only: **the wetted
 boundary of the fluid mesh is the body's own triangulation**, which is both
 what makes the pressures land on the surface the designer sees and the
 reason the bodies must not intersect each other (fuse them with a boolean
@@ -1232,7 +994,7 @@ non-penetration wall. `ComputeNodalValueProcess` projects the elemental
 velocity and pressure coefficient onto the nodes.
 
 **The output** is one legacy VTK unstructured grid in the same dialect as
-the structural export: the tetrahedra of the air, with
+the structural analysis writes: the tetrahedra of the air, with
 `VELOCITY_POTENTIAL`, `VELOCITY` and `PRESSURE_COEFFICIENT` at every node,
 and the bodies' own surface triangles alongside them with cell data
 `region` = 1 against the fluid's 0 -- threshold on that in ParaView and the
@@ -1574,23 +1336,25 @@ The paradigm is now **edit a draft, Apply on a button**, in both places.
   once from the entity's outer one), and the whole chain ran inside the
   Apply click with no repaint. Lattices were excluded from that chain
   altogether. Now the document subsystem alone subscribes: it queues
-  every boolean result and lattice that `DependsOn` the changed entity
+  every boolean result and generated body structure (the lattices, when
+  this was written) that `DependsOn` the changed entity
   (directly, or through a boolean target), walking `Entities` so the
   queue is in build order, and a core ticker rebuilds one item per tick.
-  A boolean goes as soon as its turn comes; a lattice (seconds of work)
+  A boolean goes as soon as its turn comes; a structure generation
+  (seconds of work)
   waits until 0.3 s have passed since the last queueing, so one Apply
   that changes an entity and then the booleans over it regenerates the
-  lattice over those once, and an Editor gizmo drag does not regenerate
+  structure over those once, and an Editor gizmo drag does not regenerate
   it every frame. `ApplyEntityModel` queues explicitly as well, since a
   commandlet's `RefreshProxy` builds and broadcasts nothing;
   `FlushPendingRebuilds` drains at once, which is what the test uses.
-  Lattice failures are reported in one message box and the lattice left
-  as it was; *Regenerate Lattices* remains for that case.
+  Generation failures are reported in one message box and the layers left
+  as they were.
 * **The status bar's rebuild bar** (`SAerotelicMainShell::BuildStatusBar`)
   is a thin progress bar at the left of the bottom border, directly under
   the scene tree (the status text sits to its right), full while nothing
   is waiting. An Apply counts the entity itself as one parameterisation
-  rebuilt and each queued boolean or lattice as one more, so the bar
+  rebuilt and each queued boolean or structure generation as one more, so the bar
   drops to `done / total` and fills back as the queue drains, one step
   per frame. It is a count, not a timing: every parameterisation is one
   step whatever it costs, nothing is measured, and the only cost is one
@@ -1599,9 +1363,10 @@ The paradigm is now **edit a draft, Apply on a button**, in both places.
 The document commandlet covers the draft's independence before and after
 Apply, that Apply gives the entity a fresh model (neither the old one nor
 the draft), the wing's parameters surviving the spec round trip, that a
-boolean result has no draft, the boolean and the lattice over the sphere
+boolean result has no draft, the boolean and the generated structure over
+the sphere (the lattice, when this was written)
 being queued (the bar at one third) and rebuilt by the flush (the bar
-full), and the lattice regenerated over the sphere as changed.
+full), and the structure regenerated over the sphere as changed.
 
 ## Mass properties (2026-10-22)
 
@@ -1613,8 +1378,8 @@ derived ones included, sets what that entity is made of --
 `Placement`-style, stored on the actor (`AAerotelicEntityActor::MassSpec`)
 and written with it as `mass: {asserted: <total>}` or
 `mass: {material: {name, density, youngs_modulus, poisson_ratio,
-allowable_stress}, skin_thickness: <t>}` on the entity, boolean or
-lattice (absent means unset, so older files read unchanged; the interim
+allowable_stress}, skin_thickness: <t>}` on the entity or boolean (and,
+until 2026-11-08, a lattice; absent means unset, so older files read unchanged; the interim
 `mass: {density: <rho>}` reads as a custom material with only a density;
 `skin_thickness` is written only when positive). *An asserted mass*
 states the total; when weighed it is spread uniformly over the surface
@@ -1630,27 +1395,26 @@ the thickness, its mass the density times that, spread over the surface
 as a thin shell (`aerotelic::SkinMassProperties`) -- open surfaces
 included, so a zero-thickness skin no longer has to be asserted. The
 report's Note column says "skin t thick" on such a row. The same figure
-is what a lattice hollows the entity by and what the structural
-analysis gives its shells.
+is what the body's structure hollows the entity by and what the
+structural analysis gives its shells (since 2026-11-08 the skin
+thickness is also a per-body attribute -- see *Per-body structure*).
 
 **Inheritance, and no defaults (2026-10-31, Matt's three rules).** A
 parameterisation's Material Properties are the one source of what it is
-made of. A DERIVED entity -- a boolean result or a lattice -- carries no
+made of. A DERIVED entity -- a boolean result (and, until 2026-11-08, a
+lattice) -- carries no
 `mass:` of its own (an older file's is ignored on load, none is written)
 and has no Material Properties menu: it inherits, a boolean result from
-its first operand and a lattice from its first filled body, recursively
+its first operand (a lattice from its first filled body), recursively
 (`AAerotelicEntityActor::GetEffectiveMassSpec`, `GetMassSpecSource`,
 `IsDerived`). Every analysis reads the effective spec: the mass report
-(a lattice's two bodies are real solids, so they weigh by the inherited
-density over their volume, "inherited from X" in the Note), the lattice
-generator (each target hollowed by its own skin thickness, the struts of
-its material) and the structural analysis. There is no global default
-anywhere: the lattice dialog has no thickness field (the list under the
-parameters shows each chosen body's figure and names one that lacks it,
-which the generation refuses by name; `LatticeSpec::skin_thickness` is
-the core generator's and is written as 0), and the document commandlet
-checks the sphere is hollowed by its own 0.05, a wing without a material
-is refused, and the lattice reports the sphere's material.
+("inherited from X" in the Note), the hollowing (each body hollowed by
+its own skin thickness) and the structural analysis. There is no global
+default anywhere (the lattice dialog of the time had no thickness field:
+the list under the parameters showed each chosen body's figure and named
+one that lacked it, which the generation refused by name), and the
+document commandlet checks the sphere is hollowed by its own 0.05 and
+that a wing without a material is refused.
 The dialog shows the entity's enclosed volume, surface area, whether the
 surface is closed, the material volume (enclosed, or area times
 thickness) and what the current setting would weigh, so the zero a
@@ -1677,7 +1441,7 @@ a mirrored half is a second part and carries the whole mass again. The
 report is text: shown in the dialog, copied, or saved beside the project.
 
 The integrals are `core/include/aerotelic/mass_properties.hpp`, OCCT-free
-so a boolean result or a lattice -- which have no B-rep solid -- weigh the
+so a boolean result or a generated layer -- which have no B-rep solid -- weigh the
 same way a wing does: every triangle and the origin make a tetrahedron
 whose signed volume, first moment and second-moment matrix add up over a
 closed surface to the body's (the divergence theorem one simplex at a
@@ -1734,8 +1498,7 @@ Where the setting reaches:
   `--unit`) and the geometry is written as it is, so CAD opens it at the
   right size. Before this nothing set it and every export left declared
   in OCCT's default, millimetres, whatever the project was drawn in.
-  STL, VTK and the tetrahedral exports are unitless by format and stay
-  in model units.
+  STL and VTK are unitless by format and stay in model units.
 * **Potential flow and DUST**: the dialogs' fields are in project units
   with the unit on each; at Solve / Write the bodies are scaled to
   metres and the stream (speed, density, speed of sound, pressure,
@@ -1779,23 +1542,24 @@ scale`, `Place(..., scale)`: the solid scaled about the origin, then
 rotated, then translated by the scaled translation). So everything that
 reads placed geometry is the replica's without knowing it: the viewport,
 the mirrors, `GetPlacedMeshes` / `GetPlacedBounds` / `GetPlacedShape`,
-the boolean results and the lattices built over them, STL / STEP / 3D PDF
+the boolean results and the body structures generated over them, STL / STEP / 3D PDF
 export, mass properties, the FEA, the potential flow, the panel method
 (its default reference area and length are scaled with the wing) and the
 DUST case (a spinning propeller's hub-local blade and radius are scaled).
 Setting the scale re-places every entity, which rebuilds the booleans and
-regenerates the lattices as a Transform dialog's Apply does, and reframes
+regenerates the body structures as a Transform dialog's Apply does, and reframes
 the view. The Transform dialog and the design panels keep showing the
 full-scale numbers, which is what they are.
 
 **Not scaled, on purpose**: the materials -- a skin thickness and a
 density are what the replica is to be built FROM, so a 1:4 model with a
 2 mm skin weighs its area at 2 mm, and the stresses and strains the FEA
-reports are the replica's under its own loads; the lattice parameters --
-cell size, wall thickness, skin depth stay as set and the lattice
-regenerates over the smaller bodies (a 1:10 replica at the same cell size
-has a thousandth of the cells: set the cell smaller if that was not the
-intent); and the units -- a 1:4 replica of a vehicle drawn in feet is in
+reports are the replica's under its own loads; the structure's build
+figures -- skin thickness, rib thickness and height -- stay as set and
+the structure regenerates over the smaller bodies (rib start and spacing
+are geometry and scale with the body; while there were lattices their
+cell size stayed as set too, so a 1:10 replica at the same cell had a
+thousandth of the cells); and the units -- a 1:4 replica of a vehicle drawn in feet is in
 feet. Every flow quantity with a length scale in it (Reynolds number, the
 forces at a given speed) is the replica's.
 
@@ -1815,7 +1579,8 @@ parameterisation and authored placement unchanged, the actor at a quarter
 scale a quarter as far out, the feature-tree transform carrying the scale
 with the full-scale translation, the placed bounds, meshes and OCCT solid
 a quarter the size, the sphere's skin mass 1/16 (area) with its thickness
-as typed, the boolean and the lattice queued and rebuilt; saves, finds
+as typed, the boolean and the structure over the sphere (the lattice,
+then) queued and rebuilt; saves, finds
 `scale: 0.25` in the file, reopens, and finds the replica as it was.
 
 ### What the model scale broke, and the fixes (2026-11-03, evening)
@@ -1903,17 +1668,23 @@ ksi; `stress:` in the file's `units:` line) that Young's modulus, the
 allowables and every reported stress use.
 
 **Analysis > Structural (Kratos FEA)** (`Dialogs/StructuralFeaDialog`,
-`Entity/AerotelicStructuralFea`, `tools/structural_fea.py`,
-`tools/homogenize.py`) is a linear static analysis of a lattice-filled
-body on KratosMultiphysics' StructuralMechanicsApplication, run as a
+`Entity/AerotelicStructuralFea`, `Entity/AerotelicFeaModelBuilder`,
+`tools/structural_fea.py`) is a linear static analysis of the chosen
+bodies as SHELLS -- skin shells on each body's own grid, rib shells on
+the discs of its plane networks -- on KratosMultiphysics'
+StructuralMechanicsApplication, run as a
 separate process in the WingDesigner environment like the potential flow
 (`pip install KratosMultiphysics KratosStructuralMechanicsApplication
 KratosLinearSolversApplication scipy`). Everything the solver sees is SI:
 the mesh scaled by the length unit, the materials as they are, loads in
-newtons and pascals; the dialog converts the results back. Two models of
-the same part, chosen in the dialog:
+newtons and pascals; the dialog converts the results back. Since
+2026-11-08 there is one model, shells (see *Shells only* below). As
+first written, when bodies were lattice-filled, there were two models of
+the same part, chosen in the dialog; both are gone and stay here as the
+record of what was measured:
 
-* **Shells over a homogenised lattice core (the default, 2026-10-30).**
+* **Shells over a homogenised lattice core (the default 2026-10-30 to
+  2026-11-08; removed).**
   The skin / core tetrahedra below ran to 609k on p38a's airframe --
   millions of degrees of freedom at second order -- and the count was the
   SKIN: one tetrahedron thick on an offset remeshed at two skin
@@ -1936,7 +1707,8 @@ the same part, chosen in the dialog:
   printed in, as Mass Properties already reads it (density times the
   lattice body's actual volume); the effective figures are computed.
 
-  *Homogenisation* (`tools/homogenize.py`, after Andreassen & Andreasen
+  *Homogenisation* (`tools/homogenize.py`, removed 2026-11-08; after
+  Andreassen & Andreasen
   2014, extended to 3-D voxels of any aspect): one period of the lattice
   field is voxelised at the voxel centres (`aerotelic::SampleUnitCell` --
   the cubic cell for TPMS and struts; for a honeycomb one period of the
@@ -1975,10 +1747,12 @@ the same part, chosen in the dialog:
   assumes the core is several cells thick, which a trailing edge is not:
   the error there is local.
 
-  *Which shell element*, measured rather than assumed
+  *Which shell element*, measured rather than assumed, and still the
+  reason the thin triangle is the one in use
   (`tools/structural_fea_check.py`, a sandwich box beam L x 0.1 x 0.1
   clamped at one end under its own weight, against Timoshenko and against
-  the same box as 10-node tetrahedra): with a core of 1% of the skin's
+  the same box as 10-node tetrahedra -- tetrahedral models, since
+  removed): with a core of 1% of the skin's
   modulus the thin corotational triangle (Kirchhoff bending, ANDES
   membrane) deflects 1.002 of Timoshenko and the 10-node tetrahedra 1.06;
   with a void core, where a hollow box really is softer than beam theory,
@@ -2001,18 +1775,20 @@ the same part, chosen in the dialog:
   KratosLinearSolversApplication) is what the default `auto` runs up to a
   million degrees of freedom (see "The solver that stopped short" below).
 
-* **Skin and core tetrahedra (full resolution).** The mesh Lattice >
-  Export Tetrahedral Mesh writes, whose outer faces are the body's own
-  surface triangles. The skin tetrahedra are made of their body's
+* **Skin and core tetrahedra (full resolution; removed 2026-11-08).** The
+  mesh Lattice >
+  Export Tetrahedral Mesh wrote, whose outer faces were the body's own
+  surface triangles. The skin tetrahedra were made of their body's
   material, the core tetrahedra of the lattice's row read as an EFFECTIVE
-  material. Second-order (10-node) tetrahedra are the default and should
+  material. Second-order (10-node) tetrahedra were the default and had to
   stay on: a skin one tetrahedron thick is a bending problem, and
-  first-order tetrahedra lock. The script adds the mid-edge nodes itself
-  (straight edges; the corner nodes and so the surface are untouched), so
-  the tet pipeline and its exports are unchanged. This is the reference
-  the shell model is checked against on small bodies.
+  first-order tetrahedra lock. The script added the mid-edge nodes itself
+  (straight edges; the corner nodes and so the surface untouched). This
+  was the reference the shell model was checked against on small bodies.
 
-A region without a structural material stops the solve and says which.
+A region without a structural material stops the solve and says which;
+so does a body with no skin thickness (a solid): "shells only; give it a
+skin thickness".
 
 Phase 1 is dummy loads. The support fixes every degree of freedom of the
 nodes on a coordinate plane -- y = 0 by default, the root of a mirrored
@@ -2027,59 +1803,51 @@ phase 2 -- the pressure field from the potential flow or DUST, at the
 same tolerance and so face for face -- is a file in place of a constant.
 Forces are newtons whatever the project's units.
 
-Reported: nodes, elements and DOF; the homogenised core's relative
-density, effective moduli and amplification bound; the peak displacement
-and where; the peak von Mises overall and per region (skin, and core by
-its estimated strut stress with the smeared figure beside it), with the
+Reported: nodes, elements and DOF; the peak displacement
+and where; the peak von Mises overall and per region (each body's skin,
+each network's ribs), with the
 margin allowable / peak - 1; the mass; the force balance -- the reactions
 at the support against gravity, the pressure's resultant and the point
 force, which must be equal and opposite; and the mean of u.n over the
 wetted nodes, so an inward pressure can be seen to move the surface
-inward. The VTK holds the displacement (and the shells' rotations), the
+inward. The VTK holds the displacement (and the shells' rotations) and the
 von Mises stress (element peaks over the integration points -- a shell's
-over its top, middle and bottom surfaces -- averaged to the nodes) and
-the core's estimated micro stress, as triangles and tetrahedra, in SI,
-for ParaView.
+over its top, middle and bottom surfaces -- averaged to the nodes), as
+triangles, in SI, for ParaView. (Until 2026-11-08 the report also carried
+the homogenised core's relative density, effective moduli, amplification
+bound and estimated strut stress, and the VTK its tetrahedra.)
 
-**Any body, not only a lattice-filled one (2026-10-31, later the same
-day).** The dialog picks BODIES with the shared picker (every scene body
-but the lattices themselves), and each becomes a REGION of what its
-effective Material Properties say it is: with a skin thickness and no
-lattice, a thin-walled part -- shells of that thickness on its own
-surface triangles and nothing inside; with no skin thickness and no
-lattice, a solid of its material, meshed by gmsh at an element size (a
+**Any body, as its Material Properties say (2026-10-31, later the same
+day; the lattice and solid cases removed 2026-11-08).** The dialog picks
+BODIES with the shared picker, and each becomes a REGION: with a skin
+thickness, a thin-walled part -- shells of that thickness on its own
+surface triangles and nothing inside -- which since 2026-11-08 is the
+only case. As first written there were three more: no skin thickness, a
+solid of its material meshed by gmsh at an element size (a
 twentieth of the largest extent unless set); filled by a lattice, shells
 of its skin thickness over tetrahedra at the cell size carrying the
-lattice's homogenised tensor, the struts of the body's own material
-(which the lattice inherits), or at full resolution the skin tetrahedra
+lattice's homogenised tensor; or at full resolution the skin tetrahedra
 as a solid of the material over core tetrahedra with the homogenised
 lattice. The job (`AerotelicStructuralFea::FRequest`: `Regions`, each
-with an optional skin, an optional homogenised core or solid, and
-`ShellFaces` for the regions with no tetrahedra, in `faces.bin`) is one
+with its skin and its `ShellFaces` in `faces.bin`) is one
 form, `model: regions`; the script (`_regions_from_job`) still reads the
-two earlier forms, so `structural_fea_check.py` is unchanged. Second
-order applies to the tetrahedra only; the shells stay 3-node on the
-corner nodes, and a shell-only body's faces stay 3-node conditions (a
-mid-edge node there would carry a load with no stiffness). The document
-commandlet solves the sphere four ways: full resolution, shells over the
-homogenised core, as a thin-walled shell (rho t A, the weight carried,
-p a / 2t) and as a solid (rho V, the weight, a displacement of order
-rho g a^2 / E), each against the pre-processor.
+two earlier forms. The shells are 3-node on the
+corner nodes, and a shell-only body's faces are 3-node conditions. The
+document commandlet solved the sphere four ways then (full resolution,
+shells over the homogenised core, thin-walled shell, solid); the
+thin-walled shell (rho t A, the weight carried, p a / 2t) is the one that
+remains, against the pre-processor.
 
 **Bodies, loads and supports (2026-10-31, night; Matt's four points).**
-(1) *Generate Lattice* left the menu bar: the Lattice menu is gone, its
-two VTK exports now under File, and a lattice is made within a body one
-picks -- "Generate Lattice" on any non-lattice row of the Scene tree (a
-boolean result included) opens the dialog with that body and its
-mirrored half chosen (`ShowAerotelicLatticeDialog`'s `FillBody`); a
-lattice row has "Regenerate". (2) A boolean result is reported as the
+(1) concerned the Lattice menu (it left the menu bar for a per-body
+"Generate Lattice" on the Scene tree), all of it since removed -- see
+*Shells only*. (2) A boolean result is reported as the
 solid bodies it really is: `AerotelicMeshing::SplitShells` splits the
 folded mesh into its connected shells (seam vertices welded within 1e-6
 for the connectivity), one shell stays "Main", several are "Body 1" (the
 largest) onwards -- a flap fused alongside its wing, parted by its gap,
 is a body of its own. (3) The Structural dialog picks SOLID BODIES, one
-row per body of every operand (`FAerotelicBodyChoice::Body`; the lattice's
-meshes are matched by the same "<entity> / <body>" label), and whatever
+row per body of every operand (`FAerotelicBodyChoice::Body`), and whatever
 has no load path to any support is LEFT OUT automatically rather than
 refused: `FBuilt` keeps the full mesh, each derivation (`Derive`) runs
 the pre-processor, drops the elements on unsupported connected pieces
@@ -2138,24 +1906,24 @@ inertial load factor now starts at 0, so a test load acts alone.
 
 **The pre-processor tabs (2026-10-31).** The dialog is modeless and
 tabbed (`Widgets/TabStrip`, the High Order Panel pattern): *Set-up* holds
-the choices and the result read-outs; *Build Model* meshes the bodies
-(gmsh, kept by the lattice model until it changes) and derives, without
+the choices and the result read-outs; *Build Model* builds the bodies'
+shells (the skin on the body's own grid, the rib discs by gmsh) and
+derives, without
 solving, what the solver will be handed; *Solve* builds the same model
 and runs it. The derivation is `Entity/AerotelicFeaPreprocess` --
 headless, from the `FRequest` alone, by the script's own rules: the
-wetted faces are the tetrahedra's boundary faces, outward, in
+wetted faces are the skin's triangles (the tetrahedra's boundary faces,
+while there were tetrahedra), outward, in
 `np.unique`'s order (lexicographic by sorted node ids) so a pressure per
 face would map face for face; the fixed nodes are the corner nodes
 within the tolerance of the plane (`min` / `max` resolved on the mesh, a
 zero tolerance a ten-thousandth of the diagonal); the point force goes to the
 nearest corner node; the inertial load is the load factor times g on the
-part's mass (in the shell model estimated from the cell's solid fraction,
-which is the homogeniser's relative density, until it has run) at the
+part's mass at the
 mass-weighted centre. Three tabs draw it through `SAerotelicSceneView`
 and `AAerotelicColoredMeshActor` (which gained an edge overlay through
 `M_AerotelicWire`, `SetEdges`): *Mesh*, the wetted faces coloured by
-region with their edges -- the shell elements themselves in the shell
-model, the skin tetrahedra's outer faces in the other -- with the counts
+region with their edges -- the shell elements themselves -- with the counts
 per region; *Loads*, the surface in grey and the forces as arrows whose
 heads sit at the point of application: orange the pressure as the
 traction on up to ~1500 evenly spaced faces (direction and relative
@@ -2170,7 +1938,7 @@ are equal on the sphere both ways, with the mass, the applied gravity,
 the zero pressure resultant and the outward winding. There is no
 post-processing view yet: the solution still goes to the VTK for
 ParaView. `run_aerotelic_dev.bat -AerotelicFeaSmoke
--AerotelicProject=<path>\p38a.yaml` (the project with a lattice) opens
+-AerotelicProject=<path>\p38a.yaml` opens
 the dialog, builds the model with every load on, saves
 `Saved/Screenshots/fea_smoke_{mesh,loads,support}.png` and quits;
 `-AerotelicFeaSmokeDelay=<s>` waits longer before the first picture.
@@ -2214,7 +1982,9 @@ constraint process FREES the support's degrees of freedom again when
 the step ends, so reactions are read from the Support sub model part,
 not by asking which nodes are fixed.
 
-The document commandlet solves the lattice-filled sphere both ways. As
+The document commandlet solved the lattice-filled sphere both ways (both
+tetrahedral models removed 2026-11-08; the figures stay as the record of
+what the solver and the iterative-solver guard were checked against). As
 skin / core tetrahedra -- an aluminium skin 0.05 thick on a unit sphere
 over a very soft core, stood on its bottom under its own weight and 1 bar
 of external pressure (64,056 DOF) -- it holds to closed forms: the mass is
@@ -2249,7 +2019,8 @@ Found: the linear thin shell converges cleanly (tip 0.988 of Timoshenko
 at h = 0.5 m, 1.000 at 0.0625; M c / I to 1%; the couple to 0.3%; amgcl
 agrees with sparse_lu); the thick corotational shell is too stiff and
 does NOT converge (0.82, 0.94, 0.98, 0.93 over the series) with its force
-balance error growing 1e-4 -> 1e-1; the 10-node tetrahedra came out 8%
+balance error growing 1e-4 -> 1e-1; the 10-node tetrahedra (tetrahedral
+models, since removed) came out 8%
 then 4% too flexible because `_support_nodes` ran on the corner nodes
 BEFORE `second_order()` added the mid-edge nodes, so every mid-edge node
 on the clamp plane was free (clamping them all gave 0.99 on both meshes);
@@ -2257,7 +2028,8 @@ and the box primitive was 12 triangles, which both routes used as given --
 48 degrees of freedom of shells at 0.69 of the right deflection (0.05
 with the thick shell), and the solid route's `core_size` had no effect at
 all (gmsh keeps the boundary triangles, so 0.5, 0.25 and 0.125 all gave
-the same 9-node mesh: Tet4 0.015, Tet10 0.76 of theory) -- all reported
+the same 9-node mesh: Tet4 0.015, Tet10 0.76 of theory -- tetrahedral
+models, since removed) -- all reported
 as converged, the force balance being exact. Also measured: a support
 tolerance wider than the element size clamps the next ring and shortens
 the beam (0.963 = (9.875 / 10)^3); the shells sit on the outer surface
@@ -2265,12 +2037,13 @@ rather than t/2 inward, 3% stiff at 10 mm and 16% at 50 mm (Matt chose to
 leave this); where the tip loads are put does not matter (the end cap is
 a diaphragm). The fixes, as Matt chose them:
 
-* **The clamp holds the mid-edge nodes** (`structural_fea.py`): the
-  support search runs again on `nodes_all` after `second_order()`; the
-  result reports `support_nodes` (all) and `support_corner_nodes` (the
-  pre-processor's figure), which the commandlet compares and checks that
-  the former exceeds the latter on 10-node runs. `structural_fea_check.py`
-  solves a 10-node bar and asserts no node on the clamped face moves.
+* **The clamp held the mid-edge nodes** (`structural_fea.py`; a fix to
+  the second-order tetrahedra, removed with them on 2026-11-08): the
+  support search ran again on `nodes_all` after `second_order()`; the
+  result reported `support_nodes` (all) and `support_corner_nodes` (the
+  pre-processor's figure), which the commandlet compared on 10-node runs,
+  and `structural_fea_check.py` solved a 10-node bar and asserted no node
+  on the clamped face moved. With shells only the two counts are one.
 * **The thick corotational shell left the dialog** (the script still
   takes it in a job). The thin linear triangle remains the default, the
   corotational thin one the alternative.
@@ -2286,7 +2059,7 @@ a diaphragm). The fixes, as Matt chose them:
   save (an entity-level `mesh:` key with only the non-automatic fields;
   WingDesigner ignores keys it does not know), and every `BuildMeshes`
   goes through `mesh.Apply(base, tolerance)` over its own defaults -- so
-  the viewport, the FEA shells and tetrahedra, the potential flow's and
+  the viewport, the FEA shells, the potential flow's and
   DUST's wetted surfaces and the STL / 3D PDF exports all see one grid.
   Fields, each 0 = automatic (what the model did before): *Panels along*
   and *Panels round* (`LoftOptions::grid_u / grid_v`: uniform intervals
@@ -2312,7 +2085,8 @@ a diaphragm). The fixes, as Matt chose them:
 * **Tests**: `mesh_check` (box cells, cylinder counts, the structured
   loft against `LoftNetwork`), `project_yaml_check` (`mesh:` round trip),
   `structural_fea_check.py` (the thin-walled box beam within 2% of
-  Timoshenko and M c / I, the 10-node bar's clamp), and the document
+  Timoshenko and M c / I; the 10-node bar's clamp, while there were
+  tetrahedra), and the document
   commandlet's step "structural fea (a box beam)": a box primitive given
   2 x 20 x 2 cells through a draft, the pre-processor's 9 root nodes and
   the coarse-tolerance flag, the solve within 3% of Timoshenko.
@@ -2326,8 +2100,8 @@ solves the SAME model a second time -- the same mesh, materials and
 clamps, no loads -- as the generalised eigenvalue problem K phi =
 omega^2 M phi on StructuralMechanicsApplication's `eigen_value` solver
 (the dynamic scheme: K the stiffness the static case used, M the elements'
-own mass matrices from the densities and shell thicknesses, the core's
-overlap correction included), for the lowest modes asked. The eigensolver
+own mass matrices from the densities and shell thicknesses), for the
+lowest modes asked. The eigensolver
 is LinearSolversApplication's Spectra shift-invert
 (`spectra_sym_g_eigs_shift`), with the subspace solver
 `eigen_eigensystem` as the fallback (either falls back to the other); on
@@ -2349,26 +2123,34 @@ and rotary inertia (Timoshenko) 1.8%, and together the estimate is
 10.97 Hz, so the shells are within 1.5%. The modes after the pair -- 26.1,
 27.0, 28.4, 30.3 Hz -- are the 1 m skin panels' own plate modes, well
 below the second beam mode at 73 Hz: a thin-walled part goes local long
-before it bends again, which is the kind of thing this output is for. The
-10-node solid bar of the same proportions has no cap and lands on the
-Timoshenko cantilever frequency.
+before it bends again, which is the kind of thing this output is for. (The
+10-node solid bar of the same proportions -- a tetrahedral model, since
+removed -- had no cap and landed on the
+Timoshenko cantilever frequency.)
 
 * **Tests**: `structural_fea_check.py` -- `cantilever_f1` (beta^2 / (2 pi
   L^2) sqrt(EI / rho A) lowered for shear and rotary inertia to first
   order and for a tip mass by Rayleigh) against the box beam's pair within
-  4% and the 10-node bar's within 3%, both pairs degenerate to 0.5%, the
-  sandwich box's eigensolve on mixed six- and three-degree-of-freedom
-  nodes, the `mode_k` vectors in the VTK scaled to unit peak; the document
+  4% (and the 10-node bar's within 3%, while there were tetrahedra), the
+  pair degenerate to 0.5%, the `mode_k` vectors in the VTK scaled to unit
+  peak (the sandwich box's eigensolve on mixed six- and
+  three-degree-of-freedom nodes went with the core); the document
   commandlet's box-beam step asks for four modes and checks the same.
 * **Also 2026-11-04**: every body picker (booleans, STL / STEP / 3D PDF
-  exports, mass properties, lattices, panel method, potential flow, DUST,
+  exports, mass properties, panel method, potential flow, DUST,
   structural) has *Remove All*, the reverse of *Select All*; and a changed
-  skin thickness under Material Properties regenerates the lattices over
-  the entity (see *Meshing, distance fields and lattices*), checked in the
-  document commandlet's lattice step (0.05 to 0.08 and back; the same spec
+  skin thickness under Material Properties regenerates the generated
+  structure over the entity (the lattices, then; see *Meshing and
+  distance fields*), checked in the
+  document commandlet (0.05 to 0.08 and back; the same spec
   again, or a density edit, queues nothing).
 
 ### The body's own grid, and a solve you can watch (2026-11-05)
+
+(The lattice, the core tetrahedra and the element order this section
+describes were removed on 2026-11-08 -- see *Shells only* below. What
+stands from it is the own-grid rule, the DOF budget, the cost known
+before the solve, and the watched, cancellable solve.)
 
 Matt ran the structural analysis on the P-38's Center fuselage with a
 honeycomb lattice inside it and it "stalled": no feedback, then a failure
@@ -2408,51 +2190,30 @@ What changed:
   rule if the viewport has not yet). The structural dialog, the material
   dialog and mass properties (whose tolerance box now takes 0 for this,
   and starts there; the report says so) all ask for it. A caller with a
-  tolerance of its own -- STL export, the lattice's hollowing -- gets a
+  tolerance of its own -- STL export, the structure's hollowing -- gets a
   private copy and must not hand it to a solver.
-* **The lattice lends its material card only.** The structural dialog
-  meshes the chosen body's own grid itself (`TetMeshFor`: gmsh on exactly
-  the body's triangles, the interior at the lattice cell size and no
-  longer seeded by the surface -- `AerotelicTetGmsh::FRequest::
-  bSizeFromBoundary`, `tet_gmsh.py size_from_boundary`, measured on a
-  1,280-triangle sphere at a 0.25 cell: 5,531 tetrahedra down to 2,939
-  with the worst element no worse) and takes from the lattice its cell
-  and skin thickness. The meshes are cached in the dialog by the
-  surface's bytes and the cell size. The lattice model's structural mesh
-  and notes are deleted; `FTetBody::Outer` stays private to the hollowing
-  and the full-resolution skin / core mesh, which is the one model still
-  meshed on the lattice's copy (its inner boundary is the lattice's
-  offset) and is now labelled as such.
-* **The reclassification is visible and optional.** The Set-up tab says
-  "FILLED BY Lattice 1 (not chosen; it lends its material card only)" and
-  what follows from it; the Model combo has a third choice, *Ignore the
-  lattices*, which analyses every body as its Material Properties alone
-  say (shells or solid), and says beside a body that a lattice fills it
-  and was ignored.
-* **An element order per region.** `FRegion::SecondOrder` (1 / 0 / -1 =
-  the request's flag) and the job's per-region `second_order`; the
-  script sorts the tetrahedra 4-node first and writes two element blocks,
-  the condition ids staying in the wetted faces' order so a pressure per
-  face still maps by id; the VTK holds both cell kinds. A homogenised
-  core is 0 whatever the checkbox says; solids and the full-resolution
-  skin tetrahedra follow it. The result reports `second_order_regions`
-  and `tets_second_order`. (Also fixed on the way: the core's micro
-  stress was skipped for 10-node core elements, so a 10-node homogenised
-  core reported zero strut stress.)
+* **The lattice lent its material card only; the Model combo; an element
+  order per region** -- three changes of this day that went with the
+  tetrahedra on 2026-11-08: the dialog meshing the body's own grid with
+  gmsh at the lattice cell (`TetMeshFor`, the `size_from_boundary`
+  seeding choice), the Set-up tab's "FILLED BY Lattice 1" line and the
+  *Ignore the lattices* choice, and `FRegion::SecondOrder` with the
+  script's two element blocks. See *Shells only*.
 * **The cost is known before the solve.** `AerotelicFeaPreprocess::FModel`
-  counts, by the script's own rules, the second-order tetrahedra, the
-  mid-edge nodes (one per distinct edge of those tetrahedra), the nodes
-  carrying shells and the degrees of freedom; Build Model's status line
+  counts, by the script's own rules, the nodes
+  carrying shells and the degrees of freedom (six a node); Build Model's
+  status line
   and the Mesh caption show it with which solver the automatic choice
   takes; past the budget Solve asks first. The document commandlet
-  asserts the estimate equals the solver's `dofs` on the 10-node sphere
-  (mid-edge nodes counted), the 4-node homogenised sphere (shell nodes
-  counted) and the 10-node solid.
+  asserts the estimate equals the solver's `dofs` (as first written, on
+  the 10-node sphere with its mid-edge nodes counted, the 4-node
+  homogenised sphere and the 10-node solid as well).
 * **The direct solver's budget is 150,000 DOF**, `AUTO_DIRECT_DOFS` in
   the script and `AerotelicStructuralFea::kAutoDirectDofs` in the
   application, amgcl beyond on every core. Checked first:
-  `structural_fea_check.py --solver amgcl` passes every case with the
-  reactions balanced to 1e-12 (the mixed shell / core box, the shell-only
+  `structural_fea_check.py --solver amgcl` passed every case with the
+  reactions balanced to 1e-12 (as the cases then were: the mixed shell /
+  core box, the shell-only
   beam, the pressurised sphere, the 10-node bar), so the 2026-11-01
   failure on hershey_bar was the clamp's tolerance and the shell element,
   not amgcl as such; the force balance still guards every solve.
@@ -2464,68 +2225,19 @@ What changed:
   script's stage and the elapsed time in the status bar and in a line
   with a marquee above the buttons, Build and Solve go quiet, Cancel
   ends it, and the window may be closed while it runs. The script prints
-  its stages (mesh read, homogenising, writing the Kratos model, Kratos
+  its stages (mesh read, writing the Kratos model, Kratos
   reading, assembling and solving with which solver, post-processing,
   the modes, the VTK). Meshing in Build Model is still on the game thread
   (it touches the entity actors; seconds, not minutes).
-* **Tests**: `structural_fea_check.py` -- a region declining second order
-  under a job that asks for it stays 4-node and solves the same; a
-  two-region solid with a 10-node skin over a 4-node core writes both
-  element kinds, clamps the mid-edge nodes, balances, and the VTK holds
-  3,196 quadratic and 1,243 linear tetrahedra. The document commandlet's
-  homogenised sphere now meshes the body's own grid (tolerance 0, coarser
-  than a finer tolerance's mesh, the lattice's hollowed body left to
-  itself), asks for 10 nodes and gets a 4-node core, and checks the
-  pre-processor's DOF, order and budget verdict against the solver's.
-
-### The interior grid's quality (2026-11-05, late)
-
-Matt ran Center at a 100 x 100 unrefined grid with the default lattice
-(cell = a tenth of the length, 0.6 m) and found the interior grid ugly.
-Reproduced headlessly (a throwaway extractor against the core library and
-`tools/tet_gmsh.py`, measuring every tetrahedron's dihedral angles, face
-angles, edge and radius ratios; the tools are in `%TEMP%\aerotelic_diag`):
-not compliant, for two separate reasons.
-
-1. **The surface at the nose and tail.** The nose is one apex vertex with
-   a full 100-point ring 26 mm behind it (fan wedges of 3.6 degrees); the
-   tail's last ring is a 3 x 6 cm slit carrying 100 points 1 mm apart with
-   the previous ring 6 cm away (every tail triangle under 10 degrees,
-   median 2.3). 11.8% of the surface's triangles have an angle under 10
-   degrees, and the tetrahedra that conform to them are needles whatever
-   the mesher does: within 0.25 m of either end two thirds of the
-   tetrahedra have a dihedral under 10 degrees. Fewer points round the
-   section does not help (40 x 40 is as bad); refinement does not reach
-   the poles. NOT FIXED here: the fuselage tessellation needs a polar cap
-   that collapses the ring count toward an apex, and the tail slit closed
-   to an apex or a single cap.
-2. **The interior sizing of the morning**: not seeding the interior from
-   the surface (`bSizeFromBoundary` off) halved the tetrahedra but, with
-   5 cm surface edges meeting a 60 cm cell, lined the whole skin with
-   slivers: 12% of the body's tetrahedra under 10 degrees against 2%
-   seeded, median smallest dihedral 26 against 45 degrees, edge ratio
-   median 6.9 against 1.7. A graded size field (`tet_gmsh.py grading`,
-   `FRequest::Grading`: the surface's median edge growing at a rate per
-   unit distance to the cell; gmsh Distance + Threshold fields) was
-   measured at 0.25 / 0.5 / 1 / 2: 63k / 50k / 43k / 35k tetrahedra at
-   7.4 / 9.6 / 11.6 / 15.2% under 10 degrees -- every step a step down
-   from seeded (83k at 5.7%). So **seeded is the default again** and the
-   graded field stays an option. Without Netgen a quarter of the
-   tetrahedra are under 10 degrees; it stays on.
-
-Done for it: `tet_gmsh.py` reports `min_dihedral`, `max_dihedral`,
-`tets_dihedral_under_10`, `tets_dihedral_over_160` (and `grading`);
-`AerotelicTetGmsh::FResult` carries them; `AerotelicFeaPreprocess::FModel`
-computes the same over whatever mesh the solver is handed (so the
-full-resolution lattice tetrahedra are judged too), with
-`kPoorTetFraction` = 2% outside the 10 to 160 degree band as the verdict
-(`MeshIsPoor`); the Mesh caption and Build Model's status line show the
-extremes, the counts and the verdict, and Solve asks before running a
-poor mesh. The document commandlet checks the pre-processor's statistics
-equal gmsh's on the same tetrahedra (two implementations, one answer) for
-the homogenised sphere and the solid sphere, and that the seeded fill of
-the sphere is within the band. The Help tab has a QUALITY section citing
-Shewchuk 2002.
+* **Tests** (as of this day; the second-order and homogenised-core cases
+  went with the tetrahedra): `structural_fea_check.py` -- a region
+  declining second order
+  under a job that asked for it stayed 4-node and solved the same; a
+  two-region solid with a 10-node skin over a 4-node core wrote both
+  element kinds. The document commandlet's
+  sphere meshes the body's own grid (tolerance 0, coarser
+  than a finer tolerance's mesh) and checks the
+  pre-processor's DOF and budget verdict against the solver's.
 
 ### Support patches, dragged in the picture (2026-11-05, night)
 
@@ -2566,7 +2278,8 @@ consistent with the planes the Support panel already has:
   marked provisional; release re-derives the model (`Derive(false)`: no
   reframing, the view stays where the user had it).
 * **Checked live** with `tools/mouse.ps1` and screen captures on the
-  gyroid-filled box (`Saved/Screenshots/fea_patch_drag.png`): a corner
+  box of the FEA smoke test (gyroid-filled at the time;
+  `Saved/Screenshots/fea_patch_drag.png`): a corner
   dragged on the end face y = -2 sits under the cursor mid-drag, the
   patch's numbers and the count (20 to 6 nodes) follow, and release keeps
   them. Also seen: a left press that misses a handle orbits the view as
@@ -2577,6 +2290,94 @@ consistent with the planes the Support panel already has:
   sphere clamped on a quadrant patch of z = min: the script and the
   pre-processor fix the same, smaller set, every fixed node inside the
   rectangle, the quadrant carrying the weight (293 passed).
+
+### Shells only: the tetrahedra and the lattices removed (2026-11-08)
+
+Matt's decision, after the per-body structure of the morning had put
+skins, ribs, spars and frames on every body: the structure of an airframe
+IS those things -- thin shells, a skin stiffened by plane members -- and
+the application's structural model should be nothing else. The
+tetrahedral route (the constrained Delaunay mesher of 2026-10-12, its gmsh
+replacement, the skin / core split, the homogenised core, the second
+order) and the lattice infill (OpenLattice's 36 cell types, their
+calibration, the marching-tetrahedra and marching-cubes extractions, the
+homogeniser) had grown, over four weeks, into a large part of the code
+base -- several thousand lines of core, a Python tool chain and half the
+structural dialog -- in the service of a printed-lattice interior that the
+mission does not need. A solid body has no place in an airframe's
+structural model either; if it needs analysing, it gets a skin thickness
+and becomes one.
+
+**Removed.** In the core: `tet.hpp` / `tet.cpp`, `tet_skin`, `tet_improve`
+(the constrained Delaunay tetrahedral mesher, its skin / core split and
+its refinement and improvement passes), `lattice.hpp` / `lattice.cpp`
+(the OpenLattice TPMS, strut and honeycomb fields and their calibration),
+`shell.hpp` (the offset-copy skin of 2026-10-11) and their tests. In the
+tools: `homogenize.py` and `homogenize_check.py` (the Andreassen &
+Andreasen homogeniser), `tet_gmsh.py` and `tet_gmsh_check.py` -- the
+`.tri` reader, the DLL bootstrap and the discrete-surface helpers they
+carried moved to `tools/gmsh_common.py`, which `potential_flow.py`,
+`rib_gmsh.py` and `structural_fea.py` import. In the application:
+`AerotelicTetGmsh` (now `AerotelicRibGmsh`, which meshes rib discs and
+nothing else), the structural dialog's Model combo (as designed / full
+resolution / ignore the lattices), the second-order (10-node) option, the
+voxels and element-size rows, File's *Export Skin Tetrahedra (VTK)* and
+*Export Tetrahedral Mesh (VTK)*, the Structure dialog's Infill tab and
+`LatticeSpecControls`. The `lattice_meshlib*.py` scripts were renamed
+`structure_meshlib*.py`, since hollowing and rib slabs are what they do.
+
+**The structural model now.** Every element is a shell. A body's skin is
+shells of its skin material and thickness on the body's OWN grid (the
+Mesh tab's, tolerance 0 -- the rule of 2026-11-05 stands). Each plane
+network is rib shells: the skin is cut by every plane with the core's
+`mesh_cut.hpp`, so a rib's rim is the skin's own nodes; the disc is
+meshed in 2-D by gmsh through `tools/rib_gmsh.py` from that rim with no
+new rim nodes, and crossing networks share their chord nodes. One region
+per body and one per network, each with its material and thickness; rib
+faces are not wetted and carry no surface load, their mass counts and
+their peak stress is reported. A body whose skin thickness is 0 (a
+solid) is refused by name: "shells only; give it a skin thickness". The
+pre-processor, the DOF estimate, the 150,000-DOF direct-solver budget,
+the watched and cancellable solve, the natural frequencies and the
+support patches are as they were.
+
+**Old files.** A project's legacy top-level `lattices:` list is skipped
+and each entry reported by name; a body's `infill:` key (the lattice
+infill the per-body structure carried for a few days) is dropped and
+reported. Both appear under "Project Opened With Problems"; everything
+else in such a file loads as before.
+
+**Kept, and why.** `sdf.hpp` (the BVH distance field) and Shewchuk's
+`predicates`: the mesh boolean needs both. MeshLib: the hollowing (the
+Skin layer) and the rib slabs (the Ribs layers) of a body's viewport and
+mass structure, `tools/structure_meshlib.py`. gmsh: the rib discs and the
+potential flow's fluid domain -- a tetrahedral mesh of the AIR, a CFD
+mesh unrelated to the structure, which is the one place tetrahedra are
+still built. The matched-row loft rule (`LoftSource::mirror_v` /
+`mirror_u`) in `mesh.hpp`: the mesh boolean and the panel grids benefit
+from it. The viewport's structure layers of a body are Skin and Ribs
+only.
+
+**Which earlier sections are now history.** *Tetrahedral mesh of the
+bodies (2026-10-12)*, reduced to a marker above; the *Lattices* and
+*Lattice menu* entries of *Meshing and distance fields* (deleted; the
+*Per-body structure* entry is the present); the two models under
+*Materials and the structural analysis* (shells over a homogenised core,
+skin and core tetrahedra), kept as the record of what was measured; the
+lattice, reclassification and element-order parts of *The body's own
+grid*; *The interior grid's quality (2026-11-05, late)* (deleted -- its
+one finding about the SURFACE survives: a fuselage whose nose is an apex
+with a full ring just behind it, or whose tail is a slit of 100 points 1
+mm apart, makes needle triangles, and shells on needle triangles are as
+poor as the tetrahedra were; the polar cap it asked for is still
+wanted). What those sections learned stays where it is still relevant:
+the matched-row lofts in *Meshing and distance fields*, the mesh
+boolean's seam pass under *Boolean operations*, the shell-element
+measurements (thin against thick, against beam theory) in *Materials and
+the structural analysis*, and the Delaunay refinement references
+(Ruppert 1995, Üngör's off-centres, Shewchuk's 2002 survey) for whoever
+next needs a quality bound on a 2-D rib disc -- gmsh's own 2-D algorithms
+do that job today.
 
 ## The Model menu and the material library (2026-11-07)
 
@@ -2856,7 +2657,7 @@ back with every field.
   to -2000 at the very tip), so refine a pointed-tip wing spanwise rather
   than chordwise. Bodies other than wings are source networks built from
   their lofts, not from their triangulations (a triangle mesh has no
-  structured grid for the method's splines), so boolean results, lattices
+  structured grid for the method's splines), so boolean results
   and propellers cannot be paneled; a loft whose end ring has collapsed to
   a line (the P-38 boom's nose and tail: zero half-width, finite height)
   gets no cap there, since a fan on a line is a ring of panels of no area
@@ -2932,23 +2733,11 @@ back with every field.
   pocket is the flap's span widened by the side gap at each end. Not yet:
   dragging the hinge on the plan view, deflection, slats, and a flapped
   wing's STEP export (still the one-piece wing).
-* Lattices: the paper gives pictures, not node tables, for its strut
-  cells; G7 (BCC with a vertical pillar), Vintiles (the cuboctahedral
-  frame on the edge midpoints) and Re-entrant (vertical edges bowed a
-  quarter cell inward) are reconstructions in `lattice.cpp`'s tables and
-  are plain data to edit. The honeycomb family is not in the paper at all
-  and claims no authority from it. Its cells are axis-aligned: the prism
-  axis picks x, y or z, not an arbitrary direction, and the tiling is not
-  rotated within its plane, so a honeycomb that should follow a swept spar
-  has to be approximated by the axis nearest it. A thin wall on a large
-  part is expensive, the sampling having to resolve the wall everywhere
-  (a 0.6 mm wall across a 600 mm part is a 1000:1 span); the grid cap and
-  the resolution warning both bite well before anything silently degrades.
-  A propeller blade's mesh is trimmed at the hub
+* A propeller blade's mesh is trimmed at the hub
   by its span range rather than a box cut (exact without rake). A nacelle
-  with chevrons still goes through OCCT. The lattice dialog is modal and
-  generation runs on the game thread, so the window does not repaint until
-  it is done.
+  with chevrons still goes through OCCT. (The lattice limits that stood
+  here -- reconstructed strut cells, axis-aligned honeycombs, the cost of
+  a thin wall on a large part -- went with the lattices on 2026-11-08.)
 * Legacy project files: WingDesigner's older format keys entities by `id`
   with a display `label` (`Projects/cessna_172.yaml`); the label becomes
   the name and the raw `features` graph is ignored (the mirror nodes it

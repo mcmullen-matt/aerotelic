@@ -329,9 +329,6 @@ std::vector<StructureMassPart> StructureMassParts(const TriMesh& placed, const B
 		part.note = "skin, rho t A over the surface";
 		out.push_back(part);
 	}
-	const double volume = closed ? std::fabs(placed.SignedVolume()) : 0.0;
-	const double area = placed.SurfaceArea();
-	double ribs_volume = 0.0;
 	for (const PlaneNetwork& n : s.networks) {
 		std::vector<MassProperties> pieces;
 		int planes_hit = 0;
@@ -378,7 +375,6 @@ std::vector<StructureMassPart> StructureMassParts(const TriMesh& placed, const B
 			mp.volume = vol;
 			mp.area = std::fabs(area_sum);
 			pieces.push_back(mp);
-			ribs_volume += vol;
 		}
 		StructureMassPart part;
 		part.label = n.name;
@@ -393,31 +389,6 @@ std::vector<StructureMassPart> StructureMassParts(const TriMesh& placed, const B
 			part.props = CombineMassProperties(pieces);
 			part.note = "estimated from the planes' sections (" + std::to_string(planes_hit) + " of " + std::to_string(n.count)
 				+ " planes cross the body); generate the structure for the exact figure";
-		}
-		out.push_back(part);
-	}
-	if (s.infill) {
-		StructureMassPart part;
-		part.label = "infill";
-		part.estimated = true;
-		if (!closed) {
-			part.included = false;
-			part.note = "open surface: the interior volume is not defined";
-		} else if (!s.infill->material.HasDensity()) {
-			part.included = false;
-			part.note = "its material has no density";
-		} else {
-			const LatticeSpec& spec = s.infill->lattice;
-			double fraction = spec.volume_fraction;
-			if (spec.family == LatticeFamily::Honeycomb && spec.wall_sizing == WallSizing::Thickness) {
-				// Sized by its wall, the fraction follows from it.
-				try { fraction = CellSolidFraction(spec, 0.5 * spec.wall_thickness); } catch (const std::exception&) {}
-			}
-			const double interior = std::max(volume - area * s.skin_thickness - ribs_volume, 0.0);
-			const double mass = s.infill->material.density / density_to_si * fraction * interior;
-			part.props = SolidMassProperties(placed, volume > 0.0 ? mass / volume : 0.0);
-			part.props.volume = fraction * interior;
-			part.note = "estimated: the volume fraction of what the skin and the ribs leave of the interior, spread over the body; generate the structure for the exact figure";
 		}
 		out.push_back(part);
 	}
