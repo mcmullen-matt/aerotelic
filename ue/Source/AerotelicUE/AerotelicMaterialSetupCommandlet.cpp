@@ -24,6 +24,7 @@
 #endif
 
 #include "Standalone/AerotelicSectionGizmo.h"
+#include "Standalone/AerotelicPlanePreviewActor.h"
 #include "Standalone/AerotelicColoredMeshActor.h"
 // Last: it pulls in OCCT, whose Handle() macro breaks any engine header
 // (IoDispatcher.h has a member called Handle) included after it.
@@ -282,6 +283,31 @@ namespace
 		return SaveMaterial(Material, Package, PackageName);
 	}
 
+	// M_AerotelicPlanePreview: the Structure dialog's cutting planes in the
+	// 3D view -- translucent rectangles a body can be seen through, drawn
+	// on top (a plane inside a wing must still show), unlit, two sided, with
+	// the colour and the opacity as parameters (the edited network brighter
+	// than the rest).
+	bool AuthorPlanePreview()
+	{
+		const FString PackageName = AAerotelicPlanePreviewActor::MaterialPackage();
+		UPackage* Package = nullptr;
+		UMaterial* Material = NewMaterial(PackageName, Package);
+		if (Material == nullptr)
+		{
+			return false;
+		}
+		Material->SetShadingModel(MSM_Unlit);
+		Material->TwoSided = true;
+		Material->BlendMode = BLEND_Translucent;
+		Material->bDisableDepthTest = true;
+		auto* Color = VectorParam(Material, TEXT("Color"), FLinearColor(1.0f, 0.7f, 0.1f, 1.0f), -400, -200);
+		UMaterialEditingLibrary::ConnectMaterialProperty(Color, TEXT(""), MP_EmissiveColor);
+		auto* Opacity = ScalarParam(Material, TEXT("Opacity"), 0.25f, -400, 0);
+		UMaterialEditingLibrary::ConnectMaterialProperty(Opacity, TEXT(""), MP_Opacity);
+		return SaveMaterial(Material, Package, PackageName);
+	}
+
 	// M_AerotelicVertexColor: a field painted on a surface (the panel
 	// method's Cp). Lit like the bodies, two sided, the base colour straight
 	// from the vertex colour (which AAerotelicColoredMeshActor stores
@@ -327,6 +353,7 @@ int32 UAerotelicMaterialSetupCommandlet::Main(const FString& Params)
 	bOk = AuthorVertexColor() && bOk;
 	bOk = AuthorGizmo(AAerotelicSectionGizmo::FrameMaterialPackage(), false) && bOk;
 	bOk = AuthorGizmo(AAerotelicSectionGizmo::HandleMaterialPackage(), true) && bOk;
+	bOk = AuthorPlanePreview() && bOk;
 	return bOk ? 0 : 1;
 #else
 	UE_LOG(LogAerotelicMaterialSetup, Error, TEXT("RESULT: FAILED -- this commandlet needs the Editor binaries"));

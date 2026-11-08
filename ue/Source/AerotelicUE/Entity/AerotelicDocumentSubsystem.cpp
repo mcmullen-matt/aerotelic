@@ -526,6 +526,38 @@ void UAerotelicDocumentSubsystem::SetRenderStyle(EAerotelicRenderStyle Style)
 	}
 }
 
+void UAerotelicDocumentSubsystem::SetStructurePreview(const FAerotelicStructurePreview& Preview)
+{
+	StructurePreview = Preview;
+	OnStructurePreviewChanged.Broadcast();
+}
+
+void UAerotelicDocumentSubsystem::ClearStructurePreview()
+{
+	StructurePreview = FAerotelicStructurePreview();
+	OnStructurePreviewChanged.Broadcast();
+}
+
+int32 UAerotelicDocumentSubsystem::CopyStructuresFromOperand(AAerotelicEntityActor* Boolean)
+{
+	if (Boolean == nullptr || Boolean->GetEntityType() != EntityType::Boolean)
+	{
+		return 0;
+	}
+	const FAerotelicBooleanModel* M = static_cast<const FAerotelicBooleanModel*>(Boolean->GetModel());
+	if (M == nullptr || M->Operands.Num() == 0 || !M->Operands[0].Entity.IsValid())
+	{
+		return 0;
+	}
+	const BodyStructure Source = M->Operands[0].Entity->GetBodyStructure(0);
+	int32 Count = 0;
+	for (const FAerotelicBody& Body : Boolean->GetBodies())
+	{
+		if (Boolean->SetBodyStructure(Body.Name, Source)) ++Count;
+	}
+	return Count;
+}
+
 void UAerotelicDocumentSubsystem::ApplySectionPlaneToEntities()
 {
 	for (auto& WeakEntity : Entities)

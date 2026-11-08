@@ -17,6 +17,7 @@
 #include "AerotelicGridGround.h"
 #include "AerotelicPlayerController.h"
 #include "AerotelicSectionGizmo.h"
+#include "AerotelicPlanePreviewActor.h"
 #include "Branding/AerotelicTheme.h"
 #include "Entity/AerotelicDocumentSubsystem.h"
 #include "Entity/AerotelicEntityActor.h"
@@ -63,6 +64,8 @@ void AAerotelicGameMode::SpawnGround()
 	FitGroundToScene();
 	// The section plane's handle; hidden until a Section axis is chosen.
 	World->SpawnActor<AAerotelicSectionGizmo>(FVector::ZeroVector, FRotator::ZeroRotator, Params);
+	// The Structure dialog's cutting planes; nothing until one is editing.
+	World->SpawnActor<AAerotelicPlanePreviewActor>(FVector::ZeroVector, FRotator::ZeroRotator, Params);
 }
 
 void AAerotelicGameMode::FitGroundToScene()

@@ -2,7 +2,7 @@
 #include "Widgets/MessageBox.h"
 #include "AerotelicDesignDock.h"
 #include "AerotelicTransformDialog.h"
-#include "AerotelicMaterialDialog.h"
+#include "AerotelicStructureDialog.h"
 
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Layout/SBox.h"
@@ -18,6 +18,7 @@
 #include "Entity/AerotelicDocumentSubsystem.h"
 #include "Entity/AerotelicEntityActor.h"
 #include "Entity/AerotelicBooleanModel.h"
+#include "Entity/AerotelicBodyStructureText.h"
 #include "Dialogs/LatticeDialog.h"
 #include "Branding/AerotelicTheme.h"
 #include "Widgets/PromptDialogs.h"
@@ -212,6 +213,16 @@ TSharedRef<ITableRow> SAerotelicSceneTree::GenerateRow(FItem Item, const TShared
 		if (!Entity.IsValid()) return FLinearColor::Transparent;
 		return Kind == EKind::Entity ? Entity->GetDisplayColor() : Entity->GetBodyDisplayColor(Body);
 	};
+	// The tooltip: what the body is made of and built with (an entity's,
+	// one line per body).
+	auto Tip = [Entity, Kind, Body]()
+	{
+		if (!Entity.IsValid()) return FText::GetEmpty();
+		const UAerotelicDocumentSubsystem* Doc = UAerotelicDocumentSubsystem::Get();
+		const aerotelic::UnitSystem Units = Doc != nullptr ? Doc->GetUnits() : aerotelic::UnitSystem{};
+		if (Kind == EKind::Entity) return FText::FromString(DescribeAerotelicEntityStructures(Entity.Get(), Units));
+		return FText::FromString(DescribeAerotelicBodyStructure(Entity->GetBodyStructure(Body), Units));
+	};
 
 	return SNew(STableRow<FItem>, OwnerTable)
 		.Padding(FMargin(2, 1))
@@ -235,6 +246,7 @@ TSharedRef<ITableRow> SAerotelicSceneTree::GenerateRow(FItem Item, const TShared
 			[
 				SNew(STextBlock)
 				.Text_Lambda(Name)
+				.ToolTipText_Lambda(Tip)
 				.OverflowPolicy(ETextOverflowPolicy::Ellipsis)
 				.ColorAndOpacity(Kind == EKind::Entity ? FSlateColor::UseForeground() : FSlateColor(FLinearColor(0.8f, 0.8f, 0.8f)))
 			]
@@ -489,17 +501,30 @@ TSharedPtr<SWidget> SAerotelicSceneTree::MakeEntityMenu(FItem Item)
 			})));
 	}
 
-	// On a parameterisation only: a boolean result or a lattice inherits
-	// what it is built on (AAerotelicEntityActor::GetEffectiveMassSpec) and
-	// has nothing of its own to set. Analysis > Mass Properties weighs by
-	// it; Analysis > Structural analyses with it; a lattice hollows by its
-	// skin thickness.
-	if (!bDerived)
+	// The structure -- material, skin, infill, plane networks, asserted
+	// mass -- belongs to each BODY (2026-11-08): an entity with one body
+	// offers it here too; one with several has it on each body's row. A
+	// boolean result's bodies own theirs and can start from an operand's.
+	if (!bLattice && Entity->GetBodies().Num() == 1)
 	{
-		Menu.AddMenuEntry(LOCTEXT("MaterialProperties", "Material Properties"),
-			LOCTEXT("MaterialPropertiesTip", "What this parameterisation is made of: a material picked from the library (the presets and your own, defined under Model > Material Properties), with the skin thickness of every body it produces -- or an asserted total mass. Shows the material's figures and the entity's enclosed volume, surface area and weight. Analysis > Mass Properties weighs by it, Analysis > Structural analyses with it, a lattice hollows by its skin thickness; boolean results and lattices built on it inherit it."),
+		const FString Role = Entity->GetBodies()[0].Name;
+		Menu.AddMenuEntry(LOCTEXT("Structure", "Structure..."),
+			LOCTEXT("StructureTip", "What this body is made of and built with: its material and skin thickness, a lattice infill, networks of cutting planes (ribs, spars, frames) and their materials, or an asserted mass. Analysis > Mass Properties weighs by it; Analysis > Structural analyses with it."),
 			FSlateIcon(),
-			FUIAction(FExecuteAction::CreateLambda([Entity]() { if (Entity.IsValid()) OpenAerotelicMaterialDialog(Entity.Get()); })));
+			FUIAction(FExecuteAction::CreateLambda([Entity, Role]() { if (Entity.IsValid()) OpenAerotelicStructureDialog(Entity.Get(), Role); })));
+	}
+	if (bBoolean)
+	{
+		Menu.AddMenuEntry(LOCTEXT("CopyStructure", "Copy Structure From Operand"),
+			LOCTEXT("CopyStructureTip", "Give every body of this result the structure of its first operand's first body, as a starting point (a boolean result's bodies own their structure; nothing is inherited)."),
+			FSlateIcon(),
+			FUIAction(FExecuteAction::CreateLambda([this, Entity]()
+			{
+				UAerotelicDocumentSubsystem* Doc = UAerotelicDocumentSubsystem::Get();
+				if (!Entity.IsValid() || Doc == nullptr) return;
+				const int32 N = Doc->CopyStructuresFromOperand(Entity.Get());
+				Status(FText::Format(LOCTEXT("StatusCopiedStructure", "{0}: {1} bodies took the first operand's structure"), FText::FromString(Entity->EntityName), FText::AsNumber(N)));
+			})));
 	}
 
 	Menu.AddMenuEntry(LOCTEXT("Color", "Color"), LOCTEXT("ColorTip", "Pick the colour every body of this entity is drawn in (the mirrored ones included)"), FSlateIcon(),
@@ -563,6 +588,18 @@ TSharedPtr<SWidget> SAerotelicSceneTree::MakeBodyMenu(FItem Item)
 
 	if (!bMirror)
 	{
+		// What the body is made of and built with -- its own, per body; a
+		// mirrored half shares the body's. Not on a lattice's two bodies,
+		// which are built geometry rather than parameterised bodies.
+		if (Entity->GetEntityType() != project_yaml::EntityType::Lattice && Entity->GetBodies().IsValidIndex(Body))
+		{
+			const FString Role = Entity->GetBodies()[Body].Name;
+			Menu.AddMenuEntry(LOCTEXT("BodyStructure", "Structure..."),
+				LOCTEXT("BodyStructureTip", "What this body is made of and built with: its material and skin thickness, a lattice infill, networks of cutting planes (ribs, spars, frames) and their materials, or an asserted mass. Its mirrored half shares it. Analysis > Mass Properties weighs by it; Analysis > Structural analyses with it."),
+				FSlateIcon(),
+				FUIAction(FExecuteAction::CreateLambda([Entity, Role]() { if (Entity.IsValid()) OpenAerotelicStructureDialog(Entity.Get(), Role); })));
+		}
+
 		Menu.AddMenuEntry(LOCTEXT("Color", "Color"), LOCTEXT("BodyColorTip", "Pick this body's colour. Only this body changes -- not its siblings; its mirror follows it."), FSlateIcon(),
 			FUIAction(FExecuteAction::CreateLambda([this, Entity, Body]() { if (Entity.IsValid()) PickBodyColor(Entity.Get(), Body); })));
 
