@@ -1,0 +1,519 @@
+# Aerotelic material presets (Model > Material Properties). SI: kg/m^3, Pa.
+#
+# Every material here comes from a source that may be redistributed
+# publicly and commercially, so this file ships with the application:
+# CMake embeds it into the core library at build time (edit it, rebuild).
+#
+#   Metals -- MIL-HDBK-5J, Metallic Materials and Elements for Aerospace
+#     Vehicle Structures, US Department of Defense, 31 January 2003
+#     (Distribution Statement A; a US Government work, public domain).
+#     Each row names its handbook table, specification, product form,
+#     condition, thickness range and basis, and the two strengths in ksi.
+#     The allowable is the handbook's design MINIMUM tensile yield Fty
+#     (A-basis -- 99% of material exceeds it at 95% confidence -- where
+#     the handbook gives one, else S-basis, the specification minimum),
+#     longitudinal: a design value, 5-15% below a typical yield. Casting
+#     rows are "any area" minimums. 1 ksi = 6.894757 MPa, 1 lb/in^3 =
+#     27679.9 kg/m^3. Where the handbook leaves Poisson's ratio blank a
+#     literature value is used and the source says so.
+#   Composites -- representative quasi-isotropic laminates, no one's data.
+#   Woods -- USDA Forest Products Laboratory, Wood Handbook FPL-GTR-190
+#     (2010), Tables 5-1, 5-3 and 5-5 at 12% moisture (public domain);
+#     ANC-18 (1951) for the plywood rule; Borrega & Gibson 2015 for the
+#     balsa grades' density scaling (a method, not their data). The
+#     allowable is the compression strength parallel to the grain.
+#
+# Materials from sources whose terms restrict redistribution -- the ASM
+# Handbooks, manufacturers' data sheets -- are NOT in this file: see
+# materials_restricted.yaml, which is not embedded, and the library file
+# of a user who holds them.
+#
+# A material's name is written into a project file when it is assigned,
+# so renaming a row orphans old files: add rows, do not rename them.
+# Fields: name, category (Metal, Composite, Wood, Foam, SLA resin, FDM
+# thermoplastic, ...), density kg/m^3, youngs_modulus Pa, poisson_ratio,
+# allowable_stress Pa (0 = no margin reported), source (free text).
+materials:
+  - name: Aluminium 2024-T3 sheet
+    category: Metal
+    density: 2768
+    youngs_modulus: 72400000000
+    poisson_ratio: 0.33
+    allowable_stress: 324000000
+    source: "Table 3.2.3.0(b1), AMS 4037 sheet 0.010-0.128 in, A-basis: Ftu 64, Fty 47 ksi (L; 42 ksi LT); E 10.5e3 ksi, nu 0.33, 0.100 lb/in^3; MIL-HDBK-5J (US DoD, 31 Jan 2003; public domain) design values: E, nu and density from the alloy's design-properties table; allowable = the handbook's MINIMUM tensile yield Fty (longitudinal; A-basis where it gives one, else S-basis) for the product form and thickness named -- a design minimum, not a typical value"
+  - name: Aluminium 7075-T6 sheet
+    category: Metal
+    density: 2796
+    youngs_modulus: 71000000000
+    poisson_ratio: 0.33
+    allowable_stress: 496000000
+    source: "Table 3.7.6.0(b1), AMS 4045 sheet 0.040-0.125 in, A-basis: Ftu 78, Fty 72 ksi (L; 70 ksi LT); E 10.3e3 ksi, nu 0.33, 0.101 lb/in^3; MIL-HDBK-5J (US DoD, 31 Jan 2003; public domain) design values: E, nu and density from the alloy's design-properties table; allowable = the handbook's MINIMUM tensile yield Fty (longitudinal; A-basis where it gives one, else S-basis) for the product form and thickness named -- a design minimum, not a typical value"
+  - name: Aluminium 6061-T6 sheet
+    category: Metal
+    density: 2713
+    youngs_modulus: 68300000000
+    poisson_ratio: 0.33
+    allowable_stress: 248000000
+    source: "Table 3.6.2.0(b1), AMS 4025/4027 sheet 0.010-0.249 in, A-basis: Ftu 42, Fty 36 ksi (L; 35 ksi LT); E 9.9e3 ksi, nu 0.33, 0.098 lb/in^3; MIL-HDBK-5J (US DoD, 31 Jan 2003; public domain) design values: E, nu and density from the alloy's design-properties table; allowable = the handbook's MINIMUM tensile yield Fty (longitudinal; A-basis where it gives one, else S-basis) for the product form and thickness named -- a design minimum, not a typical value"
+  - name: Aluminium 2014-T6 sheet
+    category: Metal
+    density: 2796
+    youngs_modulus: 72400000000
+    poisson_ratio: 0.33
+    allowable_stress: 407000000
+    source: "Table 3.2.1.0(b1), AMS 4029 sheet 0.040-0.249 in, A-basis: Ftu 67, Fty 59 ksi; E 10.5e3 ksi, nu 0.33, 0.101 lb/in^3; MIL-HDBK-5J (US DoD, 31 Jan 2003; public domain) design values: E, nu and density from the alloy's design-properties table; allowable = the handbook's MINIMUM tensile yield Fty (longitudinal; A-basis where it gives one, else S-basis) for the product form and thickness named -- a design minimum, not a typical value"
+  - name: Aluminium 2090-T83 sheet (Al-Li)
+    category: Metal
+    density: 2602
+    youngs_modulus: 79300000000
+    poisson_ratio: 0.34
+    allowable_stress: 483000000
+    source: "Table 3.2.6.0(b), AMS 4251 sheet 0.040-0.125 in, S-basis: Ftu 77, Fty 70 ksi (L; 56 ksi at 45 deg, 66 ksi LT -- strongly anisotropic); E 11.5e3 ksi (L), nu 0.34, 0.094 lb/in^3; MIL-HDBK-5J (US DoD, 31 Jan 2003; public domain) design values: E, nu and density from the alloy's design-properties table; allowable = the handbook's MINIMUM tensile yield Fty (longitudinal; A-basis where it gives one, else S-basis) for the product form and thickness named -- a design minimum, not a typical value"
+  - name: Aluminium 2124-T851 plate
+    category: Metal
+    density: 2768
+    youngs_modulus: 71700000000
+    poisson_ratio: 0.33
+    allowable_stress: 393000000
+    source: "Table 3.2.7.0(b), AMS 4101 plate 1.000-1.500 in, S-basis: Ftu 66, Fty 57 ksi; E 10.4e3 ksi, nu 0.33, 0.100 lb/in^3; MIL-HDBK-5J (US DoD, 31 Jan 2003; public domain) design values: E, nu and density from the alloy's design-properties table; allowable = the handbook's MINIMUM tensile yield Fty (longitudinal; A-basis where it gives one, else S-basis) for the product form and thickness named -- a design minimum, not a typical value"
+  - name: Aluminium 2219-T87 plate
+    category: Metal
+    density: 2851
+    youngs_modulus: 72400000000
+    poisson_ratio: 0.33
+    allowable_stress: 345000000
+    source: "Table 3.2.8.0(b2), AMS-QQ-A-250/30 plate 0.250-1.000 in, A-basis: Ftu 63, Fty 50 ksi; E 10.5e3 ksi, nu 0.33, 0.103 lb/in^3; MIL-HDBK-5J (US DoD, 31 Jan 2003; public domain) design values: E, nu and density from the alloy's design-properties table; allowable = the handbook's MINIMUM tensile yield Fty (longitudinal; A-basis where it gives one, else S-basis) for the product form and thickness named -- a design minimum, not a typical value"
+  - name: Aluminium 5052-H34 sheet
+    category: Metal
+    density: 2685
+    youngs_modulus: 69600000000
+    poisson_ratio: 0.33
+    allowable_stress: 179000000
+    source: "Table 3.5.1.0(b1), AMS 4017 sheet and plate 0.009-1.000 in, S-basis: Ftu 34, Fty 26 ksi; E 10.1e3 ksi, nu 0.33, 0.097 lb/in^3; MIL-HDBK-5J (US DoD, 31 Jan 2003; public domain) design values: E, nu and density from the alloy's design-properties table; allowable = the handbook's MINIMUM tensile yield Fty (longitudinal; A-basis where it gives one, else S-basis) for the product form and thickness named -- a design minimum, not a typical value"
+  - name: Aluminium 5083-H321 plate
+    category: Metal
+    density: 2657
+    youngs_modulus: 70300000000
+    poisson_ratio: 0.33
+    allowable_stress: 214000000
+    source: "Table 3.5.2.0(b), AMS-QQ-A-250/6 plate 0.250-1.500 in, A-basis: Ftu 44, Fty 31 ksi (28 ksi LT); E 10.2e3 ksi, nu 0.33, 0.096 lb/in^3; MIL-HDBK-5J (US DoD, 31 Jan 2003; public domain) design values: E, nu and density from the alloy's design-properties table; allowable = the handbook's MINIMUM tensile yield Fty (longitudinal; A-basis where it gives one, else S-basis) for the product form and thickness named -- a design minimum, not a typical value"
+  - name: Aluminium 6013-T6 sheet
+    category: Metal
+    density: 2713
+    youngs_modulus: 68300000000
+    poisson_ratio: 0.33
+    allowable_stress: 324000000
+    source: "Table 3.6.1.0(b), AMS 4216 sheet 0.010-0.062 in, S-basis: Ftu 52, Fty 47 ksi; E 9.9e3 ksi, nu 0.33, 0.098 lb/in^3; MIL-HDBK-5J (US DoD, 31 Jan 2003; public domain) design values: E, nu and density from the alloy's design-properties table; allowable = the handbook's MINIMUM tensile yield Fty (longitudinal; A-basis where it gives one, else S-basis) for the product form and thickness named -- a design minimum, not a typical value"
+  - name: Aluminium 7050-T7451 plate
+    category: Metal
+    density: 2823
+    youngs_modulus: 71000000000
+    poisson_ratio: 0.33
+    allowable_stress: 441000000
+    source: "Table 3.7.4.0(b1), AMS 4050 plate 0.250-1.500 in, A-basis: Ftu 74, Fty 64 ksi; E 10.3e3 ksi, nu 0.33, 0.102 lb/in^3; MIL-HDBK-5J (US DoD, 31 Jan 2003; public domain) design values: E, nu and density from the alloy's design-properties table; allowable = the handbook's MINIMUM tensile yield Fty (longitudinal; A-basis where it gives one, else S-basis) for the product form and thickness named -- a design minimum, not a typical value"
+  - name: Aluminium 7055-T77511 extrusion
+    category: Metal
+    density: 2851
+    youngs_modulus: 71700000000
+    poisson_ratio: 0.33
+    allowable_stress: 621000000
+    source: "Table 3.7.5.0(e), AMS 4337 extrusion 0.500-1.500 in, A-basis: Ftu 94, Fty 90 ksi (L; 84 ksi LT); E 10.4e3 ksi, nu 0.33, 0.103 lb/in^3; MIL-HDBK-5J (US DoD, 31 Jan 2003; public domain) design values: E, nu and density from the alloy's design-properties table; allowable = the handbook's MINIMUM tensile yield Fty (longitudinal; A-basis where it gives one, else S-basis) for the product form and thickness named -- a design minimum, not a typical value"
+  - name: Aluminium 7475-T761 sheet
+    category: Metal
+    density: 2796
+    youngs_modulus: 68900000000
+    poisson_ratio: 0.33
+    allowable_stress: 421000000
+    source: "Table 3.7.10.0(b), AMS 4085 sheet 0.063-0.187 in, S-basis: Ftu 71, Fty 61 ksi; E 10.0e3 ksi, nu 0.33, 0.101 lb/in^3; MIL-HDBK-5J (US DoD, 31 Jan 2003; public domain) design values: E, nu and density from the alloy's design-properties table; allowable = the handbook's MINIMUM tensile yield Fty (longitudinal; A-basis where it gives one, else S-basis) for the product form and thickness named -- a design minimum, not a typical value"
+  - name: Aluminium A356.0-T6 casting
+    category: Metal
+    density: 2685
+    youngs_modulus: 71700000000
+    poisson_ratio: 0.33
+    allowable_stress: 193000000
+    source: "Table 3.9.5.0(b), AMS-A-21180 casting, designated area, strength class 1, S-basis: Ftu 38, Fty 28 ksi; E 10.4e3 ksi, nu 0.33, 0.097 lb/in^3; MIL-HDBK-5J (US DoD, 31 Jan 2003; public domain) design values: E, nu and density from the alloy's design-properties table; allowable = the handbook's MINIMUM tensile yield Fty (longitudinal; A-basis where it gives one, else S-basis) for the product form and thickness named -- a design minimum, not a typical value"
+  - name: Aluminium A357.0-T6 casting
+    category: Metal
+    density: 2685
+    youngs_modulus: 71700000000
+    poisson_ratio: 0.33
+    allowable_stress: 241000000
+    source: "Table 3.9.6.0(b), AMS-A-21180 casting, designated area, strength class 1, S-basis: Ftu 45, Fty 35 ksi; E 10.4e3 ksi, nu 0.33, 0.097 lb/in^3; MIL-HDBK-5J (US DoD, 31 Jan 2003; public domain) design values: E, nu and density from the alloy's design-properties table; allowable = the handbook's MINIMUM tensile yield Fty (longitudinal; A-basis where it gives one, else S-basis) for the product form and thickness named -- a design minimum, not a typical value"
+  - name: Steel 4130, normalised
+    category: Metal
+    density: 7833
+    youngs_modulus: 200000000000
+    poisson_ratio: 0.32
+    allowable_stress: 517000000
+    source: "Table 2.3.1.0(c1), AMS 6360 sheet, strip, plate and tubing to 0.188 in, normalised and tempered, S-basis: Ftu 95, Fty 75 ksi; E 29.0e3 ksi, nu 0.32, 0.283 lb/in^3; MIL-HDBK-5J (US DoD, 31 Jan 2003; public domain) design values: E, nu and density from the alloy's design-properties table; allowable = the handbook's MINIMUM tensile yield Fty (longitudinal; A-basis where it gives one, else S-basis) for the product form and thickness named -- a design minimum, not a typical value"
+  - name: Steel 17-4PH H900
+    category: Metal
+    density: 7806
+    youngs_modulus: 196500000000
+    poisson_ratio: 0.27
+    allowable_stress: 1172000000
+    source: "Table 2.6.9.0(d), AMS 5643 forging, tubing and rings under 8 in, condition H900, S-basis: Ftu 190, Fty 170 ksi; E 28.5e3 ksi, nu 0.27, 0.282 lb/in^3; MIL-HDBK-5J (US DoD, 31 Jan 2003; public domain) design values: E, nu and density from the alloy's design-properties table; allowable = the handbook's MINIMUM tensile yield Fty (longitudinal; A-basis where it gives one, else S-basis) for the product form and thickness named -- a design minimum, not a typical value"
+  - name: Steel 1025 carbon, annealed
+    category: Metal
+    density: 7861
+    youngs_modulus: 200000000000
+    poisson_ratio: 0.32
+    allowable_stress: 248000000
+    source: "Table 2.2.1.0(b), AMS 5046 sheet, strip and plate, annealed, S-basis: Ftu 55, Fty 36 ksi; E 29.0e3 ksi, nu 0.32, 0.284 lb/in^3; MIL-HDBK-5J (US DoD, 31 Jan 2003; public domain) design values: E, nu and density from the alloy's design-properties table; allowable = the handbook's MINIMUM tensile yield Fty (longitudinal; A-basis where it gives one, else S-basis) for the product form and thickness named -- a design minimum, not a typical value"
+  - name: Steel 4130, 125 ksi heat treatment
+    category: Metal
+    density: 7833
+    youngs_modulus: 200000000000
+    poisson_ratio: 0.32
+    allowable_stress: 689000000
+    source: "Table 2.3.1.0(c2), AMS 6361 tubing quenched and tempered to 125 ksi, S-basis: Ftu 125, Fty 100 ksi; E 29.0e3 ksi, nu 0.32, 0.283 lb/in^3; MIL-HDBK-5J (US DoD, 31 Jan 2003; public domain) design values: E, nu and density from the alloy's design-properties table; allowable = the handbook's MINIMUM tensile yield Fty (longitudinal; A-basis where it gives one, else S-basis) for the product form and thickness named -- a design minimum, not a typical value"
+  - name: Steel 4140, 180 ksi heat treatment
+    category: Metal
+    density: 7833
+    youngs_modulus: 200000000000
+    poisson_ratio: 0.32
+    allowable_stress: 1124000000
+    source: "Table 2.3.1.0(g2) at the 180 ksi strength level (Table 2.3.0.2 lists 4140 to 1.00 in for it), quenched and tempered: Ftu 180, Fty 163 ksi; E 29.0e3 ksi, nu 0.32, 0.283 lb/in^3; MIL-HDBK-5J (US DoD, 31 Jan 2003; public domain) design values: E, nu and density from the alloy's design-properties table; allowable = the handbook's MINIMUM tensile yield Fty (longitudinal; A-basis where it gives one, else S-basis) for the product form and thickness named -- a design minimum, not a typical value"
+  - name: Steel 4340, 200 ksi heat treatment
+    category: Metal
+    density: 7833
+    youngs_modulus: 200000000000
+    poisson_ratio: 0.32
+    allowable_stress: 1213000000
+    source: "Table 2.3.1.0(g2) at the 200 ksi strength level (Table 2.3.0.2 lists 4340 to 1.70-3.50 in for it), quenched and tempered: Ftu 200, Fty 176 ksi; E 29.0e3 ksi, nu 0.32, 0.283 lb/in^3; MIL-HDBK-5J (US DoD, 31 Jan 2003; public domain) design values: E, nu and density from the alloy's design-properties table; allowable = the handbook's MINIMUM tensile yield Fty (longitudinal; A-basis where it gives one, else S-basis) for the product form and thickness named -- a design minimum, not a typical value"
+  - name: Steel 300M, 280 ksi
+    category: Metal
+    density: 7833
+    youngs_modulus: 200000000000
+    poisson_ratio: 0.32
+    allowable_stress: 1586000000
+    source: "Table 2.3.1.0(f1), AMS 6419 (0.42C 300M) bar, forging and tubing, quenched and tempered, S-basis: Ftu 280, Fty 230 ksi; E 29.0e3 ksi, nu 0.32, 0.283 lb/in^3; MIL-HDBK-5J (US DoD, 31 Jan 2003; public domain) design values: E, nu and density from the alloy's design-properties table; allowable = the handbook's MINIMUM tensile yield Fty (longitudinal; A-basis where it gives one, else S-basis) for the product form and thickness named -- a design minimum, not a typical value"
+  - name: Steel D6AC, 220 ksi
+    category: Metal
+    density: 7833
+    youngs_modulus: 200000000000
+    poisson_ratio: 0.32
+    allowable_stress: 1310000000
+    source: "Table 2.3.1.0(f1), AMS 6431 bar, forging and tubing, quenched and tempered, S-basis: Ftu 220, Fty 190 ksi; E 29.0e3 ksi, nu 0.32, 0.283 lb/in^3; MIL-HDBK-5J (US DoD, 31 Jan 2003; public domain) design values: E, nu and density from the alloy's design-properties table; allowable = the handbook's MINIMUM tensile yield Fty (longitudinal; A-basis where it gives one, else S-basis) for the product form and thickness named -- a design minimum, not a typical value"
+  - name: Steel 4330V, 220 ksi
+    category: Metal
+    density: 7833
+    youngs_modulus: 200000000000
+    poisson_ratio: 0.32
+    allowable_stress: 1276000000
+    source: "Table 2.3.1.0(f1), AMS 6411 bar, forging and tubing, quenched and tempered, S-basis: Ftu 220, Fty 185 ksi; E 29.0e3 ksi, nu 0.32, 0.283 lb/in^3; MIL-HDBK-5J (US DoD, 31 Jan 2003; public domain) design values: E, nu and density from the alloy's design-properties table; allowable = the handbook's MINIMUM tensile yield Fty (longitudinal; A-basis where it gives one, else S-basis) for the product form and thickness named -- a design minimum, not a typical value"
+  - name: Steel H-11 (5Cr-Mo-V), 260 ksi
+    category: Metal
+    density: 7778
+    youngs_modulus: 206800000000
+    poisson_ratio: 0.36
+    allowable_stress: 1482000000
+    source: "Table 2.4.1.0(c), AMS 6487/6488 bar and forging, quenched and tempered, S-basis, transverse column: Ftu 260, Fty 215 ksi; E 30.0e3 ksi, nu 0.36, 0.281 lb/in^3; MIL-HDBK-5J (US DoD, 31 Jan 2003; public domain) design values: E, nu and density from the alloy's design-properties table; allowable = the handbook's MINIMUM tensile yield Fty (longitudinal; A-basis where it gives one, else S-basis) for the product form and thickness named -- a design minimum, not a typical value"
+  - name: Steel maraging 250
+    category: Metal
+    density: 7916
+    youngs_modulus: 182700000000
+    poisson_ratio: 0.31
+    allowable_stress: 1724000000
+    source: "Table 2.5.1.0(b), AMS 6512 bar under 4.000 in, maraged at 900 F, S-basis: Ftu 255, Fty 250 ksi; E 26.5e3 ksi, nu 0.31, 0.286 lb/in^3; MIL-HDBK-5J (US DoD, 31 Jan 2003; public domain) design values: E, nu and density from the alloy's design-properties table; allowable = the handbook's MINIMUM tensile yield Fty (longitudinal; A-basis where it gives one, else S-basis) for the product form and thickness named -- a design minimum, not a typical value"
+  - name: Steel AerMet 100
+    category: Metal
+    density: 7889
+    youngs_modulus: 193100000000
+    poisson_ratio: 0.305
+    allowable_stress: 1620000000
+    source: "Table 2.5.3.0(b), AMS 6532 bar and forging, solution treated and aged, A-basis: Ftu 275, Fty 235 ksi; E 28.0e3 ksi, nu 0.305, 0.285 lb/in^3; MIL-HDBK-5J (US DoD, 31 Jan 2003; public domain) design values: E, nu and density from the alloy's design-properties table; allowable = the handbook's MINIMUM tensile yield Fty (longitudinal; A-basis where it gives one, else S-basis) for the product form and thickness named -- a design minimum, not a typical value"
+  - name: Steel PH13-8Mo H1000
+    category: Metal
+    density: 7723
+    youngs_modulus: 195100000000
+    poisson_ratio: 0.28
+    allowable_stress: 1310000000
+    source: "Table 2.6.6.0(b), AMS 5629 bar, condition H1000: Ftu 201 ksi (A-basis), Fty 190 ksi (S-basis); E 28.3e3 ksi, nu 0.28, 0.279 lb/in^3; MIL-HDBK-5J (US DoD, 31 Jan 2003; public domain) design values: E, nu and density from the alloy's design-properties table; allowable = the handbook's MINIMUM tensile yield Fty (longitudinal; A-basis where it gives one, else S-basis) for the product form and thickness named -- a design minimum, not a typical value"
+  - name: Steel 15-5PH H1025
+    category: Metal
+    density: 7833
+    youngs_modulus: 196500000000
+    poisson_ratio: 0.27
+    allowable_stress: 1000000000
+    source: "Table 2.6.7.0(b), AMS 5659 bar to 12 in, condition H1025, S-basis: Ftu 155, Fty 145 ksi; E 28.5e3 ksi, nu 0.27, 0.283 lb/in^3; MIL-HDBK-5J (US DoD, 31 Jan 2003; public domain) design values: E, nu and density from the alloy's design-properties table; allowable = the handbook's MINIMUM tensile yield Fty (longitudinal; A-basis where it gives one, else S-basis) for the product form and thickness named -- a design minimum, not a typical value"
+  - name: Steel 17-4PH H1025
+    category: Metal
+    density: 7833
+    youngs_modulus: 196500000000
+    poisson_ratio: 0.27
+    allowable_stress: 1000000000
+    source: "Table 2.6.9.0(d), AMS 5643 forging, tubing and rings under 8 in, condition H1025, S-basis: Ftu 155, Fty 145 ksi; E 28.5e3 ksi, nu 0.27, 0.283 lb/in^3; MIL-HDBK-5J (US DoD, 31 Jan 2003; public domain) design values: E, nu and density from the alloy's design-properties table; allowable = the handbook's MINIMUM tensile yield Fty (longitudinal; A-basis where it gives one, else S-basis) for the product form and thickness named -- a design minimum, not a typical value"
+  - name: Steel 17-7PH TH1050
+    category: Metal
+    density: 7640
+    youngs_modulus: 200000000000
+    poisson_ratio: 0.28
+    allowable_stress: 1034000000
+    source: "Table 2.6.10.0(b), AMS 5528 sheet 0.015-0.187 in, condition TH1050, A-basis: Ftu 177, Fty 150 ksi; E 29.0e3 ksi, nu 0.28, 0.276 lb/in^3; MIL-HDBK-5J (US DoD, 31 Jan 2003; public domain) design values: E, nu and density from the alloy's design-properties table; allowable = the handbook's MINIMUM tensile yield Fty (longitudinal; A-basis where it gives one, else S-basis) for the product form and thickness named -- a design minimum, not a typical value"
+  - name: Steel 301 stainless, annealed
+    category: Metal
+    density: 7916
+    youngs_modulus: 200000000000
+    poisson_ratio: 0.27
+    allowable_stress: 179000000
+    source: "Table 2.7.1.0(b), AMS 5901 sheet and strip, annealed, S-basis: Ftu 73, Fty 26 ksi (L; 30 ksi LT); E 29.0e3 ksi, nu 0.27, 0.286 lb/in^3; MIL-HDBK-5J (US DoD, 31 Jan 2003; public domain) design values: E, nu and density from the alloy's design-properties table; allowable = the handbook's MINIMUM tensile yield Fty (longitudinal; A-basis where it gives one, else S-basis) for the product form and thickness named -- a design minimum, not a typical value"
+  - name: Steel 301 stainless, half hard
+    category: Metal
+    density: 7916
+    youngs_modulus: 179300000000
+    poisson_ratio: 0.27
+    allowable_stress: 641000000
+    source: "Table 2.7.1.0(b), AMS 5518 sheet and strip, 1/2 hard, A-basis: Ftu 141, Fty 93 ksi (L); E 26.0e3 ksi (L; 28.0e3 LT -- cold work makes it anisotropic), nu 0.27, 0.286 lb/in^3; MIL-HDBK-5J (US DoD, 31 Jan 2003; public domain) design values: E, nu and density from the alloy's design-properties table; allowable = the handbook's MINIMUM tensile yield Fty (longitudinal; A-basis where it gives one, else S-basis) for the product form and thickness named -- a design minimum, not a typical value"
+  - name: Steel A-286
+    category: Metal
+    density: 7944
+    youngs_modulus: 200600000000
+    poisson_ratio: 0.31
+    allowable_stress: 655000000
+    source: "Table 6.2.1.0(b), AMS 5734 bar to 2.499 in, solution treated and aged, S-basis: Ftu 140, Fty 95 ksi; E 29.1e3 ksi, nu 0.31, 0.287 lb/in^3; MIL-HDBK-5J (US DoD, 31 Jan 2003; public domain) design values: E, nu and density from the alloy's design-properties table; allowable = the handbook's MINIMUM tensile yield Fty (longitudinal; A-basis where it gives one, else S-basis) for the product form and thickness named -- a design minimum, not a typical value"
+  - name: Magnesium AZ31B-H24 sheet
+    category: Metal
+    density: 1769
+    youngs_modulus: 44800000000
+    poisson_ratio: 0.35
+    allowable_stress: 200000000
+    source: "Table 4.2.1.0(b), AMS 4377 sheet 0.016-0.062 in, H24, S-basis: Ftu 39, Fty 29 ksi (L; 32 ksi LT); E 6.5e3 ksi, nu 0.35, 0.0639 lb/in^3; MIL-HDBK-5J (US DoD, 31 Jan 2003; public domain) design values: E, nu and density from the alloy's design-properties table; allowable = the handbook's MINIMUM tensile yield Fty (longitudinal; A-basis where it gives one, else S-basis) for the product form and thickness named -- a design minimum, not a typical value"
+  - name: Magnesium AZ31B-F extrusion
+    category: Metal
+    density: 1769
+    youngs_modulus: 44800000000
+    poisson_ratio: 0.35
+    allowable_stress: 145000000
+    source: "Table 4.2.1.0(d), ASTM B107 extruded bar, rod and solid shapes to 0.249 in, as fabricated (F), S-basis: Ftu 35, Fty 21 ksi; E 6.5e3 ksi, nu 0.35, 0.0639 lb/in^3; MIL-HDBK-5J (US DoD, 31 Jan 2003; public domain) design values: E, nu and density from the alloy's design-properties table; allowable = the handbook's MINIMUM tensile yield Fty (longitudinal; A-basis where it gives one, else S-basis) for the product form and thickness named -- a design minimum, not a typical value"
+  - name: Magnesium AZ61A-F extrusion
+    category: Metal
+    density: 1791
+    youngs_modulus: 43400000000
+    poisson_ratio: 0.31
+    allowable_stress: 165000000
+    source: "Table 4.2.2.0(b), AMS 4350 extruded bar, rod and solid shapes 0.250-2.499 in, as fabricated (F), S-basis: Ftu 40, Fty 24 ksi; E 6.3e3 ksi, nu 0.31, 0.0647 lb/in^3; MIL-HDBK-5J (US DoD, 31 Jan 2003; public domain) design values: E, nu and density from the alloy's design-properties table; allowable = the handbook's MINIMUM tensile yield Fty (longitudinal; A-basis where it gives one, else S-basis) for the product form and thickness named -- a design minimum, not a typical value"
+  - name: Magnesium ZK60A-T5 extrusion
+    category: Metal
+    density: 1824
+    youngs_modulus: 44800000000
+    poisson_ratio: 0.35
+    allowable_stress: 248000000
+    source: "Table 4.2.3.0(c), AMS 4352 extruded rod, bar and solid shapes under 2.000 in^2, T5, S-basis: Ftu 45, Fty 36 ksi; E 6.5e3 ksi, nu 0.35, 0.0659 lb/in^3; MIL-HDBK-5J (US DoD, 31 Jan 2003; public domain) design values: E, nu and density from the alloy's design-properties table; allowable = the handbook's MINIMUM tensile yield Fty (longitudinal; A-basis where it gives one, else S-basis) for the product form and thickness named -- a design minimum, not a typical value"
+  - name: Magnesium AM100A-T6 casting
+    category: Metal
+    density: 1802
+    youngs_modulus: 44800000000
+    poisson_ratio: 0.35
+    allowable_stress: 65500000
+    source: "Table 4.3.1.0(b), AMS 4455 investment casting, T6, any area, S-basis: Ftu 17, Fty 9.5 ksi; E 6.5e3 ksi, nu 0.35, 0.0651 lb/in^3; MIL-HDBK-5J (US DoD, 31 Jan 2003; public domain) design values: E, nu and density from the alloy's design-properties table; allowable = the handbook's MINIMUM tensile yield Fty (longitudinal; A-basis where it gives one, else S-basis) for the product form and thickness named -- a design minimum, not a typical value"
+  - name: Magnesium AZ91C-T6 casting
+    category: Metal
+    density: 1805
+    youngs_modulus: 44800000000
+    poisson_ratio: 0.35
+    allowable_stress: 82700000
+    source: "Table 4.3.2.0(b), AMS 4437 sand casting, T6, any area, S-basis: Ftu 17, Fty 12 ksi; E 6.5e3 ksi, nu 0.35, 0.0652 lb/in^3; MIL-HDBK-5J (US DoD, 31 Jan 2003; public domain) design values: E, nu and density from the alloy's design-properties table; allowable = the handbook's MINIMUM tensile yield Fty (longitudinal; A-basis where it gives one, else S-basis) for the product form and thickness named -- a design minimum, not a typical value"
+  - name: Magnesium AZ91E-T6 casting
+    category: Metal
+    density: 1805
+    youngs_modulus: 44800000000
+    poisson_ratio: 0.35
+    allowable_stress: 82700000
+    source: "Table 4.3.2.0(c), AMS 4446 sand casting, T6, any area, S-basis: Ftu 17, Fty 12 ksi; E 6.5e3 ksi, nu 0.35, 0.0652 lb/in^3; MIL-HDBK-5J (US DoD, 31 Jan 2003; public domain) design values: E, nu and density from the alloy's design-properties table; allowable = the handbook's MINIMUM tensile yield Fty (longitudinal; A-basis where it gives one, else S-basis) for the product form and thickness named -- a design minimum, not a typical value"
+  - name: Magnesium AZ92A-T6 casting
+    category: Metal
+    density: 1824
+    youngs_modulus: 44800000000
+    poisson_ratio: 0.35
+    allowable_stress: 93100000
+    source: "Table 4.3.3.0(b), AMS 4434 sand casting, T6, any area, S-basis: Ftu 17, Fty 13.5 ksi; E 6.5e3 ksi, nu 0.35, 0.0659 lb/in^3; MIL-HDBK-5J (US DoD, 31 Jan 2003; public domain) design values: E, nu and density from the alloy's design-properties table; allowable = the handbook's MINIMUM tensile yield Fty (longitudinal; A-basis where it gives one, else S-basis) for the product form and thickness named -- a design minimum, not a typical value"
+  - name: Magnesium EZ33A-T5 casting
+    category: Metal
+    density: 1824
+    youngs_modulus: 44800000000
+    poisson_ratio: 0.35
+    allowable_stress: 75800000
+    source: "Table 4.3.4.0(b), AMS 4442 sand casting, T5, any area, S-basis: Ftu 13, Fty 11 ksi; E 6.5e3 ksi, nu 0.35, 0.0659 lb/in^3; MIL-HDBK-5J (US DoD, 31 Jan 2003; public domain) design values: E, nu and density from the alloy's design-properties table; allowable = the handbook's MINIMUM tensile yield Fty (longitudinal; A-basis where it gives one, else S-basis) for the product form and thickness named -- a design minimum, not a typical value"
+  - name: Magnesium QE22A-T6 casting
+    category: Metal
+    density: 1807
+    youngs_modulus: 44800000000
+    poisson_ratio: 0.35
+    allowable_stress: 159000000
+    source: "Table 4.3.5.0(b), AMS 4418 sand casting, T6, any area, S-basis: Ftu 32, Fty 23 ksi; E 6.5e3 ksi, nu 0.35, 0.0653 lb/in^3; MIL-HDBK-5J (US DoD, 31 Jan 2003; public domain) design values: E, nu and density from the alloy's design-properties table; allowable = the handbook's MINIMUM tensile yield Fty (longitudinal; A-basis where it gives one, else S-basis) for the product form and thickness named -- a design minimum, not a typical value"
+  - name: Magnesium ZE41A-T5 casting
+    category: Metal
+    density: 1816
+    youngs_modulus: 44800000000
+    poisson_ratio: 0.35
+    allowable_stress: 121000000
+    source: "Table 4.3.6.0(b), AMS 4439 sand casting, T5, any area, S-basis: Ftu 26, Fty 17.5 ksi; E 6.5e3 ksi, nu 0.35, 0.0656 lb/in^3; MIL-HDBK-5J (US DoD, 31 Jan 2003; public domain) design values: E, nu and density from the alloy's design-properties table; allowable = the handbook's MINIMUM tensile yield Fty (longitudinal; A-basis where it gives one, else S-basis) for the product form and thickness named -- a design minimum, not a typical value"
+  - name: Titanium Ti-6Al-4V annealed sheet
+    category: Metal
+    density: 4429
+    youngs_modulus: 110300000000
+    poisson_ratio: 0.31
+    allowable_stress: 869000000
+    source: "Table 5.4.1.0(b), AMS 4911 sheet, strip and plate under 0.1875 in, annealed, A-basis: Ftu 134, Fty 126 ksi; E 16.0e3 ksi, nu 0.31, 0.160 lb/in^3; MIL-HDBK-5J (US DoD, 31 Jan 2003; public domain) design values: E, nu and density from the alloy's design-properties table; allowable = the handbook's MINIMUM tensile yield Fty (longitudinal; A-basis where it gives one, else S-basis) for the product form and thickness named -- a design minimum, not a typical value"
+  - name: Titanium CP grade 2 (CP-3)
+    category: Metal
+    density: 4512
+    youngs_modulus: 106900000000
+    poisson_ratio: 0.34
+    allowable_stress: 276000000
+    source: "Table 5.2.1.0(b), AMS 4902 (CP-3) sheet, strip and plate to 1.000 in, annealed, S-basis: Ftu 50, Fty 40 ksi; E 15.5e3 ksi, 0.163 lb/in^3; the handbook gives no nu for CP titanium, 0.34 is the literature value; MIL-HDBK-5J (US DoD, 31 Jan 2003; public domain) design values: E, nu and density from the alloy's design-properties table; allowable = the handbook's MINIMUM tensile yield Fty (longitudinal; A-basis where it gives one, else S-basis) for the product form and thickness named -- a design minimum, not a typical value"
+  - name: Titanium CP grade 4 (CP-1)
+    category: Metal
+    density: 4512
+    youngs_modulus: 106900000000
+    poisson_ratio: 0.34
+    allowable_stress: 483000000
+    source: "Table 5.2.1.0(b), AMS 4901 (CP-1) sheet, strip and plate to 1.000 in, annealed, S-basis: Ftu 80, Fty 70 ksi; E 15.5e3 ksi, 0.163 lb/in^3; the handbook gives no nu for CP titanium, 0.34 is the literature value; MIL-HDBK-5J (US DoD, 31 Jan 2003; public domain) design values: E, nu and density from the alloy's design-properties table; allowable = the handbook's MINIMUM tensile yield Fty (longitudinal; A-basis where it gives one, else S-basis) for the product form and thickness named -- a design minimum, not a typical value"
+  - name: Titanium Ti-5Al-2.5Sn
+    category: Metal
+    density: 4484
+    youngs_modulus: 106900000000
+    poisson_ratio: 0.31
+    allowable_stress: 758000000
+    source: "Table 5.3.1.0(b), AMS 4910 sheet 0.015-0.079 in, annealed, A-basis: Ftu 120, Fty 110 ksi; E 15.5e3 ksi, 0.162 lb/in^3; the handbook gives no nu, 0.31 is the literature value for the alpha alloy; MIL-HDBK-5J (US DoD, 31 Jan 2003; public domain) design values: E, nu and density from the alloy's design-properties table; allowable = the handbook's MINIMUM tensile yield Fty (longitudinal; A-basis where it gives one, else S-basis) for the product form and thickness named -- a design minimum, not a typical value"
+  - name: Titanium Ti-8Al-1Mo-1V
+    category: Metal
+    density: 4373
+    youngs_modulus: 120700000000
+    poisson_ratio: 0.32
+    allowable_stress: 931000000
+    source: "Table 5.3.2.0(b1), AMS 4915 sheet under 0.1875 in, single annealed, S-basis: Ftu 145, Fty 135 ksi; E 17.5e3 ksi, nu 0.32, 0.158 lb/in^3; MIL-HDBK-5J (US DoD, 31 Jan 2003; public domain) design values: E, nu and density from the alloy's design-properties table; allowable = the handbook's MINIMUM tensile yield Fty (longitudinal; A-basis where it gives one, else S-basis) for the product form and thickness named -- a design minimum, not a typical value"
+  - name: Titanium Ti-6Al-2Sn-4Zr-2Mo
+    category: Metal
+    density: 4540
+    youngs_modulus: 113800000000
+    poisson_ratio: 0.32
+    allowable_stress: 862000000
+    source: "Table 5.3.3.0(b), AMS 4919 sheet to 0.046 in, duplex annealed, A-basis: Ftu 135, Fty 125 ksi; E 16.5e3 ksi, nu 0.32, 0.164 lb/in^3; MIL-HDBK-5J (US DoD, 31 Jan 2003; public domain) design values: E, nu and density from the alloy's design-properties table; allowable = the handbook's MINIMUM tensile yield Fty (longitudinal; A-basis where it gives one, else S-basis) for the product form and thickness named -- a design minimum, not a typical value"
+  - name: Titanium Ti-6Al-4V STA
+    category: Metal
+    density: 4429
+    youngs_modulus: 110300000000
+    poisson_ratio: 0.31
+    allowable_stress: 1000000000
+    source: "Table 5.4.1.0(b), AMS-T-9046 sheet under 0.1875 in, solution treated and aged, S-basis: Ftu 160, Fty 145 ksi (the annealed sheet's A-basis is Ftu 134, Fty 126 ksi); E 16.0e3 ksi, nu 0.31, 0.160 lb/in^3; MIL-HDBK-5J (US DoD, 31 Jan 2003; public domain) design values: E, nu and density from the alloy's design-properties table; allowable = the handbook's MINIMUM tensile yield Fty (longitudinal; A-basis where it gives one, else S-basis) for the product form and thickness named -- a design minimum, not a typical value"
+  - name: Titanium Ti-6Al-6V-2Sn
+    category: Metal
+    density: 4540
+    youngs_modulus: 110300000000
+    poisson_ratio: 0.31
+    allowable_stress: 1000000000
+    source: "Table 5.4.2.0(b), AMS 4918 sheet, strip and plate under 0.1875 in, annealed, A-basis: Ftu 155, Fty 145 ksi; E 16.0e3 ksi, nu 0.31, 0.164 lb/in^3; MIL-HDBK-5J (US DoD, 31 Jan 2003; public domain) design values: E, nu and density from the alloy's design-properties table; allowable = the handbook's MINIMUM tensile yield Fty (longitudinal; A-basis where it gives one, else S-basis) for the product form and thickness named -- a design minimum, not a typical value"
+  - name: Titanium Ti-4.5Al-3V-2Fe-2Mo (SP-700)
+    category: Metal
+    density: 4540
+    youngs_modulus: 110300000000
+    poisson_ratio: 0.31
+    allowable_stress: 869000000
+    source: "Table 5.4.3.0(b), AMS 4899 sheet 0.025-0.063 in, annealed, A-basis: Ftu 134, Fty 126 ksi; E 16.0e3 ksi, 0.164 lb/in^3; the handbook gives no nu, 0.31 is the literature value for the alpha-beta alloy; MIL-HDBK-5J (US DoD, 31 Jan 2003; public domain) design values: E, nu and density from the alloy's design-properties table; allowable = the handbook's MINIMUM tensile yield Fty (longitudinal; A-basis where it gives one, else S-basis) for the product form and thickness named -- a design minimum, not a typical value"
+  - name: Titanium Ti-13V-11Cr-3Al
+    category: Metal
+    density: 4816
+    youngs_modulus: 100000000000
+    poisson_ratio: 0.33
+    allowable_stress: 869000000
+    source: "Table 5.5.1.0(b), AMS-T-9046 sheet 0.012-0.049 in, annealed, S-basis: Ftu 132, Fty 126 ksi; E 14.5e3 ksi, 0.174 lb/in^3; the handbook gives no nu, 0.33 is the literature value for the beta alloy; MIL-HDBK-5J (US DoD, 31 Jan 2003; public domain) design values: E, nu and density from the alloy's design-properties table; allowable = the handbook's MINIMUM tensile yield Fty (longitudinal; A-basis where it gives one, else S-basis) for the product form and thickness named -- a design minimum, not a typical value"
+  - name: Titanium Ti-15V-3Cr-3Sn-3Al STA
+    category: Metal
+    density: 4761
+    youngs_modulus: 104800000000
+    poisson_ratio: 0.33
+    allowable_stress: 965000000
+    source: "Table 5.5.2.0(b), AMS 4914 sheet to 0.125 in, solution treated and aged 1000 F/8 h, S-basis: Ftu 145, Fty 140 ksi; E 15.2e3 ksi (L), 0.172 lb/in^3; the handbook gives no nu, 0.33 is the literature value for the beta alloy; MIL-HDBK-5J (US DoD, 31 Jan 2003; public domain) design values: E, nu and density from the alloy's design-properties table; allowable = the handbook's MINIMUM tensile yield Fty (longitudinal; A-basis where it gives one, else S-basis) for the product form and thickness named -- a design minimum, not a typical value"
+  - name: Titanium Ti-10V-2Fe-3Al STA
+    category: Metal
+    density: 4650
+    youngs_modulus: 109600000000
+    poisson_ratio: 0.33
+    allowable_stress: 1103000000
+    source: "Table 5.5.3.0(b), AMS 4983 die forging under 1.000 in, solution treated and aged, S-basis: Ftu 180, Fty 160 ksi; E 15.9e3 ksi, 0.168 lb/in^3; the handbook gives no nu, 0.33 is the literature value for the beta alloy; MIL-HDBK-5J (US DoD, 31 Jan 2003; public domain) design values: E, nu and density from the alloy's design-properties table; allowable = the handbook's MINIMUM tensile yield Fty (longitudinal; A-basis where it gives one, else S-basis) for the product form and thickness named -- a design minimum, not a typical value"
+  - name: CFRP quasi-isotropic
+    category: Composite
+    density: 1600
+    youngs_modulus: 55000000000
+    poisson_ratio: 0.3
+    allowable_stress: 500000000
+    source: Representative quasi-isotropic carbon/epoxy laminate (standard-modulus fibre, ~60% fibre volume, [0/±45/90]s), in-plane; allowable = a representative laminate tensile strength
+  - name: GFRP quasi-isotropic
+    category: Composite
+    density: 1900
+    youngs_modulus: 20000000000
+    poisson_ratio: 0.28
+    allowable_stress: 250000000
+    source: Representative quasi-isotropic E-glass/epoxy laminate (~55% fibre volume), in-plane; allowable = a representative laminate tensile strength
+  - name: Spruce (along grain)
+    category: Wood
+    density: 450
+    youngs_modulus: 10000000000
+    poisson_ratio: 0.37
+    allowable_stress: 40000000
+    source: USDA Wood Handbook (FPL-GTR-190) Table 5-3, Sitka spruce at 12% moisture, parallel to grain; nu_LR 0.372 (Table 5-1); allowable ~ compression strength parallel to grain
+  - name: Balsa, light (100 kg/m^3)
+    category: Wood
+    density: 100
+    youngs_modulus: 1900000000
+    poisson_ratio: 0.23
+    allowable_stress: 8300000
+    source: "USDA Wood Handbook Table 5-5 balsa (SG 0.16, 12% moisture: E 3.4 GPa, compression parallel 14.9 MPa) scaled to a 6 lb/ft^3 contest-light grade in proportion to density after Borrega & Gibson (2015); nu_LR 0.229 (Table 5-1); allowable = compression parallel to grain"
+  - name: Balsa, medium (160 kg/m^3)
+    category: Wood
+    density: 160
+    youngs_modulus: 3000000000
+    poisson_ratio: 0.23
+    allowable_stress: 13000000
+    source: "USDA Wood Handbook Table 5-5 balsa (SG 0.16, 12% moisture: E 3.4 GPa, compression parallel 14.9 MPa) scaled to a 10 lb/ft^3 medium grade in proportion to density after Borrega & Gibson (2015); nu_LR 0.229 (Table 5-1); allowable = compression parallel to grain"
+  - name: Balsa, hard (240 kg/m^3)
+    category: Wood
+    density: 240
+    youngs_modulus: 4500000000
+    poisson_ratio: 0.23
+    allowable_stress: 20000000
+    source: "USDA Wood Handbook Table 5-5 balsa (SG 0.16, 12% moisture: E 3.4 GPa, compression parallel 14.9 MPa) scaled to a 15 lb/ft^3 hard grade in proportion to density after Borrega & Gibson (2015); nu_LR 0.229 (Table 5-1); allowable = compression parallel to grain"
+  - name: Basswood, American (along grain)
+    category: Wood
+    density: 415
+    youngs_modulus: 10100000000
+    poisson_ratio: 0.36
+    allowable_stress: 32600000
+    source: "USDA Wood Handbook Table 5-3, American basswood at 12% moisture (SG 0.37): E 10.1 GPa, MOR 60 MPa; nu_LR 0.364 (Table 5-1); allowable = compression parallel to grain 32.6 MPa"
+  - name: Pine, Eastern white (along grain)
+    category: Wood
+    density: 390
+    youngs_modulus: 8500000000
+    poisson_ratio: 0.33
+    allowable_stress: 33100000
+    source: "USDA Wood Handbook Table 5-3, Eastern white pine at 12% moisture (SG 0.35): E 8.5 GPa, MOR 59 MPa; nu_LR 0.33 as the western white pine of Table 5-1; allowable = compression parallel to grain 33.1 MPa"
+  - name: Yellow-poplar (along grain)
+    category: Wood
+    density: 470
+    youngs_modulus: 10900000000
+    poisson_ratio: 0.32
+    allowable_stress: 38200000
+    source: "USDA Wood Handbook Table 5-3, yellow-poplar at 12% moisture (SG 0.42): E 10.9 GPa, MOR 70 MPa; nu_LR 0.318 (Table 5-1); allowable = compression parallel to grain 38.2 MPa"
+  - name: Douglas-fir, Coast (along grain)
+    category: Wood
+    density: 540
+    youngs_modulus: 13400000000
+    poisson_ratio: 0.29
+    allowable_stress: 49900000
+    source: "USDA Wood Handbook Table 5-3, Douglas-fir (Coast) at 12% moisture (SG 0.48): E 13.4 GPa, MOR 85 MPa; nu_LR 0.292 (Table 5-1); allowable = compression parallel to grain 49.9 MPa"
+  - name: Birch plywood, aircraft 3-ply (face grain)
+    category: Wood
+    density: 690
+    youngs_modulus: 9300000000
+    poisson_ratio: 0.2
+    allowable_stress: 37500000
+    source: "Yellow birch of USDA Wood Handbook Table 5-3 (12% moisture, SG 0.62: E 13.9 GPa, compression parallel 56.3 MPa) at two-thirds for a three-ply sheet of equal veneers along the face grain (ANC-18 Design of Wood Aircraft Structures); nu 0.20 in-plane, approximate; allowable = two-thirds of the compression parallel to grain"
+  - name: Poplar plywood, lite-ply 3-ply (face grain)
+    category: Wood
+    density: 470
+    youngs_modulus: 7300000000
+    poisson_ratio: 0.2
+    allowable_stress: 25500000
+    source: "Yellow-poplar of USDA Wood Handbook Table 5-3 (12% moisture, SG 0.42: E 10.9 GPa, compression parallel 38.2 MPa) at two-thirds for a three-ply sheet of equal veneers along the face grain (ANC-18); nu 0.20 in-plane, approximate; allowable = two-thirds of the compression parallel to grain. Hobby lite-ply is often a lighter poplar: weigh a sheet"

@@ -1,0 +1,318 @@
+# Aerotelic materials from sources whose terms restrict redistribution.
+# SI: kg/m^3, Pa. NOT part of the public distribution: this file is not
+# embedded into the application and is not staged into a package. It is
+# the set that was split out of the presets on 2026-11-07 and written into
+# the user's own library file (materials.yaml beside the licence file),
+# where Model > Material Properties reads it like any material of theirs.
+#
+#   The first seven metals -- typical room-temperature values from the ASM
+#     Handbook vol. 1 and 2 (ASM International requires written consent to
+#     reproduce its material) and, for 17-4PH, AK Steel's product bulletin;
+#     the allowable is the typical tensile yield. Public-domain MIL-HDBK-5J
+#     rows for the same alloys are in materials_presets.yaml.
+#   Foam -- Evonik ROHACELL IG-F data sheet.
+#   SLA / LCD / DLP resins -- Formlabs, Siraya Tech and Anycubic technical
+#     data sheets, post-cured figures (Anycubic's ranges at their
+#     conservative bounds); Poisson's ratios are literature values.
+#   FDM thermoplastics -- Prusament, Bambu Lab, Polymaker, Markforged,
+#     Stratasys and 3DXTech technical data sheets, as printed, flat
+#     orientation; a printed part is weaker across its layers.
+#
+# Individual property values are facts, not copyrightable in the US
+# (Feist v. Rural; 17 USC 103(b)); the restriction is the publishers'
+# terms of use, which mostly permit personal or non-commercial use only.
+materials:
+  - name: Aluminium 2024-T3
+    category: Metal
+    density: 2780
+    youngs_modulus: 73100000000
+    poisson_ratio: 0.33
+    allowable_stress: 345000000
+    source: MMPDS-01 / ASM Handbook vol. 2, typical room-temperature values, T3 sheet; allowable = tensile yield
+  - name: Aluminium 7075-T6
+    category: Metal
+    density: 2810
+    youngs_modulus: 71700000000
+    poisson_ratio: 0.33
+    allowable_stress: 503000000
+    source: MMPDS-01 / ASM Handbook vol. 2, typical room-temperature values, T6 sheet; allowable = tensile yield
+  - name: Aluminium 6061-T6
+    category: Metal
+    density: 2700
+    youngs_modulus: 68900000000
+    poisson_ratio: 0.33
+    allowable_stress: 276000000
+    source: MMPDS-01 / ASM Handbook vol. 2, typical room-temperature values, T6; allowable = tensile yield
+  - name: Titanium Ti-6Al-4V
+    category: Metal
+    density: 4430
+    youngs_modulus: 113800000000
+    poisson_ratio: 0.342
+    allowable_stress: 880000000
+    source: MMPDS-01 / ASM Handbook vol. 2, annealed, typical; allowable = tensile yield
+  - name: Steel 4130
+    category: Metal
+    density: 7850
+    youngs_modulus: 205000000000
+    poisson_ratio: 0.29
+    allowable_stress: 435000000
+    source: ASM Handbook vol. 1, normalised at 870 C, typical; allowable = tensile yield
+  - name: Steel 17-4PH H900
+    category: Metal
+    density: 7800
+    youngs_modulus: 196000000000
+    poisson_ratio: 0.27
+    allowable_stress: 1170000000
+    source: ASM Handbook vol. 1 / AK Steel 17-4 PH data sheet, condition H900, typical; allowable = tensile yield
+  - name: Magnesium AZ31B
+    category: Metal
+    density: 1770
+    youngs_modulus: 45000000000
+    poisson_ratio: 0.35
+    allowable_stress: 200000000
+    source: ASM Handbook vol. 2, AZ31B-H24 sheet, typical; allowable = tensile yield
+  - name: Foam, PMI 71 kg/m^3
+    category: Foam
+    density: 71
+    youngs_modulus: 105000000
+    poisson_ratio: 0.3
+    allowable_stress: 1900000
+    source: "Evonik ROHACELL 71 IG-F data sheet (nominal 75 kg/m^3 grade): E 105 MPa; allowable between the compressive (1.7 MPa) and tensile (2.8 MPa) strengths"
+  - name: SLA resin, standard (Formlabs Grey V4)
+    category: SLA resin
+    density: 1140
+    youngs_modulus: 2800000000
+    poisson_ratio: 0.35
+    allowable_stress: 65000000
+    source: Formlabs Grey Resin V4 TDS; density from Formlabs' post-cured density table; post-cured ASTM D638 tensile modulus and strength; allowable = tensile yield where the sheet gives one, else strength at break; nu 0.35 (literature, cured acrylates)
+  - name: SLA resin, clear (Formlabs Clear V4.1)
+    category: SLA resin
+    density: 1170
+    youngs_modulus: 2370000000
+    poisson_ratio: 0.35
+    allowable_stress: 53000000
+    source: Formlabs Clear Resin V4.1 TDS; density from Formlabs' post-cured density table; post-cured ASTM D638 tensile modulus and strength; allowable = tensile yield where the sheet gives one, else strength at break; nu 0.35 (literature, cured acrylates)
+  - name: SLA resin, tough ABS-like (Formlabs Tough 2000 V2)
+    category: SLA resin
+    density: 1090
+    youngs_modulus: 1800000000
+    poisson_ratio: 0.35
+    allowable_stress: 40400000
+    source: Formlabs Tough 2000 Resin V2 TDS; density from Formlabs' post-cured density table; post-cured ASTM D638 tensile modulus and strength; allowable = tensile yield where the sheet gives one, else strength at break; nu 0.35 (literature, cured acrylates)
+  - name: SLA resin, tough (Siraya Tech Blu)
+    category: SLA resin
+    density: 1150
+    youngs_modulus: 1800000000
+    poisson_ratio: 0.35
+    allowable_stress: 51000000
+    source: Siraya Tech Blu TDS; post-cured ASTM D638 tensile modulus and strength; allowable = tensile yield where the sheet gives one, else strength at break; nu 0.35 (literature, cured acrylates)
+  - name: SLA resin, durable PP-like (Formlabs Durable)
+    category: SLA resin
+    density: 1130
+    youngs_modulus: 1260000000
+    poisson_ratio: 0.38
+    allowable_stress: 31800000
+    source: Formlabs Durable Resin TDS; density from Formlabs' post-cured density table; nu 0.38 for the soft polypropylene-like resin; post-cured ASTM D638 tensile modulus and strength; allowable = tensile yield where the sheet gives one, else strength at break; nu 0.35 (literature, cured acrylates)
+  - name: SLA resin, high-temp (Formlabs High Temp V2)
+    category: SLA resin
+    density: 1190
+    youngs_modulus: 2800000000
+    poisson_ratio: 0.35
+    allowable_stress: 58300000
+    source: Formlabs High Temp Resin V2 TDS; density from Formlabs' post-cured density table; post-cured ASTM D638 tensile modulus and strength; allowable = tensile yield where the sheet gives one, else strength at break; nu 0.35 (literature, cured acrylates)
+  - name: SLA resin, glass-filled (Formlabs Rigid 10K)
+    category: SLA resin
+    density: 1700
+    youngs_modulus: 11000000000
+    poisson_ratio: 0.3
+    allowable_stress: 88000000
+    source: Formlabs Rigid 10K Resin TDS; nu 0.30 for the glass-filled resin; post-cured ASTM D638 tensile modulus and strength; allowable = tensile yield where the sheet gives one, else strength at break; nu 0.35 (literature, cured acrylates)
+  - name: SLA resin, standard (Anycubic Standard)
+    category: SLA resin
+    density: 1200
+    youngs_modulus: 1600000000
+    poisson_ratio: 0.35
+    allowable_stress: 40000000
+    source: "Anycubic Standard Resin TDS and store page; data sheet gives ranges, no post-cure, no tensile modulus (store page adds a Young's modulus range): LOWER bound of E and tensile strength, UPPER bound of density; nu 0.35"
+  - name: SLA resin, standard (Anycubic Standard V2)
+    category: SLA resin
+    density: 1250
+    youngs_modulus: 1200000000
+    poisson_ratio: 0.35
+    allowable_stress: 35000000
+    source: "Anycubic Standard Resin V2 TDS and store page; data sheet gives ranges, no post-cure, no tensile modulus (store page adds a Young's modulus range): LOWER bound of E and tensile strength, UPPER bound of density; nu 0.35"
+  - name: SLA resin, standard (Anycubic 16K Standard)
+    category: SLA resin
+    density: 1100
+    youngs_modulus: 1800000000
+    poisson_ratio: 0.35
+    allowable_stress: 40000000
+    source: "Anycubic 16K Standard Resin TDS and store page; data sheet gives ranges, no post-cure, no tensile modulus (store page adds a Young's modulus range): LOWER bound of E and tensile strength, UPPER bound of density; nu 0.35"
+  - name: SLA resin, ABS-like (Anycubic ABS-Like 2.0)
+    category: SLA resin
+    density: 1090
+    youngs_modulus: 1800000000
+    poisson_ratio: 0.35
+    allowable_stress: 34000000
+    source: "Anycubic ABS-Like Resin 2.0 TDS and store page; data sheet gives ranges, no post-cure, no tensile modulus (store page adds a Young's modulus range): LOWER bound of E and tensile strength, UPPER bound of density; nu 0.35"
+  - name: SLA resin, ABS-like (Anycubic ABS-Like V2)
+    category: SLA resin
+    density: 1200
+    youngs_modulus: 1000000000
+    poisson_ratio: 0.35
+    allowable_stress: 35000000
+    source: "Anycubic ABS-Like Resin V2 TDS; no Young's modulus anywhere, so the lower flexural modulus stands in; data sheet gives ranges, no post-cure, no tensile modulus (store page adds a Young's modulus range): LOWER bound of E and tensile strength, UPPER bound of density; nu 0.35"
+  - name: SLA resin, ABS-like (Anycubic ABS-Like 3.0)
+    category: SLA resin
+    density: 1090
+    youngs_modulus: 1300000000
+    poisson_ratio: 0.35
+    allowable_stress: 38000000
+    source: "Anycubic ABS-Like Resin 3.0 TDS and store page; data sheet gives ranges, no post-cure, no tensile modulus (store page adds a Young's modulus range): LOWER bound of E and tensile strength, UPPER bound of density; nu 0.35"
+  - name: SLA resin, ABS-like (Anycubic ABS-Like Pro 2)
+    category: SLA resin
+    density: 1250
+    youngs_modulus: 1600000000
+    poisson_ratio: 0.35
+    allowable_stress: 35000000
+    source: "Anycubic ABS-Like Resin Pro 2 TDS and store page; data sheet gives ranges, no post-cure, no tensile modulus (store page adds a Young's modulus range): LOWER bound of E and tensile strength, UPPER bound of density; nu 0.35"
+  - name: SLA resin, water-wash ABS-like (Anycubic Water-Wash ABS-Like 3.0)
+    category: SLA resin
+    density: 1100
+    youngs_modulus: 1800000000
+    poisson_ratio: 0.35
+    allowable_stress: 36000000
+    source: "Anycubic Water-Wash ABS-Like Resin 3.0 TDS and store page; data sheet gives ranges, no post-cure, no tensile modulus (store page adds a Young's modulus range): LOWER bound of E and tensile strength, UPPER bound of density; nu 0.35"
+  - name: SLA resin, water-wash (Anycubic Water-Wash 2.0)
+    category: SLA resin
+    density: 1090
+    youngs_modulus: 1100000000
+    poisson_ratio: 0.35
+    allowable_stress: 38000000
+    source: "Anycubic Water-Wash Resin 2.0 TDS and store page; data sheet gives ranges, no post-cure, no tensile modulus (store page adds a Young's modulus range): LOWER bound of E and tensile strength, UPPER bound of density; nu 0.35"
+  - name: SLA resin, tough (Anycubic Tough 2.0)
+    category: SLA resin
+    density: 1150
+    youngs_modulus: 900000000
+    poisson_ratio: 0.38
+    allowable_stress: 30000000
+    source: "Anycubic Tough Resin 2.0 TDS and store page; nu 0.38 for the ductile resin; data sheet gives ranges, no post-cure, no tensile modulus (store page adds a Young's modulus range): LOWER bound of E and tensile strength, UPPER bound of density; nu 0.35"
+  - name: SLA resin, soft tough (Anycubic Tough Ultra)
+    category: SLA resin
+    density: 1250
+    youngs_modulus: 350000000
+    poisson_ratio: 0.42
+    allowable_stress: 20000000
+    source: "Anycubic Tough Resin Ultra TDS and store page; nu 0.42 -- at 70-80% elongation and Shore D 71-75 nearly an elastomer, so treat linear results with care; data sheet gives ranges, no post-cure, no tensile modulus (store page adds a Young's modulus range): LOWER bound of E and tensile strength, UPPER bound of density; nu 0.35"
+  - name: SLA resin, clear (Anycubic High Clear)
+    category: SLA resin
+    density: 1120
+    youngs_modulus: 700000000
+    poisson_ratio: 0.35
+    allowable_stress: 28000000
+    source: "Anycubic High Clear Resin TDS and store page; data sheet gives ranges, no post-cure, no tensile modulus (store page adds a Young's modulus range): LOWER bound of E and tensile strength, UPPER bound of density; nu 0.35"
+  - name: SLA resin, fast (Anycubic High Speed 2.0)
+    category: SLA resin
+    density: 1200
+    youngs_modulus: 1300000000
+    poisson_ratio: 0.35
+    allowable_stress: 37000000
+    source: "Anycubic High Speed Resin 2.0 TDS and store page; data sheet gives ranges, no post-cure, no tensile modulus (store page adds a Young's modulus range): LOWER bound of E and tensile strength, UPPER bound of density; nu 0.35"
+  - name: SLA resin, plant-based (Anycubic Plant-Based 2.0)
+    category: SLA resin
+    density: 1100
+    youngs_modulus: 1300000000
+    poisson_ratio: 0.35
+    allowable_stress: 35000000
+    source: "Anycubic Plant-Based Resin 2.0 TDS and store page; data sheet gives ranges, no post-cure, no tensile modulus (store page adds a Young's modulus range): LOWER bound of E and tensile strength, UPPER bound of density; nu 0.35"
+  - name: SLA resin, DLP (Anycubic DLP Craftsman)
+    category: SLA resin
+    density: 1200
+    youngs_modulus: 1300000000
+    poisson_ratio: 0.35
+    allowable_stress: 36000000
+    source: "Anycubic DLP Craftsman Resin TDS and store page; data sheet gives ranges, no post-cure, no tensile modulus (store page adds a Young's modulus range): LOWER bound of E and tensile strength, UPPER bound of density; nu 0.35"
+  - name: SLA resin, texture (Anycubic 14K Texture)
+    category: SLA resin
+    density: 1110
+    youngs_modulus: 1300000000
+    poisson_ratio: 0.35
+    allowable_stress: 35000000
+    source: "Anycubic 14K Texture Resin TDS and store page; data sheet gives ranges, no post-cure, no tensile modulus (store page adds a Young's modulus range): LOWER bound of E and tensile strength, UPPER bound of density; nu 0.35"
+  - name: SLA resin, bio (Anycubic Bio)
+    category: SLA resin
+    density: 1150
+    youngs_modulus: 1200000000
+    poisson_ratio: 0.35
+    allowable_stress: 35000000
+    source: "Anycubic Bio Resin TDS and store page; data sheet gives ranges, no post-cure, no tensile modulus (store page adds a Young's modulus range): LOWER bound of E and tensile strength, UPPER bound of density; nu 0.35"
+  - name: FDM PLA (Prusament)
+    category: FDM thermoplastic
+    density: 1240
+    youngs_modulus: 2300000000
+    poisson_ratio: 0.36
+    allowable_stress: 51000000
+    source: Prusament PLA TDS; nu 0.36 (literature, printed PLA); as printed, flat (XY/XZ) orientation, dry; allowable = tensile yield where given, else tensile strength; a printed part is weaker across its layers
+  - name: FDM PETG (Prusament)
+    category: FDM thermoplastic
+    density: 1270
+    youngs_modulus: 1500000000
+    poisson_ratio: 0.38
+    allowable_stress: 47000000
+    source: Prusament PETG TDS; nu 0.38 (literature, printed PETG); as printed, flat (XY/XZ) orientation, dry; allowable = tensile yield where given, else tensile strength; a printed part is weaker across its layers
+  - name: FDM ABS (Bambu Lab)
+    category: FDM thermoplastic
+    density: 1050
+    youngs_modulus: 2200000000
+    poisson_ratio: 0.37
+    allowable_stress: 33000000
+    source: Bambu Lab ABS TDS; nu 0.37 (literature, printed ABS); as printed, flat (XY/XZ) orientation, dry; allowable = tensile yield where given, else tensile strength; a printed part is weaker across its layers
+  - name: FDM ASA (Prusament)
+    category: FDM thermoplastic
+    density: 1070
+    youngs_modulus: 1600000000
+    poisson_ratio: 0.37
+    allowable_stress: 42000000
+    source: Prusament ASA TDS; nu 0.37 (as ABS); as printed, flat (XY/XZ) orientation, dry; allowable = tensile yield where given, else tensile strength; a printed part is weaker across its layers
+  - name: FDM polycarbonate (Prusament PC Blend)
+    category: FDM thermoplastic
+    density: 1220
+    youngs_modulus: 1900000000
+    poisson_ratio: 0.37
+    allowable_stress: 63000000
+    source: Prusament PC Blend TDS; nu 0.37 (literature, printed PC); as printed, flat (XY/XZ) orientation, dry; allowable = tensile yield where given, else tensile strength; a printed part is weaker across its layers
+  - name: FDM nylon PA6/66 (Polymaker CoPA)
+    category: FDM thermoplastic
+    density: 1120
+    youngs_modulus: 2220000000
+    poisson_ratio: 0.39
+    allowable_stress: 66200000
+    source: Polymaker PolyMide CoPA TDS; nu 0.39 (literature, printed nylon); as printed, flat (XY/XZ) orientation, dry; allowable = tensile yield where given, else tensile strength; a printed part is weaker across its layers
+  - name: FDM nylon-CF (Bambu Lab PAHT-CF)
+    category: FDM thermoplastic
+    density: 1060
+    youngs_modulus: 3860000000
+    poisson_ratio: 0.35
+    allowable_stress: 92000000
+    source: Bambu Lab PAHT-CF TDS; nu 0.35 (fibre-filled); as printed, flat (XY/XZ) orientation, dry; allowable = tensile yield where given, else tensile strength; a printed part is weaker across its layers
+  - name: FDM nylon-CF (Markforged Onyx)
+    category: FDM thermoplastic
+    density: 1200
+    youngs_modulus: 2400000000
+    poisson_ratio: 0.35
+    allowable_stress: 37000000
+    source: Markforged composites data sheet, Onyx; nu 0.35 (fibre-filled); as printed, flat (XY/XZ) orientation, dry; allowable = tensile yield where given, else tensile strength; a printed part is weaker across its layers
+  - name: FDM PEI (Stratasys ULTEM 9085)
+    category: FDM thermoplastic
+    density: 1340
+    youngs_modulus: 2520000000
+    poisson_ratio: 0.36
+    allowable_stress: 69200000
+    source: Stratasys ULTEM 9085 resin data sheet, XZ orientation column; nu 0.36 (literature, printed PEI); as printed, flat (XY/XZ) orientation, dry; allowable = tensile yield where given, else tensile strength; a printed part is weaker across its layers
+  - name: FDM PEEK (3DXTech ThermaX)
+    category: FDM thermoplastic
+    density: 1300
+    youngs_modulus: 3720000000
+    poisson_ratio: 0.4
+    allowable_stress: 100000000
+    source: 3DXTech ThermaX PEEK TDS; nu 0.40 (literature, PEEK); as printed, flat (XY/XZ) orientation, dry; allowable = tensile yield where given, else tensile strength; a printed part is weaker across its layers

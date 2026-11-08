@@ -229,7 +229,7 @@ int32 UAerotelicRealProjectTestCommandlet::Main(const FString& Params)
 			if (!Weak.IsValid() || Weak->IsDerived()) continue;
 			aerotelic::MassSpec Spec;
 			Spec.mode = aerotelic::MassMode::Material;
-			Spec.material = *aerotelic::FindMaterialPreset("Aluminium 2024-T3");
+			Spec.material = *aerotelic::FindMaterialPreset("Aluminium 2024-T3 sheet");
 			Spec.skin_thickness = Thickness;
 			Weak->SetMassSpec(Spec);
 		}

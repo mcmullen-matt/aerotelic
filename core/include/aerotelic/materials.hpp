@@ -36,13 +36,16 @@ struct Material {
 	bool IsStructural() const { return density > 0.0 && youngs_modulus > 0.0 && poisson_ratio >= 0.0 && poisson_ratio < 0.5; }
 };
 
-// The presets, in the order the dialog lists them. Typical handbook
-// values (room temperature; the allowable is the yield strength, a
-// representative quasi-isotropic figure for the laminate), then the
-// 3D-printing polymers: the photopolymer resins of SLA / LCD printers
-// (post-cured data-sheet figures) and the thermoplastics of FDM printers
-// (as printed, along the layers -- a printed part is weaker across them;
-// see materials.cpp and each preset's `source` for the sheets and caveats).
+// The presets, in the order the dialog lists them: the rows of
+// core/data/materials_presets.yaml (embedded at build time), every one
+// from a source that may be redistributed -- MIL-HDBK-5J design values for
+// the metals (the allowable is the handbook's design-minimum yield), the
+// USDA Wood Handbook and ANC-18 for the woods (the allowable is the
+// compression strength along the grain), representative figures for the
+// two laminates. Each row's `source` says which table and convention.
+// Materials from sources whose terms restrict redistribution (ASM
+// Handbook figures, manufacturers' data sheets) are not presets: see
+// core/data/materials_restricted.yaml and materials.cpp.
 const std::vector<Material>& MaterialPresets();
 // The preset of that name, or null. The name written to a project file
 // is the preset's, so a renamed preset would orphan old files: do not.

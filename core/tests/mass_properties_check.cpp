@@ -9,7 +9,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <fstream>
 #include <iostream>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 
@@ -247,9 +249,9 @@ void CheckModeNames() {
 	Check(std::string(MassModeName(MassMode::Asserted)) == "asserted" && std::string(MassModeName(MassMode::Material)) == "material", "mass mode name");
 
 	// The presets are materials: SI, structural, and found by name.
-	Check(MaterialPresets().size() >= 5, "there are material presets");
-	const Material* al = FindMaterialPreset("Aluminium 2024-T3");
-	Check(al != nullptr && al->IsStructural() && al->density == 2780.0 && al->youngs_modulus == 73.1e9, "2024-T3 is a preset with handbook figures");
+	Check(MaterialPresets().size() >= 60, "there are material presets (the embedded data/materials_presets.yaml parsed)");
+	const Material* al = FindMaterialPreset("Aluminium 2024-T3 sheet");
+	Check(al != nullptr && al->IsStructural() && al->density == 2768.0 && al->youngs_modulus == 72.4e9 && al->allowable_stress == 324.0e6, "2024-T3 sheet is a preset with MIL-HDBK-5J's figures");
 	Check(FindMaterialPreset("Unobtainium") == nullptr, "an unknown preset is null");
 	{
 		// Every preset is a structural material with a unique name, and the
@@ -262,19 +264,50 @@ void CheckModeNames() {
 		}
 		Check(all_structural, "every preset has density, modulus, a Poisson's ratio below 0.5 and an allowable");
 		Check(unique, "preset names are unique");
-		const Material* resin = FindMaterialPreset("SLA resin, standard (Formlabs Grey V4)");
-		const Material* pla = FindMaterialPreset("FDM PLA (Prusament)");
-		Check(resin != nullptr && resin->youngs_modulus == 2.8e9 && resin->allowable_stress == 65.0e6, "the standard SLA resin preset carries Formlabs' post-cured figures");
-		Check(pla != nullptr && pla->density == 1240.0 && pla->youngs_modulus == 2.3e9, "the FDM PLA preset carries Prusament's as-printed figures");
-		const Material* tough = FindMaterialPreset("SLA resin, tough (Anycubic Tough 2.0)");
+		// The materials whose sources restrict redistribution are no presets
+		// (2026-11-07): they are data/materials_restricted.yaml, which is not
+		// embedded, for a user who holds them to keep in their own library.
+		// It must parse and still carry their figures.
+		Check(FindMaterialPreset("SLA resin, standard (Formlabs Grey V4)") == nullptr && FindMaterialPreset("FDM PLA (Prusament)") == nullptr
+			&& FindMaterialPreset("Aluminium 2024-T3") == nullptr && FindMaterialPreset("Foam, PMI 71 kg/m^3") == nullptr,
+			"no data-sheet or ASM Handbook material is a preset");
+		bool every_preset_public = true;
+		for (const Material& m : presets) {
+			every_preset_public = every_preset_public && m.source.find("ASM Handbook") == std::string::npos
+				&& m.source.find("TDS") == std::string::npos && m.source.find("data sheet") == std::string::npos;
+		}
+		Check(every_preset_public, "no preset cites the ASM Handbook or a data sheet");
+		std::vector<Material> restricted;
+		{
+			std::ifstream in(std::string(AEROTELIC_DATA_DIR) + "/materials_restricted.yaml", std::ios::binary);
+			std::stringstream ss;
+			ss << in.rdbuf();
+			restricted = ReadMaterialsYaml(ss.str());
+		}
+		const Material* resin = nullptr;
+		const Material* pla = nullptr;
+		const Material* tough = nullptr;
+		const Material* old_al = nullptr;
+		bool restricted_sourced = true;
+		for (const Material& m : restricted) {
+			if (m.name == "SLA resin, standard (Formlabs Grey V4)") resin = &m;
+			if (m.name == "FDM PLA (Prusament)") pla = &m;
+			if (m.name == "SLA resin, tough (Anycubic Tough 2.0)") tough = &m;
+			if (m.name == "Aluminium 2024-T3") old_al = &m;
+			restricted_sourced = restricted_sourced && !m.category.empty() && !m.source.empty() && m.IsStructural() && MaterialProblem(m).empty();
+		}
+		Check(restricted.size() == 42 && restricted_sourced, "the restricted-source file carries its 42 materials, each complete with a category and a source");
+		Check(resin != nullptr && resin->youngs_modulus == 2.8e9 && resin->allowable_stress == 65.0e6, "the standard SLA resin carries Formlabs' post-cured figures");
+		Check(pla != nullptr && pla->density == 1240.0 && pla->youngs_modulus == 2.3e9, "the FDM PLA carries Prusament's as-printed figures");
 		Check(tough != nullptr && tough->density == 1150.0 && tough->youngs_modulus == 0.9e9 && tough->allowable_stress == 30.0e6,
-			"the Anycubic Tough 2.0 preset takes the data sheet's conservative bounds");
+			"the Anycubic Tough 2.0 takes the data sheet's conservative bounds");
+		Check(old_al != nullptr && old_al->density == 2780.0 && old_al->youngs_modulus == 73.1e9, "the ASM-sourced 2024-T3 kept its figures");
 		// Every preset says what family it belongs to and where its figures
 		// came from (the table's Category and Source columns, the Help tab).
 		bool sourced = true;
 		for (const Material& m : presets) sourced = sourced && !m.category.empty() && !m.source.empty();
 		Check(sourced, "every preset has a category and a source");
-		Check(al->category == "Metal" && resin->category == "SLA resin" && pla->category == "FDM thermoplastic", "the preset families");
+		Check(al->category == "Metal" && resin != nullptr && resin->category == "SLA resin" && pla != nullptr && pla->category == "FDM thermoplastic", "the material families");
 		// The hobbyist's woods: balsa in its grades and at least five woods.
 		int woods = 0;
 		for (const Material& m : presets) woods += m.category == "Wood" ? 1 : 0;
@@ -304,6 +337,7 @@ void CheckModeNames() {
 		std::vector<Material> mine = { {"Balsa, test", 160.0, 3.0e9, 0.30, 10.0e6, "Wood", "a test"} };
 		const std::string text = WriteMaterialsYaml(mine);
 		Check(text.find("materials:") != std::string::npos && text.find("Balsa, test") != std::string::npos, "the library file lists the materials");
+		Check(text.find("poisson_ratio: 0.3\n") != std::string::npos && text.find("0.29999") == std::string::npos, "the library file is written for people: 0.3 reads as 0.3");
 		const std::vector<Material> back = ReadMaterialsYaml(text);
 		Check(back.size() == 1 && back[0].name == "Balsa, test" && back[0].category == "Wood" && back[0].source == "a test"
 			&& back[0].density == 160.0 && back[0].youngs_modulus == 3.0e9 && back[0].poisson_ratio == 0.30 && back[0].allowable_stress == 10.0e6,

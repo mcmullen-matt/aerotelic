@@ -2264,7 +2264,7 @@ void ShowAerotelicStructuralFeaDialog(TFunction<void(const FText&)> Status)
 		{
 			AAerotelicEntityActor* E = C->Operand.Entity.Get();
 			if (E == nullptr || E->IsDerived() || HasStructuralMaterial(E->GetMassSpec())) continue;
-			if (const aerotelic::Material* Preset = aerotelic::FindMaterialPreset("Aluminium 2024-T3"))
+			if (const aerotelic::Material* Preset = aerotelic::FindMaterialPreset("Aluminium 2024-T3 sheet"))
 			{
 				aerotelic::MassSpec Spec;
 				Spec.mode = aerotelic::MassMode::Material;

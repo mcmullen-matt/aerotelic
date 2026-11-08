@@ -1814,7 +1814,10 @@ no nodes falls back and is flagged).
 ## Materials and the structural analysis (2026-10-22)
 
 **A material is a property of the stuff, not of the units.** The
-presets (`core/include/aerotelic/materials.hpp`: 2024-T3, 7075-T6,
+presets (since 2026-11-07 the rows of `core/data/materials_presets.yaml`,
+public-domain sources only -- see *The split, and presets as YAML* under
+*The Model menu and the material library*; as first written,
+`core/include/aerotelic/materials.hpp` carried 2024-T3, 7075-T6,
 6061-T6, Ti-6Al-4V, 4130, 17-4PH, AZ31B, quasi-isotropic CFRP and GFRP,
 spruce, a PMI foam; since 2026-11-06 the 3D-printing polymers too --
 seven photopolymer resins of SLA / LCD printers (Formlabs Grey, Clear,
@@ -2616,7 +2619,7 @@ Ti-6Al-6V-2Sn, SP-700, Ti-13V-11Cr-3Al, Ti-15V-3Cr-3Sn-3Al, Ti-10V-2Fe-3Al.
 Ti-6Al-4V STA row against the handbook.
 
 **Sources and redistribution (audit of 2026-11-07).** Of the sources the
-presets cite, the public-domain ones are MIL-HDBK-5J, the USDA Wood
+presets cited, the public-domain ones are MIL-HDBK-5J, the USDA Wood
 Handbook (FPL-GTR-190) and ANC-18 (US Government works), and MMPDS-01
 was released as an FAA report through NTIS with no copyright notice
 (prepared under contract, so not formally a 17 USC 105 work, but
@@ -2629,8 +2632,53 @@ Stratasys, 3DXTech, Evonik, AK Steel/Cleveland-Cliffs) is copyrighted
 and most of the sites' terms of use say personal / non-commercial use
 only; individual factual values are not copyrightable in the US (Feist
 v. Rural, 17 USC 103(b)), but the terms are a contract and the EU has a
-separate database right. Nothing has been removed; the rows are listed
-in the session notes for Matt to decide on.
+separate database right.
+
+**The split, and presets as YAML (2026-11-07, night).** Matt's decision:
+ship only what may be redistributed, move the rest into the user's own
+library. So the presets are now DATA -- `core/data/materials_presets.yaml`,
+69 rows, every one from MIL-HDBK-5J, the Wood Handbook / ANC-18 or no
+one's figures (the two representative laminates) -- and
+`core/src/materials.cpp` holds no material at all: `core/CMakeLists.txt`
+reads the file at configure time into a byte array
+(`build/generated/materials_presets_yaml.inc`, a configure dependency,
+so an edit to the YAML re-runs configure and rebuilds; `configure_file
+COPYONLY` keeps the timestamp still when the bytes did not change) that
+`MaterialPresets()` parses once with `ReadMaterialsYaml`. The seven
+original metal rows lost nothing: public-domain MIL-HDBK-5J rows of the
+same alloys were added under new names (`Aluminium 2024-T3 sheet`,
+`7075-T6 sheet`, `6061-T6 sheet`, `Steel 4130, normalised`, `Steel 17-4PH
+H900`, `Magnesium AZ31B-H24 sheet`, `Titanium Ti-6Al-4V annealed sheet`),
+since a preset's name may never change and the old names now belong to
+the restricted rows. The 42 restricted rows (the seven ASM-typical metals,
+the ROHACELL foam, 24 resins, 10 filaments) went to
+`core/data/materials_restricted.yaml` -- NOT embedded, NOT staged, kept in
+the tree so they are not lost; delete it before publishing the repository
+-- and were merged into Matt's `%LOCALAPPDATA%\MS2
+Aerodynamics\WingDesigner\materials.yaml` (his one existing custom entry
+kept, the previous file set aside as `materials.yaml.before-2026-11-07`),
+where the dialog lists them in bold like any material of his. A one-off
+`aerotelic_materials_split` tool (classify by source keyword, write both
+files, merge into the user's) did the migration and was then removed.
+`WriteMaterialsYaml` now streams the figures through the emitter at 12
+significant digits -- a double assigned to a `YAML::Node` is stringified
+at full precision on assignment, which is why the files used to read
+`0.33000000000000002`; the already-written files were rounded in place.
+Every reference to the old names moved to the new ones
+(`StructuralFeaDialog`'s smoke-test default, the commandlet tests' 2024-T3
+skins; the shells-over-core test builds its own round-figure foam instead
+of the ROHACELL preset). `mass_properties_check`: the embedded presets
+parse (>= 60), no preset cites the ASM Handbook or a data sheet, the
+restricted file parses to its 42 complete rows with their figures, and
+the library YAML writes 0.3 as 0.3.
+
+**The ratio columns (2026-11-07, night).** The Materials table gained
+E/ρ, √E/ρ, G/ρ, √G/ρ and σ/ρ -- Ashby's indices for a tie, a beam, a
+shaft (section fixed; radius free) and specific strength, G the isotropic
+E / (2 (1 + ν)) -- computed from the four figures in the project's units
+(`IndicesOf` in `MaterialLibraryDialog.cpp`), each sortable like the other
+columns (the order is unit-independent); the window grew to 1640 px to
+hold them and the Help tab explains them.
 
 **Scene tree > Material Properties slimmed.** The per-entity dialog no
 longer edits figures. One list -- *Not set*, *An asserted mass*, then

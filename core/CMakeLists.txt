@@ -83,6 +83,26 @@ target_include_directories(aerotelic_core PUBLIC include "${OCCT_ROOT}/include/o
 target_link_libraries(aerotelic_core PUBLIC ${OCCT_LINK_LIBS} "${YAMLCPP_LIB}")
 target_compile_definitions(aerotelic_core PUBLIC YAML_CPP_STATIC_DEFINE)
 
+# The material presets are data, not code: data/materials_presets.yaml, a
+# human-readable file whose every row cites a source that may be
+# redistributed. Its bytes are embedded into the library (src/materials.cpp
+# includes the generated array), so the application needs no file beside
+# it at run time. The file is read at configure time; listing it as a
+# configure dependency makes an edit re-run configure, and configure_file
+# only touches the generated header when the bytes changed, so nothing
+# recompiles needlessly. data/materials_restricted.yaml -- the sources
+# whose terms restrict redistribution -- is deliberately NOT embedded; the
+# tests read it from AEROTELIC_DATA_DIR to check that it parses.
+set(MATERIALS_PRESETS_YAML "${CMAKE_CURRENT_SOURCE_DIR}/data/materials_presets.yaml")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${MATERIALS_PRESETS_YAML}")
+file(READ "${MATERIALS_PRESETS_YAML}" MATERIALS_PRESETS_HEX HEX)
+string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1," MATERIALS_PRESETS_BYTES "${MATERIALS_PRESETS_HEX}")
+string(REGEX REPLACE "((0x[0-9a-f][0-9a-f],){24})" "\\1\n" MATERIALS_PRESETS_BYTES "${MATERIALS_PRESETS_BYTES}")
+file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/generated/materials_presets_yaml.inc.tmp" "// Generated from core/data/materials_presets.yaml by CMake: edit the YAML, not this.\n${MATERIALS_PRESETS_BYTES}\n")
+configure_file("${CMAKE_CURRENT_BINARY_DIR}/generated/materials_presets_yaml.inc.tmp" "${CMAKE_CURRENT_BINARY_DIR}/generated/materials_presets_yaml.inc" COPYONLY)
+target_include_directories(aerotelic_core PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
+add_compile_definitions(AEROTELIC_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data")
+
 # The STEP writer the application runs as a separate process (see
 # src/tools/step_writer.cpp): the STEP + XCAF toolkits, which the
 # application itself must not load.

@@ -276,14 +276,16 @@ void CheckMassSpecRoundTrip() {
 	CheckClose(asserted.mass.mass, 12.5, 1e-12, "mass round trip: the asserted mass");
 
 	e.mass.mode = MassMode::Material;
-	e.mass.material = *FindMaterialPreset("Titanium Ti-6Al-4V");
+	// The MIL-HDBK-5J Ti-6Al-4V sheet (the ASM-typical "Titanium Ti-6Al-4V"
+	// is no longer a preset: see materials.cpp).
+	e.mass.material = *FindMaterialPreset("Titanium Ti-6Al-4V annealed sheet");
 	ProjectEntity by_material = RoundTripThroughText(e);
 	Check(by_material.mass.mode == MassMode::Material, "mass round trip: material mode survives");
-	Check(by_material.mass.material.name == "Titanium Ti-6Al-4V", "mass round trip: the material's name");
-	CheckClose(by_material.mass.material.density, 4430.0, 1e-12, "mass round trip: the density");
-	CheckClose(by_material.mass.material.youngs_modulus, 113.8e9, 1e-3, "mass round trip: Young's modulus");
-	CheckClose(by_material.mass.material.poisson_ratio, 0.342, 1e-12, "mass round trip: Poisson's ratio");
-	CheckClose(by_material.mass.material.allowable_stress, 880.0e6, 1e-3, "mass round trip: the allowable");
+	Check(by_material.mass.material.name == "Titanium Ti-6Al-4V annealed sheet", "mass round trip: the material's name");
+	CheckClose(by_material.mass.material.density, 4429.0, 1e-12, "mass round trip: the density");
+	CheckClose(by_material.mass.material.youngs_modulus, 110.3e9, 1e-3, "mass round trip: Young's modulus");
+	CheckClose(by_material.mass.material.poisson_ratio, 0.31, 1e-12, "mass round trip: Poisson's ratio");
+	CheckClose(by_material.mass.material.allowable_stress, 869.0e6, 1e-3, "mass round trip: the allowable");
 	Check(IsMaterialPreset(by_material.mass.material), "mass round trip: it is still the preset");
 	CheckClose(by_material.mass.skin_thickness, 0.0, 0.0, "mass round trip: a solid writes no skin thickness and reads back solid");
 
@@ -292,7 +294,7 @@ void CheckMassSpecRoundTrip() {
 	ProjectEntity skin = RoundTripThroughText(e);
 	Check(skin.mass.mode == MassMode::Material && skin.mass.IsSkin(), "mass round trip: a skin stays a skin");
 	CheckClose(skin.mass.skin_thickness, 0.0025, 1e-15, "mass round trip: the skin thickness");
-	Check(skin.mass.material.name == "Titanium Ti-6Al-4V", "mass round trip: the skin's material");
+	Check(skin.mass.material.name == "Titanium Ti-6Al-4V annealed sheet", "mass round trip: the skin's material");
 	e.mass.skin_thickness = 0.0;
 
 	// The forms the file is meant to read as, the pre-material one included.

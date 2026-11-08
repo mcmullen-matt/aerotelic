@@ -54,7 +54,9 @@ import potential_flow_check as pfc  # noqa: E402  (icosphere, write_tri)
 import numpy as np  # noqa: E402
 import gmsh  # noqa: E402
 
-AL = {"name": "Aluminium 2024-T3", "density": 2780.0, "youngs_modulus": 73.1e9, "poisson_ratio": 0.33, "allowable_stress": 345.0e6}
+# The "Aluminium 2024-T3 sheet" preset: MIL-HDBK-5J Table 3.2.3.0(b1), A-basis
+# (the ASM-typical figures this used to carry are no longer shipped).
+AL = {"name": "Aluminium 2024-T3 sheet", "density": 2768.0, "youngs_modulus": 72.4e9, "poisson_ratio": 0.33, "allowable_stress": 324.0e6}
 
 
 def check(cond, msg):

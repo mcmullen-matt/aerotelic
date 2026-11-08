@@ -40,10 +40,34 @@ namespace
 	using FRowPtr = TSharedPtr<FRow>;
 
 	const FName ColName("Name"), ColCategory("Category"), ColDensity("Density"), ColModulus("Modulus"),
-		ColPoisson("Poisson"), ColAllowable("Allowable"), ColSource("Source");
+		ColPoisson("Poisson"), ColAllowable("Allowable"), ColSpecE("SpecE"), ColSpecRootE("SpecRootE"),
+		ColSpecG("SpecG"), ColSpecRootG("SpecRootG"), ColSpecStrength("SpecStrength"), ColSource("Source");
 
 	FString Str(const std::string& S) { return FString(UTF8_TO_TCHAR(S.c_str())); }
 	std::string Std(const FString& S) { return std::string(TCHAR_TO_UTF8(*S)); }
+
+	// A material's stiffness- and strength-to-weight ratios (Ashby's
+	// material indices), in the project's units: E/rho ranks materials for
+	// a tie of least mass at a given axial stiffness, sqrt(E)/rho for a beam
+	// of given length and bending stiffness, G/rho and sqrt(G)/rho for a
+	// shaft in torsion (section fixed, radius free), sigma/rho for a tie of
+	// least mass at a given load. G is the isotropic E / (2 (1 + nu)). A
+	// ratio's ranking is the same in any units.
+	struct FIndices { double E = 0.0, RootE = 0.0, G = 0.0, RootG = 0.0, Strength = 0.0; };
+	FIndices IndicesOf(const Material& M, const aerotelic::UnitSystem& U)
+	{
+		FIndices I;
+		const double Rho = M.density / U.DensityToSI();
+		if (Rho <= 0.0) return I;
+		const double E = M.youngs_modulus / U.StressToSI();
+		const double G = E / (2.0 * (1.0 + M.poisson_ratio));
+		I.E = E / Rho;
+		I.RootE = FMath::Sqrt(FMath::Max(E, 0.0)) / Rho;
+		I.G = G / Rho;
+		I.RootG = FMath::Sqrt(FMath::Max(G, 0.0)) / Rho;
+		I.Strength = (M.allowable_stress / U.StressToSI()) / Rho;
+		return I;
+	}
 
 	FText WithUnit(const FText& Label, const std::string& Unit)
 	{
@@ -138,6 +162,12 @@ namespace
 			if (SortColumn == ColPoisson) return CompareNumber(A.M.poisson_ratio, B.M.poisson_ratio);
 			if (SortColumn == ColAllowable) return CompareNumber(A.M.allowable_stress, B.M.allowable_stress);
 			if (SortColumn == ColSource) return CompareText(A.M.source, B.M.source);
+			const FIndices IA = IndicesOf(A.M, Units), IB = IndicesOf(B.M, Units);
+			if (SortColumn == ColSpecE) return CompareNumber(IA.E, IB.E);
+			if (SortColumn == ColSpecRootE) return CompareNumber(IA.RootE, IB.RootE);
+			if (SortColumn == ColSpecG) return CompareNumber(IA.G, IB.G);
+			if (SortColumn == ColSpecRootG) return CompareNumber(IA.RootG, IB.RootG);
+			if (SortColumn == ColSpecStrength) return CompareNumber(IA.Strength, IB.Strength);
 			return 0;
 		}
 
@@ -195,6 +225,11 @@ namespace
 			else if (Column == ColModulus) { Text = FormatG(M.youngs_modulus / Units.StressToSI(), 4); bRight = true; }
 			else if (Column == ColPoisson) { Text = FormatG(M.poisson_ratio, 3); bRight = true; }
 			else if (Column == ColAllowable) { Text = FormatG(M.allowable_stress / Units.StressToSI(), 4); bRight = true; }
+			else if (Column == ColSpecE) { Text = FormatG(IndicesOf(M, Units).E, 4); bRight = true; }
+			else if (Column == ColSpecRootE) { Text = FormatG(IndicesOf(M, Units).RootE, 4); bRight = true; }
+			else if (Column == ColSpecG) { Text = FormatG(IndicesOf(M, Units).G, 4); bRight = true; }
+			else if (Column == ColSpecRootG) { Text = FormatG(IndicesOf(M, Units).RootG, 4); bRight = true; }
+			else if (Column == ColSpecStrength) { Text = FormatG(IndicesOf(M, Units).Strength, 4); bRight = true; }
 			else if (Column == ColSource) { Text = FText::FromString(Str(M.source)); Tip = Text; }
 			return SNew(SBox).Padding(FMargin(4, 1)).HAlign(bRight ? HAlign_Right : HAlign_Left).VAlign(VAlign_Center)
 				[
@@ -239,6 +274,11 @@ namespace
 		"The Source column says where a preset's figures came from and what convention they follow; hover a row to read the whole of it. "
 		"Double-click a row to take it to the Custom tab as the starting point for a material of your own.\n"
 		"\n"
+		"The five ratio columns are the stiffness- and strength-to-weight indices that rank materials for a part of least mass (Ashby's material indices), computed from the four figures in the project's units -- so their numbers change with the units but their order never does. "
+		"E/ρ ranks materials for a tie, an axial member of given stiffness; √E/ρ for a beam of given length and bending stiffness, where a lighter, thicker section wins (a plate's index would be the cube root); "
+		"G/ρ and √G/ρ do the same for a shaft in torsion, with the section fixed and with the radius free, the shear modulus taken as the isotropic G = E / (2 (1 + ν)); σ/ρ is the specific strength, the allowable stress over density, for a tie of given load. "
+		"Sort by one to see why spruce and balsa beat aluminium for a beam while aluminium beats them for a tie.\n"
+		"\n"
 		"THE CUSTOM TAB\n"
 		"\n"
 		"Define your own materials. Pick a material under 'Start from' to copy its figures into the fields (or select one of yours on the left to edit it), then type a name, a category of your choosing, the four figures in the project's units, and where the figures came from. "
@@ -249,6 +289,12 @@ namespace
 		"An entity is given a COPY of the material it is assigned (the name and the figures, saved in the project file), so editing or removing a library material changes nothing already assigned: pick it again on the entity to take the new figures. "
 		"A project file carries its own materials, so it opens the same on a machine without your library.\n"
 		"\n"
+		"THE FILES\n"
+		"\n"
+		"Both libraries are plain YAML a person can read and edit. The presets are core/data/materials_presets.yaml in the source tree, built into the application (edit it and rebuild); your own are the file named at the bottom of the Custom tab, written the moment you add, update or remove a material here, and read when the application starts -- so you may also edit it by hand while the application is closed. "
+		"The two share one schema: a 'materials' list of name, category, density (kg/m^3), youngs_modulus (Pa), poisson_ratio, allowable_stress (Pa; 0 reports no margin) and source. "
+		"The application ships only materials whose sources permit public and commercial redistribution. Materials whose sources' terms restrict it -- the ASM Handbook's typical figures for the first seven metals and every manufacturer's data sheet (the resins, the filaments, the PMI foam, AK Steel's 17-4PH) -- were split out on 2026-11-07 into core/data/materials_restricted.yaml, which is not built in, and into the library file of the user who held them, where they appear in bold like any material of theirs.\n"
+		"\n"
 		"ASSIGNING A MATERIAL\n"
 		"\n"
 		"Right-click a parameterisation in the Scene tree and choose Material Properties: pick the material from the list, give the skin thickness (0 for a solid body; a positive thickness makes every body of the entity a skin of the material that thick, which is also what a lattice hollows it by and what the structural analysis gives its shells), and read off the enclosed volume, the surface area and what it would weigh. "
@@ -256,11 +302,14 @@ namespace
 		"\n"
 		"CONVENTIONS OF THE PRESETS\n"
 		"\n"
-		"Metals: room-temperature handbook values. The seven original rows (2024-T3, 7075-T6, 6061-T6, Ti-6Al-4V annealed, 4130 normalised, 17-4PH H900, AZ31B-H24) are TYPICAL values whose allowable is the typical tensile yield. "
-		"The alloy tables added after them (at least ten aluminium, steel, magnesium and titanium alloys) are MIL-HDBK-5J design values: their allowable is the handbook's MINIMUM tensile yield -- A-basis (99% of material exceeds it, 95% confidence) where the handbook gives one, else S-basis (the procurement specification's minimum) -- longitudinal, for the product form, condition and thickness range the Source column names, so it is a design minimum rather than a typical figure and sits 5-15% below the typical yield of the same alloy. "
-		"Magnesium casting rows are the handbook's 'any area' minimums, which are well below separately cast test-bar figures. Where the handbook gives no Poisson's ratio (some titanium alloys) a literature value is used and the Source column says so.\n"
+		"Metals: MIL-HDBK-5J design values, room temperature, for at least ten aluminium, steel, magnesium and titanium alloys each. The allowable is the handbook's MINIMUM tensile yield -- A-basis (99% of material exceeds it, 95% confidence) where the handbook gives one, else S-basis (the procurement specification's minimum) -- longitudinal, for the product form, condition and thickness range the Source column names: a design minimum rather than a typical figure, 5-15% below the typical yield of the same alloy. "
+		"Magnesium casting rows are the handbook's 'any area' minimums, which are well below separately cast test-bar figures. Where the handbook gives no Poisson's ratio (some titanium alloys) a literature value is used and the Source column says so. "
+		"(The seven metal rows the application used to ship -- 2024-T3, 7075-T6, 6061-T6, Ti-6Al-4V, 4130, 17-4PH H900, AZ31B -- were the ASM Handbook's TYPICAL values with the typical yield as allowable; they are in the restricted file and in the library of a user who held them, and have handbook rows of the same alloys here.)\n"
 		"Laminates: representative quasi-isotropic in-plane figures for a carbon/epoxy and an E-glass/epoxy laminate, not any one supplier's; the allowable is a representative laminate strength.\n"
 		"Woods: the USDA Wood Handbook's clear-wood figures along the grain at 12% moisture, density from its specific gravity, Poisson's ratio nu_LR from its Table 5-1; the allowable is the compression strength parallel to the grain (the lower of the two, what a spar cap buckles at). Balsa is sold by weight, so three grades are given -- contest-light, medium, hard -- with the Handbook's figures scaled in proportion to density (its stiffness and strength go roughly as its density: Borrega & Gibson 2015). The two plywoods (aircraft birch, poplar lite-ply) take the solid wood at two-thirds along the face grain of a three-ply sheet, ANC-18's approach, and an approximate in-plane Poisson's ratio of 0.2. Weigh a sheet: hobby stock varies more than any handbook.\n"
+		"\n"
+		"CONVENTIONS OF THE DATA-SHEET MATERIALS (not shipped; in your library if you hold them)\n"
+		"\n"
 		"Foam: the data-sheet figure for the nominal grade; the allowable sits between the compressive and tensile strengths.\n"
 		"SLA / LCD / DLP resins: the manufacturers' technical data sheets, POST-CURED figures (ASTM D638 tensile modulus and strength); the allowable is the tensile yield where the sheet gives one, else the strength at break; densities from the sheet or Formlabs' post-cured density table. Poisson's ratio is not on the sheets: 0.35 is the literature figure for cured acrylates (0.30 glass-filled, 0.38 for the soft polypropylene-like and ductile resins, 0.42 for the near-elastomeric one). "
 		"Anycubic's sheets give ranges, no post-cure and no tensile modulus (the store pages add a Young's modulus range): the LOWER bound of the modulus and of the tensile strength and the UPPER bound of the density were taken, a conservative card.\n"
@@ -268,18 +317,19 @@ namespace
 		"\n"
 		"SOURCES\n"
 		"\n"
-		"Metals, the seven original rows: MMPDS-01 (Metallic Materials Properties Development and Standardization, DOT/FAA/AR-MMPDS-01, FAA/Battelle, 2003) and ASM Handbook vol. 1 (Irons, Steels and High-Performance Alloys) and vol. 2 (Nonferrous Alloys), ASM International; AK Steel 17-4 PH stainless steel product data bulletin.\n"
-		"Metals, the alloy tables: MIL-HDBK-5J, Metallic Materials and Elements for Aerospace Vehicle Structures, US Department of Defense, 31 January 2003 (Distribution Statement A: approved for public release, distribution unlimited; a US Government work in the public domain) -- the 'Design Mechanical and Physical Properties' table of each alloy, cited by table number in the Source column: Chapter 2 steels, Chapter 3 aluminium, Chapter 4 magnesium, Chapter 5 titanium, Chapter 6 A-286. MMPDS-01 is the FAA's technically equivalent re-issue of it; later MMPDS editions are copyrighted by Battelle.\n"
+		"Metals: MIL-HDBK-5J, Metallic Materials and Elements for Aerospace Vehicle Structures, US Department of Defense, 31 January 2003 (Distribution Statement A: approved for public release, distribution unlimited; a US Government work in the public domain) -- the 'Design Mechanical and Physical Properties' table of each alloy, cited by table number in the Source column: Chapter 2 steels, Chapter 3 aluminium, Chapter 4 magnesium, Chapter 5 titanium, Chapter 6 A-286. MMPDS-01 (DOT/FAA/AR-MMPDS-01, 2003) is the FAA's technically equivalent re-issue of it; later MMPDS editions are copyrighted by Battelle and are not used.\n"
 		"Wood: Forest Products Laboratory, Wood Handbook -- Wood as an Engineering Material, General Technical Report FPL-GTR-190, USDA, 2010: Table 5-3 (Sitka spruce, American basswood, Eastern white pine, yellow-poplar, Coast Douglas-fir, yellow birch), Table 5-5 (balsa), Table 5-1 (Poisson's ratios), all at 12% moisture; "
 		"M. Borrega and L. J. Gibson, 'Mechanics of balsa (Ochroma pyramidale) wood', Mechanics of Materials 84 (2015) 75-90, for the density scaling of the balsa grades; "
 		"ANC-18, Design of Wood Aircraft Structures, ANC Bulletin, US Army-Navy-Civil Committee on Aircraft Design Criteria, 1951, for the plywood approach.\n"
+		"\n"
+		"Sources of the data-sheet materials, whose terms of use restrict redistribution (so they are not shipped): ASM Handbook vol. 1 (Irons, Steels and High-Performance Alloys) and vol. 2 (Nonferrous Alloys), ASM International, and the AK Steel 17-4 PH product data bulletin, for the seven former metal rows. "
 		"Foam: Evonik Industries, ROHACELL IG / IG-F technical data sheet (grade 71).\n"
 		"Resins: Formlabs technical data sheets -- Grey Resin V4, Clear Resin V4.1, Tough 2000 Resin V2, Durable Resin, High Temp Resin V2, Rigid 10K Resin -- and Formlabs support, 'Density of selected Formlabs SLA resins' (post-cured); Siraya Tech, Blu resin technical data sheet; "
 		"Anycubic technical data sheets (store.anycubic.com, resin user manual index) and store pages for Standard, Standard V2, 16K Standard, ABS-Like 2.0, ABS-Like V2, ABS-Like 3.0, ABS-Like Pro 2, Water-Wash ABS-Like 3.0, Water-Wash 2.0, Tough 2.0, Tough Ultra, High Clear, High Speed 2.0, Plant-Based 2.0, DLP Craftsman, 14K Texture and Bio resins.\n"
 		"FDM: Prusa Research, Prusament PLA, PETG, ASA and PC Blend technical data sheets; Bambu Lab, ABS and PAHT-CF technical data sheets; Polymaker, PolyMide CoPA technical data sheet; Markforged, composites material data sheet (Onyx); Stratasys, ULTEM 9085 resin data sheet (XZ orientation); 3DXTech, ThermaX PEEK technical data sheet.\n"
 		"Poisson's ratios of printed polymers: literature values for cured acrylate resins and printed PLA, ABS, PETG, nylon, PC, PEI and PEEK; 0.35 for fibre-filled filaments.\n"
 		"\n"
-		"The figures are the suppliers' and the handbooks' typical values, not design allowables for any particular part: a printed or moulded part's properties depend on its process, orientation, cure and environment. Check them against your own coupons before trusting a margin.");
+		"The metal presets are handbook design minimums for the product form named, the woods clear-wood averages, the data-sheet materials their suppliers' typical values: none is a design allowable for any particular part. A printed or moulded part's properties depend on its process, orientation, cure and environment. Check them against your own coupons before trusting a margin.");
 }
 
 void ShowAerotelicMaterialLibraryDialog(TFunction<void(const FText&)> Status)
@@ -295,7 +345,7 @@ void ShowAerotelicMaterialLibraryDialog(TFunction<void(const FText&)> Status)
 
 	TSharedRef<SWindow> Window = SNew(SWindow)
 		.Title(LOCTEXT("Title", "Material Properties"))
-		.ClientSize(FVector2D(1180, 660))
+		.ClientSize(FVector2D(1640, 680))
 		.SupportsMaximize(true)
 		.SupportsMinimize(false);
 	TWeakPtr<SWindow> WeakWindow = Window;
@@ -323,12 +373,18 @@ void ShowAerotelicMaterialLibraryDialog(TFunction<void(const FText&)> Status)
 			});
 	};
 
+	// The ratio columns' units: stress over density, and root-stress over
+	// density, in the project's names.
+	const std::string RatioUnit = std::string(Units.StressName()) + "/(" + Units.DensityName() + ")";
+	const std::string RootRatioUnit = std::string(Units.StressName()) + "^0.5/(" + Units.DensityName() + ")";
+
 	TSharedRef<SWidget> MaterialsTab =
 		SNew(SVerticalBox)
 		+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 6)
 		[
 			MakeInfoLabel(FText::Format(LOCTEXT("TableHint",
-				"Every material a body can be made of: the presets, then your own in bold (Custom tab). Click a column header to sort by it, again to reverse. Figures are in the project's units -- density in {0}, stresses in {1} (Model > Units) -- kept in SI underneath. Hover a row for its full source; double-click one to start a material of your own from it."),
+				"Every material a body can be made of: the presets, then your own in bold (Custom tab). Click a column header to sort by it, again to reverse. Figures are in the project's units -- density in {0}, stresses in {1} (Model > Units) -- kept in SI underneath. "
+				"The five ratio columns rank stiffness and strength against weight: E/ρ for a tie, √E/ρ for a beam, G/ρ and √G/ρ for a shaft, σ/ρ for strength (G from E and ν); their order is the same in any units. Hover a row for its full source; double-click one to start a material of your own from it."),
 				FText::FromString(Str(Units.DensityName())), FText::FromString(Str(Units.StressName()))))
 		]
 		+ SVerticalBox::Slot().FillHeight(1.0f)
@@ -357,7 +413,12 @@ void ShowAerotelicMaterialLibraryDialog(TFunction<void(const FText&)> Status)
 					+ Column(ColModulus, WithUnit(LOCTEXT("ColModulus", "Young's modulus"), Units.StressName()), LOCTEXT("ColModulusTip", "Tensile modulus of elasticity, in the project's stress unit")).ManualWidth(135)
 					+ Column(ColPoisson, LOCTEXT("ColPoisson", "Poisson's ratio"), LOCTEXT("ColPoissonTip", "Lateral over axial strain; 0.5 would be incompressible")).ManualWidth(105)
 					+ Column(ColAllowable, WithUnit(LOCTEXT("ColAllowable", "Allowable stress"), Units.StressName()), LOCTEXT("ColAllowableTip", "The stress a margin is reported against (the yield, or the strength where there is no yield), in the project's stress unit")).ManualWidth(135)
-					+ Column(ColSource, LOCTEXT("ColSource", "Source"), LOCTEXT("ColSourceTip", "Where the figures came from and the convention they follow; hover a row for the whole of it")).FillWidth(3.2f)
+					+ Column(ColSpecE, WithUnit(LOCTEXT("ColSpecE", "E/ρ"), RatioUnit), LOCTEXT("ColSpecETip", "Specific stiffness: Young's modulus over density, in the project's units. The index of a tie (axial member) of least mass at a given stiffness; the ranking is the same in any units")).ManualWidth(100)
+					+ Column(ColSpecRootE, WithUnit(LOCTEXT("ColSpecRootE", "√E/ρ"), RootRatioUnit), LOCTEXT("ColSpecRootETip", "Square root of Young's modulus over density: the index of a beam of given length and bending stiffness and least mass (a plate's would be the cube root)")).ManualWidth(100)
+					+ Column(ColSpecG, WithUnit(LOCTEXT("ColSpecG", "G/ρ"), RatioUnit), LOCTEXT("ColSpecGTip", "Shear modulus over density, G = E / (2 (1 + ν)) for an isotropic material: the index of a shaft of given section and least mass at a given torsional stiffness")).ManualWidth(100)
+					+ Column(ColSpecRootG, WithUnit(LOCTEXT("ColSpecRootG", "√G/ρ"), RootRatioUnit), LOCTEXT("ColSpecRootGTip", "Square root of the shear modulus over density: the index of a shaft of given length and torsional stiffness, radius free, and least mass")).ManualWidth(100)
+					+ Column(ColSpecStrength, WithUnit(LOCTEXT("ColSpecStrength", "σ/ρ"), RatioUnit), LOCTEXT("ColSpecStrengthTip", "Specific strength: the allowable stress over density, the index of a tie of least mass at a given load")).ManualWidth(100)
+					+ Column(ColSource, LOCTEXT("ColSource", "Source"), LOCTEXT("ColSourceTip", "Where the figures came from and the convention they follow; hover a row for the whole of it")).FillWidth(2.6f)
 				))
 		];
 

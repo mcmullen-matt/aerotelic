@@ -264,7 +264,7 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 		AerotelicMaterialLibrary::SetFilePathOverride(LibPath);
 		Check(AerotelicMaterialLibrary::Custom().Num() == 0, "library: starts empty when there is no file");
 		Check(AerotelicMaterialLibrary::All().Num() == (int32)aerotelic::MaterialPresets().size(), "library: with nothing custom the list is the presets");
-		Check(AerotelicMaterialLibrary::Find("Aluminium 2024-T3") != nullptr, "library: a preset is found by name");
+		Check(AerotelicMaterialLibrary::Find("Aluminium 2024-T3 sheet") != nullptr, "library: a preset is found by name");
 
 		aerotelic::Material Mine;
 		Mine.name = "Balsa, test";
@@ -286,7 +286,7 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 		Check(AerotelicMaterialLibrary::FindMatching(Edited) == nullptr, "library: an edited copy matches nothing");
 
 		aerotelic::Material Clash = Mine;
-		Clash.name = "Aluminium 2024-T3";
+		Clash.name = "Aluminium 2024-T3 sheet";
 		Check(!AerotelicMaterialLibrary::SetCustom({ Clash }, Error) && !Error.IsEmpty(), "library: a preset's name is refused");
 		Check(!AerotelicMaterialLibrary::SetCustom({ Mine, Mine }, Error), "library: a repeated name is refused");
 		aerotelic::Material Bad = Mine;
@@ -687,7 +687,7 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 			if (Weak.IsValid() && Weak->GetEntityType() == aerotelic::project_yaml::EntityType::Lattice) FeaLattice = Weak.Get();
 		}
 		const FAerotelicLatticeModel* FeaModel = FeaLattice ? FeaLattice->GetModelAs<FAerotelicLatticeModel>() : nullptr;
-		const aerotelic::Material Al = *aerotelic::FindMaterialPreset("Aluminium 2024-T3");
+		const aerotelic::Material Al = *aerotelic::FindMaterialPreset("Aluminium 2024-T3 sheet");
 		aerotelic::Material Soft;
 		Soft.name = "soft core";
 		Soft.density = 50.0;
@@ -807,7 +807,14 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 		UE_LOG(LogAerotelicDocumentTest, Display, TEXT("step: structural fea (shells over a homogenised core)"));
 		if (FeaModel != nullptr && Primitive != nullptr)
 		{
-			const aerotelic::Material Foam = *aerotelic::FindMaterialPreset("Foam, PMI 71 kg/m^3");
+			// A light closed-cell foam for the core, in round figures (the
+			// data-sheet presets are no longer shipped: see materials.cpp).
+			aerotelic::Material Foam;
+			Foam.name = "test foam";
+			Foam.density = 70.0;
+			Foam.youngs_modulus = 0.1e9;
+			Foam.poisson_ratio = 0.30;
+			Foam.allowable_stress = 1.5e6;
 			const std::vector<aerotelic::NamedMesh> OwnGrid = Primitive->GetPlacedMeshes(false);
 			const std::vector<aerotelic::NamedMesh> Finer = Primitive->GetPlacedMeshes(false, 1e-3);
 			Check(OwnGrid.size() == 1 && OwnGrid[0].mesh.IsClosedManifold() && OwnGrid[0].mesh.SignedVolume() > 0.0, "fea (shells): the body's own grid (tolerance 0) is one closed, outward body");
@@ -888,7 +895,7 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 							Area += 0.5 * aerotelic::Length(aerotelic::Cross(Outer.vertices[T[1]] - Outer.vertices[T[0]], Outer.vertices[T[2]] - Outer.vertices[T[0]]));
 						}
 						const double Volume = Outer.SignedVolume();
-						const double ExpectedMass = 2780.0 * 0.05 * Area + Foam.density * G.RelativeDensity * (1.0 - Area * 0.05 / Volume) * Volume;
+						const double ExpectedMass = Al.density * 0.05 * Area + Foam.density * G.RelativeDensity * (1.0 - Area * 0.05 / Volume) * Volume;
 						Check(FMath::IsNearlyEqual(R.Mass, ExpectedMass, 1e-4 * ExpectedMass),
 							FString::Printf(TEXT("fea (shells): the mass is the skin's rho t A plus the overlap-corrected core (%.6g vs %.6g)"), R.Mass, ExpectedMass));
 						const double Weight = R.Mass * 9.80665;
@@ -1125,7 +1132,7 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 			Check(Beam->GetModel() != nullptr && Beam->GetModel()->mesh.cells == std::array<int, 3>{2, 20, 2}, "fea (beam): the entity took the draft's grid (the Mesh tab's cells travel with Apply)");
 			std::unique_ptr<aerotelic::ISolidModel> Again = Doc->CloneEntityModel(Beam);
 			Check(Again != nullptr && Again->mesh.cells == std::array<int, 3>{2, 20, 2}, "fea (beam): a fresh draft starts on the entity's grid");
-			const aerotelic::Material Al = *aerotelic::FindMaterialPreset("Aluminium 2024-T3");
+			const aerotelic::Material Al = *aerotelic::FindMaterialPreset("Aluminium 2024-T3 sheet");
 			aerotelic::MassSpec Skin;
 			Skin.mode = aerotelic::MassMode::Material;
 			Skin.material = Al;
