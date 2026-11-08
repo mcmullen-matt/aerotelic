@@ -2583,6 +2583,55 @@ three tabs:
   sheets (as printed, flat orientation) for the FDM thermoplastics, with
   the caveat that these are typical values, not design allowables.
 
+**The alloy tables (2026-11-07, evening).** Matt asked for at least ten
+alloys each of aluminium, steel, magnesium and titanium, and for the
+sources to be ones whose figures can be redistributed publicly and
+commercially. Every new row comes from one source: MIL-HDBK-5J
+(*Metallic Materials and Elements for Aerospace Vehicle Structures*, US
+DoD, 31 January 2003), a US Government work with Distribution Statement
+A, public domain -- the FAA re-issued the same data as MMPDS-01, and
+Battelle's later MMPDS editions are copyrighted and sold, which is why
+the handbook's 2003 edition is the one cited. The PDF was downloaded
+from everyspec.com and its 1733 pages text-extracted with pypdf; each
+row's `source` names the handbook table, specification, product form,
+condition, thickness range and basis, and the two strengths in ksi
+(ksi x 6.894757 = MPa, lb/in^3 x 27679.9 = kg/m^3). Convention, unlike
+the seven original metal rows (typical values): the allowable is the
+handbook's design *minimum* tensile yield, A-basis where given else
+S-basis, longitudinal; so these allowables sit 5-15% below the typical
+yield of the same alloy, and the magnesium castings' "any area" minimums
+sit far below test-bar figures. Where the handbook leaves Poisson's
+ratio blank (CP titanium, Ti-5Al-2.5Sn, SP-700 and the three beta
+alloys) a literature value is used and the source says so. Added:
+aluminium 2014-T6, 2090-T83, 2124-T851, 2219-T87, 5052-H34, 5083-H321,
+6013-T6, 7050-T7451, 7055-T77511, 7475-T761, A356.0-T6, A357.0-T6;
+steels 1025, 4130 (125 ksi), 4140 (180), 4340 (200), 300M, D6AC,
+4330V, H-11, maraging 250, AerMet 100, PH13-8Mo H1000, 15-5PH H1025,
+17-4PH H1025, 17-7PH TH1050, 301 annealed and half hard, A-286;
+magnesium AZ31B-F, AZ61A-F, ZK60A-T5, AM100A-T6, AZ91C-T6, AZ91E-T6,
+AZ92A-T6, EZ33A-T5, QE22A-T6, ZE41A-T5; titanium CP grade 2 and 4,
+Ti-5Al-2.5Sn, Ti-8Al-1Mo-1V, Ti-6Al-2Sn-4Zr-2Mo, Ti-6Al-4V STA,
+Ti-6Al-6V-2Sn, SP-700, Ti-13V-11Cr-3Al, Ti-15V-3Cr-3Sn-3Al, Ti-10V-2Fe-3Al.
+`mass_properties_check` counts at least ten of each and checks the
+Ti-6Al-4V STA row against the handbook.
+
+**Sources and redistribution (audit of 2026-11-07).** Of the sources the
+presets cite, the public-domain ones are MIL-HDBK-5J, the USDA Wood
+Handbook (FPL-GTR-190) and ANC-18 (US Government works), and MMPDS-01
+was released as an FAA report through NTIS with no copyright notice
+(prepared under contract, so not formally a 17 USC 105 work, but
+equivalent to MIL-HDBK-5J, which is). The ASM Handbooks are copyrighted
+by ASM International, whose terms require written consent to reproduce
+any of their material (the 4130, 17-4PH and AZ31B rows and the co-cited
+aluminium and Ti-6Al-4V rows). Every manufacturer data sheet (Formlabs,
+Siraya Tech, Anycubic, Prusament, Bambu Lab, Polymaker, Markforged,
+Stratasys, 3DXTech, Evonik, AK Steel/Cleveland-Cliffs) is copyrighted
+and most of the sites' terms of use say personal / non-commercial use
+only; individual factual values are not copyrightable in the US (Feist
+v. Rural, 17 USC 103(b)), but the terms are a contract and the EU has a
+separate database right. Nothing has been removed; the rows are listed
+in the session notes for Matt to decide on.
+
 **Scene tree > Material Properties slimmed.** The per-entity dialog no
 longer edits figures. One list -- *Not set*, *An asserted mass*, then
 every material of the library, plus the entity's own figures when they

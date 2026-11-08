@@ -23,6 +23,10 @@ const char* const kResinNote = "post-cured ASTM D638 tensile modulus and strengt
 const char* const kAnycubicNote = "data sheet gives ranges, no post-cure, no tensile modulus (store page adds a Young's modulus range): LOWER bound of E and tensile strength, UPPER bound of density; nu 0.35";
 const char* const kFdmNote = "as printed, flat (XY/XZ) orientation, dry; allowable = tensile yield where given, else tensile strength; a printed part is weaker across its layers";
 
+// The alloys added 2026-11-07 all come from one public-domain handbook, so
+// each row names only its table, product form, basis and the two strengths.
+const char* const kMil5Note = "MIL-HDBK-5J (US DoD, 31 Jan 2003; public domain) design values: E, nu and density from the alloy's design-properties table; allowable = the handbook's MINIMUM tensile yield Fty (longitudinal; A-basis where it gives one, else S-basis) for the product form and thickness named -- a design minimum, not a typical value";
+
 } // namespace
 
 const std::vector<Material>& MaterialPresets() {
@@ -44,6 +48,135 @@ const std::vector<Material>& MaterialPresets() {
 			"ASM Handbook vol. 1 / AK Steel 17-4 PH data sheet, condition H900, typical; allowable = tensile yield"},
 		{"Magnesium AZ31B", 1770.0, 45.0e9, 0.35, 200.0e6, kMetal,
 			"ASM Handbook vol. 2, AZ31B-H24 sheet, typical; allowable = tensile yield"},
+
+		// The wider alloy tables (2026-11-07): MIL-HDBK-5J, the US DoD's
+		// handbook of aerospace metallic design data (its 2003 edition,
+		// since re-issued by Battelle as the copyrighted MMPDS). A US
+		// Government work, so its figures may be redistributed. Unlike the
+		// seven handbook rows above, whose allowable is a TYPICAL yield,
+		// these take the handbook's design MINIMUM yield (A-basis = 99%
+		// of material exceeds it with 95% confidence, where the handbook
+		// gives one; S-basis = the procurement specification's minimum
+		// otherwise), in the longitudinal direction, for the product form
+		// and thickness range named -- what an airframe stress report
+		// would use. 1 ksi = 6.894757 MPa; 1 lb/in^3 = 27679.9 kg/m^3;
+		// E is the tension modulus. Where the handbook leaves Poisson's
+		// ratio blank (some titanium alloys) a literature value is given
+		// and said to be one.
+		//
+		// Aluminium: Chapter 3.
+		{"Aluminium 2014-T6 sheet", 2796.0, 72.4e9, 0.33, 407.0e6, kMetal,
+			std::string("Table 3.2.1.0(b1), AMS 4029 sheet 0.040-0.249 in, A-basis: Ftu 67, Fty 59 ksi; E 10.5e3 ksi, nu 0.33, 0.101 lb/in^3; ") + kMil5Note},
+		{"Aluminium 2090-T83 sheet (Al-Li)", 2602.0, 79.3e9, 0.34, 483.0e6, kMetal,
+			std::string("Table 3.2.6.0(b), AMS 4251 sheet 0.040-0.125 in, S-basis: Ftu 77, Fty 70 ksi (L; 56 ksi at 45 deg, 66 ksi LT -- strongly anisotropic); E 11.5e3 ksi (L), nu 0.34, 0.094 lb/in^3; ") + kMil5Note},
+		{"Aluminium 2124-T851 plate", 2768.0, 71.7e9, 0.33, 393.0e6, kMetal,
+			std::string("Table 3.2.7.0(b), AMS 4101 plate 1.000-1.500 in, S-basis: Ftu 66, Fty 57 ksi; E 10.4e3 ksi, nu 0.33, 0.100 lb/in^3; ") + kMil5Note},
+		{"Aluminium 2219-T87 plate", 2851.0, 72.4e9, 0.33, 345.0e6, kMetal,
+			std::string("Table 3.2.8.0(b2), AMS-QQ-A-250/30 plate 0.250-1.000 in, A-basis: Ftu 63, Fty 50 ksi; E 10.5e3 ksi, nu 0.33, 0.103 lb/in^3; ") + kMil5Note},
+		{"Aluminium 5052-H34 sheet", 2685.0, 69.6e9, 0.33, 179.0e6, kMetal,
+			std::string("Table 3.5.1.0(b1), AMS 4017 sheet and plate 0.009-1.000 in, S-basis: Ftu 34, Fty 26 ksi; E 10.1e3 ksi, nu 0.33, 0.097 lb/in^3; ") + kMil5Note},
+		{"Aluminium 5083-H321 plate", 2657.0, 70.3e9, 0.33, 214.0e6, kMetal,
+			std::string("Table 3.5.2.0(b), AMS-QQ-A-250/6 plate 0.250-1.500 in, A-basis: Ftu 44, Fty 31 ksi (28 ksi LT); E 10.2e3 ksi, nu 0.33, 0.096 lb/in^3; ") + kMil5Note},
+		{"Aluminium 6013-T6 sheet", 2713.0, 68.3e9, 0.33, 324.0e6, kMetal,
+			std::string("Table 3.6.1.0(b), AMS 4216 sheet 0.010-0.062 in, S-basis: Ftu 52, Fty 47 ksi; E 9.9e3 ksi, nu 0.33, 0.098 lb/in^3; ") + kMil5Note},
+		{"Aluminium 7050-T7451 plate", 2823.0, 71.0e9, 0.33, 441.0e6, kMetal,
+			std::string("Table 3.7.4.0(b1), AMS 4050 plate 0.250-1.500 in, A-basis: Ftu 74, Fty 64 ksi; E 10.3e3 ksi, nu 0.33, 0.102 lb/in^3; ") + kMil5Note},
+		{"Aluminium 7055-T77511 extrusion", 2851.0, 71.7e9, 0.33, 621.0e6, kMetal,
+			std::string("Table 3.7.5.0(e), AMS 4337 extrusion 0.500-1.500 in, A-basis: Ftu 94, Fty 90 ksi (L; 84 ksi LT); E 10.4e3 ksi, nu 0.33, 0.103 lb/in^3; ") + kMil5Note},
+		{"Aluminium 7475-T761 sheet", 2796.0, 68.9e9, 0.33, 421.0e6, kMetal,
+			std::string("Table 3.7.10.0(b), AMS 4085 sheet 0.063-0.187 in, S-basis: Ftu 71, Fty 61 ksi; E 10.0e3 ksi, nu 0.33, 0.101 lb/in^3; ") + kMil5Note},
+		{"Aluminium A356.0-T6 casting", 2685.0, 71.7e9, 0.33, 193.0e6, kMetal,
+			std::string("Table 3.9.5.0(b), AMS-A-21180 casting, designated area, strength class 1, S-basis: Ftu 38, Fty 28 ksi; E 10.4e3 ksi, nu 0.33, 0.097 lb/in^3; ") + kMil5Note},
+		{"Aluminium A357.0-T6 casting", 2685.0, 71.7e9, 0.33, 241.0e6, kMetal,
+			std::string("Table 3.9.6.0(b), AMS-A-21180 casting, designated area, strength class 1, S-basis: Ftu 45, Fty 35 ksi; E 10.4e3 ksi, nu 0.33, 0.097 lb/in^3; ") + kMil5Note},
+
+		// Steels: Chapter 2 (and A-286 of Chapter 6). The low-alloy steels
+		// are specified by the ultimate strength they are heat treated to.
+		{"Steel 1025 carbon, annealed", 7861.0, 200.0e9, 0.32, 248.0e6, kMetal,
+			std::string("Table 2.2.1.0(b), AMS 5046 sheet, strip and plate, annealed, S-basis: Ftu 55, Fty 36 ksi; E 29.0e3 ksi, nu 0.32, 0.284 lb/in^3; ") + kMil5Note},
+		{"Steel 4130, 125 ksi heat treatment", 7833.0, 200.0e9, 0.32, 689.0e6, kMetal,
+			std::string("Table 2.3.1.0(c2), AMS 6361 tubing quenched and tempered to 125 ksi, S-basis: Ftu 125, Fty 100 ksi; E 29.0e3 ksi, nu 0.32, 0.283 lb/in^3; ") + kMil5Note},
+		{"Steel 4140, 180 ksi heat treatment", 7833.0, 200.0e9, 0.32, 1124.0e6, kMetal,
+			std::string("Table 2.3.1.0(g2) at the 180 ksi strength level (Table 2.3.0.2 lists 4140 to 1.00 in for it), quenched and tempered: Ftu 180, Fty 163 ksi; E 29.0e3 ksi, nu 0.32, 0.283 lb/in^3; ") + kMil5Note},
+		{"Steel 4340, 200 ksi heat treatment", 7833.0, 200.0e9, 0.32, 1213.0e6, kMetal,
+			std::string("Table 2.3.1.0(g2) at the 200 ksi strength level (Table 2.3.0.2 lists 4340 to 1.70-3.50 in for it), quenched and tempered: Ftu 200, Fty 176 ksi; E 29.0e3 ksi, nu 0.32, 0.283 lb/in^3; ") + kMil5Note},
+		{"Steel 300M, 280 ksi", 7833.0, 200.0e9, 0.32, 1586.0e6, kMetal,
+			std::string("Table 2.3.1.0(f1), AMS 6419 (0.42C 300M) bar, forging and tubing, quenched and tempered, S-basis: Ftu 280, Fty 230 ksi; E 29.0e3 ksi, nu 0.32, 0.283 lb/in^3; ") + kMil5Note},
+		{"Steel D6AC, 220 ksi", 7833.0, 200.0e9, 0.32, 1310.0e6, kMetal,
+			std::string("Table 2.3.1.0(f1), AMS 6431 bar, forging and tubing, quenched and tempered, S-basis: Ftu 220, Fty 190 ksi; E 29.0e3 ksi, nu 0.32, 0.283 lb/in^3; ") + kMil5Note},
+		{"Steel 4330V, 220 ksi", 7833.0, 200.0e9, 0.32, 1276.0e6, kMetal,
+			std::string("Table 2.3.1.0(f1), AMS 6411 bar, forging and tubing, quenched and tempered, S-basis: Ftu 220, Fty 185 ksi; E 29.0e3 ksi, nu 0.32, 0.283 lb/in^3; ") + kMil5Note},
+		{"Steel H-11 (5Cr-Mo-V), 260 ksi", 7778.0, 206.8e9, 0.36, 1482.0e6, kMetal,
+			std::string("Table 2.4.1.0(c), AMS 6487/6488 bar and forging, quenched and tempered, S-basis, transverse column: Ftu 260, Fty 215 ksi; E 30.0e3 ksi, nu 0.36, 0.281 lb/in^3; ") + kMil5Note},
+		{"Steel maraging 250", 7916.0, 182.7e9, 0.31, 1724.0e6, kMetal,
+			std::string("Table 2.5.1.0(b), AMS 6512 bar under 4.000 in, maraged at 900 F, S-basis: Ftu 255, Fty 250 ksi; E 26.5e3 ksi, nu 0.31, 0.286 lb/in^3; ") + kMil5Note},
+		{"Steel AerMet 100", 7889.0, 193.1e9, 0.305, 1620.0e6, kMetal,
+			std::string("Table 2.5.3.0(b), AMS 6532 bar and forging, solution treated and aged, A-basis: Ftu 275, Fty 235 ksi; E 28.0e3 ksi, nu 0.305, 0.285 lb/in^3; ") + kMil5Note},
+		{"Steel PH13-8Mo H1000", 7723.0, 195.1e9, 0.28, 1310.0e6, kMetal,
+			std::string("Table 2.6.6.0(b), AMS 5629 bar, condition H1000: Ftu 201 ksi (A-basis), Fty 190 ksi (S-basis); E 28.3e3 ksi, nu 0.28, 0.279 lb/in^3; ") + kMil5Note},
+		{"Steel 15-5PH H1025", 7833.0, 196.5e9, 0.27, 1000.0e6, kMetal,
+			std::string("Table 2.6.7.0(b), AMS 5659 bar to 12 in, condition H1025, S-basis: Ftu 155, Fty 145 ksi; E 28.5e3 ksi, nu 0.27, 0.283 lb/in^3; ") + kMil5Note},
+		{"Steel 17-4PH H1025", 7833.0, 196.5e9, 0.27, 1000.0e6, kMetal,
+			std::string("Table 2.6.9.0(d), AMS 5643 forging, tubing and rings under 8 in, condition H1025, S-basis: Ftu 155, Fty 145 ksi; E 28.5e3 ksi, nu 0.27, 0.283 lb/in^3; ") + kMil5Note},
+		{"Steel 17-7PH TH1050", 7640.0, 200.0e9, 0.28, 1034.0e6, kMetal,
+			std::string("Table 2.6.10.0(b), AMS 5528 sheet 0.015-0.187 in, condition TH1050, A-basis: Ftu 177, Fty 150 ksi; E 29.0e3 ksi, nu 0.28, 0.276 lb/in^3; ") + kMil5Note},
+		{"Steel 301 stainless, annealed", 7916.0, 200.0e9, 0.27, 179.0e6, kMetal,
+			std::string("Table 2.7.1.0(b), AMS 5901 sheet and strip, annealed, S-basis: Ftu 73, Fty 26 ksi (L; 30 ksi LT); E 29.0e3 ksi, nu 0.27, 0.286 lb/in^3; ") + kMil5Note},
+		{"Steel 301 stainless, half hard", 7916.0, 179.3e9, 0.27, 641.0e6, kMetal,
+			std::string("Table 2.7.1.0(b), AMS 5518 sheet and strip, 1/2 hard, A-basis: Ftu 141, Fty 93 ksi (L); E 26.0e3 ksi (L; 28.0e3 LT -- cold work makes it anisotropic), nu 0.27, 0.286 lb/in^3; ") + kMil5Note},
+		{"Steel A-286", 7944.0, 200.6e9, 0.31, 655.0e6, kMetal,
+			std::string("Table 6.2.1.0(b), AMS 5734 bar to 2.499 in, solution treated and aged, S-basis: Ftu 140, Fty 95 ksi; E 29.1e3 ksi, nu 0.31, 0.287 lb/in^3; ") + kMil5Note},
+
+		// Magnesium: Chapter 4. The casting figures are the handbook's
+		// "any area" minimums -- what every point of a sand or investment
+		// casting is guaranteed to reach -- and so sit well below the
+		// separately cast test-bar figures the alloy specifications quote.
+		{"Magnesium AZ31B-F extrusion", 1769.0, 44.8e9, 0.35, 145.0e6, kMetal,
+			std::string("Table 4.2.1.0(d), ASTM B107 extruded bar, rod and solid shapes to 0.249 in, as fabricated (F), S-basis: Ftu 35, Fty 21 ksi; E 6.5e3 ksi, nu 0.35, 0.0639 lb/in^3; ") + kMil5Note},
+		{"Magnesium AZ61A-F extrusion", 1791.0, 43.4e9, 0.31, 165.0e6, kMetal,
+			std::string("Table 4.2.2.0(b), AMS 4350 extruded bar, rod and solid shapes 0.250-2.499 in, as fabricated (F), S-basis: Ftu 40, Fty 24 ksi; E 6.3e3 ksi, nu 0.31, 0.0647 lb/in^3; ") + kMil5Note},
+		{"Magnesium ZK60A-T5 extrusion", 1824.0, 44.8e9, 0.35, 248.0e6, kMetal,
+			std::string("Table 4.2.3.0(c), AMS 4352 extruded rod, bar and solid shapes under 2.000 in^2, T5, S-basis: Ftu 45, Fty 36 ksi; E 6.5e3 ksi, nu 0.35, 0.0659 lb/in^3; ") + kMil5Note},
+		{"Magnesium AM100A-T6 casting", 1802.0, 44.8e9, 0.35, 65.5e6, kMetal,
+			std::string("Table 4.3.1.0(b), AMS 4455 investment casting, T6, any area, S-basis: Ftu 17, Fty 9.5 ksi; E 6.5e3 ksi, nu 0.35, 0.0651 lb/in^3; ") + kMil5Note},
+		{"Magnesium AZ91C-T6 casting", 1805.0, 44.8e9, 0.35, 82.7e6, kMetal,
+			std::string("Table 4.3.2.0(b), AMS 4437 sand casting, T6, any area, S-basis: Ftu 17, Fty 12 ksi; E 6.5e3 ksi, nu 0.35, 0.0652 lb/in^3; ") + kMil5Note},
+		{"Magnesium AZ91E-T6 casting", 1805.0, 44.8e9, 0.35, 82.7e6, kMetal,
+			std::string("Table 4.3.2.0(c), AMS 4446 sand casting, T6, any area, S-basis: Ftu 17, Fty 12 ksi; E 6.5e3 ksi, nu 0.35, 0.0652 lb/in^3; ") + kMil5Note},
+		{"Magnesium AZ92A-T6 casting", 1824.0, 44.8e9, 0.35, 93.1e6, kMetal,
+			std::string("Table 4.3.3.0(b), AMS 4434 sand casting, T6, any area, S-basis: Ftu 17, Fty 13.5 ksi; E 6.5e3 ksi, nu 0.35, 0.0659 lb/in^3; ") + kMil5Note},
+		{"Magnesium EZ33A-T5 casting", 1824.0, 44.8e9, 0.35, 75.8e6, kMetal,
+			std::string("Table 4.3.4.0(b), AMS 4442 sand casting, T5, any area, S-basis: Ftu 13, Fty 11 ksi; E 6.5e3 ksi, nu 0.35, 0.0659 lb/in^3; ") + kMil5Note},
+		{"Magnesium QE22A-T6 casting", 1807.0, 44.8e9, 0.35, 159.0e6, kMetal,
+			std::string("Table 4.3.5.0(b), AMS 4418 sand casting, T6, any area, S-basis: Ftu 32, Fty 23 ksi; E 6.5e3 ksi, nu 0.35, 0.0653 lb/in^3; ") + kMil5Note},
+		{"Magnesium ZE41A-T5 casting", 1816.0, 44.8e9, 0.35, 121.0e6, kMetal,
+			std::string("Table 4.3.6.0(b), AMS 4439 sand casting, T5, any area, S-basis: Ftu 26, Fty 17.5 ksi; E 6.5e3 ksi, nu 0.35, 0.0656 lb/in^3; ") + kMil5Note},
+
+		// Titanium: Chapter 5. The handbook names the commercially pure
+		// grades CP-1 to CP-4 by falling strength; CP-3 (AMS 4902) is
+		// ASTM grade 2 and CP-1 (AMS 4901) is ASTM grade 4.
+		{"Titanium CP grade 2 (CP-3)", 4512.0, 106.9e9, 0.34, 276.0e6, kMetal,
+			std::string("Table 5.2.1.0(b), AMS 4902 (CP-3) sheet, strip and plate to 1.000 in, annealed, S-basis: Ftu 50, Fty 40 ksi; E 15.5e3 ksi, 0.163 lb/in^3; the handbook gives no nu for CP titanium, 0.34 is the literature value; ") + kMil5Note},
+		{"Titanium CP grade 4 (CP-1)", 4512.0, 106.9e9, 0.34, 483.0e6, kMetal,
+			std::string("Table 5.2.1.0(b), AMS 4901 (CP-1) sheet, strip and plate to 1.000 in, annealed, S-basis: Ftu 80, Fty 70 ksi; E 15.5e3 ksi, 0.163 lb/in^3; the handbook gives no nu for CP titanium, 0.34 is the literature value; ") + kMil5Note},
+		{"Titanium Ti-5Al-2.5Sn", 4484.0, 106.9e9, 0.31, 758.0e6, kMetal,
+			std::string("Table 5.3.1.0(b), AMS 4910 sheet 0.015-0.079 in, annealed, A-basis: Ftu 120, Fty 110 ksi; E 15.5e3 ksi, 0.162 lb/in^3; the handbook gives no nu, 0.31 is the literature value for the alpha alloy; ") + kMil5Note},
+		{"Titanium Ti-8Al-1Mo-1V", 4373.0, 120.7e9, 0.32, 931.0e6, kMetal,
+			std::string("Table 5.3.2.0(b1), AMS 4915 sheet under 0.1875 in, single annealed, S-basis: Ftu 145, Fty 135 ksi; E 17.5e3 ksi, nu 0.32, 0.158 lb/in^3; ") + kMil5Note},
+		{"Titanium Ti-6Al-2Sn-4Zr-2Mo", 4540.0, 113.8e9, 0.32, 862.0e6, kMetal,
+			std::string("Table 5.3.3.0(b), AMS 4919 sheet to 0.046 in, duplex annealed, A-basis: Ftu 135, Fty 125 ksi; E 16.5e3 ksi, nu 0.32, 0.164 lb/in^3; ") + kMil5Note},
+		{"Titanium Ti-6Al-4V STA", 4429.0, 110.3e9, 0.31, 1000.0e6, kMetal,
+			std::string("Table 5.4.1.0(b), AMS-T-9046 sheet under 0.1875 in, solution treated and aged, S-basis: Ftu 160, Fty 145 ksi (the annealed sheet's A-basis is Ftu 134, Fty 126 ksi); E 16.0e3 ksi, nu 0.31, 0.160 lb/in^3; ") + kMil5Note},
+		{"Titanium Ti-6Al-6V-2Sn", 4540.0, 110.3e9, 0.31, 1000.0e6, kMetal,
+			std::string("Table 5.4.2.0(b), AMS 4918 sheet, strip and plate under 0.1875 in, annealed, A-basis: Ftu 155, Fty 145 ksi; E 16.0e3 ksi, nu 0.31, 0.164 lb/in^3; ") + kMil5Note},
+		{"Titanium Ti-4.5Al-3V-2Fe-2Mo (SP-700)", 4540.0, 110.3e9, 0.31, 869.0e6, kMetal,
+			std::string("Table 5.4.3.0(b), AMS 4899 sheet 0.025-0.063 in, annealed, A-basis: Ftu 134, Fty 126 ksi; E 16.0e3 ksi, 0.164 lb/in^3; the handbook gives no nu, 0.31 is the literature value for the alpha-beta alloy; ") + kMil5Note},
+		{"Titanium Ti-13V-11Cr-3Al", 4816.0, 100.0e9, 0.33, 869.0e6, kMetal,
+			std::string("Table 5.5.1.0(b), AMS-T-9046 sheet 0.012-0.049 in, annealed, S-basis: Ftu 132, Fty 126 ksi; E 14.5e3 ksi, 0.174 lb/in^3; the handbook gives no nu, 0.33 is the literature value for the beta alloy; ") + kMil5Note},
+		{"Titanium Ti-15V-3Cr-3Sn-3Al STA", 4761.0, 104.8e9, 0.33, 965.0e6, kMetal,
+			std::string("Table 5.5.2.0(b), AMS 4914 sheet to 0.125 in, solution treated and aged 1000 F/8 h, S-basis: Ftu 145, Fty 140 ksi; E 15.2e3 ksi (L), 0.172 lb/in^3; the handbook gives no nu, 0.33 is the literature value for the beta alloy; ") + kMil5Note},
+		{"Titanium Ti-10V-2Fe-3Al STA", 4650.0, 109.6e9, 0.33, 1103.0e6, kMetal,
+			std::string("Table 5.5.3.0(b), AMS 4983 die forging under 1.000 in, solution treated and aged, S-basis: Ftu 180, Fty 160 ksi; E 15.9e3 ksi, 0.168 lb/in^3; the handbook gives no nu, 0.33 is the literature value for the beta alloy; ") + kMil5Note},
 
 		// Laminates: representative quasi-isotropic figures, not any one
 		// manufacturer's.

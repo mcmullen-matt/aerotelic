@@ -280,6 +280,23 @@ void CheckModeNames() {
 		for (const Material& m : presets) woods += m.category == "Wood" ? 1 : 0;
 		const Material* balsa = FindMaterialPreset("Balsa, medium (160 kg/m^3)");
 		Check(woods >= 5 && balsa != nullptr && balsa->density == 160.0 && balsa->category == "Wood", "at least five woods, balsa among them");
+		// The alloy tables: at least ten alloys of each structural metal,
+		// every one of them a Metal, and the MIL-HDBK-5J rows carry the
+		// handbook's figures (Ti-6Al-4V STA sheet: 0.160 lb/in^3,
+		// 16.0e3 ksi, Fty 145 ksi).
+		int al = 0, steel = 0, mg = 0, ti = 0;
+		bool metals_categorised = true;
+		for (const Material& m : presets) {
+			const bool is_al = m.name.rfind("Aluminium ", 0) == 0, is_steel = m.name.rfind("Steel ", 0) == 0;
+			const bool is_mg = m.name.rfind("Magnesium ", 0) == 0, is_ti = m.name.rfind("Titanium ", 0) == 0;
+			al += is_al ? 1 : 0; steel += is_steel ? 1 : 0; mg += is_mg ? 1 : 0; ti += is_ti ? 1 : 0;
+			if (is_al || is_steel || is_mg || is_ti) metals_categorised = metals_categorised && m.category == "Metal";
+		}
+		Check(al >= 10 && steel >= 10 && mg >= 10 && ti >= 10, "at least ten aluminium, steel, magnesium and titanium alloys each");
+		Check(metals_categorised, "every alloy is a Metal");
+		const Material* ti64 = FindMaterialPreset("Titanium Ti-6Al-4V STA");
+		Check(ti64 != nullptr && ti64->density == 4429.0 && ti64->youngs_modulus == 110.3e9 && ti64->poisson_ratio == 0.31 && ti64->allowable_stress == 1000.0e6
+			&& ti64->source.find("MIL-HDBK-5J") != std::string::npos, "the Ti-6Al-4V STA preset carries MIL-HDBK-5J's design figures and cites it");
 	}
 	{
 		// The user's library file: a round trip through YAML keeps every
