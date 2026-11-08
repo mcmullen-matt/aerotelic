@@ -27,6 +27,7 @@
 
 #include <yaml-cpp/yaml.h>
 
+#include "aerotelic/body_structure.hpp"
 #include "aerotelic/feature_tree.hpp"
 #include "aerotelic/fuselage_model.hpp"
 #include "aerotelic/lattice.hpp"
@@ -93,6 +94,20 @@ EntityType ParseEntityType(const std::string& s);
 
 using EntityModelSpec = std::variant<WingModelSpec, FuselageSpec, NacelleSpec, LoftedNacelleSpec, PropellerSpec, PrimitiveSpec>;
 
+// One solid body of an entity or a boolean result (`bodies:`), by its role
+// name: its display overrides (colour, hidden) and what it is made of and
+// built with -- its skin, infill, plane networks, asserted mass
+// (body_structure.hpp). Written only when something is set.
+struct ProjectBody {
+	std::string name;
+	std::optional<std::array<double, 3>> color;
+	bool hidden = false;
+	BodyStructure structure;
+
+	bool IsDefault() const { return !color && !hidden && !structure.IsSet() && !structure.HasInterior() && structure.exclusions.empty(); }
+};
+using ProjectBooleanBody = ProjectBody;
+
 struct ProjectEntity {
 	std::string name;
 	EntityType type;
@@ -112,6 +127,12 @@ struct ProjectEntity {
 	// MeshSpec): written only when anything is set, as `mesh: {...}` with
 	// the non-default keys alone.
 	MeshSpec mesh;
+	// Its bodies' display overrides and structure (`bodies:`), by role
+	// name; a body with nothing set is not listed. Since 2026-11-08 the
+	// material, the skin and the internal structure live here, per body;
+	// `mass:` above is the form before that (one setting for every body),
+	// still read, no longer written once the bodies carry theirs.
+	std::vector<ProjectBody> bodies;
 };
 
 // `mesh:` on an entity: stations, around, refine, tolerance, max_aspect,
@@ -128,12 +149,22 @@ struct BooleanOperand {
 	bool mirror = false;
 };
 
-// Per-solid display overrides of a boolean result (`bodies:`).
-struct ProjectBooleanBody {
-	std::string name;
-	std::optional<std::array<double, 3>> color;
-	bool hidden = false;
-};
+// A material as the file writes it: the name and the four figures (SI),
+// in flow style, so the file stands on its own when a preset changes.
+YAML::Node EncodeMaterial(const Material& m);
+Material DecodeMaterial(const YAML::Node& node);
+YAML::Node Encode(const PlaneNetwork& n);
+PlaneNetwork DecodePlaneNetwork(const YAML::Node& node);
+YAML::Node Encode(const InfillSpec& s);
+InfillSpec DecodeInfillSpec(const YAML::Node& node);
+// The structure's keys -- material, skin_thickness, infill, networks,
+// exclusions, asserted_mass -- the non-default ones only, written into
+// `into` (a body's own mapping). Decode throws std::invalid_argument when
+// the structure cannot be used (BodyStructureProblem).
+void EncodeBodyStructure(const BodyStructure& s, YAML::Node& into);
+BodyStructure DecodeBodyStructure(const YAML::Node& node);
+YAML::Node Encode(const ProjectBody& b);
+ProjectBody DecodeProjectBody(const YAML::Node& node);
 
 struct ProjectBoolean {
 	std::string name;
@@ -144,7 +175,7 @@ struct ProjectBoolean {
 	std::optional<double> fillet_radius;
 	bool hidden = false;
 	std::optional<std::array<double, 3>> color;
-	std::vector<ProjectBooleanBody> bodies;
+	std::vector<ProjectBody> bodies;
 	MassSpec mass;
 };
 

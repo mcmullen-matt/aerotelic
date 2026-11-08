@@ -7,6 +7,7 @@
 //     (aerotelic/projects/p38.yaml), to confirm actual file compatibility,
 //     not just that this port's own round-trip is self-consistent.
 
+#include <cmath>
 #include <fstream>
 #include <iostream>
 #include <string>
@@ -308,6 +309,153 @@ void CheckMassSpecRoundTrip() {
 	from_text = DecodeMassSpec(YAML::Load("{density: 1200}"));
 	Check(from_text.mode == MassMode::Material && from_text.material.density == 1200.0 && from_text.material.name == "Custom"
 		&& from_text.material.youngs_modulus == 0.0, "mass: the old `{density: 1200}` reads as a custom material with only a density");
+}
+
+// `bodies:` on an entity: each solid body's structure -- material, skin,
+// infill, plane networks, exclusions, asserted mass -- round-trips with
+// only the keys that were set, a body with nothing set is not written, a
+// boolean result's bodies carry theirs too, and a structure that cannot
+// be used is refused with the body named.
+void CheckBodiesRoundTrip() {
+	ProjectEntity e;
+	e.name = "Wing1";
+	e.type = EntityType::Primitive;
+	e.model = PrimitiveSpec{};
+
+	// A body with nothing set writes no entry at all.
+	ProjectBody blank;
+	blank.name = "Main";
+	e.bodies.push_back(blank);
+	Check(RoundTripThroughText(e).bodies.empty(), "bodies: a body with nothing set is not written");
+	e.bodies.clear();
+
+	ProjectBody main;
+	main.name = "Main";
+	main.structure.material = *FindMaterialPreset("Aluminium 6061-T6 sheet");
+	e.bodies.push_back(main);
+
+	ProjectBody flap;
+	flap.name = "Flap 1";
+	flap.color = std::array<double, 3>{0.2, 0.4, 0.6};
+	flap.structure.material = *FindMaterialPreset("Balsa, medium (160 kg/m^3)");
+	flap.structure.skin_thickness = 0.0015;
+	InfillSpec infill;
+	infill.material = *FindMaterialPreset("Aluminium 2024-T3 sheet");
+	infill.lattice.family = LatticeFamily::Tpms;
+	infill.lattice.type = "Gyroid";
+	infill.lattice.phase = TpmsPhase::Sheet;
+	infill.lattice.cell_size = 0.02;
+	infill.lattice.volume_fraction = 0.3;
+	infill.lattice.resolution = 12;
+	infill.lattice.origin = Vec3{0.1, -0.05, 0.02};
+	flap.structure.infill = infill;
+	PlaneNetwork ribs;
+	ribs.name = "Ribs";
+	ribs.axis = PlaneAxis::Y;
+	ribs.start = 0.05;
+	ribs.spacing = 0.1;
+	ribs.count = 9;
+	ribs.thickness = 0.002;
+	ribs.material = *FindMaterialPreset("Birch plywood, aircraft 3-ply (face grain)");
+	PlaneNetwork spar;
+	spar.name = "Spar";
+	spar.axis = PlaneAxis::Custom;
+	spar.normal = Vec3{0.98, 0.2, 0.0};   // not unit: the file carries it normalised
+	spar.start = 0.1;
+	spar.count = 1;
+	spar.thickness = 0.003;
+	spar.height = 0.01;
+	spar.material = *FindMaterialPreset("Spruce (along grain)");
+	flap.structure.networks = {ribs, spar};
+	flap.structure.exclusions = {"Bay"};
+	flap.structure.asserted_mass = 0.2;
+	e.bodies.push_back(flap);
+
+	ProjectEntity back = RoundTripThroughText(e);
+	Check(back.bodies.size() == 2 && back.bodies[0].name == "Main" && back.bodies[1].name == "Flap 1", "bodies: both bodies come back by name");
+	if (back.bodies.size() != 2) return;
+	const BodyStructure& m = back.bodies[0].structure;
+	Check(m.IsSet() && !m.IsSkin() && !m.HasInterior() && m.material.name == "Aluminium 6061-T6 sheet" && m.material.density == 2713.0, "bodies: a solid body keeps its material");
+	Check(!back.bodies[0].color && !back.bodies[0].hidden, "bodies: no colour or hidden flag was invented");
+	const ProjectBody& f = back.bodies[1];
+	Check(f.color && std::abs((*f.color)[1] - 0.4) < 1e-12, "bodies: the flap's colour");
+	const BodyStructure& s = f.structure;
+	Check(s.IsSkin() && s.HasInterior() && s.material.name == "Balsa, medium (160 kg/m^3)" && s.material.density == 160.0, "bodies: the flap's skin material");
+	CheckClose(s.skin_thickness, 0.0015, 1e-15, "bodies: the skin thickness");
+	Check(s.infill.has_value(), "bodies: the infill is there");
+	if (s.infill) {
+		Check(s.infill->lattice.family == LatticeFamily::Tpms && s.infill->lattice.type == "Gyroid" && s.infill->lattice.phase == TpmsPhase::Sheet
+			&& s.infill->lattice.resolution == 12, "bodies: the infill lattice family, type, phase, resolution");
+		CheckClose(s.infill->lattice.cell_size, 0.02, 1e-15, "bodies: the infill cell size");
+		CheckClose(s.infill->lattice.volume_fraction, 0.3, 1e-15, "bodies: the infill volume fraction");
+		CheckClose(s.infill->lattice.origin.y, -0.05, 1e-15, "bodies: the infill lattice offsets");
+		Check(s.infill->material.name == "Aluminium 2024-T3 sheet" && s.infill->lattice.skin_thickness == 0.0, "bodies: the infill's own material; the lattice's skin is the body's, not its own");
+	}
+	Check(s.networks.size() == 2, "bodies: two plane networks");
+	if (s.networks.size() == 2) {
+		const PlaneNetwork& r = s.networks[0];
+		Check(r.name == "Ribs" && r.axis == PlaneAxis::Y && r.count == 9 && r.height == 0.0, "bodies: the rib network's axis, count and full height");
+		CheckClose(r.start, 0.05, 1e-15, "bodies: the rib start");
+		CheckClose(r.spacing, 0.1, 1e-15, "bodies: the rib spacing");
+		CheckClose(r.thickness, 0.002, 1e-15, "bodies: the rib thickness");
+		Check(r.material.name == "Birch plywood, aircraft 3-ply (face grain)", "bodies: the rib material");
+		const PlaneNetwork& p = s.networks[1];
+		Check(p.axis == PlaneAxis::Custom && p.count == 1, "bodies: the spar is a single custom-axis plane");
+		CheckClose(Length(p.normal), 1.0, 1e-12, "bodies: the custom normal comes back unit");
+		CheckClose(p.normal.x, 0.98 / std::sqrt(0.98 * 0.98 + 0.2 * 0.2), 1e-12, "bodies: the custom normal's direction");
+		CheckClose(p.height, 0.01, 1e-15, "bodies: a limited height");
+		Check(p.material.name == "Spruce (along grain)", "bodies: the spar material");
+	}
+	Check(s.exclusions.size() == 1 && s.exclusions[0] == "Bay", "bodies: the exclusions by scene name");
+	Check(s.asserted_mass && *s.asserted_mass == 0.2, "bodies: the asserted mass");
+	Check(SameStructureGeometry(s, flap.structure), "bodies: the geometry is the same after the round trip");
+
+	// A boolean result's bodies carry structure too.
+	{
+		ProjectFile pf;
+		ProjectEntity a = e, b = e;
+		a.name = "A"; a.bodies.clear();
+		b.name = "B"; b.bodies.clear();
+		pf.entities = {a, b};
+		ProjectBoolean fuse;
+		fuse.name = "Fused";
+		fuse.operands = {{"A", false}, {"B", false}};
+		ProjectBody body1;
+		body1.name = "Body 1";
+		body1.hidden = true;
+		body1.structure.material = *FindMaterialPreset("Steel 4130, normalised");
+		body1.structure.skin_thickness = 0.001;
+		fuse.bodies.push_back(body1);
+		pf.booleans.push_back(fuse);
+		const std::string path = AEROTELIC_TESTS_DIR "/project_yaml_check_tmp.yaml";
+		SaveProjectYaml(pf, path);
+		ProjectFile reloaded = LoadProjectYaml(path);
+		Check(reloaded.booleans.size() == 1 && reloaded.booleans[0].bodies.size() == 1, "bodies: a boolean's body is written and read");
+		if (reloaded.booleans.size() == 1 && reloaded.booleans[0].bodies.size() == 1) {
+			const ProjectBody& rb = reloaded.booleans[0].bodies[0];
+			Check(rb.name == "Body 1" && rb.hidden && rb.structure.material.name == "Steel 4130, normalised" && rb.structure.skin_thickness == 0.001,
+				"bodies: the boolean body's hidden flag, material and skin");
+		}
+	}
+
+	// A structure that cannot be used is refused, naming the body.
+	{
+		bool threw = false;
+		std::string what;
+		try {
+			DecodeProjectBody(YAML::Load("{name: Flap, material: {name: X, density: 100}, networks: [{name: Ribs, axis: y, start: 0, spacing: 0.1, count: 3, thickness: 0.002}]}"));
+		} catch (const std::invalid_argument& ex) { threw = true; what = ex.what(); }
+		Check(threw && what.find("Flap") != std::string::npos && what.find("interior") != std::string::npos, "bodies: a network on a solid body is refused with the body named");
+		threw = false;
+		try {
+			DecodeProjectBody(YAML::Load("{name: Flap, material: {name: X, density: 100}, skin_thickness: 0.001, networks: [{name: Ribs, axis: y, start: 0, spacing: 0.1, count: 0, thickness: 0.002}]}"));
+		} catch (const std::invalid_argument& ex) { threw = true; what = ex.what(); }
+		Check(threw && what.find("Ribs") != std::string::npos, "bodies: a network without planes is refused with the network named");
+		// Lenient reading: an axis alone, no spacing on a single plane.
+		const ProjectBody lone = DecodeProjectBody(YAML::Load("{name: Main, material: {name: X, density: 100}, skin_thickness: 0.001, networks: [{axis: x, start: 0.3, count: 1, thickness: 0.004}]}"));
+		Check(lone.structure.networks.size() == 1 && lone.structure.networks[0].axis == PlaneAxis::X && lone.structure.networks[0].count == 1
+			&& lone.structure.networks[0].thickness == 0.004 && lone.structure.networks[0].name == "Ribs", "bodies: a single plane needs no spacing and takes the default name");
+	}
 }
 
 // `mesh:` on an entity -- the density of its grid (the Mesh tab) --
@@ -651,6 +799,7 @@ int main() {
 		CheckPrimitiveRoundTrip();
 		CheckPlacementRoundTrip();
 		CheckMassSpecRoundTrip();
+		CheckBodiesRoundTrip();
 		CheckMeshSpecRoundTrip();
 		CheckUnitsRoundTrip();
 		CheckScaleRoundTrip();

@@ -572,14 +572,7 @@ YAML::Node EncodeMassSpec(const MassSpec& m) {
 	if (m.mode == MassMode::Asserted) {
 		n["asserted"] = m.mass;
 	} else if (m.mode == MassMode::Material) {
-		YAML::Node mat;
-		mat["name"] = m.material.name;
-		mat["density"] = m.material.density;
-		mat["youngs_modulus"] = m.material.youngs_modulus;
-		mat["poisson_ratio"] = m.material.poisson_ratio;
-		mat["allowable_stress"] = m.material.allowable_stress;
-		mat.SetStyle(YAML::EmitterStyle::Flow);
-		n["material"] = mat;
+		n["material"] = EncodeMaterial(m.material);
 		// A skin, in the project's length unit (as typed); absent is solid.
 		if (m.skin_thickness > 0.0) n["skin_thickness"] = m.skin_thickness;
 	}
@@ -595,11 +588,7 @@ MassSpec DecodeMassSpec(const YAML::Node& node) {
 		m.mass = node["asserted"].as<double>();
 	} else if (const YAML::Node mat = node["material"]) {
 		m.mode = MassMode::Material;
-		if (mat["name"]) m.material.name = mat["name"].as<std::string>();
-		if (mat["density"]) m.material.density = mat["density"].as<double>();
-		if (mat["youngs_modulus"]) m.material.youngs_modulus = mat["youngs_modulus"].as<double>();
-		if (mat["poisson_ratio"]) m.material.poisson_ratio = mat["poisson_ratio"].as<double>();
-		if (mat["allowable_stress"]) m.material.allowable_stress = mat["allowable_stress"].as<double>();
+		m.material = DecodeMaterial(mat);
 		if (node["skin_thickness"]) m.skin_thickness = node["skin_thickness"].as<double>();
 	} else if (node["density"]) {
 		// The form before materials existed: a bare density, SI (every
@@ -610,6 +599,189 @@ MassSpec DecodeMassSpec(const YAML::Node& node) {
 	}
 	return m;
 }
+
+// ===========================================================================
+// Bodies (`bodies:` on an entity or a boolean result): display overrides
+// and the structure of each solid body (body_structure.hpp)
+// ===========================================================================
+
+YAML::Node EncodeMaterial(const Material& m) {
+	YAML::Node mat;
+	mat["name"] = m.name;
+	mat["density"] = m.density;
+	mat["youngs_modulus"] = m.youngs_modulus;
+	mat["poisson_ratio"] = m.poisson_ratio;
+	mat["allowable_stress"] = m.allowable_stress;
+	mat.SetStyle(YAML::EmitterStyle::Flow);
+	return mat;
+}
+
+Material DecodeMaterial(const YAML::Node& mat) {
+	Material m;
+	if (!mat || !mat.IsMap()) return m;
+	if (mat["name"]) m.name = mat["name"].as<std::string>();
+	if (mat["density"]) m.density = mat["density"].as<double>();
+	if (mat["youngs_modulus"]) m.youngs_modulus = mat["youngs_modulus"].as<double>();
+	if (mat["poisson_ratio"]) m.poisson_ratio = mat["poisson_ratio"].as<double>();
+	if (mat["allowable_stress"]) m.allowable_stress = mat["allowable_stress"].as<double>();
+	return m;
+}
+
+namespace {
+
+YAML::Node EncodeVec3(const Vec3& v) {
+	YAML::Node n;
+	n.push_back(v.x);
+	n.push_back(v.y);
+	n.push_back(v.z);
+	n.SetStyle(YAML::EmitterStyle::Flow);
+	return n;
+}
+
+bool DecodeVec3(const YAML::Node& node, Vec3* out) {
+	if (!node || !node.IsSequence() || node.size() < 3) return false;
+	*out = Vec3{node[0].as<double>(), node[1].as<double>(), node[2].as<double>()};
+	return true;
+}
+
+} // namespace
+
+YAML::Node Encode(const PlaneNetwork& net) {
+	// The planes as the dialog states them: the axis (and the normal when
+	// it is the user's own), where the first plane is, the spacing and how
+	// many; then the rib's thickness, its height in from the surface when
+	// it does not span the interior, and its material.
+	YAML::Node n;
+	n["name"] = net.name;
+	n["axis"] = std::string(PlaneAxisName(net.axis));
+	if (net.axis == PlaneAxis::Custom) n["normal"] = EncodeVec3(NetworkNormal(net));
+	n["start"] = net.start;
+	if (net.count > 1) n["spacing"] = net.spacing;
+	n["count"] = net.count;
+	n["thickness"] = net.thickness;
+	if (net.height > 0.0) n["height"] = net.height;
+	n["material"] = EncodeMaterial(net.material);
+	n.SetStyle(YAML::EmitterStyle::Flow);
+	return n;
+}
+
+PlaneNetwork DecodePlaneNetwork(const YAML::Node& node) {
+	PlaneNetwork net;
+	if (!node || !node.IsMap()) throw std::invalid_argument("a plane network is not a mapping");
+	if (node["name"]) net.name = node["name"].as<std::string>();
+	if (node["axis"]) net.axis = ParsePlaneAxis(node["axis"].as<std::string>());
+	Vec3 normal;
+	if (DecodeVec3(node["normal"], &normal)) net.normal = Normalized(normal);
+	if (node["start"]) net.start = node["start"].as<double>();
+	if (node["spacing"]) net.spacing = node["spacing"].as<double>();
+	if (node["count"]) net.count = node["count"].as<int>();
+	if (node["thickness"]) net.thickness = node["thickness"].as<double>();
+	if (node["height"]) net.height = node["height"].as<double>();
+	net.material = DecodeMaterial(node["material"]);
+	const std::string why = PlaneNetworkProblem(net);
+	if (!why.empty()) throw std::invalid_argument("plane network '" + net.name + "': " + why);
+	return net;
+}
+
+YAML::Node Encode(const InfillSpec& s) {
+	YAML::Node n;
+	n["material"] = EncodeMaterial(s.material);
+	n["lattice"] = Encode(s.lattice);
+	return n;
+}
+
+InfillSpec DecodeInfillSpec(const YAML::Node& node) {
+	InfillSpec s;
+	if (!node || !node.IsMap()) throw std::invalid_argument("an infill is not a mapping");
+	s.material = DecodeMaterial(node["material"]);
+	s.lattice = DecodeLatticeSpec(node["lattice"]);
+	s.lattice.skin_thickness = 0.0;   // the body's rules, never the lattice's
+	return s;
+}
+
+void EncodeBodyStructure(const BodyStructure& s, YAML::Node& into) {
+	if (s.material.HasDensity() || !s.material.name.empty()) into["material"] = EncodeMaterial(s.material);
+	if (s.skin_thickness > 0.0) into["skin_thickness"] = s.skin_thickness;
+	if (s.infill) into["infill"] = Encode(*s.infill);
+	if (!s.networks.empty()) {
+		YAML::Node nets(YAML::NodeType::Sequence);
+		for (const PlaneNetwork& net : s.networks) nets.push_back(Encode(net));
+		into["networks"] = nets;
+	}
+	if (!s.exclusions.empty()) {
+		YAML::Node ex(YAML::NodeType::Sequence);
+		for (const std::string& name : s.exclusions) ex.push_back(name);
+		ex.SetStyle(YAML::EmitterStyle::Flow);
+		into["exclusions"] = ex;
+	}
+	if (s.asserted_mass) into["asserted_mass"] = *s.asserted_mass;
+}
+
+BodyStructure DecodeBodyStructure(const YAML::Node& node) {
+	BodyStructure s;
+	if (!node || !node.IsMap()) return s;
+	if (node["material"]) s.material = DecodeMaterial(node["material"]);
+	if (node["skin_thickness"]) s.skin_thickness = node["skin_thickness"].as<double>();
+	if (node["infill"]) s.infill = DecodeInfillSpec(node["infill"]);
+	if (const YAML::Node nets = node["networks"]) {
+		for (const auto& nn : nets) s.networks.push_back(DecodePlaneNetwork(nn));
+	}
+	if (const YAML::Node ex = node["exclusions"]) {
+		for (const auto& e : ex) s.exclusions.push_back(e.as<std::string>());
+	}
+	if (node["asserted_mass"]) s.asserted_mass = node["asserted_mass"].as<double>();
+	const std::string why = BodyStructureProblem(s);
+	if (!why.empty()) throw std::invalid_argument(why);
+	return s;
+}
+
+YAML::Node Encode(const ProjectBody& b) {
+	YAML::Node n;
+	n["name"] = b.name;
+	if (b.color) n["color"] = EncodeColor(*b.color);
+	if (b.hidden) n["hidden"] = true;
+	EncodeBodyStructure(b.structure, n);
+	return n;
+}
+
+ProjectBody DecodeProjectBody(const YAML::Node& node) {
+	ProjectBody b;
+	if (!node || !node.IsMap()) throw std::invalid_argument("a body entry is not a mapping");
+	b.name = node["name"] ? node["name"].as<std::string>() : "";
+	b.color = DecodeColor(node["color"]);
+	b.hidden = node["hidden"] ? node["hidden"].as<bool>() : false;
+	try {
+		b.structure = DecodeBodyStructure(node);
+	} catch (const std::invalid_argument& e) {
+		throw std::invalid_argument("body '" + b.name + "': " + e.what());
+	}
+	return b;
+}
+
+namespace {
+
+YAML::Node EncodeBodies(const std::vector<ProjectBody>& bodies) {
+	YAML::Node out(YAML::NodeType::Sequence);
+	for (const ProjectBody& body : bodies) {
+		if (!body.IsDefault()) out.push_back(Encode(body));
+	}
+	return out;
+}
+
+std::vector<ProjectBody> DecodeBodies(const YAML::Node& node, const std::string& owner) {
+	std::vector<ProjectBody> out;
+	if (!node) return out;
+	for (const auto& bn : node) {
+		try {
+			out.push_back(DecodeProjectBody(bn));
+		} catch (const std::invalid_argument& e) {
+			throw std::invalid_argument("'" + owner + "': " + e.what());
+		}
+	}
+	return out;
+}
+
+} // namespace
 
 YAML::Node Encode(const ProjectBoolean& b) {
 	YAML::Node n;
@@ -631,17 +803,8 @@ YAML::Node Encode(const ProjectBoolean& b) {
 	if (b.hidden) n["hidden"] = true;
 	if (b.color) n["color"] = EncodeColor(*b.color);
 	if (b.mass.mode != MassMode::Unset) n["mass"] = EncodeMassSpec(b.mass);
-	if (!b.bodies.empty()) {
-		YAML::Node bodies(YAML::NodeType::Sequence);
-		for (const ProjectBooleanBody& body : b.bodies) {
-			YAML::Node bn;
-			bn["name"] = body.name;
-			if (body.color) bn["color"] = EncodeColor(*body.color);
-			if (body.hidden) bn["hidden"] = true;
-			bodies.push_back(bn);
-		}
-		n["bodies"] = bodies;
-	}
+	const YAML::Node bodies = EncodeBodies(b.bodies);
+	if (bodies.size() > 0) n["bodies"] = bodies;
 	return n;
 }
 
@@ -668,13 +831,7 @@ ProjectBoolean DecodeProjectBoolean(const YAML::Node& node) {
 	b.hidden = node["hidden"] ? node["hidden"].as<bool>() : false;
 	b.color = DecodeColor(node["color"]);
 	b.mass = DecodeMassSpec(node["mass"]);
-	for (const auto& bn : node["bodies"]) {
-		ProjectBooleanBody body;
-		body.name = bn["name"] ? bn["name"].as<std::string>() : "";
-		body.color = DecodeColor(bn["color"]);
-		body.hidden = bn["hidden"] ? bn["hidden"].as<bool>() : false;
-		b.bodies.push_back(body);
-	}
+	b.bodies = DecodeBodies(node["bodies"], b.name);
 	return b;
 }
 
@@ -825,6 +982,8 @@ YAML::Node EncodeEntity(const ProjectEntity& e) {
 	if (e.hidden) n["hidden"] = true;
 	if (e.mass.mode != MassMode::Unset) n["mass"] = EncodeMassSpec(e.mass);
 	if (!e.mesh.IsDefault()) n["mesh"] = EncodeMeshSpec(e.mesh);
+	const YAML::Node bodies = EncodeBodies(e.bodies);
+	if (bodies.size() > 0) n["bodies"] = bodies;
 	return n;
 }
 
@@ -858,6 +1017,7 @@ ProjectEntity DecodeEntity(const YAML::Node& node) {
 	e.hidden = node["hidden"] ? node["hidden"].as<bool>() : false;
 	e.mass = DecodeMassSpec(node["mass"]);
 	e.mesh = DecodeMeshSpec(node["mesh"]);
+	e.bodies = DecodeBodies(node["bodies"], e.name);
 	return e;
 }
 

@@ -66,6 +66,7 @@ add_library(aerotelic_core STATIC
 	src/mass_properties.cpp
 	src/units.cpp
 	src/materials.cpp
+	src/body_structure.cpp
 	# Shewchuk's exact geometric predicates (public domain), compiled as C
 	# with strict IEEE rounding: the adaptive arithmetic is defeated by
 	# fast-math style reassociation.
@@ -215,4 +216,7 @@ target_link_libraries(mass_properties_check PRIVATE aerotelic_core)
 
 add_executable(units_check tests/units_check.cpp)
 target_link_libraries(units_check PRIVATE aerotelic_core)
+
+add_executable(body_structure_check tests/body_structure_check.cpp)
+target_link_libraries(body_structure_check PRIVATE aerotelic_core)
 
