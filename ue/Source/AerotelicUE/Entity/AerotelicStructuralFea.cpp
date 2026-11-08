@@ -123,7 +123,7 @@ namespace AerotelicStructuralFea
 
 	bool Run(const FRequest& Request, FResult& Out, FString& OutError, AerotelicMeshLib::FJobProgress* Progress)
 	{
-		if (Request.Mesh == nullptr || (Request.Mesh->tets.empty() && Request.ShellFaces.Num() == 0))
+		if (Request.Mesh == nullptr || (Request.Mesh->tets.empty() && Request.ShellFaces.Num() == 0 && Request.RibFaces.Num() == 0))
 		{
 			OutError = TEXT("nothing to analyse: no tetrahedra and no shells");
 			return false;
@@ -135,14 +135,19 @@ namespace AerotelicStructuralFea
 		}
 		for (const FRegion& R : Request.Regions)
 		{
-			if (!R.HasShells() && !R.HasTetrahedra())
+			if (!R.HasShells() && !R.HasTetrahedra() && !R.HasRibs())
 			{
-				OutError = FString::Printf(TEXT("'%s' is neither shells nor a solid nor a lattice core: give it a skin thickness or a solid material."), *R.Label);
+				OutError = FString::Printf(TEXT("'%s' is neither shells nor a solid nor a lattice core nor ribs: give it a skin thickness or a solid material."), *R.Label);
 				return false;
 			}
 			if (R.HasShells() && !R.Skin.IsStructural())
 			{
-				OutError = FString::Printf(TEXT("'%s' has no structural material for its skin: give it a density, a Young's modulus and a Poisson's ratio under Material Properties in the Scene tree."), *R.Label);
+				OutError = FString::Printf(TEXT("'%s' has no structural material for its skin: give it a density, a Young's modulus and a Poisson's ratio under Structure in the Scene tree."), *R.Label);
+				return false;
+			}
+			if (R.HasRibs() && !R.Rib.IsStructural())
+			{
+				OutError = FString::Printf(TEXT("'%s' has no structural material for its ribs: give the network a density, a Young's modulus and a Poisson's ratio under Structure in the Scene tree."), *R.Label);
 				return false;
 			}
 			if (R.HasTetrahedra() && !R.Core.IsStructural())
@@ -199,6 +204,17 @@ namespace AerotelicStructuralFea
 				return false;
 			}
 		}
+		FString RibsFile;
+		if (Request.RibFaces.Num() > 0)
+		{
+			RibsFile = TEXT("ribs.bin");
+			if (!WriteFaces(Request.RibFaces, FPaths::Combine(Dir, RibsFile)))
+			{
+				OutError = TEXT("could not write the rib faces for the solver");
+				Cleanup();
+				return false;
+			}
+		}
 		FString PressureFile;
 		if (Request.PressurePerFace.Num() > 0)
 		{
@@ -220,10 +236,14 @@ namespace AerotelicStructuralFea
 		for (int32 i = 0; i < Request.Regions.Num(); ++i)
 		{
 			const FRegion& R = Request.Regions[i];
-			FString Skin = TEXT("null"), Core = TEXT("null"), Solid = TEXT("null");
+			FString Skin = TEXT("null"), Core = TEXT("null"), Solid = TEXT("null"), Rib = TEXT("null");
 			if (R.HasShells())
 			{
 				Skin = FString::Printf(TEXT("{\"material\": %s, \"thickness\": %s}"), *MaterialJson(R.Skin), *Num(R.SkinThickness * L));
+			}
+			if (R.HasRibs())
+			{
+				Rib = FString::Printf(TEXT("{\"material\": %s, \"thickness\": %s}"), *MaterialJson(R.Rib), *Num(R.RibThickness * L));
 			}
 			if (R.Cell != nullptr)
 			{
@@ -247,8 +267,8 @@ namespace AerotelicStructuralFea
 			}
 			// The region's own element order, or null for the request's.
 			const TCHAR* Order = R.SecondOrder < 0 ? TEXT("null") : (R.SecondOrder > 0 ? TEXT("true") : TEXT("false"));
-			Regions += FString::Printf(TEXT("%s{\"id\": %d, \"label\": %s, \"skin\": %s, \"core\": %s, \"solid\": %s, \"second_order\": %s}"),
-				i ? TEXT(", ") : TEXT(""), R.Id, *JsonString(R.Label), *Skin, *Core, *Solid, Order);
+			Regions += FString::Printf(TEXT("%s{\"id\": %d, \"label\": %s, \"skin\": %s, \"core\": %s, \"solid\": %s, \"rib\": %s, \"second_order\": %s}"),
+				i ? TEXT(", ") : TEXT(""), R.Id, *JsonString(R.Label), *Skin, *Core, *Solid, *Rib, Order);
 		}
 
 		if (Request.Supports.Num() == 0)
@@ -275,12 +295,12 @@ namespace AerotelicStructuralFea
 				*Num(P.At.x * L), *Num(P.At.y * L), *Num(P.At.z * L), *Num(P.Force.x), *Num(P.Force.y), *Num(P.Force.z));
 		}
 		const FString Job = FString::Printf(
-			TEXT("{\n \"mesh\": \"mesh.bin\",\n \"faces\": %s,\n \"model\": \"regions\",\n \"regions\": [%s],\n \"second_order\": %s,\n")
+			TEXT("{\n \"mesh\": \"mesh.bin\",\n \"faces\": %s,\n \"rib_faces\": %s,\n \"model\": \"regions\",\n \"regions\": [%s],\n \"second_order\": %s,\n")
 			TEXT(" \"supports\": [%s],\n")
 			TEXT(" \"loads\": {\"load_factor\": %s, \"pressure\": %s, \"pressure_file\": %s, \"point_forces\": [%s]},\n")
 			TEXT(" \"solver\": {\"echo_level\": 0, \"linear_solver\": %s, \"homogenize_cache\": %s, \"shell_element\": %s, \"modes\": %d},\n")
 			TEXT(" \"outputs\": {\"vtk\": %s, \"result\": \"result.json\"}\n}\n"),
-			FacesFile.IsEmpty() ? TEXT("null") : *JsonString(FacesFile), *Regions, Request.bSecondOrder ? TEXT("true") : TEXT("false"),
+			FacesFile.IsEmpty() ? TEXT("null") : *JsonString(FacesFile), RibsFile.IsEmpty() ? TEXT("null") : *JsonString(RibsFile), *Regions, Request.bSecondOrder ? TEXT("true") : TEXT("false"),
 			*SupportsJson,
 			*Num(Request.LoadFactor), *Num(Request.Pressure), PressureFile.IsEmpty() ? TEXT("null") : *JsonString(PressureFile), *PointsJson,
 			*JsonString(Request.LinearSolver.IsEmpty() ? FString(TEXT("auto")) : Request.LinearSolver), Request.bHomogenizeCache ? TEXT("true") : TEXT("false"),
@@ -308,6 +328,7 @@ namespace AerotelicStructuralFea
 		Out.Elements = Int(TEXT("elements"));
 		Out.Tets = Int(TEXT("tets"));
 		Out.Shells = Int(TEXT("shells"));
+		Out.RibShells = Int(TEXT("rib_shells"));
 		Out.Dofs = Int(TEXT("dofs"));
 		Out.SupportNodes = Int(TEXT("support_nodes"));
 		Out.SupportCornerNodes = Result->HasField(TEXT("support_corner_nodes")) ? Int(TEXT("support_corner_nodes")) : Out.SupportNodes;

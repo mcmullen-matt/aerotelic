@@ -617,58 +617,109 @@ The layout follows the Python/Qt version's main window (`aerotelic/ui/main_windo
   matches the field's own share of that box. Note that the share of a small
   box runs under the fraction asked for by order 1 / cells across, the
   boundary cutting the tiling; the calibration is exact, the box is not.
-* **Lattice menu** -- *Generate Lattice* opens the dialog: family (TPMS /
+* **Per-body structure** (2026-11-08; replaces the Lattice menu and the
+  lattice scene entity of 2026-10-11..11-04, whose history follows). The
+  structure of a solid BODY -- a wing's Main and each flap, a propeller's
+  spinner and blades, a boolean result's Body k -- is an attribute of
+  that body (`core/include/aerotelic/body_structure.hpp`, saved under the
+  entity's `bodies:` list): its material and skin thickness (0 = a
+  solid), an optional lattice INFILL in a material of its own (the
+  OpenLattice spec as before: family, type, phase, cell, fraction or wall,
+  resolution, origin offsets), any number of PLANE NETWORKS (ribs, spars,
+  frames: planes normal to x, y, z or a custom axis, a start, a spacing,
+  a count, a thickness, a material, and a height -- 0 spans the interior
+  wall to wall, positive stops that far in from the surface), reserved
+  volumes by scene name, or an asserted mass. Start and spacing are
+  geometry in the parameterisation's full-scale frame (placed, scaled and
+  mirrored with the body); skin, rib thickness and height are physical
+  build figures in project units, not scaled by the model scale. Boolean
+  result bodies own their structure (no inheritance; *Copy Structure From
+  Operand* on the result's row is the starting point). The Scene tree's
+  body rows (and a single-body entity's row) have *Structure...*: a
+  modeless dialog with Skin / Infill / Planes / Mass tabs, Apply, Revert
+  and *Generate*; while the Planes tab is edited the 3D view shows every
+  plane as a translucent rectangle over the body (the one being edited
+  amber), through `Standalone/AerotelicPlanePreviewActor` and the
+  document's structure preview. *Generate* (also on the row menu) runs the
+  MeshLib job for that body alone and gives it LAYERS -- "Skin", one per
+  network, "Infill" -- drawn under the body (and its mirrored half) in
+  the body's frame, listed under its row with their own visibility and
+  colour, exported as STL parts, weighed exactly by the mass report (a
+  solid of each layer's material) and meshed with tetrahedra for the
+  exports and the full-resolution FEA; the body's own section hides while
+  its Skin layer shows. No scene entity is created. A generated body
+  follows every later edit of its body, of the booleans over it and of
+  the volumes its exclusions name (the document's rebuild queue, by
+  (entity, body)); a structure edit that changes the geometry regenerates
+  a generated body; bodies with an interior are regenerated on load. The
+  ribs are cut inside the MeshLib job (`lattice_meshlib.py` `networks:`):
+  slabs about the planes intersected with the hollow, a limited height by
+  subtracting the body's deeper offset, earlier networks continuous and
+  later ones notched by them, the infill filling what the ribs leave --
+  the SLAB is subtracted from the domain, never the rib (MeshLib's boolean
+  fails on coincident faces). Old files' `lattices:` entries are skipped
+  by name and listed in "Project Opened With Problems".
+* **Structural analysis of a structured body** (Analysis > Structural):
+  `Entity/AerotelicFeaModelBuilder` builds every chosen body the same way
+  for the dialog and the commandlets. A skinned body with an infill is
+  skin shells (the skin's material) over 4-node tetrahedra at the cell
+  size carrying the homogenised cell of the INFILL's material -- the two
+  materials distinct at last. Its plane networks enter as RIB SHELLS: the
+  body's own grid is first cut by every plane (`core/mesh_cut.hpp`
+  `CutMeshByPlanes`: triangles split at the planes, one crossing point per
+  edge, vertices within a tolerance snapped onto the plane, closed in and
+  out), so each rib's rim is a loop of skin nodes; `tools/tet_gmsh.py`
+  meshes each rib's disc in a scratch model from the rim (transfinite rim
+  lines, no new rim nodes), splits it along the chords where networks
+  cross (the same transfinite node count on both discs, so they share
+  their chord nodes), and makes the discs WALLS of the body: every disc
+  partitions the body into compartments, each a gmsh volume bounded by its
+  piece of the skin and the walls round it, so the tetrahedra conform to
+  the ribs by construction (embedding the discs in one volume crashed
+  gmsh). A limited height reports only the part of the disc within it as
+  rib faces; the rest of the wall stays as an interface between
+  tetrahedra of one material. In `structural_fea.py` rib faces are shells
+  of their region's `rib` material and thickness and nothing else: not
+  wetted, no surface load, no part in the mean normal displacement; their
+  mass counts; their peak stress is a `kind: "rib"` entry and the VTK
+  marks them `kind` 2. A thin-walled body with ribs (no infill) gets the
+  rib discs on its skin's nodes with no tetrahedra at all (`volume:
+  false`). The full-resolution model (the generated structure's skin /
+  core tetrahedra) does not carry ribs yet and says so. Checks:
+  `core/tests/mesh_cut_check.cpp`, `tools/tet_gmsh_check.py` (the 1 x 10 x
+  1 box with three ribs and a crossing spar: every rib face a face of two
+  tetrahedra, area 13 exact, chord nodes shared), and the document
+  commandlet's "a box beam with ribs" step (the cut's volume, one
+  unit-square rim loop per plane on the skin, the mass rho t A of skin
+  plus ribs, the clamp's reactions, the tip deflection a little under the
+  unribbed Timoshenko box, a "rib" entry, kind-2 VTK cells).
+* **Lattice menu** (2026-10-11 to 2026-11-07, superseded above; kept for
+  the record) -- *Generate Lattice* opened a dialog: family (TPMS /
   Strut-based / Auxetic / Honeycomb), type, TPMS phase, prism axis and cell
   aspect (honeycomb), unit cell size, volume fraction or wall thickness
   (whichever the honeycomb's "wall set by" chooses; wall thickness for the
   iso-surface phase), voxels per cell (the
   paper's mesh density), NO skin thickness of the lattice's own -- since
-  2026-10-31 the skin thickness is PER BODY and comes from the body
-  alone: each body to fill is hollowed by the skin thickness of its
-  effective Material Properties (`MassSpec::skin_thickness`,
-  `FAerotelicLatticeModel::SkinThicknessFor`; a boolean result inherits
-  its first operand's), the dialog lists what each chosen body gets and
-  names one that lacks it, and the generation refuses such a body by
-  name (there was a default for a few hours that day; Matt's rule is
-  that there are no global defaults). The thinnest skin sizes the
-  surface tolerance and the offset's voxel, the thickest pads the domain,
-  and the MeshLib job carries `skin_thickness` and `inner_remesh_edge`
-  per target (`result.json` reports each target's). The tet bodies and
-  meshes carry it on (`FTetBody::SkinThickness`,
-  `FTetMesh::SkinThickness`), so the structural analysis's shells get
-  each body's own thickness. The document commandlet checks the sphere
-  is hollowed by its own 0.05 against a 0.03 default -- the bodies to fill
-  (every non-primitive body, mirrored
-  halves and boolean results included, chosen by default), the reserved
-  volumes (every primitive, chosen by default -- WingDesigner's primitives
-  mark payload bays), a name, and a live estimate of the sample grid (with
-  a honeycomb's wall thickness and how many voxels span it). The
-  result is a scene item of kind *lattice* with two bodies, "Skin" (the
-  outer shell) and "Lattice" (the infill): each shown, coloured, hidden,
-  sectioned, exported to STL (not STEP: they are meshes; an ASCII STL
-  carries them as separate named `solid`s) and saved under `lattices:` in
-  the project file (parameters and body names), regenerated on load. Every
-  body filled or reserved must be a closed, outward mesh: the distance
-  field's sign is meaningless on an open one (it reported "inside" in
-  whole regions behind the P-38's boom tails before the knife-edge fix),
-  so generation is refused naming the body; and each body's field is
-  clamped positive outside the body's own bounding box as a second line of
-  defence. Edit (double-click or the row menu) reopens the dialog and
-  regenerates; a lattice follows an *Apply* on any body it fills (or on an
-  operand of a boolean it fills): the document subsystem marks it stale
-  and regenerates it a moment later, once per Apply however many bodies
-  changed (see *Apply in the design panels* below). It follows a changed
-  **skin thickness** the same way (2026-11-04): the lattice is hollowed by
-  each body's Material Properties figure, so OK on that dialog with a new
-  thickness broadcasts `AAerotelicEntityActor::OnSkinThicknessChanged`
-  and the subsystem queues the lattices over the entity (lattices only --
-  no boolean reads a material; a density or modulus edited under the same
-  skin queues nothing). *Regenerate Lattices*
-  rebuilds every lattice by hand, for one that failed to follow or was
-  left as it was. Deleting a filled body deletes the lattice. Lattices
-  carry no collision (click-select them in the tree). Measured on p38: the
-  default cell (a tenth of the largest extent) generates in 0.2 s; a
-  0.4-unit cell (19.5 M samples) in well under a minute.
+  2026-10-31 the skin thickness was PER BODY and came from the body
+  alone: each body to fill was hollowed by the skin thickness of its
+  effective Material Properties (`MassSpec::skin_thickness`; a boolean
+  result inherited its first operand's), the dialog listed what each
+  chosen body got and named one that lacked it, and the generation
+  refused such a body by name (there was a default for a few hours that
+  day; Matt's rule is that there are no global defaults). The thinnest
+  skin sized the surface tolerance and the offset's voxel, the thickest
+  padded the domain, and the MeshLib job carries `skin_thickness` and
+  `inner_remesh_edge` per target (`result.json` reports each target's).
+  The result was a scene item of kind *lattice* with two bodies, "Skin"
+  (the outer shell) and "Lattice" (the infill), saved under `lattices:`
+  in the project file and regenerated on load; it followed an *Apply* on
+  any body it filled and a changed skin thickness. Every body filled or
+  reserved must be a closed, outward mesh: the distance field's sign is
+  meaningless on an open one (it reported "inside" in whole regions
+  behind the P-38's boom tails before the knife-edge fix), so generation
+  is refused naming the body. Measured on p38: the default cell (a tenth
+  of the largest extent) generated in 0.2 s; a 0.4-unit cell (19.5 M
+  samples) in well under a minute.
 * **Hollowing and infill on MeshLib** (2026-10-14; `Entity/AerotelicMeshLib.h`,
   `tools/lattice_meshlib.py`, `tools/lattice_meshlib_check.py`). The
   sampled skin and the tetrahedra-bounded skin both showed visible faults

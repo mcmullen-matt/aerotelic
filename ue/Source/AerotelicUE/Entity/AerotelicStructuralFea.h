@@ -79,15 +79,25 @@ namespace AerotelicStructuralFea
 		// / maximum" can be resolved against that body alone (FSupport::Body).
 		// -1: not from a picked body.
 		int32 Body = -1;
+		// Rib shells (2026-11-08): shells of this material and thickness on
+		// the region's faces in FRequest::RibFaces -- the cross-sections of a
+		// body's plane networks, embedded in its tetrahedra (or hanging on
+		// its skin shells alone) by tools/tet_gmsh.py. Unloaded: no pressure
+		// lands on them, they are not wetted; their mass counts. A region of
+		// ribs alone is one network.
+		aerotelic::Material Rib;       // SI
+		double RibThickness = 0.0;
 
 		bool HasShells() const { return SkinThickness > 0.0; }
+		bool HasRibs() const { return RibThickness > 0.0; }
 		bool HasHomogenisedCore() const { return Cell != nullptr; }
 		bool HasTetrahedra() const { return bSolid || Cell != nullptr; }
 		bool IsSecondOrder(bool bRequestDefault) const { return SecondOrder < 0 ? bRequestDefault : SecondOrder > 0; }
 	};
 
-	// A wetted face of a shell-only region: its nodes (into the request
-	// mesh's nodes), wound outward, and its region id.
+	// A wetted face of a shell-only region (or a rib face, in
+	// FRequest::RibFaces): its nodes (into the request mesh's nodes), wound
+	// outward, and its region id.
 	struct FShellFace
 	{
 		int32 N[3] = { 0, 0, 0 };
@@ -139,6 +149,8 @@ namespace AerotelicStructuralFea
 		// region's faces among the mesh's nodes.
 		const aerotelic::TetMesh* Mesh = nullptr;
 		TArray<FShellFace> ShellFaces;
+		// The rib faces (FRegion::Rib): shells inside the body, not wetted.
+		TArray<FShellFace> RibFaces;
 		double LengthToSI = 1.0;
 		TArray<FRegion> Regions;
 
@@ -209,7 +221,7 @@ namespace AerotelicStructuralFea
 	{
 		int32 Region = 0;
 		FString Label;
-		FString Kind;                 // "skin", "core", "solid"
+		FString Kind;                 // "skin", "core", "solid", "rib"
 		double MaxVonMises = 0.0;     // Pa (a core: estimated in the struts)
 		double MacroVonMises = 0.0;   // Pa, a core's smeared figure
 		double Margin = 0.0;          // allowable / peak - 1 (0 without an allowable)
@@ -240,7 +252,8 @@ namespace AerotelicStructuralFea
 	struct FResult
 	{
 		int32 Nodes = 0, Elements = 0, Dofs = 0;
-		int32 Tets = 0, Shells = 0;
+		int32 Tets = 0, Shells = 0;   // Shells counts the rib shells too
+		int32 RibShells = 0;
 		// The nodes the solver clamped: on 10-node tetrahedra the mid-edge
 		// nodes on the support planes as well as the corner nodes, which
 		// SupportCornerNodes counts alone (the pre-processor's figure).

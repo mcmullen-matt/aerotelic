@@ -13,9 +13,11 @@
 #include "Entity/AerotelicMassProperties.h"
 #include "Entity/AerotelicStructuralFea.h"
 #include "Entity/AerotelicFeaPreprocess.h"
+#include "Entity/AerotelicFeaModelBuilder.h"
 #include "Entity/AerotelicMaterialLibrary.h"
 
 #include "aerotelic/materials.hpp"
+#include "aerotelic/mesh_cut.hpp"
 #include "aerotelic/primitive_model.hpp"
 #include "aerotelic/wing_model.hpp"
 #include "aerotelic/wing_panels.hpp"
@@ -1305,6 +1307,182 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 							"fea (beam): the VTK carries the four mode shapes as point vectors");
 					}
 					IFileManager::Get().Delete(*Request.VtkPath, false, true, true);
+				}
+
+				// (6) The same box with RIBS (2026-11-08): three plane networks'
+				// worth of structure on the body -- a 10 mm aluminium skin and a
+				// network of three ribs normal to y at y = -2.4, 0.05, 2.5 (OFF
+				// the grid rows, so the cut must split triangles), 5 mm thick --
+				// built through the shared model builder as the dialog builds
+				// it: the surface cut along the planes (closed, volume unchanged),
+				// one 4-corner rim loop per plane whose vertices are skin nodes,
+				// the ribs meshed as unloaded shells on those rims, a region per
+				// network. Held to: the mass is the skin's rho t A plus the
+				// ribs' rho t A (three 1 x 1 discs), the clamp carries the loads,
+				// the tip deflects a little LESS than the unribbed box (ribs
+				// stiffen the section against distortion, not against bending),
+				// the result has an entry of kind "rib", and the VTK carries the
+				// rib shells as kind 2 cells.
+				UE_LOG(LogAerotelicDocumentTest, Display, TEXT("step: structural fea (a box beam with ribs)"));
+				{
+					aerotelic::BodyStructure S = Beam->GetBodyStructure(0);
+					Check(S.IsSkin() && FMath::IsNearlyEqual(S.skin_thickness, 0.01, 1e-12), "fea (ribs): the beam carries its 10 mm skin");
+					aerotelic::PlaneNetwork Ribs;
+					Ribs.name = "Ribs";
+					Ribs.axis = aerotelic::PlaneAxis::Y;
+					Ribs.start = -2.4;
+					Ribs.spacing = 2.45;
+					Ribs.count = 3;
+					Ribs.thickness = 0.005;
+					Ribs.material = Al;
+					S.networks.push_back(Ribs);
+					Check(Beam->SetBodyStructure(TEXT("Main"), S), "fea (ribs): the network is set on the beam's body");
+
+					// The cut on its own: the surface stays closed, the volume
+					// stands, the rims are mesh edges, and the planes off the grid
+					// rows split triangles.
+					{
+						const std::vector<aerotelic::NamedMesh> Own = Beam->GetPlacedMeshes(false);
+						std::vector<aerotelic::Plane> Planes;
+						for (int k = 0; k < 3; ++k) Planes.push_back(aerotelic::NetworkPlane(Ribs, k));
+						aerotelic::MeshCutStats Stats;
+						const aerotelic::TriMesh Cut = aerotelic::CutMeshByPlanes(Own[0].mesh, Planes, 1e-9, nullptr, &Stats);
+						Check(Cut.IsClosedManifold() && FMath::IsNearlyEqual(Cut.SignedVolume(), Own[0].mesh.SignedVolume(), 1e-9), "fea (ribs): the surface cut by the three planes is closed with its volume unchanged");
+						Check(Stats.split_triangles > 0 && Stats.new_vertices > 0, FString::Printf(TEXT("fea (ribs): the off-grid planes split triangles (%d split, %d vertices added)"), Stats.split_triangles, Stats.new_vertices));
+						int32 Loops = 0;
+						bool bFourCorners = true;
+						for (const aerotelic::Plane& Pl : Planes)
+						{
+							const auto L = aerotelic::SectionLoopsOnPlane(Cut, Pl, 1e-9);
+							Loops += static_cast<int32>(L.size());
+							for (const auto& Loop : L)
+							{
+								// A 1 x 1 square: area 1, and its vertices all at |x| = 0.5 or |z| = 0.5.
+								bFourCorners = bFourCorners && FMath::IsNearlyEqual(aerotelic::LoopArea(Cut, Loop, Pl), 1.0, 1e-9);
+								for (int V : Loop) bFourCorners = bFourCorners && (FMath::IsNearlyEqual(FMath::Abs(Cut.vertices[V].x), 0.5, 1e-9) || FMath::IsNearlyEqual(FMath::Abs(Cut.vertices[V].z), 0.5, 1e-9));
+							}
+						}
+						Check(Loops == 3 && bFourCorners, FString::Printf(TEXT("fea (ribs): one unit-square rim loop per plane, on the skin (%d loops)"), Loops));
+					}
+
+					// The model through the builder.
+					AerotelicFeaModelBuilder::FOptions Options;
+					Options.Model = AerotelicFeaModelBuilder::EModel::AsDesigned;
+					AerotelicFeaModelBuilder::FCache Cache;
+					AerotelicFeaModelBuilder::FBuilt Built;
+					FAerotelicBooleanOperand BeamOp;
+					BeamOp.Entity = Beam;
+					bool bOk = false;
+					const FString Line = AerotelicFeaModelBuilder::Describe(BeamOp, TEXT("Main"), Beam->EntityName, Options, Doc->GetUnits(), &bOk);
+					Check(bOk && Line.Contains(TEXT("rib plane")) && Line.Contains(TEXT("Ribs")), FString::Printf(TEXT("fea (ribs): the Set-up line names the ribs (%s)"), *Line));
+					const bool bAppended = AerotelicFeaModelBuilder::AppendBody(BeamOp, TEXT("Main"), Beam->EntityName, 0, Options, Cache, Built);
+					Check(bAppended, FString::Printf(TEXT("fea (ribs): the ribbed beam builds (%s)"), *FString::Join(Built.Problems, TEXT("; "))));
+					if (bAppended)
+					{
+						Check(Built.Mesh.tets.empty() && Built.ShellFaces.Num() > ExpectedTriangles && Built.RibFaces.Num() > 0 && Built.Regions.Num() == 2,
+							FString::Printf(TEXT("fea (ribs): shells on the cut surface (%d > %d), %d rib shells, two regions (skin and ribs), no tetrahedra (%d)"), Built.ShellFaces.Num(), ExpectedTriangles, Built.RibFaces.Num(), (int32)Built.Mesh.tets.size()));
+						const AerotelicStructuralFea::FRegion* RibRegion = Built.Regions.FindByPredicate([](const AerotelicStructuralFea::FRegion& X) { return X.HasRibs(); });
+						Check(RibRegion != nullptr && !RibRegion->HasShells() && !RibRegion->HasTetrahedra() && FMath::IsNearlyEqual(RibRegion->RibThickness, 0.005, 1e-12) && RibRegion->Label.Contains(TEXT("Ribs")),
+							"fea (ribs): the rib region carries the network's thickness and material and nothing else");
+						// Every rib rim node is a skin node: a rib face node with
+						// |x| = 0.5 or |z| = 0.5 appears in some shell face.
+						TSet<int32> SkinNodes;
+						for (const auto& F : Built.ShellFaces) for (int32 k = 0; k < 3; ++k) SkinNodes.Add(F.N[k]);
+						bool bRims = true;
+						int32 RimNodes = 0, InteriorNodes = 0;
+						for (const auto& F : Built.RibFaces)
+						{
+							for (int32 k = 0; k < 3; ++k)
+							{
+								const aerotelic::Vec3& Node = Built.Mesh.nodes[F.N[k]];
+								const bool bOnSkin = FMath::IsNearlyEqual(FMath::Abs(Node.x), 0.5, 1e-9) || FMath::IsNearlyEqual(FMath::Abs(Node.z), 0.5, 1e-9);
+								if (bOnSkin) { ++RimNodes; bRims = bRims && SkinNodes.Contains(F.N[k]); }
+								else { ++InteriorNodes; bRims = bRims && !SkinNodes.Contains(F.N[k]); }
+							}
+						}
+						Check(bRims && RimNodes > 0 && InteriorNodes > 0, FString::Printf(TEXT("fea (ribs): every rib rim node is a skin node and no interior rib node is (%d rim, %d interior)"), RimNodes, InteriorNodes));
+						double RibArea = 0.0;
+						for (const auto& F : Built.RibFaces)
+						{
+							const aerotelic::Vec3& A = Built.Mesh.nodes[F.N[0]];
+							RibArea += 0.5 * aerotelic::Length(aerotelic::Cross(Built.Mesh.nodes[F.N[1]] - A, Built.Mesh.nodes[F.N[2]] - A));
+						}
+						Check(FMath::IsNearlyEqual(RibArea, 3.0, 1e-6), FString::Printf(TEXT("fea (ribs): the rib shells tile three unit discs (area %.6g)"), RibArea));
+
+						AerotelicStructuralFea::FRequest RibRequest;
+						RibRequest.Mesh = &Built.Mesh;
+						RibRequest.ShellFaces = Built.ShellFaces;
+						RibRequest.RibFaces = Built.RibFaces;
+						RibRequest.Regions = Built.Regions;
+						RibRequest.LengthToSI = 1.0;
+						RibRequest.LinearSolver = TEXT("sparse_lu");
+						AerotelicStructuralFea::FSupport RibRoot;
+						RibRoot.Axis = TEXT('y');
+						RibRoot.bAtMin = true;
+						RibRequest.Supports.Add(RibRoot);
+						const double Load = 1000.0;
+						for (double Side : { -0.5, 0.5 })
+						{
+							AerotelicStructuralFea::FPointForce F;
+							F.At = aerotelic::Vec3{ Side, 5.0, 0.0 };
+							F.Force = aerotelic::Vec3{ 0.0, 0.0, -0.5 * Load };
+							RibRequest.PointForces.Add(F);
+						}
+						RibRequest.VtkPath = FPaths::Combine(FPlatformProcess::UserTempDir(), TEXT("aerotelic_document_test_fea_ribs.vtk"));
+						IFileManager::Get().Delete(*RibRequest.VtkPath, false, true, true);
+
+						AerotelicFeaPreprocess::FModel RibPre;
+						FString RibPreError;
+						const bool bRibPre = AerotelicFeaPreprocess::Build(RibRequest, RibPre, RibPreError);
+						const double ExpectedMass = Al.density * (0.01 * (4.0 * 10.0 + 2.0) + 0.005 * 3.0);
+						Check(bRibPre && RibPre.RibFaces.Num() == Built.RibFaces.Num() && RibPre.Regions.Num() == 2 && RibPre.Regions[1].Kind == TEXT("rib shells") && RibPre.Regions[1].RibFaces > 0 && FMath::IsNearlyEqual(RibPre.Regions[1].RibArea, 3.0, 1e-6),
+							FString::Printf(TEXT("fea (ribs, pre-processor): the rib region is rib shells of area 3 (%s)"), *RibPreError));
+						Check(bRibPre && FMath::IsNearlyEqual(RibPre.Mass, ExpectedMass, 1e-6 * ExpectedMass), FString::Printf(TEXT("fea (ribs, pre-processor): the mass is the skin's rho t A plus the ribs' (%.6g vs %.6g)"), bRibPre ? RibPre.Mass : 0.0, ExpectedMass));
+						Check(bRibPre && RibPre.FloatingRegions.Num() == 0 && RibPre.ShellNodes == RibPre.Nodes, "fea (ribs, pre-processor): the ribs reach the support through the skin and every node carries a shell");
+
+						AerotelicStructuralFea::FResult RR;
+						const bool bRibSolved = AerotelicStructuralFea::Run(RibRequest, RR, Error);
+						Check(bRibSolved, FString::Printf(TEXT("fea (ribs): the ribbed box beam solved (%s)"), bRibSolved ? *FString::Printf(TEXT("%d nodes, %d shells (%d ribs), %d dof, %.1f s"), RR.Nodes, RR.Shells, RR.RibShells, RR.Dofs, RR.Seconds) : *Error));
+						if (bRibSolved)
+						{
+							const double E = Al.youngs_modulus, G = E / (2.0 * (1.0 + Al.poisson_ratio));
+							const double I = 2.0 * (1.0 * 0.01 * 0.25 + 0.01 * 1.0 / 12.0);
+							const double Delta = Load * 1000.0 / (3.0 * E * I) + Load * 10.0 / (G * 2.0 * 1.0 * 0.01);
+							Check(RR.bBalanced && FMath::Abs(RR.Reaction[2] - Load) <= 0.01 * Load && FMath::Abs(RR.Reaction[0]) <= 0.01 * Load && FMath::Abs(RR.Reaction[1]) <= 0.01 * Load,
+								FString::Printf(TEXT("fea (ribs): the clamp carries the two tip loads, %.4g N (reactions %.4g, %.4g, %.4g)"), Load, RR.Reaction[0], RR.Reaction[1], RR.Reaction[2]));
+							Check(RR.RibShells == Built.RibFaces.Num() && RR.Shells == Built.ShellFaces.Num() + Built.RibFaces.Num(), FString::Printf(TEXT("fea (ribs): a shell per skin face and per rib face (%d + %d = %d)"), Built.ShellFaces.Num(), RR.RibShells, RR.Shells));
+							Check(FMath::IsNearlyEqual(RR.Mass, ExpectedMass, 1e-6 * ExpectedMass), FString::Printf(TEXT("fea (ribs): the solver's mass counts the ribs (%.6g vs %.6g)"), RR.Mass, ExpectedMass));
+							Check(RR.MaxDisplacement / Delta > 0.90 && RR.MaxDisplacement / Delta < 1.01 && RR.MaxDisplacementAt[1] > 4.9,
+								FString::Printf(TEXT("fea (ribs): the ribbed box deflects as the unribbed Timoshenko box or a little less (%.4g of %.4g m, %.1f%%)"), RR.MaxDisplacement, Delta, 100.0 * (RR.MaxDisplacement / Delta - 1.0)));
+							const AerotelicStructuralFea::FEntryResult* RibEntry = RR.Entries.FindByPredicate([](const AerotelicStructuralFea::FEntryResult& X) { return X.Kind == TEXT("rib"); });
+							Check(RibEntry != nullptr && RibEntry->MaxVonMises > 0.0 && FMath::IsNearlyEqual(RibEntry->Mass, Al.density * 0.005 * 3.0, 1e-6 * Al.density * 0.005 * 3.0),
+								FString::Printf(TEXT("fea (ribs): the result has a rib entry carrying the ribs' mass and a stress (%s)"), RibEntry ? *FString::Printf(TEXT("%.4g Pa, %.4g kg"), RibEntry->MaxVonMises, RibEntry->Mass) : TEXT("none")));
+							// The VTK's `kind` cell data: as many 2s (rib shells) as rib
+							// faces (the file has Windows line endings).
+							FString Vtk;
+							int32 KindTwos = -1;
+							if (FFileHelper::LoadFileToString(Vtk, *RibRequest.VtkPath))
+							{
+								Vtk.ReplaceInline(TEXT("\r\n"), TEXT("\n"));
+								const int32 Start = Vtk.Find(TEXT("SCALARS kind int 1"));
+								if (Start != INDEX_NONE)
+								{
+									const int32 Table = Vtk.Find(TEXT("LOOKUP_TABLE default\n"), ESearchCase::CaseSensitive, ESearchDir::FromStart, Start);
+									int32 End = Vtk.Find(TEXT("SCALARS"), ESearchCase::CaseSensitive, ESearchDir::FromStart, Table + 1);
+									if (End == INDEX_NONE) End = Vtk.Len();
+									TArray<FString> Lines;
+									Vtk.Mid(Table + 21, End - Table - 21).ParseIntoArrayLines(Lines);
+									KindTwos = 0;
+									for (const FString& L : Lines) if (L.TrimStartAndEnd() == TEXT("2")) ++KindTwos;
+								}
+							}
+							Check(KindTwos == Built.RibFaces.Num(), FString::Printf(TEXT("fea (ribs): the VTK marks the rib shells as kind 2 (%d of %d)"), KindTwos, Built.RibFaces.Num()));
+							IFileManager::Get().Delete(*RibRequest.VtkPath, false, true, true);
+						}
+					}
+					// Back to the unribbed skin for the steps that follow.
+					S.networks.clear();
+					Beam->SetBodyStructure(TEXT("Main"), S);
 				}
 			}
 			// The scene as the later steps expect it.

@@ -6,6 +6,7 @@
 #include "Entity/AerotelicMeshLib.h"
 #include "Entity/AerotelicStructuralFea.h"
 #include "Entity/AerotelicFeaPreprocess.h"
+#include "Entity/AerotelicFeaModelBuilder.h"
 #include "Entity/ReferenceImagePaths.h"
 #include "HAL/FileManager.h"
 #include "Misc/FileHelper.h"
@@ -355,6 +356,87 @@ int32 UAerotelicRealProjectTestCommandlet::Main(const FString& Params)
 							FString::Printf(TEXT("p38a: the unloaded wing's outer panel reads nothing against the loaded one (%.4g vs %.4g Pa)"), UnloadedPeak, LoadedPeak));
 					}
 					IFileManager::Get().Delete(*Request.VtkPath, false, true, true);
+
+					// A SPAR through the airframe (2026-11-08): one plane network
+					// normal to x at the wing's mid-chord, 5 mm 2024-T3, set on the
+					// fused body's own structure (a boolean's bodies own theirs) and
+					// built through the shared model builder as the dialog builds
+					// it -- the skin cut along the plane, the spar meshed as shells
+					// on the skin's nodes, no tetrahedra. Held to: the model builds
+					// with rib shells and two regions, the same load solves, and
+					// the tip moves LESS than the skin alone (the web carries the
+					// outer wing's shear and moment through the nacelle cowl that
+					// the skin-only airframe bent at).
+					UE_LOG(LogAerotelicRealProjectTest, Display, TEXT("step: p38a spar"));
+					{
+						const FString Role = UTF8_TO_TCHAR(Placed[Main].name.c_str());
+						aerotelic::BodyStructure S = Bool->GetBodyStructure(Role) != nullptr ? *Bool->GetBodyStructure(Role) : aerotelic::BodyStructure();
+						S.material = *aerotelic::FindMaterialPreset("Aluminium 2024-T3 sheet");
+						S.skin_thickness = Thickness;
+						aerotelic::PlaneNetwork Spar;
+						Spar.name = "Spar";
+						Spar.axis = aerotelic::PlaneAxis::X;
+						const FBox WingBounds = Wing->GetPlacedBounds(false);
+						// The plane in the boolean's own frame: it sits at the origin
+						// unrotated (p38a places the operands, not the result), so the
+						// placed x is the local x.
+						Spar.start = WingBounds.IsValid ? WingBounds.GetCenter().X : TipAt.x;
+						Spar.spacing = 1.0;
+						Spar.count = 1;
+						Spar.thickness = 0.005;
+						Spar.material = S.material;
+						S.networks.push_back(Spar);
+						Check(Bool->SetBodyStructure(Role, S), FString::Printf(TEXT("p38a spar: the spar is set on the fused body '%s'"), *Role));
+
+						AerotelicFeaModelBuilder::FOptions Options;
+						Options.Model = AerotelicFeaModelBuilder::EModel::AsDesigned;
+						AerotelicFeaModelBuilder::FCache Cache;
+						AerotelicFeaModelBuilder::FBuilt Built;
+						FAerotelicBooleanOperand BoolOp;
+						BoolOp.Entity = Bool;
+						const bool bAppended = AerotelicFeaModelBuilder::AppendBody(BoolOp, Role, TEXT("airframe"), 0, Options, Cache, Built);
+						Check(bAppended && Built.RibFaces.Num() > 0 && Built.Regions.Num() == 2 && Built.Mesh.tets.empty(),
+							FString::Printf(TEXT("p38a spar: the airframe builds as skin shells with %d spar shells and no tetrahedra (%s)"), Built.RibFaces.Num(), *FString::Join(Built.Problems, TEXT("; "))));
+						if (bAppended && Built.RibFaces.Num() > 0)
+						{
+							AerotelicStructuralFea::FRequest SparRequest;
+							SparRequest.Mesh = &Built.Mesh;
+							SparRequest.ShellFaces = Built.ShellFaces;
+							SparRequest.RibFaces = Built.RibFaces;
+							SparRequest.Regions = Built.Regions;
+							SparRequest.LengthToSI = 1.0;
+							// The same tip load at the same node (the tip is on the
+							// skin, which the cut left in place) and the same clamp.
+							int32 SparTip = 0;
+							for (int32 n = 1; n < static_cast<int32>(Built.Mesh.nodes.size()); ++n) if (Built.Mesh.nodes[n].y > Built.Mesh.nodes[SparTip].y) SparTip = n;
+							AerotelicStructuralFea::FPointForce SparLoad;
+							SparLoad.At = Built.Mesh.nodes[SparTip];
+							SparLoad.Force = aerotelic::Vec3{ 0.0, 0.0, -Force };
+							SparRequest.PointForces.Add(SparLoad);
+							SparRequest.Supports.Add(Centre);
+							SparRequest.LinearSolver = TEXT("sparse_lu");
+							SparRequest.VtkPath = FPaths::Combine(FPlatformProcess::UserTempDir(), TEXT("aerotelic_real_project_test_p38a_spar.vtk"));
+							IFileManager::Get().Delete(*SparRequest.VtkPath, false, true, true);
+							AerotelicFeaPreprocess::FModel SparPre;
+							FString SparPreError;
+							const bool bSparPre = AerotelicFeaPreprocess::Build(SparRequest, SparPre, SparPreError);
+							Check(bSparPre && SparPre.RibFaces.Num() == Built.RibFaces.Num() && SparPre.FloatingRegions.Num() == 0 && SparPre.Regions.Num() == 2 && SparPre.Regions[1].Kind == TEXT("rib shells"),
+								FString::Printf(TEXT("p38a spar: the spar region is rib shells on the load path (%d faces, %.4g m^2; %s)"), bSparPre ? SparPre.RibFaces.Num() : -1, bSparPre && SparPre.Regions.Num() == 2 ? SparPre.Regions[1].RibArea : 0.0, *SparPreError));
+							AerotelicStructuralFea::FResult RS;
+							FString SparError;
+							const bool bSparSolved = AerotelicStructuralFea::Run(SparRequest, RS, SparError);
+							Check(bSparSolved, FString::Printf(TEXT("p38a spar: the sparred airframe solved (%s)"), bSparSolved ? *FString::Printf(TEXT("%d nodes, %d shells (%d spar), %d dof, %.1f s"), RS.Nodes, RS.Shells, RS.RibShells, RS.Dofs, RS.Seconds) : *SparError));
+							if (bSparSolved)
+							{
+								Check(RS.bBalanced && FMath::Abs(RS.Reaction[2] - Force) <= 0.02 * Force, FString::Printf(TEXT("p38a spar: the clamp reacts the tip load (%.4g of %.4g N)"), RS.Reaction[2], Force));
+								Check(RS.RibShells == Built.RibFaces.Num() && RS.Entries.ContainsByPredicate([](const AerotelicStructuralFea::FEntryResult& E) { return E.Kind == TEXT("rib"); }),
+									"p38a spar: the result carries the spar's shells and a rib entry");
+								Check(RS.MaxDisplacement > 0.0 && RS.MaxDisplacement < 0.9 * R.MaxDisplacement,
+									FString::Printf(TEXT("p38a spar: the spar stiffens the airframe -- the tip moves %.4g m against %.4g m for the skin alone (%.0f%%)"), RS.MaxDisplacement, R.MaxDisplacement, 100.0 * RS.MaxDisplacement / R.MaxDisplacement));
+								IFileManager::Get().Delete(*SparRequest.VtkPath, false, true, true);
+							}
+						}
+					}
 				}
 			}
 		}

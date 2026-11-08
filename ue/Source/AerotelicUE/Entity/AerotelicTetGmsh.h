@@ -72,6 +72,38 @@ namespace AerotelicTetGmsh
 		// goes into a solver.
 		bool bOptimize = true;
 		bool bOptimizeNetgen = true;
+
+		// Ribs (2026-11-08): planar shells inside the volume, one per plane
+		// of a body's networks. Outer must already have vertices along each
+		// plane (core mesh_cut.hpp CutMeshByPlanes), so the rib's rim is the
+		// surface's own nodes and the rib shells share them with the skin
+		// shells; each disc walls the body into compartments the tetrahedra
+		// conform to. Height > 0 reports only the part of the rib within that
+		// distance of its rim. Ribs and an Inner offset together are refused.
+		struct FRib
+		{
+			int32 Id = 0;
+			aerotelic::Vec3 Normal{0.0, 1.0, 0.0};   // unit, scene frame
+			double Offset = 0.0;                     // Normal . x = Offset
+			double Height = 0.0;
+		};
+		TArray<FRib> Ribs;
+		// Target edge length inside the ribs (0: the surface's median edge).
+		double RibSize = 0.0;
+		// A vertex within this of a plane is on it (0: 1e-7 of the diagonal).
+		double PlaneTolerance = 0.0;
+		// False: no tetrahedra at all, the rib discs alone (a thin-walled
+		// body of shells with ribs). The mesh's nodes are then the surface's
+		// followed by the ribs' interior nodes.
+		bool bVolume = true;
+	};
+
+	// One rib shell: its nodes (into FResult::Mesh's nodes) and the rib it
+	// belongs to.
+	struct FRibFace
+	{
+		int32 N[3] = { 0, 0, 0 };
+		int32 Id = 0;
 	};
 
 	struct FResult
@@ -101,6 +133,13 @@ namespace AerotelicTetGmsh
 		int32 TetsDihedralUnder10 = 0, TetsDihedralOver160 = 0;
 		int32 Flipped = 0;       // handed back the other way round, swapped here
 		int32 Degenerate = 0;    // zero volume even after that
+		// The rib shells, their area (project units^2), and how many of them
+		// are NOT a face of exactly two tetrahedra (0 when the embedding
+		// conformed; the script retries once without Netgen when it did not).
+		TArray<FRibFace> RibFaces;
+		double RibArea = 0.0;
+		int32 RibFacesMissing = 0;
+		TArray<FString> Notes;
 		double Seconds = 0.0;
 	};
 

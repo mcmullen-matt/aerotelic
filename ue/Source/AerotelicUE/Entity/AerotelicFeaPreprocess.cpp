@@ -32,7 +32,7 @@ namespace AerotelicFeaPreprocess
 	bool Build(const AerotelicStructuralFea::FRequest& Request, FModel& Out, FString& OutError)
 	{
 		Out = FModel();
-		if (Request.Mesh == nullptr || (Request.Mesh->tets.empty() && Request.ShellFaces.Num() == 0))
+		if (Request.Mesh == nullptr || (Request.Mesh->tets.empty() && Request.ShellFaces.Num() == 0 && Request.RibFaces.Num() == 0))
 		{
 			OutError = TEXT("nothing to analyse: no tetrahedra and no shells");
 			return false;
@@ -109,6 +109,25 @@ namespace AerotelicFeaPreprocess
 			OutError = TEXT("the mesh has no boundary faces");
 			return false;
 		}
+		// The rib faces, as given.
+		for (const AerotelicStructuralFea::FShellFace& S : Request.RibFaces)
+		{
+			FFace F;
+			F.N[0] = S.N[0]; F.N[1] = S.N[1]; F.N[2] = S.N[2];
+			F.Tet = -1;
+			F.Region = S.Region;
+			if (F.N[0] < 0 || F.N[1] < 0 || F.N[2] < 0 || F.N[0] >= Out.Nodes || F.N[1] >= Out.Nodes || F.N[2] >= Out.Nodes)
+			{
+				OutError = TEXT("a rib face refers to a node the mesh does not have");
+				return false;
+			}
+			Out.RibFaces.Add(F);
+		}
+		auto FaceAreaOf = [&Mesh](const FFace& F)
+		{
+			const aerotelic::Vec3& A = Mesh.nodes[F.N[0]];
+			return 0.5 * aerotelic::Length(aerotelic::Cross(Mesh.nodes[F.N[1]] - A, Mesh.nodes[F.N[2]] - A));
+		};
 
 		// Per face: centre, outward normal, area.
 		const int32 NFaces = Out.WettedFaces.Num();
@@ -229,13 +248,20 @@ namespace AerotelicFeaPreprocess
 			++R.Faces;
 			R.Area += Out.FaceArea[i];
 		}
+		for (const FFace& F : Out.RibFaces)
+		{
+			FRegionSummary& R = Regions[F.Region];
+			R.Id = F.Region;
+			++R.RibFaces;
+			R.RibArea += FaceAreaOf(F);
+		}
 		// Densities per region id (kg/m^3) for the mass and its centre: a
 		// solid region's own; a homogenised core's as the base density times
 		// the cell's solid fraction, less the skin's overlap -- the script's
 		// rule with the homogeniser's relative density stood in for by the
 		// voxel fraction it is computed from; shells as rho t per unit area
-		// on the region's faces.
-		std::map<int32, double> CoreDensity, SkinArealDensity;
+		// on the region's faces; rib shells as rho t on the rib faces.
+		std::map<int32, double> CoreDensity, SkinArealDensity, RibArealDensity;
 		for (auto& Entry : Regions)
 		{
 			FRegionSummary& R = Entry.second;
@@ -248,6 +274,7 @@ namespace AerotelicFeaPreprocess
 			R.Label = Spec->Label;
 			const double Volume = R.Volume * L * L * L;
 			const double Area = R.Area * L * L;
+			const double RibArea = R.RibArea * L * L;
 			const double T = Spec->SkinThickness * L;
 			double RhoCore = 0.0;
 			if (Spec->Cell != nullptr)
@@ -262,18 +289,24 @@ namespace AerotelicFeaPreprocess
 				RhoCore = Spec->Core.density;
 				R.Kind = Spec->HasShells() ? TEXT("shells over a solid") : TEXT("solid");
 			}
-			else
+			else if (Spec->HasShells())
 			{
 				R.Kind = TEXT("shells");
 			}
+			else
+			{
+				R.Kind = TEXT("rib shells");
+			}
+			if (Spec->HasRibs() && !R.Kind.Equals(TEXT("rib shells"))) R.Kind += TEXT(" + rib shells");
 			CoreDensity[R.Id] = RhoCore;
 			SkinArealDensity[R.Id] = Spec->HasShells() ? Spec->Skin.density * T : 0.0;
-			R.Mass = RhoCore * Volume + SkinArealDensity[R.Id] * Area;
+			RibArealDensity[R.Id] = Spec->HasRibs() ? Spec->Rib.density * Spec->RibThickness * L : 0.0;
+			R.Mass = RhoCore * Volume + SkinArealDensity[R.Id] * Area + RibArealDensity[R.Id] * RibArea;
 		}
 		for (const auto& Entry : Regions) Out.Regions.Add(Entry.second);
 		{
 			// The corner nodes that carry shells: those of the wetted faces of
-			// the regions with a skin.
+			// the regions with a skin, and those of the rib faces.
 			TArray<bool> OnShell;
 			OnShell.Init(false, Out.Nodes);
 			for (int32 i = 0; i < NFaces; ++i)
@@ -282,12 +315,16 @@ namespace AerotelicFeaPreprocess
 				if (Spec == nullptr || !Spec->HasShells()) continue;
 				for (int32 k = 0; k < 3; ++k) OnShell[Out.WettedFaces[i].N[k]] = true;
 			}
+			for (const FFace& F : Out.RibFaces)
+			{
+				for (int32 k = 0; k < 3; ++k) OnShell[F.N[k]] = true;
+			}
 			for (bool B : OnShell) Out.ShellNodes += B ? 1 : 0;
 			Out.Dofs = 3ll * (Out.Nodes + Out.MidEdgeNodes) + 3ll * Out.ShellNodes;
 		}
 
 		// The mass and its centre (project units), mass-weighted over the
-		// tetrahedra and the shells.
+		// tetrahedra, the shells and the rib shells.
 		double Mass = 0.0;
 		aerotelic::Vec3 First;
 		for (int32 t = 0; t < Out.Tets; ++t)
@@ -304,6 +341,12 @@ namespace AerotelicFeaPreprocess
 			const double M = SkinArealDensity[Out.WettedFaces[i].Region] * Out.FaceArea[i] * L * L;
 			Mass += M;
 			First += aerotelic::Vec3{ Out.FaceCentre[i].X, Out.FaceCentre[i].Y, Out.FaceCentre[i].Z } * M;
+		}
+		for (const FFace& F : Out.RibFaces)
+		{
+			const double M = RibArealDensity[F.Region] * FaceAreaOf(F) * L * L;
+			Mass += M;
+			First += (Mesh.nodes[F.N[0]] + Mesh.nodes[F.N[1]] + Mesh.nodes[F.N[2]]) * (M / 3.0);
 		}
 		Out.Mass = Mass;
 		Out.MassCentre = Mass > 0.0 ? ToF(First / Mass) : ToF(Out.Bounds.Center());
@@ -333,6 +376,7 @@ namespace AerotelicFeaPreprocess
 					for (int32 k = 0; k < 4; ++k) AddNode(Id, Mesh.tets[t][k]);
 				}
 				for (const FFace& F : Out.WettedFaces) for (int32 k = 0; k < 3; ++k) AddNode(F.Region, F.N[k]);
+				for (const FFace& F : Out.RibFaces) for (int32 k = 0; k < 3; ++k) AddNode(F.Region, F.N[k]);
 			}
 			for (const AerotelicStructuralFea::FSupport& S : Request.Supports)
 			{
@@ -387,6 +431,7 @@ namespace AerotelicFeaPreprocess
 			};
 			for (const auto& T : Mesh.tets) { Unite(T[0], T[1]); Unite(T[0], T[2]); Unite(T[0], T[3]); }
 			for (const FFace& F : Out.WettedFaces) { Unite(F.N[0], F.N[1]); Unite(F.N[0], F.N[2]); }
+			for (const FFace& F : Out.RibFaces) { Unite(F.N[0], F.N[1]); Unite(F.N[0], F.N[2]); }
 			TMap<int32, int32> ComponentOfRoot;
 			Out.NodeComponent.SetNum(Out.Nodes);
 			for (int32 n = 0; n < Out.Nodes; ++n)
@@ -408,6 +453,11 @@ namespace AerotelicFeaPreprocess
 				S = S || Supported[Out.NodeComponent[Mesh.tets[t][0]]];
 			}
 			for (const FFace& F : Out.WettedFaces)
+			{
+				bool& S = RegionSupported.FindOrAdd(F.Region, false);
+				S = S || Supported[Out.NodeComponent[F.N[0]]];
+			}
+			for (const FFace& F : Out.RibFaces)
 			{
 				bool& S = RegionSupported.FindOrAdd(F.Region, false);
 				S = S || Supported[Out.NodeComponent[F.N[0]]];

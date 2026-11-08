@@ -84,6 +84,49 @@ namespace AerotelicTetGmsh
 			Out.constrained.assign(Nt, 0);
 			return true;
 		}
+
+		// ribs.bin: uint32 count, int32 node triples, int32 rib id per face.
+		bool ReadRibs(const FString& Path, int32 Nodes, TArray<FRibFace>& Out, FString& OutError)
+		{
+			Out.Reset();
+			TArray<uint8> Bytes;
+			if (!FFileHelper::LoadFileToArray(Bytes, *Path))
+			{
+				OutError = FString::Printf(TEXT("could not read %s"), *Path);
+				return false;
+			}
+			if (Bytes.Num() < 4)
+			{
+				OutError = FString::Printf(TEXT("%s is truncated"), *Path);
+				return false;
+			}
+			uint32 Nf = 0;
+			FMemory::Memcpy(&Nf, Bytes.GetData(), 4);
+			if (static_cast<uint64>(Bytes.Num()) != 4ull + 16ull * Nf)
+			{
+				OutError = FString::Printf(TEXT("%s is truncated (%d bytes for %u faces)"), *Path, Bytes.Num(), Nf);
+				return false;
+			}
+			const uint8* P = Bytes.GetData() + 4;
+			Out.SetNum(Nf);
+			for (uint32 i = 0; i < Nf; ++i, P += 12)
+			{
+				FMemory::Memcpy(Out[i].N, P, 12);
+				for (int32 k = 0; k < 3; ++k)
+				{
+					if (Out[i].N[k] < 0 || Out[i].N[k] >= Nodes)
+					{
+						OutError = FString::Printf(TEXT("%s: rib face %u refers to node %d of %d"), *Path, i, Out[i].N[k], Nodes);
+						return false;
+					}
+				}
+			}
+			for (uint32 i = 0; i < Nf; ++i, P += 4)
+			{
+				FMemory::Memcpy(&Out[i].Id, P, 4);
+			}
+			return true;
+		}
 	}
 
 	FString FindScript()
@@ -124,7 +167,7 @@ namespace AerotelicTetGmsh
 			Cleanup();
 			return false;
 		}
-		const bool bHasInner = Request.Inner != nullptr && !Request.Inner->IsEmpty();
+		const bool bHasInner = Request.Inner != nullptr && !Request.Inner->IsEmpty() && Request.bVolume;
 		if (bHasInner && !AerotelicMeshLib::WriteTri(*Request.Inner, FPaths::Combine(Dir, TEXT("inner.tri"))))
 		{
 			OutError = TEXT("could not write the offset surface for gmsh");
@@ -132,12 +175,22 @@ namespace AerotelicTetGmsh
 			return false;
 		}
 
+		FString RibsJson = TEXT("[");
+		for (int32 i = 0; i < Request.Ribs.Num(); ++i)
+		{
+			const FRequest::FRib& R = Request.Ribs[i];
+			RibsJson += FString::Printf(TEXT("%s{\"id\": %d, \"normal\": [%s, %s, %s], \"offset\": %s, \"height\": %s}"), i ? TEXT(", ") : TEXT(""),
+				R.Id, *Num(R.Normal.x), *Num(R.Normal.y), *Num(R.Normal.z), *Num(R.Offset), *Num(FMath::Max(R.Height, 0.0)));
+		}
+		RibsJson += TEXT("]");
 		const FString Job = FString::Printf(
 			TEXT("{\n \"outer\": \"outer.tri\",\n \"inner\": \"%s\",\n \"core_size\": %s,\n \"min_size\": %s,\n \"min_pocket_volume\": %s,\n \"algorithm\": %d,\n \"optimize\": %s,\n \"optimize_netgen\": %s,\n \"size_from_boundary\": %s,\n \"grading\": %s,\n")
-			TEXT(" \"outputs\": {\"mesh\": \"mesh.tet\", \"result\": \"result.json\"}\n}\n"),
+			TEXT(" \"ribs\": %s,\n \"rib_size\": %s,\n \"plane_tolerance\": %s,\n \"volume\": %s,\n")
+			TEXT(" \"outputs\": {\"mesh\": \"mesh.tet\", \"result\": \"result.json\", \"ribs\": \"ribs.bin\"}\n}\n"),
 			bHasInner ? TEXT("inner.tri") : TEXT(""), *Num(Request.CoreSize), *Num(Request.MinSize), *Num(Request.MinPocketVolume),
 			Request.Algorithm, Request.bOptimize ? TEXT("true") : TEXT("false"), Request.bOptimizeNetgen ? TEXT("true") : TEXT("false"),
-			Request.bSizeFromBoundary ? TEXT("true") : TEXT("false"), *Num(FMath::Max(Request.Grading, 0.0)));
+			Request.bSizeFromBoundary ? TEXT("true") : TEXT("false"), *Num(FMath::Max(Request.Grading, 0.0)),
+			*RibsJson, *Num(FMath::Max(Request.RibSize, 0.0)), *Num(FMath::Max(Request.PlaneTolerance, 0.0)), Request.bVolume ? TEXT("true") : TEXT("false"));
 		if (!FFileHelper::SaveStringToFile(Job, *FPaths::Combine(Dir, TEXT("job.json")), FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM))
 		{
 			OutError = TEXT("could not write the gmsh job file");
@@ -159,18 +212,41 @@ namespace AerotelicTetGmsh
 			Cleanup();
 			return false;
 		}
-		auto Int = [&Result](const TCHAR* Field) { return static_cast<int32>(Result->GetNumberField(Field)); };
+		Out.RibFaces.Reset();
+		Out.Notes.Reset();
+		if (Request.Ribs.Num() > 0 && !ReadRibs(FPaths::Combine(Dir, TEXT("ribs.bin")), static_cast<int32>(Out.Mesh.nodes.size()), Out.RibFaces, ReadError))
+		{
+			OutError = ReadError;
+			Cleanup();
+			return false;
+		}
+		auto Int = [&Result](const TCHAR* Field) { double V = 0.0; Result->TryGetNumberField(Field, V); return static_cast<int32>(V); };
+		Out.RibArea = 0.0;
+		Result->TryGetNumberField(TEXT("rib_area"), Out.RibArea);
+		Out.RibFacesMissing = Int(TEXT("rib_faces_missing"));
+		{
+			const TArray<TSharedPtr<FJsonValue>>* Notes = nullptr;
+			if (Result->TryGetArrayField(TEXT("rib_notes"), Notes))
+			{
+				for (const TSharedPtr<FJsonValue>& N : *Notes)
+				{
+					FString S;
+					if (N.IsValid() && N->TryGetString(S)) Out.Notes.Add(S);
+				}
+			}
+		}
 		Out.Nodes = Int(TEXT("nodes"));
 		Out.SkinTets = Int(TEXT("skin_tets"));
 		Out.CoreTets = Int(TEXT("core_tets"));
-		Out.OuterVolume = Result->GetNumberField(TEXT("outer_volume"));
-		Out.InnerVolume = Result->GetNumberField(TEXT("inner_volume"));
-		Out.SkinVolume = Result->GetNumberField(TEXT("skin_volume"));
-		Out.CoreVolume = Result->GetNumberField(TEXT("core_volume"));
-		Out.VolumeError = Result->GetNumberField(TEXT("volume_error"));
-		Out.CoreVolumeError = Result->GetNumberField(TEXT("core_volume_error"));
-		Out.MinQuality = Result->GetNumberField(TEXT("min_quality"));
-		Out.MeanQuality = Result->GetNumberField(TEXT("mean_quality"));
+		auto Real = [&Result](const TCHAR* Field) { double V = 0.0; Result->TryGetNumberField(Field, V); return V; };
+		Out.OuterVolume = Real(TEXT("outer_volume"));
+		Out.InnerVolume = Real(TEXT("inner_volume"));
+		Out.SkinVolume = Real(TEXT("skin_volume"));
+		Out.CoreVolume = Real(TEXT("core_volume"));
+		Out.VolumeError = Real(TEXT("volume_error"));
+		Out.CoreVolumeError = Real(TEXT("core_volume_error"));
+		Out.MinQuality = Real(TEXT("min_quality"));
+		Out.MeanQuality = Real(TEXT("mean_quality"));
 		Out.PoorQuality = Int(TEXT("poor_quality"));
 		// The dihedral statistics (2026-11-05): absent from an older script's result.
 		double D = 0.0;
@@ -180,7 +256,7 @@ namespace AerotelicTetGmsh
 		Out.TetsDihedralOver160 = Result->TryGetNumberField(TEXT("tets_dihedral_over_160"), D) ? static_cast<int32>(D) : 0;
 		Out.Flipped = Int(TEXT("flipped"));
 		Out.Degenerate = Int(TEXT("degenerate"));
-		Out.Seconds = Result->GetNumberField(TEXT("seconds"));
+		Out.Seconds = Real(TEXT("seconds"));
 		Cleanup();
 		return true;
 	}

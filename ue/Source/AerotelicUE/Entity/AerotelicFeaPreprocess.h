@@ -47,12 +47,14 @@ namespace AerotelicFeaPreprocess
 	{
 		int32 Id = 0;
 		FString Label;
-		FString Kind;          // "shells", "solid", "shells over a homogenised core", "homogenised core"
+		FString Kind;          // "shells", "solid", "shells over a homogenised core", "homogenised core", "rib shells"
 		int32 Tets = 0;
 		int32 Faces = 0;
+		int32 RibFaces = 0;    // rib shells of the region (FRequest::RibFaces)
 		bool bSecondOrder = false;   // its tetrahedra 10-node (FRegion::IsSecondOrder)
 		double Volume = 0.0;   // project units^3
 		double Area = 0.0;     // of its wetted faces, project units^2
+		double RibArea = 0.0;  // of its rib faces, project units^2
 		double Mass = 0.0;     // kg (a homogenised core: estimated)
 	};
 
@@ -63,6 +65,11 @@ namespace AerotelicFeaPreprocess
 		aerotelic::Box3 Bounds;
 		double Diagonal = 0.0;
 		TArray<FFace> WettedFaces;
+		// The rib faces (2026-11-08): shells inside the body, not wetted --
+		// no pressure, no part in the surface displacement -- but carrying
+		// mass, degrees of freedom and the load path like any shell. Tet is
+		// -1; Region is the rib region's.
+		TArray<FFace> RibFaces;
 		// ---- the system the solver will build (2026-11-05), by the
 		// script's own rules, so the cost is known BEFORE the solve: the
 		// tetrahedra of the second-order regions, the mid-edge nodes the
