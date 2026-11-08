@@ -24,6 +24,7 @@
 #include "Widgets/AerotelicDialogWindow.h"
 #include "Widgets/MaterialPicker.h"
 #include "Widgets/LatticeSpecControls.h"
+#include "Widgets/MessageBox.h"
 
 #include "aerotelic/body_structure.hpp"
 #include "aerotelic/mass_properties.hpp"
@@ -555,15 +556,32 @@ void OpenAerotelicStructureDialog(AAerotelicEntityActor* Entity, const FString& 
 			.IsEnabled_Lambda([IsDirty, Weak]() { return IsDirty() && Weak.IsValid(); })
 			.OnClicked_Lambda([D]() { D->ReadFromEntity(); return FReply::Handled(); })
 		]
-		+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
+		+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 0, 6, 0)
 		[
-			SNew(SButton).Text(LOCTEXT("Apply", "Apply")).ToolTipText(LOCTEXT("ApplyTip", "Give the body this structure. Analysis > Mass Properties weighs by it and Analysis > Structural analyses with it; a lattice over the body regenerates when the geometry changed."))
+			SNew(SButton).Text(LOCTEXT("Apply", "Apply")).ToolTipText(LOCTEXT("ApplyTip", "Give the body this structure. Analysis > Mass Properties weighs by it and Analysis > Structural analyses with it; a structure already generated regenerates when the geometry changed."))
 			.IsEnabled_Lambda([D, Weak]() { return D->bDirty && Weak.IsValid() && aerotelic::BodyStructureProblem(D->S).empty(); })
 			.OnClicked_Lambda([D]()
 			{
 				if (D->Entity.IsValid() && D->Entity->SetBodyStructure(D->Role, D->S))
 				{
 					D->bDirty = false;
+				}
+				return FReply::Handled();
+			})
+		]
+		+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
+		[
+			SNew(SButton).Text(LOCTEXT("Generate", "Generate")).ToolTipText(LOCTEXT("GenerateTip", "Apply, then build the body's skin shell, infill and ribs from this structure (seconds of MeshLib work). They appear as layers under the body in the Scene tree, and its mirrored half's, and follow every later edit of the body."))
+			.IsEnabled_Lambda([D, Weak]() { return Weak.IsValid() && aerotelic::BodyStructureProblem(D->S).empty() && D->S.IsSkin(); })
+			.OnClicked_Lambda([D]()
+			{
+				UAerotelicDocumentSubsystem* Doc = UAerotelicDocumentSubsystem::Get();
+				if (!D->Entity.IsValid() || Doc == nullptr) return FReply::Handled();
+				if (D->bDirty && D->Entity->SetBodyStructure(D->Role, D->S)) D->bDirty = false;
+				FString Error;
+				if (!Doc->GenerateBodyStructure(D->Entity.Get(), D->Role, Error))
+				{
+					AerotelicMessageBox(EAppMsgType::Ok, FText::FromString(Error), LOCTEXT("GenerateTitle", "Generate Structure"));
 				}
 				return FReply::Handled();
 			})

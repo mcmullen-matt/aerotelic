@@ -22,10 +22,11 @@ namespace AerotelicExport
 	struct FStlTriangle { FVector3f N, A, B, C; };
 
 	// One body's run of triangles within FStlMesh::Triangles, named
-	// "<entity>/<body>" ("Lattice 1/Skin", "Lattice 1/Lattice"): an ASCII
-	// STL is written as one `solid` per part, so a mesher or FE
-	// pre-processor can pick the parts up separately (and give a lattice's
-	// shell and infill different materials). Binary STL has no parts.
+	// "<entity>/<body>" or, for a generated structure layer,
+	// "<entity>/<body>/<layer>" ("Wing/Flap 1/Skin", "Wing/Flap 1/Ribs"): an
+	// ASCII STL is written as one `solid` per part, so a mesher or FE
+	// pre-processor can pick the parts up separately (and give a body's
+	// shell, infill and ribs different materials). Binary STL has no parts.
 	struct FStlPart
 	{
 		FString Name;
@@ -50,6 +51,19 @@ namespace AerotelicExport
 	// deflections. Bodies that cannot be built are listed in OutFailures.
 	FStlMesh MeshForStl(const TArray<FAerotelicBooleanOperand>& Operands, const TArray<FString>& Labels,
 		double LinearDeflection, double AngularDeflectionDeg, TArray<FString>& OutFailures);
+
+	// What the STL dialog picks: an operand (every body of it), or one
+	// generated structure layer of one of its bodies (Body and Layer set:
+	// AAerotelicEntityActor::GetPlacedLayerMeshes), which is written as it
+	// was generated, whatever the deflection.
+	struct FStlSource
+	{
+		FAerotelicBooleanOperand Operand;
+		FString Label;
+		FString Body;
+		FString Layer;
+	};
+	FStlMesh MeshForStl(const TArray<FStlSource>& Sources, double LinearDeflection, double AngularDeflectionDeg, TArray<FString>& OutFailures);
 
 	// Writes the triangles, binary or ASCII.
 	bool WriteStl(const FStlMesh& Mesh, const FString& Path, bool bAscii, FString& OutError);

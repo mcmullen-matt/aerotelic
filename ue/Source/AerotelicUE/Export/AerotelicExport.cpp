@@ -113,6 +113,51 @@ namespace AerotelicExport
 		return Out;
 	}
 
+	FStlMesh MeshForStl(const TArray<FStlSource>& Sources, double LinearDeflection, double AngularDeflectionDeg, TArray<FString>& OutFailures)
+	{
+		// The bodies go through the operand path above; the layers are
+		// taken as generated.
+		TArray<FAerotelicBooleanOperand> Operands;
+		TArray<FString> Labels;
+		for (const FStlSource& S : Sources)
+		{
+			if (S.Layer.IsEmpty())
+			{
+				Operands.Add(S.Operand);
+				Labels.Add(S.Label);
+			}
+		}
+		FStlMesh Out = MeshForStl(Operands, Labels, LinearDeflection, AngularDeflectionDeg, OutFailures);
+		for (const FStlSource& S : Sources)
+		{
+			if (S.Layer.IsEmpty()) continue;
+			if (!S.Operand.Entity.IsValid())
+			{
+				OutFailures.Add(S.Label + TEXT(": no longer in the scene"));
+				continue;
+			}
+			bool bAny = false;
+			for (const aerotelic::NamedMesh& M : S.Operand.Entity->GetPlacedLayerMeshes(S.Body, S.Operand.bMirror))
+			{
+				if (FString(UTF8_TO_TCHAR(M.name.c_str())) != S.Layer || M.mesh.IsEmpty()) continue;
+				FStlPart Part;
+				Part.Name = FString::Printf(TEXT("%s%s/%s/%s"), *S.Operand.Entity->EntityName, S.Operand.bMirror ? TEXT(" (mirror)") : TEXT(""), *S.Body, *S.Layer);
+				Part.First = Out.Triangles.Num();
+				AppendMesh(M.mesh, Out);
+				Part.Count = Out.Triangles.Num() - Part.First;
+				Out.Parts.Add(Part);
+				bAny = true;
+			}
+			if (!bAny)
+			{
+				OutFailures.Add(S.Label + TEXT(": the layer has no triangles (generate the structure first)"));
+				continue;
+			}
+			++Out.Bodies;
+		}
+		return Out;
+	}
+
 	bool WriteStl(const FStlMesh& Mesh, const FString& Path, bool bAscii, FString& OutError)
 	{
 		const TArray<FTriangle>& Tris = Mesh.Triangles;
@@ -193,11 +238,6 @@ namespace AerotelicExport
 			return TopoDS_Shape();
 		}
 		AAerotelicEntityActor* Entity = Operand.Entity.Get();
-		if (Entity->GetEntityType() == EntityType::Lattice)
-		{
-			OutError = TEXT("a lattice is a triangle mesh with no B-rep: export it as STL");
-			return TopoDS_Shape();
-		}
 		if (Entity->GetEntityType() == EntityType::Boolean)
 		{
 			OutError = TEXT("a boolean result is a triangle mesh with no B-rep: export its operands and combine them downstream, or export it as STL");

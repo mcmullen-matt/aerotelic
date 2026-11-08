@@ -14,14 +14,17 @@ DECLARE_DELEGATE_OneParam(FOnAerotelicStatus, const FText&);
 // (kind, entity, body) row key. The list is the list of parameterisations:
 // each entity is a row, with a child row per solid body it produces (the
 // one solid of a fuselage; a propeller's spinner and blades) and, when the
-// entity is mirrored, a child row per mirrored body.
+// entity is mirrored, a child row per mirrored body. A body whose
+// structure has been generated has a row per layer (skin, infill, ribs)
+// under it, and its mirror likewise.
 struct FAerotelicSceneRow
 {
-	enum class EKind : uint8 { Entity, Body, Mirror };
+	enum class EKind : uint8 { Entity, Body, Mirror, Layer, MirrorLayer };
 
 	EKind Kind = EKind::Entity;
 	TWeakObjectPtr<AAerotelicEntityActor> Entity;
-	int32 BodyIndex = INDEX_NONE; // Body / Mirror rows: which body
+	int32 BodyIndex = INDEX_NONE;  // Body / Mirror / Layer rows: which body
+	int32 LayerIndex = INDEX_NONE; // Layer / MirrorLayer rows: which layer (AAerotelicEntityActor::GetLayers)
 	TArray<TSharedPtr<FAerotelicSceneRow>> Children;
 };
 
@@ -55,6 +58,10 @@ private:
 	TSharedPtr<SWidget> OnContextMenuOpening();
 	TSharedPtr<SWidget> MakeEntityMenu(FItem Item);
 	TSharedPtr<SWidget> MakeBodyMenu(FItem Item);
+	TSharedPtr<SWidget> MakeLayerMenu(FItem Item);
+	// Generates (or regenerates) one body's structure through the document,
+	// reporting on the status bar or in a message box.
+	void GenerateStructure(AAerotelicEntityActor* Entity, const FString& Role);
 
 	void RefreshItems();
 	void OnBodiesChanged(AAerotelicEntityActor* Entity);
@@ -65,6 +72,7 @@ private:
 	void DeleteEntity(AAerotelicEntityActor* Entity);
 	void PickEntityColor(AAerotelicEntityActor* Entity);
 	void PickBodyColor(AAerotelicEntityActor* Entity, int32 BodyIndex);
+	void PickLayerColor(AAerotelicEntityActor* Entity, int32 LayerIndex);
 
 	TArray<FItem> Items;
 	TSharedPtr<STreeView<FItem>> Tree;

@@ -32,10 +32,10 @@ void FAerotelicCommands::RegisterCommands()
 	UI_COMMAND(BooleanOperation, "Boolean Operation", "Fuse/Cut/Common two entities (or previously-created boolean results)", EUserInterfaceActionType::Button, FInputChord());
 	UI_COMMAND(MaterialLibrary, "Material Properties", "The materials a body can be made of: a table of every preset (metals, composites, wood, foam, SLA resins, FDM thermoplastics) and of your own, with density, Young's modulus, Poisson's ratio, allowable stress and the source of the figures, sortable by any column; a tab to define your own materials, kept per user for every project; and a Help tab with the conventions and citations. Assign one to an entity with Material Properties on its row in the Scene tree", EUserInterfaceActionType::Button, FInputChord());
 
-	// Lattice exports (File menu; Generate Lattice is on a body's row in the
-	// Scene tree, Regenerate on a lattice's)
-	UI_COMMAND(ExportSkinVtk, "Export Skin Tetrahedra (VTK)", "Write the skin of every body a lattice fills as tetrahedra conforming exactly to the body's surface outside and to its offset at the skin depth inside (legacy VTK unstructured grid, cell data 'material' = 1), for a finite-element model", EUserInterfaceActionType::Button, FInputChord());
-	UI_COMMAND(ExportTetVtk, "Export Tetrahedral Mesh (VTK)", "Write every body a lattice fills as tetrahedra conforming exactly to its surface, split at its offset into skin (material 1) and core (material 2) that together fill the body's volume exactly, as a legacy VTK unstructured grid for a finite-element model", EUserInterfaceActionType::Button, FInputChord());
+	// Tetrahedral exports of the generated structures (File menu; Generate
+	// Structure is on a body's row in the Scene tree)
+	UI_COMMAND(ExportSkinVtk, "Export Skin Tetrahedra (VTK)", "Write the skin of every body whose structure has been generated as tetrahedra conforming exactly to the body's surface outside and to its offset at the skin depth inside (legacy VTK unstructured grid, cell data 'material' = 1), for a finite-element model", EUserInterfaceActionType::Button, FInputChord());
+	UI_COMMAND(ExportTetVtk, "Export Tetrahedral Mesh (VTK)", "Write every body whose structure has been generated as tetrahedra conforming exactly to its surface, split at its offset into skin (material 1) and core (material 2) that together fill the body's volume exactly, as a legacy VTK unstructured grid for a finite-element model", EUserInterfaceActionType::Button, FInputChord());
 
 	// Analysis
 	UI_COMMAND(MassProperties, "Mass Properties", "Weigh selected bodies: the mass, centre of mass and inertia of each, by the density or asserted mass set on its entity in the Scene tree, and of all of them as one assembly about its own centre (parallel-axis theorem)", EUserInterfaceActionType::Button, FInputChord());

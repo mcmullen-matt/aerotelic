@@ -170,8 +170,118 @@ def main(argv):
     if not body_path:
         ok &= check_per_body_skin()
         ok &= check_remesh_budget()
+        ok &= check_plane_networks()
     print("RESULT: %s" % ("all checks passed" if ok else "some checks FAILED"))
     return 0 if ok else 1
+
+
+def check_plane_networks():
+    """Plane networks (2026-11-08): a unit sphere with a 0.05 skin, two
+    ribs normal to x at x = -0.3 and 0.3 (thickness 0.04) and one spar
+    normal to y at y = 0 (thickness 0.06) given priority, plus a gyroid
+    infill. The ribs are closed; each network's volume is near its
+    analytic figure (a disc of the inner sphere, radius 0.95, times the
+    thickness: the spar's pi 0.95^2 0.06, the ribs' pi (0.95^2 - 0.3^2)
+    0.04 each less the notch the spar takes); the infill, the ribs and
+    the spar are disjoint (the infill's volume leaves the ribs' out of
+    the domain); the inner_file of the first run is accepted on a second
+    and gives the same skin."""
+    print("plane networks: a sphere with two ribs, a spar and an infill")
+    job_dir = tempfile.mkdtemp(prefix="aerotelic_lattice_planes_")
+    ok = True
+    try:
+        sphere = mm.makeUVSphere(1.0, 64, 32)
+        lm.write_tri(os.path.join(job_dir, "target_0.tri"), sphere)
+        thickness = 0.05
+        voxel = thickness / 4.0
+        cell, resolution, fraction = 0.5, 12, 0.35
+        h = cell / resolution
+        lo = (-1.0 - 2 * h, -1.0 - 2 * h, -1.0 - 2 * h)
+        ext = (2.0 + 4 * h,) * 3
+        nx, ny, nz = [max(2, int(np.ceil(e / h))) + 1 for e in ext]
+        field = gyroid_field(lo, h, nx, ny, nz, cell, calibrate_gyroid(fraction))
+        field.transpose(2, 1, 0).astype("<f4").tofile(os.path.join(job_dir, "lattice.f32"))
+        networks = [
+            {"label": "Spar", "planes": [{"normal": [0.0, 1.0, 0.0], "offset": 0.0}], "thickness": 0.06, "height": 0.0,
+             "centre": [0.0, 0.0, 0.0], "half_extent": 1.5},
+            {"label": "Ribs", "planes": [{"normal": [1.0, 0.0, 0.0], "offset": -0.3}, {"normal": [1.0, 0.0, 0.0], "offset": 0.3}],
+             "thickness": 0.04, "height": 0.0, "centre": [0.0, 0.0, 0.0], "half_extent": 1.5},
+        ]
+        job = {
+            "skin_thickness": thickness,
+            "offset_voxel": voxel,
+            "offset_mode": "standard",
+            "decimate_tolerance": 0.2 * voxel,
+            "min_pocket_volume": (4.0 * voxel) ** 3,
+            "inner_opening": 0.0,
+            "inner_remesh_edge": 2.0 * thickness,
+            "targets": [{"label": "Sphere", "file": "target_0.tri"}],
+            "reserved": [],
+            "networks": networks,
+            "field": {"file": "lattice.f32", "nx": nx, "ny": ny, "nz": nz, "origin": list(lo), "h": h},
+            "outputs": {"skin": "skin.tri", "lattice": "lattice.tri", "result": "result.json", "inner_prefix": "inner", "ribs_prefix": "ribs"},
+        }
+        with open(os.path.join(job_dir, "job.json"), "w", encoding="utf-8") as f:
+            json.dump(job, f, indent=1)
+        code = lm.main(["lattice_meshlib.py", job_dir])
+        with open(os.path.join(job_dir, "result.json"), "r", encoding="utf-8") as f:
+            result = json.load(f)
+        ok &= check(code == 0 and result.get("ok"), "plane networks: the job succeeded: %s" % result.get("error", ""))
+        if not ok:
+            return False
+        nets = result.get("networks", [])
+        ok &= check(len(nets) == 2 and nets[0]["label"] == "Spar" and nets[1]["label"] == "Ribs", "plane networks: two networks reported in order")
+        if len(nets) != 2:
+            return False
+        r_in = 0.95
+        spar_expected = np.pi * r_in ** 2 * 0.06
+        # Each rib is a disc of radius sqrt(0.95^2 - 0.3^2), less the
+        # notch the spar takes out of it (a strip 0.06 wide across the disc).
+        rib_r = np.sqrt(r_in ** 2 - 0.3 ** 2)
+        rib_disc = np.pi * rib_r ** 2
+        notch = 0.06 * 2.0 * rib_r
+        ribs_expected = 2.0 * (rib_disc - notch) * 0.04
+        ok &= check(abs(nets[0]["volume"] - spar_expected) < 0.08 * spar_expected,
+                    "plane networks: the spar's volume is near pi r^2 t (%.5g vs %.5g)" % (nets[0]["volume"], spar_expected))
+        ok &= check(abs(nets[1]["volume"] - ribs_expected) < 0.08 * ribs_expected,
+                    "plane networks: the ribs' volume is near two notched discs (%.5g vs %.5g)" % (nets[1]["volume"], ribs_expected))
+        spar = lm.read_tri(os.path.join(job_dir, nets[0]["file"]))
+        ribs = lm.read_tri(os.path.join(job_dir, nets[1]["file"]))
+        ok &= check(spar.topology.findNumHoles() == 0 and spar.volume() > 0, "plane networks: the spar is closed and outward")
+        ok &= check(ribs.topology.findNumHoles() == 0 and ribs.volume() > 0, "plane networks: the ribs are closed and outward")
+        ok &= check(mm.MeshComponents.getNumComponents(mm.MeshPart(ribs)) == 4, "plane networks: the spar notches each rib into two (%d components)"
+                    % mm.MeshComponents.getNumComponents(mm.MeshPart(ribs)))
+        # Disjoint: the spar and the ribs do not collide; the infill is cut
+        # to the domain less the ribs, so its vertices lie outside the slabs.
+        ok &= check(len(mm.findCollidingTriangles(mm.MeshPart(spar), mm.MeshPart(ribs), None, True)) == 0, "plane networks: the ribs do not cross the spar")
+        lattice = lm.read_tri(os.path.join(job_dir, "lattice.tri"))
+        verts = mn.getNumpyVerts(lattice)
+        inside_spar = np.sum(np.abs(verts[:, 1]) < 0.03 - 1e-4)
+        inside_ribs = np.sum((np.abs(verts[:, 0] + 0.3) < 0.02 - 1e-4) | (np.abs(verts[:, 0] - 0.3) < 0.02 - 1e-4))
+        ok &= check(inside_spar == 0 and inside_ribs == 0, "plane networks: no infill vertex lies inside a rib or the spar (%d, %d)" % (inside_spar, inside_ribs))
+        ok &= check(result["infill_domain_volume"] < result["domain_volume"] - 0.9 * result["ribs_volume"],
+                    "plane networks: the infill domain lost the ribs' volume (%.5g of %.5g, ribs %.5g)" % (result["infill_domain_volume"], result["domain_volume"], result["ribs_volume"]))
+        # A second run on the cached offset: the same skin volume, no offset.
+        targets = result["targets"]
+        job["targets"][0]["inner_file"] = targets[0]["inner_file"]
+        job["outputs"]["skin"] = "skin2.tri"
+        job["outputs"]["result"] = "result2.json"
+        job["outputs"]["inner_prefix"] = "inner2"
+        job["outputs"]["ribs_prefix"] = "ribs2"
+        with open(os.path.join(job_dir, "job.json"), "w", encoding="utf-8") as f:
+            json.dump(job, f, indent=1)
+        code = lm.main(["lattice_meshlib.py", job_dir])
+        with open(os.path.join(job_dir, "result2.json"), "r", encoding="utf-8") as f:
+            result2 = json.load(f)
+        ok &= check(code == 0 and result2.get("ok"), "plane networks: the rerun on the cached offset succeeded: %s" % result2.get("error", ""))
+        if result2.get("ok"):
+            ok &= check(abs(result2["skin_volume"] - result["skin_volume"]) < 1e-9 * max(1.0, result["skin_volume"]),
+                        "plane networks: the cached offset gives the same skin (%.6g vs %.6g)" % (result2["skin_volume"], result["skin_volume"]))
+            ok &= check(abs(result2["networks"][0]["volume"] - nets[0]["volume"]) < 1e-6 * max(1.0, nets[0]["volume"]),
+                        "plane networks: the cached offset gives the same spar")
+    finally:
+        shutil.rmtree(job_dir, ignore_errors=True)
+    return ok
 
 
 def check_remesh_budget():

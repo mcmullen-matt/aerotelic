@@ -4,6 +4,7 @@
 #include <atomic>
 #include <vector>
 
+#include "aerotelic/body_structure.hpp"
 #include "aerotelic/mesh.hpp"
 #include "aerotelic/vec3.hpp"
 
@@ -28,6 +29,27 @@ namespace AerotelicMeshLib
 		const aerotelic::TriMesh* Mesh = nullptr;
 		double SkinThickness = 0.0;
 		double InnerRemeshEdge = 0.0;
+		// A target's inward offset from an earlier run (the application's
+		// cache of the hollow): when set and non-empty the script takes it
+		// as it is instead of offsetting the body again.
+		const aerotelic::TriMesh* PrecomputedInner = nullptr;
+	};
+
+	// A family of parallel planes cut from the hollow as ribs, spars or
+	// frames (body_structure.hpp PlaneNetwork, placed): the planes in the
+	// job's frame (the world's: the bodies are placed meshes), a thickness,
+	// a height (0: wall to wall; else the ribs stop that far in from the
+	// body's surface) and the slab's extent -- the slabs are boxes
+	// 2 * HalfExtent across centred on Centre projected onto each plane,
+	// so Centre and HalfExtent must cover the body.
+	struct FNetwork
+	{
+		FString Label;
+		TArray<aerotelic::Plane> Planes;
+		double Thickness = 0.0;
+		double Height = 0.0;
+		aerotelic::Vec3 Centre;
+		double HalfExtent = 0.0;
 	};
 
 	// The lattice field sampled on a regular grid: node (i, j, k) at
@@ -66,6 +88,10 @@ namespace AerotelicMeshLib
 		double InnerRemeshEdge = 0.0;
 		// The infill's field; null for a hollow part with no infill.
 		const FField* Field = nullptr;
+		// The plane networks, in priority order (an earlier one is
+		// continuous, a later one is notched by it); the infill fills what
+		// they leave.
+		TArray<FNetwork> Networks;
 	};
 
 	// A target body's offset interior on its own: the inner boundary of
@@ -84,14 +110,34 @@ namespace AerotelicMeshLib
 		int32 Components = 0;
 	};
 
+	// One network's ribs: the slabs cut to the hollow (less the networks
+	// before it), closed and disjoint from the other layers. Empty, with
+	// the reason in Note, when the planes miss the interior or MeshLib
+	// refused the boolean.
+	struct FRibs
+	{
+		FString Label;
+		aerotelic::TriMesh Mesh;
+		double Volume = 0.0;
+		int32 Planes = 0;
+		FString Note;
+	};
+
 	struct FResult
 	{
 		aerotelic::TriMesh Skin;
 		aerotelic::TriMesh Lattice;
 		// One per request target, in order.
 		TArray<FInner> Inners;
+		// One per request network, in order.
+		TArray<FRibs> Ribs;
 		double SkinVolume = 0.0;
+		// The hollow's volume (the union of the offset interiors less the
+		// reserved volumes), before the ribs are taken out of it.
 		double DomainVolume = 0.0;
+		// ... and after: what the infill fills.
+		double InfillDomainVolume = 0.0;
+		double RibsVolume = 0.0;
 		double LatticeVolume = 0.0;
 		// Lattice volume over the infill domain's.
 		double AchievedFraction = 0.0;

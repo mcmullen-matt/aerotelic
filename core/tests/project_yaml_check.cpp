@@ -10,6 +10,7 @@
 #include <cmath>
 #include <fstream>
 #include <iostream>
+#include <iterator>
 #include <string>
 
 #include <BRepGProp.hxx>
@@ -601,88 +602,102 @@ void CheckScaleRoundTrip() {
 	Check(threw, "scale: zero is refused on save");
 }
 
-// A lattice under `lattices:` (OpenLattice parameters, targets, reserved
-// volumes) round-trips, and its references are validated like a boolean's.
-void CheckLatticeRoundTrip() {
+// A file from before 2026-11-08 with a `lattices:` section: the lattice
+// entity kind no longer exists, so the entries are skipped by name (the
+// rest of the file loads) and never written back. The lattice PARAMETERS
+// still round-trip as a body's infill (CheckBodiesRoundTrip): the
+// honeycomb's three figures of its own are checked here through that.
+void CheckUnsupportedLattices() {
+	const std::string path = AEROTELIC_TESTS_DIR "/project_yaml_check_tmp.yaml";
+	{
+		// Two real entities as the writer puts them down, then the old
+		// section appended as a file of the time would have had it.
+		ProjectFile old;
+		ProjectEntity w;
+		w.name = "Wing";
+		w.type = EntityType::Wing;
+		w.mirror = true;
+		w.model = WingModelSpec{};
+		ProjectEntity bay;
+		bay.name = "Bay";
+		bay.type = EntityType::Primitive;
+		bay.model = PrimitiveSpec{};
+		old.entities.push_back(w);
+		old.entities.push_back(bay);
+		SaveProjectYaml(old, path);
+		std::ofstream out(path, std::ios::app);
+		out << "\nlattices:\n"
+		       "  - name: Lattice 1\n"
+		       "    lattice: {family: strut, type: Octet, cell_size: 0.25, volume_fraction: 0.22, resolution: 10}\n"
+		       "    targets: [Wing, {mirror: Wing}]\n"
+		       "    exclusions: [Bay]\n"
+		       "  - name: Lattice 2\n"
+		       "    lattice: {family: tpms, type: Gyroid, cell_size: 0.5}\n"
+		       "    targets: [Nope]\n";
+	}
+	ProjectFile back;
+	bool threw = false;
+	try { back = LoadProjectYaml(path); } catch (const std::exception& e) { threw = true; std::cerr << e.what() << "\n"; }
+	Check(!threw, "old lattices: a file with a lattices: section still loads");
+	Check(back.entities.size() == 2, "old lattices: the entities load");
+	Check(back.unsupported_lattices.size() == 2 && back.unsupported_lattices[0] == "Lattice 1" && back.unsupported_lattices[1] == "Lattice 2",
+		"old lattices: the lattice entries are named as unsupported, however they refer");
+	SaveProjectYaml(back, path);
+	{
+		std::ifstream in(path);
+		std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+		Check(text.find("lattices") == std::string::npos, "old lattices: nothing is written back under lattices:");
+	}
+	Check(LoadProjectYaml(path).unsupported_lattices.empty(), "old lattices: the re-saved file has none");
+	// The entity type itself is refused under entities:.
+	{
+		std::ofstream out(path);
+		out << "entities:\n  - name: L\n    type: lattice\n    model: {}\n";
+	}
+	threw = false;
+	try { LoadProjectYaml(path); } catch (const std::invalid_argument&) { threw = true; }
+	Check(threw, "old lattices: an entity of type lattice is refused");
+
+	// A honeycomb infill keeps its cross-section, its prism axis and how its
+	// wall is sized -- the three things no other family has -- and a cell
+	// that is not in the family's list is refused.
 	ProjectFile pf;
 	ProjectEntity wing;
 	wing.name = "Wing";
 	wing.type = EntityType::Wing;
-	wing.mirror = true;
 	wing.model = WingModelSpec{};
-	ProjectEntity bay;
-	bay.name = "Bay";
-	bay.type = EntityType::Primitive;
-	bay.model = PrimitiveSpec{};
+	ProjectBody body;
+	body.name = "Main";
+	body.structure.material = *FindMaterialPreset("Aluminium 2024-T3 sheet");
+	body.structure.skin_thickness = 0.002;
+	InfillSpec infill;
+	infill.lattice.family = LatticeFamily::Honeycomb;
+	infill.lattice.type = "Hexagon";
+	infill.lattice.cell_size = 0.02;
+	infill.lattice.cell_aspect = 1.75;
+	infill.lattice.axis = PrismAxis::Y;
+	infill.lattice.wall_sizing = WallSizing::Thickness;
+	infill.lattice.wall_thickness = 0.03;
+	infill.material = body.structure.material;
+	body.structure.infill = infill;
+	wing.bodies.push_back(body);
 	pf.entities.push_back(wing);
-	pf.entities.push_back(bay);
-
-	ProjectLattice l;
-	l.name = "Lattice 1";
-	l.spec.family = LatticeFamily::Strut;
-	l.spec.type = "Octet";
-	l.spec.cell_size = 0.25;
-	l.spec.volume_fraction = 0.22;
-	l.spec.resolution = 10;
-	l.spec.skin_thickness = 0.01;
-	l.spec.origin = Vec3{0.1, 0.2, 0.3};
-	l.targets = {{"Wing", false}, {"Wing", true}};
-	l.exclusions = {{"Bay", false}};
-	l.color = std::array<double, 3>{0.1, 0.2, 0.3};
-	pf.lattices.push_back(l);
-
-	const std::string path = AEROTELIC_TESTS_DIR "/project_yaml_check_tmp.yaml";
 	SaveProjectYaml(pf, path);
-	ProjectFile back = LoadProjectYaml(path);
-	Check(back.lattices.size() == 1, "lattice round trip: one lattice");
-	if (back.lattices.empty()) return;
-	const ProjectLattice& b = back.lattices[0];
-	Check(b.name == "Lattice 1" && b.spec.family == LatticeFamily::Strut && b.spec.type == "Octet", "lattice round trip: name, family, type");
-	CheckClose(b.spec.cell_size, 0.25, 1e-12, "lattice round trip: cell size");
-	CheckClose(b.spec.volume_fraction, 0.22, 1e-12, "lattice round trip: volume fraction");
-	Check(b.spec.resolution == 10, "lattice round trip: resolution");
-	CheckClose(b.spec.skin_thickness, 0.01, 1e-12, "lattice round trip: skin");
-	CheckClose(b.spec.origin.z, 0.3, 1e-12, "lattice round trip: origin");
-	Check(b.targets.size() == 2 && b.targets[1].mirror && b.targets[1].name == "Wing", "lattice round trip: targets (with the mirror)");
-	Check(b.exclusions.size() == 1 && b.exclusions[0].name == "Bay", "lattice round trip: exclusions");
-	Check(b.color && std::abs((*b.color)[2] - 0.3) < 1e-12, "lattice round trip: colour");
-
-	// A TPMS lattice keeps its phase; a bad reference is refused.
-	pf.lattices[0].spec.family = LatticeFamily::Tpms;
-	pf.lattices[0].spec.type = "Gyroid";
-	pf.lattices[0].spec.phase = TpmsPhase::Sheet;
-	pf.lattices[0].targets = {{"Nope", false}};
-	SaveProjectYaml(pf, path);
-	bool threw = false;
-	try { LoadProjectYaml(path); } catch (const std::invalid_argument&) { threw = true; }
-	Check(threw, "lattice round trip: a target that does not exist is refused");
-	pf.lattices[0].targets = {{"Wing", false}};
-	SaveProjectYaml(pf, path);
-	Check(LoadProjectYaml(path).lattices[0].spec.phase == TpmsPhase::Sheet, "lattice round trip: TPMS phase");
-
-	// A honeycomb keeps its cross-section, its prism axis and how its wall
-	// is sized -- the three things no other family has.
-	pf.lattices[0].spec.family = LatticeFamily::Honeycomb;
-	pf.lattices[0].spec.type = "Hexagon";
-	pf.lattices[0].spec.cell_aspect = 1.75;
-	pf.lattices[0].spec.axis = PrismAxis::Y;
-	pf.lattices[0].spec.wall_sizing = WallSizing::Thickness;
-	pf.lattices[0].spec.wall_thickness = 0.03;
-	SaveProjectYaml(pf, path);
-	const LatticeSpec hc = LoadProjectYaml(path).lattices[0].spec;
-	Check(hc.family == LatticeFamily::Honeycomb && hc.type == "Hexagon", "lattice round trip: honeycomb family and cell");
-	CheckClose(hc.cell_aspect, 1.75, 1e-12, "lattice round trip: honeycomb cell aspect");
-	Check(hc.axis == PrismAxis::Y, "lattice round trip: honeycomb prism axis");
-	Check(hc.wall_sizing == WallSizing::Thickness, "lattice round trip: honeycomb wall sizing");
-	CheckClose(hc.wall_thickness, 0.03, 1e-12, "lattice round trip: honeycomb wall thickness");
-
-	// A cell that is not in the honeycomb family's list is refused, like
-	// any other family's.
-	pf.lattices[0].spec.type = "Gyroid";
+	const ProjectFile hb = LoadProjectYaml(path);
+	Check(hb.entities.size() == 1 && hb.entities[0].bodies.size() == 1 && hb.entities[0].bodies[0].structure.infill.has_value(), "honeycomb infill: round-trips");
+	if (hb.entities.size() == 1 && hb.entities[0].bodies.size() == 1 && hb.entities[0].bodies[0].structure.infill) {
+		const LatticeSpec& hc = hb.entities[0].bodies[0].structure.infill->lattice;
+		Check(hc.family == LatticeFamily::Honeycomb && hc.type == "Hexagon", "honeycomb infill: family and cell");
+		CheckClose(hc.cell_aspect, 1.75, 1e-12, "honeycomb infill: cell aspect");
+		Check(hc.axis == PrismAxis::Y, "honeycomb infill: prism axis");
+		Check(hc.wall_sizing == WallSizing::Thickness, "honeycomb infill: wall sizing");
+		CheckClose(hc.wall_thickness, 0.03, 1e-12, "honeycomb infill: wall thickness");
+	}
+	pf.entities[0].bodies[0].structure.infill->lattice.type = "Gyroid";
 	SaveProjectYaml(pf, path);
 	threw = false;
 	try { LoadProjectYaml(path); } catch (const std::invalid_argument&) { threw = true; }
-	Check(threw, "lattice round trip: a TPMS name is not a honeycomb cell");
+	Check(threw, "honeycomb infill: a TPMS name is not a honeycomb cell");
 }
 
 void CheckRealPythonProjectFile() {
@@ -803,7 +818,7 @@ int main() {
 		CheckMeshSpecRoundTrip();
 		CheckUnitsRoundTrip();
 		CheckScaleRoundTrip();
-		CheckLatticeRoundTrip();
+		CheckUnsupportedLattices();
 		CheckRealPythonProjectFile();
 	} catch (const std::exception& e) {
 		std::cout << "UNEXPECTED EXCEPTION: " << e.what() << "\n";

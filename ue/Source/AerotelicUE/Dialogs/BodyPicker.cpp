@@ -44,6 +44,41 @@ TArray<FAerotelicBodyChoicePtr> SceneBodyChoices()
 	return Out;
 }
 
+TArray<FAerotelicBodyChoicePtr> SceneLayerChoices()
+{
+	TArray<FAerotelicBodyChoicePtr> Out;
+	UAerotelicDocumentSubsystem* Doc = UAerotelicDocumentSubsystem::Get();
+	if (Doc == nullptr)
+	{
+		return Out;
+	}
+	for (const TWeakObjectPtr<AAerotelicEntityActor>& Weak : Doc->GetEntities())
+	{
+		if (!Weak.IsValid())
+		{
+			continue;
+		}
+		for (int32 Half = 0; Half < (Weak->IsMirrored() ? 2 : 1); ++Half)
+		{
+			const FString EntityLabel = Weak->EntityName + (Half == 1 ? TEXT(" (mirror)") : TEXT(""));
+			for (const FAerotelicLayerView& L : Weak->GetLayers())
+			{
+				if (L.Section == INDEX_NONE) continue;
+				FAerotelicBodyChoicePtr C = MakeShared<FAerotelicBodyChoice>();
+				C->Label = Weak->GetBodies().Num() > 1
+					? FString::Printf(TEXT("%s / %s / %s"), *EntityLabel, *L.BodyRole, *L.Name)
+					: FString::Printf(TEXT("%s / %s"), *EntityLabel, *L.Name);
+				C->Operand.Entity = Weak;
+				C->Operand.bMirror = Half == 1;
+				C->Body = L.BodyRole;
+				C->Layer = L.Name;
+				Out.Add(C);
+			}
+		}
+	}
+	return Out;
+}
+
 void SAerotelicBodyPicker::Construct(const FArguments& InArgs)
 {
 	Available = InArgs._Choices;

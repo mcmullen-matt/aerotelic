@@ -39,7 +39,20 @@ What it does, per lattice:
    Delaunay mesher (core tet.hpp, TetrahedralizeNested): closed, outward,
    and not touching the body's own surface (MeshLib's triangle collision
    test). The application meshes body and offset together into skin and
-   core tetrahedra that conform to both exactly.
+   core tetrahedra that conform to both exactly. A target that carries an
+   ``inner_file`` of its own (the offset from an earlier run of the same
+   body and skin, cached by the application) is not offset again.
+5. **Plane networks (2026-11-08: ribs, spars, frames).** Each network is a
+   family of parallel planes with a thickness: its slabs (boxes about the
+   planes, wide enough to cover the body) are intersected with the infill
+   domain by an exact mesh boolean, so the ribs are the hollow's exact
+   cross-sections, wall to wall; a network with a ``height`` reaches only
+   that far in from the surface (the slabs minus the body's deeper offset
+   at skin + height: a stringer, a cap). Earlier networks have priority
+   (a spar stays continuous, the ribs after it are notched by it), and
+   the ribs are cut from the domain before the infill is extracted, so
+   the layers are disjoint and their volumes add. Each network's body is
+   written as ``ribs_<j>.tri``.
 
 The ``.tri`` format is the application's own: 8 bytes ``AEROTRI1``,
 uint32 vertex count, uint32 triangle count, float64 xyz per vertex, int32
@@ -345,6 +358,165 @@ def lattice_surface(vol, origin):
 
 
 # ---------------------------------------------------------------------------
+# Plane networks
+# ---------------------------------------------------------------------------
+
+def plane_basis(n):
+    """An orthonormal (u, v) in the plane of unit normal n, u x v = n."""
+    n = np.asarray(n, dtype=np.float64)
+    n = n / np.linalg.norm(n)
+    a = np.array([1.0, 0.0, 0.0]) if abs(n[0]) < 0.9 else np.array([0.0, 1.0, 0.0])
+    u = np.cross(a, n)
+    u /= np.linalg.norm(u)
+    v = np.cross(n, u)
+    return n, u, v
+
+
+def slab_mesh(normal, offset, thickness, centre, half_extent):
+    """The slab of `thickness` about the plane normal . x = offset, a box
+    2 * half_extent across in the plane centred on `centre` projected onto
+    it, closed and outward (the core's SlabMesh, body_structure.hpp)."""
+    n, u, v = plane_basis(normal)
+    c = np.asarray(centre, dtype=np.float64)
+    c = c - (np.dot(n, c) - float(offset)) * n
+    h = float(half_extent)
+    t = 0.5 * float(thickness)
+    verts = np.zeros((8, 3), dtype=np.float64)
+    for i in range(8):
+        su = -h if (i & 1) == 0 else h
+        sv = -h if (i & 2) == 0 else h
+        sn = -t if (i & 4) == 0 else t
+        verts[i] = c + su * u + sv * v + sn * n
+    # The twelve triangles of a box over the bit pattern (bit0 u, bit1 v,
+    # bit2 n), wound outward.
+    faces = np.array([
+        [0, 2, 3], [0, 3, 1],   # -n
+        [4, 5, 7], [4, 7, 6],   # +n
+        [0, 1, 5], [0, 5, 4],   # -v
+        [2, 6, 7], [2, 7, 3],   # +v
+        [0, 4, 6], [0, 6, 2],   # -u
+        [1, 3, 7], [1, 7, 5],   # +u
+    ], dtype=np.int32)
+    mesh = mn.meshFromFacesVerts(faces, verts)
+    if mesh.volume() < 0.0:
+        mesh.topology.flipOrientation()
+    return mesh
+
+
+def network_slabs(net, nudge=0.0):
+    """One mesh holding every plane's slab of the network (the planes are
+    parallel and thinner than their spacing, so the slabs are disjoint
+    components); None when the network has no planes."""
+    slabs = None
+    for p in net.get("planes", []):
+        slab = slab_mesh(p["normal"], float(p["offset"]) + nudge, net["thickness"], net["centre"], net["half_extent"])
+        if slabs is None:
+            slabs = slab
+        else:
+            slabs.addMesh(slab)
+    return slabs
+
+
+def cut_networks(job, job_dir, domain, bodies, targets, voxel, mode, outputs, warnings):
+    """The ribs of every network (job["networks"]) cut from `domain`, the
+    domain with them removed, and the per-network result entries. The
+    operations are exact mesh booleans; a boolean MeshLib refuses is
+    retried once with the planes nudged by a millionth of the domain's
+    diagonal, then that network is left empty with a warning."""
+    networks = job.get("networks", []) or []
+    ribs_prefix = outputs.get("ribs_prefix", "ribs")
+    results = []
+    rib_meshes = []
+    if not networks:
+        return domain, results, rib_meshes
+    if domain is None or num_faces(domain) == 0:
+        for j, net in enumerate(networks):
+            label = net.get("label", "network %d" % j)
+            rib_file = "%s_%d.tri" % (ribs_prefix, j)
+            write_tri(os.path.join(job_dir, rib_file), None)
+            results.append({"label": label, "file": rib_file, "volume": 0.0, "triangles": 0, "planes": len(net.get("planes", [])),
+                            "note": "the body has no interior for the planes to cut"})
+        return domain, results, rib_meshes
+    bb = domain.computeBoundingBox()
+    diag = (bb.max - bb.min).length()
+    # The deeper offsets a limited-height network needs, by height (shared
+    # between networks of the same height).
+    deeper = {}
+
+    def deeper_interior(height):
+        if height in deeper:
+            return deeper[height]
+        inner_union = None
+        for item, body in zip(targets, bodies):
+            own_thickness = float(item.get("skin_thickness", job["skin_thickness"]))
+            inner = inward_offset(body, own_thickness + height, voxel, mode)
+            if num_faces(inner) == 0:
+                continue
+            if not is_closed(inner):
+                raise JobError("the inward offset of '%s' at %.4g did not close." % (item.get("label", item["file"]), own_thickness + height))
+            inner_union = mm.Mesh(inner) if inner_union is None else mesh_boolean(inner_union, inner, mm.BooleanOperation.Union, "uniting the deeper interiors")
+        deeper[height] = inner_union
+        return inner_union
+
+    # Booleans between surfaces that COINCIDE fail in MeshLib (the ribs'
+    # curved faces are the domain's own faces, so "domain minus ribs" and
+    # "ribs minus the earlier ribs" both hand it coplanar faces: "cannot
+    # separate mesh B"). So the CUTTER -- the slabs themselves, less the
+    # deeper offset when the height is limited -- is what is intersected
+    # with the domain for the ribs AND subtracted from the domain after:
+    # the slab crosses the domain's surface transversally, the deeper
+    # offset lies strictly inside it, and domain minus cutter is domain
+    # minus ribs exactly. A later network is cut from the reduced domain,
+    # which notches it by the earlier ones with no further boolean.
+    for j, net in enumerate(networks):
+        label = net.get("label", "network %d" % j)
+        rib_file = "%s_%d.tri" % (ribs_prefix, j)
+        planes = net.get("planes", [])
+        height = float(net.get("height", 0.0))
+        entry = {"label": label, "file": rib_file, "volume": 0.0, "triangles": 0, "planes": len(planes), "note": ""}
+        ribs = None
+        reduced = None
+        for attempt in range(2):
+            nudge = 0.0 if attempt == 0 else 1e-6 * diag
+            try:
+                cutter = network_slabs(net, nudge)
+                if cutter is None or num_faces(cutter) == 0:
+                    entry["note"] = "no planes"
+                    break
+                if height > 0.0:
+                    core = deeper_interior(height)
+                    if core is not None and num_faces(core) > 0:
+                        cutter = mesh_boolean(cutter, core, mm.BooleanOperation.DifferenceAB, "limiting the height of '%s'" % label)
+                cut = mesh_boolean(cutter, domain, mm.BooleanOperation.Intersection, "cutting the planes of '%s' to the interior" % label)
+                if num_faces(cut) > 0:
+                    reduced = mesh_boolean(domain, cutter, mm.BooleanOperation.DifferenceAB, "removing the ribs of '%s' from the infill domain" % label)
+                ribs = cut
+                if attempt == 1:
+                    warnings.append("%s: the planes were nudged by %.3g for MeshLib's boolean" % (label, nudge))
+                break
+            except JobError as exc:
+                if attempt == 1:
+                    warnings.append("%s: not built: %s" % (label, exc))
+                    entry["note"] = str(exc)
+                    ribs = None
+                    reduced = None
+        if ribs is not None and num_faces(ribs) > 0:
+            if not is_closed(ribs):
+                warnings.append("%s: the ribs are not a closed surface (%d holes)" % (label, ribs.topology.findNumHoles()))
+            entry["volume"] = float(ribs.volume())
+            if reduced is not None:
+                domain = reduced
+        elif ribs is not None and not entry["note"]:
+            entry["note"] = "the planes miss the interior"
+        rib_meshes.append(ribs if ribs is not None and num_faces(ribs) > 0 else None)
+        counts = write_tri(os.path.join(job_dir, rib_file), ribs if ribs is not None and num_faces(ribs) > 0 else None)
+        entry["triangles"] = counts[1]
+        log("  %s: %d plane(s) -> %d faces, volume %.6g%s" % (label, len(planes), counts[1], entry["volume"], (" (%s)" % entry["note"]) if entry["note"] else ""))
+        results.append(entry)
+    return domain, results, rib_meshes
+
+
+# ---------------------------------------------------------------------------
 # The job
 # ---------------------------------------------------------------------------
 
@@ -368,22 +540,31 @@ def run_job(job_dir):
                             surfaces together would exceed MAX_INNER_FACES
                             triangles
         targets             [{label, file, skin_thickness?,
-                            inner_remesh_edge?}] bodies to fill (.tri,
-                            closed), each optionally with its own skin
-                            depth and remesh edge in place of the job's
+                            inner_remesh_edge?, inner_file?}] bodies to
+                            fill (.tri, closed), each optionally with its
+                            own skin depth and remesh edge in place of the
+                            job's; with inner_file (a .tri in the job
+                            directory) the offset is taken from that file
+                            as it is rather than computed
         reserved            [{label, file}] volumes the infill must avoid
+        networks            [{label, planes: [{normal, offset}], thickness,
+                            height, centre, half_extent}] plane networks
+                            cut from the interior in order (see the module
+                            docstring); may be absent
         field               null, or {file, nx, ny, nz, origin, h}: the
                             lattice field on the grid (F <= 0 is material)
-        outputs             {skin, lattice, result, inner_prefix}: file
-                            names to write; the inner surface of target i
-                            goes to <inner_prefix>_<i>.tri ("inner" by
-                            default)
+        outputs             {skin, lattice, result, inner_prefix,
+                            ribs_prefix}: file names to write; the inner
+                            surface of target i goes to
+                            <inner_prefix>_<i>.tri ("inner" by default),
+                            network j to <ribs_prefix>_<j>.tri ("ribs")
 
     Returns the result dictionary (also written to outputs.result). Its
     "targets" list has, per body in order: label, inner_file,
     inner_vertices, inner_triangles, inner_components, inner_volume,
     inner_ok (usable as the mesher's inner constraint surface) and
-    inner_note (why not, or "all skin").
+    inner_note (why not, or "all skin"); its "networks" list, per network
+    in order: label, file, volume, triangles, planes, note.
     """
     t_start = time.time()
     with open(os.path.join(job_dir, "job.json"), "r", encoding="utf-8") as f:
@@ -434,11 +615,28 @@ def run_job(job_dir):
             remesh_raised.append((label, own_remesh))
             own_remesh = remesh_floor
         body_volume = body.volume()
-        inner = inward_offset(body, own_thickness, voxel, mode)
-        n_inner = num_faces(inner)
-        if n_inner > 0 and not is_closed(inner):
-            raise JobError("the inward offset of '%s' did not close (%d holes)." % (label, inner.topology.findNumHoles()))
-        if opening > 0.0 and n_inner > 0:
+        precomputed = item.get("inner_file")
+        if precomputed:
+            # The application's cached offset of this body at this skin:
+            # already opened, decimated, remeshed and checked when it was
+            # made, so none of that is done again.
+            inner = read_tri(os.path.join(job_dir, precomputed))
+            n_inner = num_faces(inner)
+            if n_inner > 0 and not is_closed(inner):
+                raise JobError("the cached offset of '%s' is not closed (%d holes)." % (label, inner.topology.findNumHoles()))
+            own_remesh = 0.0
+            opening_here = 0.0
+            min_pocket_here = 0.0
+            decimate_here = 0.0
+        else:
+            inner = inward_offset(body, own_thickness, voxel, mode)
+            n_inner = num_faces(inner)
+            if n_inner > 0 and not is_closed(inner):
+                raise JobError("the inward offset of '%s' did not close (%d holes)." % (label, inner.topology.findNumHoles()))
+            opening_here = opening
+            min_pocket_here = min_pocket
+            decimate_here = decimate_tol
+        if opening_here > 0.0 and n_inner > 0:
             before = inner.volume()
             inner = open_interior(inner, opening, voxel)
             if num_faces(inner) > 0 and not is_closed(inner):
@@ -446,12 +644,12 @@ def run_job(job_dir):
             after = inner.volume() if num_faces(inner) > 0 else 0.0
             if before > 0.0 and before - after > 0.02 * before:
                 warnings.append("%s: parts of the interior thinner than %.3g (%.1f%% of it) were made solid so the core is nowhere thinner than that" % (label, 2.0 * opening, 100.0 * (before - after) / before))
-        dropped = drop_small_components(inner, min_pocket) if min_pocket > 0.0 else 0
+        dropped = drop_small_components(inner, min_pocket_here) if min_pocket_here > 0.0 else 0
         if dropped:
             warnings.append("%s: %d pocket(s) of the offset interior smaller than %.3g were filled solid" % (label, dropped, min_pocket))
-        n_dec = decimate_within(inner, decimate_tol)
+        n_dec = decimate_within(inner, decimate_here)
         remeshed = remesh_isotropic(inner, own_remesh) if own_remesh > 0.0 else False
-        if remeshed and min_pocket > 0.0:
+        if remeshed and min_pocket_here > 0.0:
             # The remesh can leave its own debris: on the P-38 airframe it
             # made four pockets of about 1e-5 (three self-intersecting)
             # beside the real one of 17.1, and a tetrahedral mesher refuses
@@ -514,6 +712,13 @@ def run_job(job_dir):
     timings["domain"] = time.time() - t0
     log("  infill domain: %d faces, volume %.6g" % (num_faces(domain), domain_volume))
 
+    # 2b. The plane networks: ribs cut from the domain, which loses them.
+    t0 = time.time()
+    domain, network_results, rib_meshes = cut_networks(job, job_dir, domain, bodies, targets, voxel, mode, outputs, warnings)
+    ribs_volume = sum(float(r["volume"]) for r in network_results)
+    infill_domain_volume = domain.volume() if domain is not None and num_faces(domain) > 0 else 0.0
+    timings["networks"] = time.time() - t0
+
     # 3. The infill: the lattice surface cut to the domain.
     t0 = time.time()
     lattice = None
@@ -544,10 +749,13 @@ def run_job(job_dir):
         "lattice_triangles": lattice_counts[1],
         "skin_volume": skin_volume,
         "domain_volume": domain_volume,
+        "infill_domain_volume": infill_domain_volume,
+        "ribs_volume": ribs_volume,
         "lattice_volume": lattice_volume,
-        "achieved_fraction": (lattice_volume / domain_volume) if domain_volume > 0.0 else 0.0,
+        "achieved_fraction": (lattice_volume / infill_domain_volume) if infill_domain_volume > 0.0 else 0.0,
         "interiors": len(interiors),
         "targets": target_results,
+        "networks": network_results,
         "warnings": warnings,
         "timings": timings,
         "seconds": time.time() - t_start,

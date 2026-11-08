@@ -56,12 +56,43 @@ namespace AerotelicMeshLib
 					return false;
 				}
 				FString Own;
-			if (Bodies[i].SkinThickness > 0.0) Own += FString::Printf(TEXT(", \"skin_thickness\": %s"), *Num(Bodies[i].SkinThickness));
-			if (Bodies[i].InnerRemeshEdge > 0.0) Own += FString::Printf(TEXT(", \"inner_remesh_edge\": %s"), *Num(Bodies[i].InnerRemeshEdge));
-			OutJson += FString::Printf(TEXT("%s{\"label\": %s, \"file\": %s%s}"), i ? TEXT(", ") : TEXT(""), *JsonString(Bodies[i].Label), *JsonString(File), *Own);
+				if (Bodies[i].SkinThickness > 0.0) Own += FString::Printf(TEXT(", \"skin_thickness\": %s"), *Num(Bodies[i].SkinThickness));
+				if (Bodies[i].InnerRemeshEdge > 0.0) Own += FString::Printf(TEXT(", \"inner_remesh_edge\": %s"), *Num(Bodies[i].InnerRemeshEdge));
+				if (Bodies[i].PrecomputedInner != nullptr && !Bodies[i].PrecomputedInner->IsEmpty())
+				{
+					const FString InnerFile = FString::Printf(TEXT("%s_%d_cached_inner.tri"), Prefix, i);
+					if (!WriteTri(*Bodies[i].PrecomputedInner, FPaths::Combine(Dir, InnerFile)))
+					{
+						OutError = FString::Printf(TEXT("could not write the cached offset of '%s' for MeshLib"), *Bodies[i].Label);
+						return false;
+					}
+					Own += FString::Printf(TEXT(", \"inner_file\": %s"), *JsonString(InnerFile));
+				}
+				OutJson += FString::Printf(TEXT("%s{\"label\": %s, \"file\": %s%s}"), i ? TEXT(", ") : TEXT(""), *JsonString(Bodies[i].Label), *JsonString(File), *Own);
 			}
 			OutJson += TEXT("]");
 			return true;
+		}
+
+		FString NetworksJson(const TArray<FNetwork>& Networks)
+		{
+			FString Out = TEXT("[");
+			for (int32 i = 0; i < Networks.Num(); ++i)
+			{
+				const FNetwork& N = Networks[i];
+				FString Planes = TEXT("[");
+				for (int32 k = 0; k < N.Planes.Num(); ++k)
+				{
+					const aerotelic::Plane& P = N.Planes[k];
+					Planes += FString::Printf(TEXT("%s{\"normal\": [%s, %s, %s], \"offset\": %s}"), k ? TEXT(", ") : TEXT(""),
+						*Num(P.normal.x), *Num(P.normal.y), *Num(P.normal.z), *Num(P.offset));
+				}
+				Planes += TEXT("]");
+				Out += FString::Printf(TEXT("%s{\"label\": %s, \"planes\": %s, \"thickness\": %s, \"height\": %s, \"centre\": [%s, %s, %s], \"half_extent\": %s}"),
+					i ? TEXT(", ") : TEXT(""), *JsonString(N.Label), *Planes, *Num(N.Thickness), *Num(N.Height),
+					*Num(N.Centre.x), *Num(N.Centre.y), *Num(N.Centre.z), *Num(N.HalfExtent));
+			}
+			return Out + TEXT("]");
 		}
 	}
 
@@ -335,10 +366,10 @@ namespace AerotelicMeshLib
 		}
 		const FString Job = FString::Printf(
 			TEXT("{\n \"skin_thickness\": %s,\n \"offset_voxel\": %s,\n \"offset_mode\": %s,\n \"decimate_tolerance\": %s,\n \"min_pocket_volume\": %s,\n \"inner_opening\": %s,\n \"inner_remesh_edge\": %s,\n")
-			TEXT(" \"targets\": %s,\n \"reserved\": %s,\n \"field\": %s,\n")
-			TEXT(" \"outputs\": {\"skin\": \"skin.tri\", \"lattice\": \"lattice.tri\", \"result\": \"result.json\", \"inner_prefix\": \"inner\"}\n}\n"),
+			TEXT(" \"targets\": %s,\n \"reserved\": %s,\n \"networks\": %s,\n \"field\": %s,\n")
+			TEXT(" \"outputs\": {\"skin\": \"skin.tri\", \"lattice\": \"lattice.tri\", \"result\": \"result.json\", \"inner_prefix\": \"inner\", \"ribs_prefix\": \"ribs\"}\n}\n"),
 			*Num(Request.SkinThickness), *Num(Request.OffsetVoxel), *JsonString(Request.OffsetMode), *Num(Request.DecimateTolerance), *Num(Request.MinPocketVolume), *Num(Request.InnerOpening), *Num(Request.InnerRemeshEdge),
-			*TargetsJson, *ReservedJson, *FieldJson);
+			*TargetsJson, *ReservedJson, *NetworksJson(Request.Networks), *FieldJson);
 		if (!FFileHelper::SaveStringToFile(Job, *FPaths::Combine(Dir, TEXT("job.json")), FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM))
 		{
 			OutError = TEXT("could not write the MeshLib job file");
@@ -363,6 +394,10 @@ namespace AerotelicMeshLib
 		}
 		Out.SkinVolume = Result->GetNumberField(TEXT("skin_volume"));
 		Out.DomainVolume = Result->GetNumberField(TEXT("domain_volume"));
+		Out.InfillDomainVolume = Out.DomainVolume;
+		Result->TryGetNumberField(TEXT("infill_domain_volume"), Out.InfillDomainVolume);
+		Out.RibsVolume = 0.0;
+		Result->TryGetNumberField(TEXT("ribs_volume"), Out.RibsVolume);
 		Out.LatticeVolume = Result->GetNumberField(TEXT("lattice_volume"));
 		Out.AchievedFraction = Result->GetNumberField(TEXT("achieved_fraction"));
 		Out.Interiors = static_cast<int32>(Result->GetNumberField(TEXT("interiors")));
@@ -409,6 +444,40 @@ namespace AerotelicMeshLib
 		if (Out.Inners.Num() != Request.Targets.Num())
 		{
 			OutError = FString::Printf(TEXT("MeshLib returned %d inner surfaces for %d bodies"), Out.Inners.Num(), Request.Targets.Num());
+			Cleanup();
+			return false;
+		}
+		// The networks' ribs, one per request network in order.
+		Out.Ribs.Reset();
+		const TArray<TSharedPtr<FJsonValue>>* Networks = nullptr;
+		if (Result->TryGetArrayField(TEXT("networks"), Networks))
+		{
+			for (const TSharedPtr<FJsonValue>& V : *Networks)
+			{
+				const TSharedPtr<FJsonObject>* Obj = nullptr;
+				if (!V.IsValid() || !V->TryGetObject(Obj) || !Obj->IsValid())
+				{
+					continue;
+				}
+				FRibs R;
+				(*Obj)->TryGetStringField(TEXT("label"), R.Label);
+				(*Obj)->TryGetNumberField(TEXT("volume"), R.Volume);
+				double Planes = 0.0;
+				(*Obj)->TryGetNumberField(TEXT("planes"), Planes);
+				R.Planes = static_cast<int32>(Planes);
+				(*Obj)->TryGetStringField(TEXT("note"), R.Note);
+				FString File;
+				if ((*Obj)->TryGetStringField(TEXT("file"), File) && !ReadTri(FPaths::Combine(Dir, File), R.Mesh, ReadError))
+				{
+					R.Mesh.Clear();
+					R.Note = ReadError;
+				}
+				Out.Ribs.Add(MoveTemp(R));
+			}
+		}
+		if (Out.Ribs.Num() != Request.Networks.Num())
+		{
+			OutError = FString::Printf(TEXT("MeshLib returned %d rib bodies for %d networks"), Out.Ribs.Num(), Request.Networks.Num());
 			Cleanup();
 			return false;
 		}

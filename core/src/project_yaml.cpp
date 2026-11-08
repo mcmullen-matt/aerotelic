@@ -517,7 +517,6 @@ const char* EntityTypeName(EntityType t) {
 		case EntityType::Propeller: return "propeller";
 		case EntityType::Primitive: return "primitive";
 		case EntityType::Boolean: return "boolean";
-		case EntityType::Lattice: return "lattice";
 	}
 	return "";
 }
@@ -530,7 +529,7 @@ EntityType ParseEntityType(const std::string& s) {
 	if (s == "propeller") return EntityType::Propeller;
 	if (s == "primitive") return EntityType::Primitive;
 	if (s == "boolean") return EntityType::Boolean;
-	if (s == "lattice") return EntityType::Lattice;
+	if (s == "lattice") throw std::invalid_argument("Entity type 'lattice' is no longer supported: a lattice is an attribute of a body (bodies[].infill) since 2026-11-08");
 	throw std::invalid_argument("Unknown entity type '" + s + "'");
 }
 
@@ -837,43 +836,8 @@ ProjectBoolean DecodeProjectBoolean(const YAML::Node& node) {
 }
 
 // ===========================================================================
-// Lattices (`lattices:`)
+// Lattice parameters (a body's `infill: {lattice: ...}`)
 // ===========================================================================
-
-namespace {
-
-YAML::Node EncodeOperands(const std::vector<BooleanOperand>& ops) {
-	YAML::Node out(YAML::NodeType::Sequence);
-	for (const BooleanOperand& op : ops) {
-		if (op.mirror) {
-			YAML::Node m;
-			m["mirror"] = op.name;
-			m.SetStyle(YAML::EmitterStyle::Flow);
-			out.push_back(m);
-		} else {
-			out.push_back(op.name);
-		}
-	}
-	return out;
-}
-
-std::vector<BooleanOperand> DecodeOperands(const YAML::Node& node) {
-	std::vector<BooleanOperand> out;
-	if (!node) return out;
-	for (const auto& ref : node) {
-		BooleanOperand op;
-		if (ref.IsMap() && ref["mirror"]) {
-			op.name = ref["mirror"].as<std::string>();
-			op.mirror = true;
-		} else {
-			op.name = ref.as<std::string>();
-		}
-		out.push_back(op);
-	}
-	return out;
-}
-
-} // namespace
 
 YAML::Node Encode(const LatticeSpec& spec) {
 	YAML::Node n;
@@ -933,32 +897,6 @@ LatticeSpec DecodeLatticeSpec(const YAML::Node& node) {
 	return s;
 }
 
-YAML::Node Encode(const ProjectLattice& l) {
-	YAML::Node n;
-	n["name"] = l.name;
-	n["lattice"] = Encode(l.spec);
-	n["targets"] = EncodeOperands(l.targets);
-	if (!l.exclusions.empty()) n["exclusions"] = EncodeOperands(l.exclusions);
-	if (l.hidden) n["hidden"] = true;
-	if (l.color) n["color"] = EncodeColor(*l.color);
-	if (l.mass.mode != MassMode::Unset) n["mass"] = EncodeMassSpec(l.mass);
-	return n;
-}
-
-ProjectLattice DecodeProjectLattice(const YAML::Node& node) {
-	ProjectLattice l;
-	if (!node["name"]) throw std::invalid_argument("a lattice has no name");
-	l.name = node["name"].as<std::string>();
-	l.spec = DecodeLatticeSpec(node["lattice"]);
-	l.targets = DecodeOperands(node["targets"]);
-	l.exclusions = DecodeOperands(node["exclusions"]);
-	if (l.targets.empty()) throw std::invalid_argument("Lattice '" + l.name + "' fills no bodies.");
-	l.hidden = node["hidden"] ? node["hidden"].as<bool>() : false;
-	l.color = DecodeColor(node["color"]);
-	l.mass = DecodeMassSpec(node["mass"]);
-	return l;
-}
-
 // ===========================================================================
 // Project file
 // ===========================================================================
@@ -1009,7 +947,6 @@ ProjectEntity DecodeEntity(const YAML::Node& node) {
 		case EntityType::Propeller: e.model = DecodePropellerSpec(model_node); break;
 		case EntityType::Primitive: e.model = DecodePrimitiveSpec(model_node); break;
 		case EntityType::Boolean: throw std::invalid_argument("Entity '" + e.name + "': boolean results belong under 'booleans', not 'entities'");
-		case EntityType::Lattice: throw std::invalid_argument("Entity '" + e.name + "': lattices belong under 'lattices', not 'entities'");
 	}
 	if (node["color"] && node["color"].size() >= 3) {
 		const YAML::Node& c = node["color"];
@@ -1110,20 +1047,11 @@ ProjectFile LoadProjectYaml(const std::string& path) {
 			project.booleans.push_back(std::move(b));
 		}
 	}
+	// The lattice entities of an older file: not decoded (the kind no longer
+	// exists), named so the application can say what it skipped.
 	if (root["lattices"]) {
 		for (const auto& ln : root["lattices"]) {
-			ProjectLattice l = DecodeProjectLattice(ln);
-			for (const auto* list : {&l.targets, &l.exclusions}) {
-				for (const BooleanOperand& op : *list) {
-					if (!seen.count(op.name)) {
-						throw std::invalid_argument("Lattice '" + l.name + "' refers to '" + op.name + "', which does not exist.");
-					}
-					if (op.mirror && !mirrored.count(op.name)) {
-						throw std::invalid_argument("Lattice '" + l.name + "' refers to the mirror of '" + op.name + "', which is not mirrored.");
-					}
-				}
-			}
-			project.lattices.push_back(std::move(l));
+			project.unsupported_lattices.push_back(ln.IsMap() && ln["name"] ? ln["name"].as<std::string>() : std::string("(unnamed lattice)"));
 		}
 	}
 	return project;
@@ -1159,12 +1087,6 @@ void SaveProjectYaml(const ProjectFile& project, const std::string& path) {
 		for (const auto& b : project.booleans) booleans.push_back(Encode(b));
 		root["booleans"] = booleans;
 	}
-	if (!project.lattices.empty()) {
-		YAML::Node lattices(YAML::NodeType::Sequence);
-		for (const auto& l : project.lattices) lattices.push_back(Encode(l));
-		root["lattices"] = lattices;
-	}
-
 	std::ofstream out(path);
 	if (!out) throw std::runtime_error("could not open " + path + " for writing");
 	out << YAML::Dump(root);

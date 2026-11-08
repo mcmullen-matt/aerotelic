@@ -19,7 +19,6 @@
 #include "Entity/AerotelicEntityActor.h"
 #include "Entity/AerotelicBooleanModel.h"
 #include "Entity/AerotelicBodyStructureText.h"
-#include "Dialogs/LatticeDialog.h"
 #include "Branding/AerotelicTheme.h"
 #include "Widgets/PromptDialogs.h"
 
@@ -40,7 +39,6 @@ namespace
 		case project_yaml::EntityType::Propeller: return LOCTEXT("TypePropeller", "propeller");
 		case project_yaml::EntityType::Primitive: return LOCTEXT("TypePrimitive", "primitive");
 		case project_yaml::EntityType::Boolean: return LOCTEXT("TypeBoolean", "boolean");
-		case project_yaml::EntityType::Lattice: return LOCTEXT("TypeLattice", "lattice");
 		}
 		return FText::GetEmpty();
 	}
@@ -136,13 +134,8 @@ void SAerotelicSceneTree::EditEntity(AAerotelicEntityActor* Entity)
 		Doc->SetSelectedEntity(Entity);
 	}
 	// A boolean result has no parameters of its own to edit: its operands
-	// do. Selecting it is all there is. A lattice is edited in its own
-	// dialog (its parameters and the bodies it fills).
-	if (Entity->GetEntityType() == project_yaml::EntityType::Lattice)
-	{
-		ShowAerotelicLatticeDialog(Entity, [](const FText&) {});
-	}
-	else if (Entity->GetEntityType() != project_yaml::EntityType::Boolean)
+	// do. Selecting it is all there is.
+	if (Entity->GetEntityType() != project_yaml::EntityType::Boolean)
 	{
 		ShowAerotelicDesignTab();
 	}
@@ -155,10 +148,12 @@ TSharedRef<ITableRow> SAerotelicSceneTree::GenerateRow(FItem Item, const TShared
 	using EKind = FAerotelicSceneRow::EKind;
 	const EKind Kind = Item->Kind;
 	const int32 Body = Item->BodyIndex;
+	const int32 Layer = Item->LayerIndex;
 	TWeakObjectPtr<AAerotelicEntityActor> Entity = Item->Entity;
 
-	// The checkbox: the entity's, a body's, or a mirrored body's visibility.
-	auto IsChecked = [Entity, Kind, Body]()
+	// The checkbox: the entity's, a body's, a mirrored body's, or a
+	// generated layer's visibility.
+	auto IsChecked = [Entity, Kind, Body, Layer]()
 	{
 		if (!Entity.IsValid()) return ECheckBoxState::Unchecked;
 		switch (Kind)
@@ -166,10 +161,12 @@ TSharedRef<ITableRow> SAerotelicSceneTree::GenerateRow(FItem Item, const TShared
 		case EKind::Entity: return Entity->IsEntityVisible() ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
 		case EKind::Body: return Entity->IsBodyVisible(Body) ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
 		case EKind::Mirror: return Entity->IsMirrorBodyVisible(Body) ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+		case EKind::Layer: return Entity->IsLayerVisible(Layer) ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+		case EKind::MirrorLayer: return Entity->IsMirrorLayerVisible(Layer) ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
 		}
 		return ECheckBoxState::Unchecked;
 	};
-	auto OnChecked = [Entity, Kind, Body](ECheckBoxState State)
+	auto OnChecked = [Entity, Kind, Body, Layer](ECheckBoxState State)
 	{
 		if (!Entity.IsValid()) return;
 		const bool bOn = State == ECheckBoxState::Checked;
@@ -178,9 +175,11 @@ TSharedRef<ITableRow> SAerotelicSceneTree::GenerateRow(FItem Item, const TShared
 		case EKind::Entity: Entity->SetEntityVisible(bOn); break;
 		case EKind::Body: Entity->SetBodyVisible(Body, bOn); break;
 		case EKind::Mirror: Entity->SetMirrorBodyVisible(Body, bOn); break;
+		case EKind::Layer: Entity->SetLayerVisible(Layer, bOn); break;
+		case EKind::MirrorLayer: Entity->SetMirrorLayerVisible(Layer, bOn); break;
 		}
 	};
-	auto Name = [Entity, Kind, Body]()
+	auto Name = [Entity, Kind, Body, Layer]()
 	{
 		if (!Entity.IsValid()) return FText::GetEmpty();
 		switch (Kind)
@@ -188,12 +187,16 @@ TSharedRef<ITableRow> SAerotelicSceneTree::GenerateRow(FItem Item, const TShared
 		case EKind::Entity: return FText::FromString(Entity->EntityName);
 		case EKind::Body: return FText::FromString(Entity->GetBodyDisplayName(Body));
 		case EKind::Mirror: return FText::FromString(Entity->GetMirrorBodyDisplayName(Body));
+		case EKind::Layer: return Entity->GetLayers().IsValidIndex(Layer) ? FText::FromString(Entity->GetLayers()[Layer].Name) : FText::GetEmpty();
+		case EKind::MirrorLayer: return Entity->GetLayers().IsValidIndex(Layer) ? FText::FromString(Entity->GetLayers()[Layer].Name) : FText::GetEmpty();
 		}
 		return FText::GetEmpty();
 	};
 	// The grey annotation: an entity's kind; a body's role (Main, Spinner,
-	// Blade 2 ...); a mirror's role plus "mirror".
-	auto Annotation = [Entity, Kind, Body]()
+	// Blade 2 ...); a mirror's role plus "mirror"; a layer's kind (and
+	// "stale" while its body changed under it, "empty" when the generation
+	// produced nothing for it).
+	auto Annotation = [Entity, Kind, Body, Layer]()
 	{
 		if (!Entity.IsValid()) return FText::GetEmpty();
 		switch (Kind)
@@ -205,22 +208,48 @@ TSharedRef<ITableRow> SAerotelicSceneTree::GenerateRow(FItem Item, const TShared
 			// The name already ends in "-mirror"; the annotation says what
 			// is mirrored.
 			return Entity->GetBodies().IsValidIndex(Body) ? FText::FromString(Entity->GetBodies()[Body].Name) : LOCTEXT("MirrorOnly", "mirror");
+		case EKind::Layer:
+		case EKind::MirrorLayer:
+		{
+			if (!Entity->GetLayers().IsValidIndex(Layer)) return FText::GetEmpty();
+			const FAerotelicLayerView& L = Entity->GetLayers()[Layer];
+			FString Text = FAerotelicStructureLayer::KindName(L.Kind);
+			if (L.Section == INDEX_NONE) Text += TEXT(", empty");
+			const FAerotelicBodyStructure* G = Entity->GetGeneratedStructure(L.BodyRole);
+			if (G != nullptr && G->IsStale()) Text += TEXT(", stale");
+			return FText::FromString(Text);
+		}
 		}
 		return FText::GetEmpty();
 	};
-	auto Swatch = [Entity, Kind, Body]()
+	auto Swatch = [Entity, Kind, Body, Layer]()
 	{
 		if (!Entity.IsValid()) return FLinearColor::Transparent;
-		return Kind == EKind::Entity ? Entity->GetDisplayColor() : Entity->GetBodyDisplayColor(Body);
+		if (Kind == EKind::Entity) return Entity->GetDisplayColor();
+		if (Kind == EKind::Layer || Kind == EKind::MirrorLayer) return Entity->GetLayerDisplayColor(Layer);
+		return Entity->GetBodyDisplayColor(Body);
 	};
 	// The tooltip: what the body is made of and built with (an entity's,
-	// one line per body).
-	auto Tip = [Entity, Kind, Body]()
+	// one line per body); a layer's material, thickness and volume.
+	auto Tip = [Entity, Kind, Body, Layer]()
 	{
 		if (!Entity.IsValid()) return FText::GetEmpty();
 		const UAerotelicDocumentSubsystem* Doc = UAerotelicDocumentSubsystem::Get();
 		const aerotelic::UnitSystem Units = Doc != nullptr ? Doc->GetUnits() : aerotelic::UnitSystem{};
 		if (Kind == EKind::Entity) return FText::FromString(DescribeAerotelicEntityStructures(Entity.Get(), Units));
+		if (Kind == EKind::Layer || Kind == EKind::MirrorLayer)
+		{
+			if (!Entity->GetLayers().IsValidIndex(Layer)) return FText::GetEmpty();
+			const FAerotelicLayerView& V = Entity->GetLayers()[Layer];
+			const FAerotelicBodyStructure* G = Entity->GetGeneratedStructure(V.BodyRole);
+			if (G == nullptr || V.LayerIndex < 0 || V.LayerIndex >= static_cast<int32>(G->GetLayers().size())) return FText::GetEmpty();
+			const FAerotelicStructureLayer& L = G->GetLayers()[V.LayerIndex];
+			FString Text = FString::Printf(TEXT("%s: %s"), FAerotelicStructureLayer::KindName(L.Kind), UTF8_TO_TCHAR(L.Material.name.c_str()));
+			if (L.Thickness > 0.0) Text += FString::Printf(TEXT(", %.4g %s thick"), L.Thickness, UTF8_TO_TCHAR(Units.LengthName()));
+			Text += FString::Printf(TEXT("; %s triangles, volume %.5g %s^3"), *FText::AsNumber(static_cast<int64>(L.Mesh.triangles.size())).ToString(), L.Volume, UTF8_TO_TCHAR(Units.LengthName()));
+			if (!L.Note.IsEmpty()) Text += TEXT("\n") + L.Note;
+			return FText::FromString(Text);
+		}
 		return FText::FromString(DescribeAerotelicBodyStructure(Entity->GetBodyStructure(Body), Units));
 	};
 
@@ -291,11 +320,21 @@ void SAerotelicSceneTree::RefreshItems()
 	using EKind = FAerotelicSceneRow::EKind;
 	// Keep the user's expansion where a row survives the rebuild.
 	TSet<AAerotelicEntityActor*> WasExpanded;
+	// ... and of the body rows that have layers under them (keyed by
+	// entity, kind and body), which open the first time they get layers.
+	TSet<FString> BodyWasExpanded, BodyWasSeen;
+	auto BodyKey = [](const FItem& Row) { return FString::Printf(TEXT("%p|%d|%d"), Row->Entity.Get(), static_cast<int32>(Row->Kind), Row->BodyIndex); };
 	for (const FItem& Old : Items)
 	{
 		if (Old->Entity.IsValid() && Tree.IsValid() && Tree->IsItemExpanded(Old))
 		{
 			WasExpanded.Add(Old->Entity.Get());
+		}
+		for (const FItem& OldBody : Old->Children)
+		{
+			if (OldBody->Children.Num() == 0) continue;
+			BodyWasSeen.Add(BodyKey(OldBody));
+			if (Tree.IsValid() && Tree->IsItemExpanded(OldBody)) BodyWasExpanded.Add(BodyKey(OldBody));
 		}
 	}
 	const bool bFirstFill = Items.Num() == 0;
@@ -313,12 +352,27 @@ void SAerotelicSceneTree::RefreshItems()
 			Row->Kind = EKind::Entity;
 			Row->Entity = E;
 			const int32 NumBodies = E->GetBodies().Num();
+			const TArray<FAerotelicLayerView>& Layers = E->GetLayers();
+			auto AddLayers = [&](const FItem& Parent, int32 BodyIndex, EKind LayerKind)
+			{
+				for (int32 l = 0; l < Layers.Num(); ++l)
+				{
+					if (Layers[l].BodyIndex != BodyIndex) continue;
+					FItem LayerRow = MakeShared<FAerotelicSceneRow>();
+					LayerRow->Kind = LayerKind;
+					LayerRow->Entity = E;
+					LayerRow->BodyIndex = BodyIndex;
+					LayerRow->LayerIndex = l;
+					Parent->Children.Add(LayerRow);
+				}
+			};
 			for (int32 i = 0; i < NumBodies; ++i)
 			{
 				FItem Body = MakeShared<FAerotelicSceneRow>();
 				Body->Kind = EKind::Body;
 				Body->Entity = E;
 				Body->BodyIndex = i;
+				AddLayers(Body, i, EKind::Layer);
 				Row->Children.Add(Body);
 			}
 			if (E->IsMirrored())
@@ -329,6 +383,7 @@ void SAerotelicSceneTree::RefreshItems()
 					Mirror->Kind = EKind::Mirror;
 					Mirror->Entity = E;
 					Mirror->BodyIndex = i;
+					AddLayers(Mirror, i, EKind::MirrorLayer);
 					Row->Children.Add(Mirror);
 				}
 			}
@@ -339,11 +394,20 @@ void SAerotelicSceneTree::RefreshItems()
 	{
 		Tree->RequestTreeRefresh();
 		// WingDesigner's policy: a row stays collapsed while it has only one
-		// body; with more it opens, and after that the user's state holds.
+		// body; with more it opens, and after that the user's state holds. A
+		// body with generated layers opens to show them, then holds its state.
 		for (const FItem& Row : Items)
 		{
-			const bool bExpand = WasExpanded.Contains(Row->Entity.Get()) || (bFirstFill || !WasExpanded.Contains(Row->Entity.Get())) && Row->Children.Num() > 1;
+			bool bHasLayers = false;
+			for (const FItem& Body : Row->Children) bHasLayers = bHasLayers || Body->Children.Num() > 0;
+			const bool bExpand = WasExpanded.Contains(Row->Entity.Get()) || (bFirstFill || !WasExpanded.Contains(Row->Entity.Get())) && (Row->Children.Num() > 1 || bHasLayers);
 			Tree->SetItemExpansion(Row, bExpand);
+			for (const FItem& Body : Row->Children)
+			{
+				if (Body->Children.Num() == 0) continue;
+				const FString Key = BodyKey(Body);
+				Tree->SetItemExpansion(Body, !BodyWasSeen.Contains(Key) || BodyWasExpanded.Contains(Key));
+			}
 		}
 	}
 	SyncSelectionFromDocument();
@@ -397,7 +461,13 @@ TSharedPtr<SWidget> SAerotelicSceneTree::OnContextMenuOpening()
 	{
 		return nullptr;
 	}
-	return Selected[0]->Kind == FAerotelicSceneRow::EKind::Entity ? MakeEntityMenu(Selected[0]) : MakeBodyMenu(Selected[0]);
+	switch (Selected[0]->Kind)
+	{
+	case FAerotelicSceneRow::EKind::Entity: return MakeEntityMenu(Selected[0]);
+	case FAerotelicSceneRow::EKind::Layer:
+	case FAerotelicSceneRow::EKind::MirrorLayer: return MakeLayerMenu(Selected[0]);
+	default: return MakeBodyMenu(Selected[0]);
+	}
 }
 
 TSharedPtr<SWidget> SAerotelicSceneTree::MakeEntityMenu(FItem Item)
@@ -406,10 +476,9 @@ TSharedPtr<SWidget> SAerotelicSceneTree::MakeEntityMenu(FItem Item)
 	const bool bVisible = Entity->IsEntityVisible();
 	// A boolean result is shown, coloured, renamed and deleted like any
 	// row, but has no design panel, placement or mirror of its own
-	// (main_window.py's result-row menu). A lattice likewise, except that
-	// Edit opens its parameter dialog.
+	// (main_window.py's result-row menu).
 	const bool bBoolean = Entity->GetEntityType() == project_yaml::EntityType::Boolean;
-	const bool bDerived = bBoolean || Entity->GetEntityType() == project_yaml::EntityType::Lattice;
+	const bool bDerived = bBoolean;
 
 	FMenuBuilder Menu(true, nullptr, nullptr, false, &FCoreStyle::Get(), /*bSearchable*/ false);
 
@@ -463,55 +532,21 @@ TSharedPtr<SWidget> SAerotelicSceneTree::MakeEntityMenu(FItem Item)
 			FUIAction(FExecuteAction::CreateLambda([Entity]() { if (Entity.IsValid()) OpenAerotelicTransformDialog(Entity.Get()); })));
 	}
 
-	// A lattice is made within a body one picks: this one (and its
-	// mirrored half), a boolean result included. A lattice row regenerates
-	// instead.
-	const bool bLattice = Entity->GetEntityType() == project_yaml::EntityType::Lattice;
-	if (!bLattice)
-	{
-		Menu.AddMenuEntry(LOCTEXT("GenerateLattice", "Generate Lattice"),
-			LOCTEXT("GenerateLatticeTip", "Fill this body (and its mirrored half) with a lattice -- TPMS, strut-based, auxetic or honeycomb, after OpenLattice -- hollowed by the skin thickness of its Material Properties; the dialog picks the type and the parameters, and more bodies can be added"),
-			FSlateIcon(),
-			FUIAction(FExecuteAction::CreateLambda([this, Entity]()
-			{
-				if (!Entity.IsValid()) return;
-				FAerotelicBooleanOperand Op;
-				Op.Entity = Entity;
-				ShowAerotelicLatticeDialog(nullptr, [this](const FText& T) { Status(T); }, &Op);
-			})));
-	}
-	else
-	{
-		Menu.AddMenuEntry(LOCTEXT("RegenerateLattice", "Regenerate"),
-			LOCTEXT("RegenerateLatticeTip", "Rebuild this lattice over its bodies as they now stand (a lattice already follows an Apply on its bodies; this is for one that failed to, or that was left as it was)"),
-			FSlateIcon(),
-			FUIAction(FExecuteAction::CreateLambda([this, Entity]()
-			{
-				UAerotelicDocumentSubsystem* Doc = UAerotelicDocumentSubsystem::Get();
-				if (!Entity.IsValid() || Doc == nullptr) return;
-				FString Error;
-				if (Doc->RegenerateLattice(Entity.Get(), Error))
-				{
-					Status(FText::Format(LOCTEXT("StatusRegenerated", "Regenerated {0}"), FText::FromString(Entity->EntityName)));
-				}
-				else
-				{
-					AerotelicMessageBox(EAppMsgType::Ok, FText::FromString(Error), LOCTEXT("RegenerateTitle", "Regenerate Lattice"));
-				}
-			})));
-	}
-
 	// The structure -- material, skin, infill, plane networks, asserted
 	// mass -- belongs to each BODY (2026-11-08): an entity with one body
 	// offers it here too; one with several has it on each body's row. A
 	// boolean result's bodies own theirs and can start from an operand's.
-	if (!bLattice && Entity->GetBodies().Num() == 1)
+	if (Entity->GetBodies().Num() == 1)
 	{
 		const FString Role = Entity->GetBodies()[0].Name;
 		Menu.AddMenuEntry(LOCTEXT("Structure", "Structure..."),
 			LOCTEXT("StructureTip", "What this body is made of and built with: its material and skin thickness, a lattice infill, networks of cutting planes (ribs, spars, frames) and their materials, or an asserted mass. Analysis > Mass Properties weighs by it; Analysis > Structural analyses with it."),
 			FSlateIcon(),
 			FUIAction(FExecuteAction::CreateLambda([Entity, Role]() { if (Entity.IsValid()) OpenAerotelicStructureDialog(Entity.Get(), Role); })));
+		Menu.AddMenuEntry(Entity->GetGeneratedStructure(Role) != nullptr ? LOCTEXT("RegenerateStructure", "Regenerate Structure") : LOCTEXT("GenerateStructure", "Generate Structure"),
+			LOCTEXT("GenerateStructureTip", "Build this body's skin shell, infill and ribs from its structure (seconds of MeshLib work): they appear as layers under the body, and its mirrored half's, and follow every later edit of the body."),
+			FSlateIcon(),
+			FUIAction(FExecuteAction::CreateLambda([this, Entity, Role]() { if (Entity.IsValid()) GenerateStructure(Entity.Get(), Role); })));
 	}
 	if (bBoolean)
 	{
@@ -589,15 +624,26 @@ TSharedPtr<SWidget> SAerotelicSceneTree::MakeBodyMenu(FItem Item)
 	if (!bMirror)
 	{
 		// What the body is made of and built with -- its own, per body; a
-		// mirrored half shares the body's. Not on a lattice's two bodies,
-		// which are built geometry rather than parameterised bodies.
-		if (Entity->GetEntityType() != project_yaml::EntityType::Lattice && Entity->GetBodies().IsValidIndex(Body))
+		// mirrored half shares the body's -- and its generation.
+		if (Entity->GetBodies().IsValidIndex(Body))
 		{
 			const FString Role = Entity->GetBodies()[Body].Name;
 			Menu.AddMenuEntry(LOCTEXT("BodyStructure", "Structure..."),
 				LOCTEXT("BodyStructureTip", "What this body is made of and built with: its material and skin thickness, a lattice infill, networks of cutting planes (ribs, spars, frames) and their materials, or an asserted mass. Its mirrored half shares it. Analysis > Mass Properties weighs by it; Analysis > Structural analyses with it."),
 				FSlateIcon(),
 				FUIAction(FExecuteAction::CreateLambda([Entity, Role]() { if (Entity.IsValid()) OpenAerotelicStructureDialog(Entity.Get(), Role); })));
+			const bool bGenerated = Entity->GetGeneratedStructure(Role) != nullptr;
+			Menu.AddMenuEntry(bGenerated ? LOCTEXT("RegenerateStructure", "Regenerate Structure") : LOCTEXT("GenerateStructure", "Generate Structure"),
+				LOCTEXT("GenerateBodyStructureTip", "Build this body's skin shell, infill and ribs from its structure (seconds of MeshLib work): they appear as layers under the body, and its mirrored half's, and follow every later edit of the body."),
+				FSlateIcon(),
+				FUIAction(FExecuteAction::CreateLambda([this, Entity, Role]() { if (Entity.IsValid()) GenerateStructure(Entity.Get(), Role); })));
+			if (bGenerated)
+			{
+				Menu.AddMenuEntry(LOCTEXT("ClearStructure", "Clear Generated Structure"),
+					LOCTEXT("ClearStructureTip", "Drop the generated layers (the structure's description stays; Generate rebuilds them)."),
+					FSlateIcon(),
+					FUIAction(FExecuteAction::CreateLambda([Entity, Role]() { if (Entity.IsValid()) Entity->ClearGeneratedStructure(Role); })));
+			}
 		}
 
 		Menu.AddMenuEntry(LOCTEXT("Color", "Color"), LOCTEXT("BodyColorTip", "Pick this body's colour. Only this body changes -- not its siblings; its mirror follows it."), FSlateIcon(),
@@ -614,7 +660,68 @@ TSharedPtr<SWidget> SAerotelicSceneTree::MakeBodyMenu(FItem Item)
 	return Menu.MakeWidget();
 }
 
+TSharedPtr<SWidget> SAerotelicSceneTree::MakeLayerMenu(FItem Item)
+{
+	// A generated layer's menu: shown or hidden (on this half), its colour.
+	using EKind = FAerotelicSceneRow::EKind;
+	TWeakObjectPtr<AAerotelicEntityActor> Entity = Item->Entity;
+	const int32 Layer = Item->LayerIndex;
+	const bool bMirror = Item->Kind == EKind::MirrorLayer;
+	const bool bVisible = bMirror ? Entity->IsMirrorLayerVisible(Layer) : Entity->IsLayerVisible(Layer);
+
+	FMenuBuilder Menu(true, nullptr, nullptr, false, &FCoreStyle::Get(), /*bSearchable*/ false);
+	Menu.AddMenuEntry(
+		bVisible ? LOCTEXT("Hide", "Hide") : LOCTEXT("Show", "Show"),
+		LOCTEXT("HideLayerTip", "Show or hide this layer in the 3D view (the body's own surface shows again while its skin layer is hidden)"),
+		FSlateIcon(),
+		FUIAction(FExecuteAction::CreateLambda([Entity, Layer, bMirror, bVisible]()
+		{
+			if (!Entity.IsValid()) return;
+			if (bMirror) Entity->SetMirrorLayerVisible(Layer, !bVisible);
+			else Entity->SetLayerVisible(Layer, !bVisible);
+		})));
+	if (!bMirror)
+	{
+		Menu.AddMenuEntry(LOCTEXT("Color", "Color"), LOCTEXT("LayerColorTip", "Pick this layer's colour (its mirror follows it)."), FSlateIcon(),
+			FUIAction(FExecuteAction::CreateLambda([this, Entity, Layer]() { if (Entity.IsValid()) PickLayerColor(Entity.Get(), Layer); })));
+		Menu.AddMenuEntry(LOCTEXT("LayerDefaultColor", "Default Color"), LOCTEXT("LayerDefaultColorTip", "Back to the layer kind's colour: the skin the body's, the infill amber, ribs steel blue"), FSlateIcon(),
+			FUIAction(FExecuteAction::CreateLambda([Entity, Layer]() { if (Entity.IsValid()) Entity->SetLayerColor(Layer, TOptional<FLinearColor>()); }),
+				FCanExecuteAction::CreateLambda([Entity, Layer]() { return Entity.IsValid() && Entity->GetLayers().IsValidIndex(Layer) && Entity->GetLayers()[Layer].bHasColor; })));
+	}
+	return Menu.MakeWidget();
+}
+
 // ---------------------------------------------------------------- actions
+
+void SAerotelicSceneTree::GenerateStructure(AAerotelicEntityActor* Entity, const FString& Role)
+{
+	UAerotelicDocumentSubsystem* Doc = UAerotelicDocumentSubsystem::Get();
+	if (Doc == nullptr || Entity == nullptr) return;
+	const FString Label = Entity->GetBodies().Num() > 1 ? FString::Printf(TEXT("%s / %s"), *Entity->EntityName, *Role) : Entity->EntityName;
+	Status(FText::Format(LOCTEXT("StatusGenerating", "Generating the structure of {0}..."), FText::FromString(Label)));
+	FString Error;
+	if (Doc->GenerateBodyStructure(Entity, Role, Error))
+	{
+		const FAerotelicBodyStructure* G = Entity->GetGeneratedStructure(Role);
+		Status(FText::Format(LOCTEXT("StatusGenerated", "Generated the structure of {0}: {1} layer(s), {2} triangles in {3} s"), FText::FromString(Label),
+			FText::AsNumber(G != nullptr ? static_cast<int32>(G->GetLayers().size()) : 0), FText::AsNumber(G != nullptr ? G->GetStats().Triangles : 0),
+			FText::AsNumber(G != nullptr ? FMath::RoundToInt(G->GetStats().Seconds) : 0)));
+	}
+	else
+	{
+		Status(LOCTEXT("Ready", "Ready"));
+		AerotelicMessageBox(EAppMsgType::Ok, FText::FromString(Error), LOCTEXT("GenerateTitle", "Generate Structure"));
+	}
+}
+
+void SAerotelicSceneTree::PickLayerColor(AAerotelicEntityActor* Entity, int32 LayerIndex)
+{
+	TWeakObjectPtr<AAerotelicEntityActor> Weak = Entity;
+	PickColor(FText::Format(LOCTEXT("LayerColorTitle", "Color -- {0}"), FText::FromString(Entity->GetLayerDisplayName(LayerIndex))),
+		Entity->GetLayerDisplayColor(LayerIndex), AsShared(),
+		[Weak, LayerIndex](FLinearColor C) { if (Weak.IsValid()) Weak->SetLayerColor(LayerIndex, C); });
+	Status(FText::Format(LOCTEXT("StatusLayerColor", "Choosing a colour for {0}"), FText::FromString(Entity->GetLayerDisplayName(LayerIndex))));
+}
 
 void SAerotelicSceneTree::PickEntityColor(AAerotelicEntityActor* Entity)
 {
@@ -683,7 +790,7 @@ void SAerotelicSceneTree::DeleteEntity(AAerotelicEntityActor* Entity)
 		return;
 	}
 	const FString Name = Entity->EntityName;
-	// Boolean results and lattices built on this go with it; say so.
+	// Boolean results built on this go with it; say so.
 	TArray<FString> Dependents;
 	for (const TWeakObjectPtr<AAerotelicEntityActor>& Other : Doc->GetEntities())
 	{
@@ -694,7 +801,7 @@ void SAerotelicSceneTree::DeleteEntity(AAerotelicEntityActor* Entity)
 	}
 	const FText Question = Dependents.Num() == 0
 		? FText::Format(LOCTEXT("ConfirmDelete", "Delete {0}?"), FText::FromString(Name))
-		: FText::Format(LOCTEXT("ConfirmDeleteCascade", "Delete {0}?\nThe boolean operation(s) and lattice(s) built on it go with it: {1}"), FText::FromString(Name), FText::FromString(FString::Join(Dependents, TEXT(", "))));
+		: FText::Format(LOCTEXT("ConfirmDeleteCascade", "Delete {0}?\nThe boolean operation(s) built on it go with it: {1}"), FText::FromString(Name), FText::FromString(FString::Join(Dependents, TEXT(", "))));
 	const EAppReturnType::Type Answer = AerotelicMessageBox(EAppMsgType::YesNo, Question);
 	if (Answer != EAppReturnType::Yes)
 	{

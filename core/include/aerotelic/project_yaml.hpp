@@ -86,9 +86,11 @@ Placement DecodePlacement(const YAML::Node& node);
 // Boolean is the kind of a boolean operation's result: a scene item like
 // the others (listed, coloured, hidden, saved), but it is never an entry
 // under `entities:` -- it lives under `booleans:` (ProjectBoolean).
-// Lattice likewise: a lattice infill generated in other bodies, saved
-// under `lattices:` (ProjectLattice) and regenerated on load.
-enum class EntityType { Wing, Fuselage, Nacelle, LoftedNacelle, Propeller, Primitive, Boolean, Lattice };
+// (Until 2026-11-08 a Lattice kind existed too, a lattice infill generated
+// in other bodies and saved under `lattices:`; the infill is an attribute
+// of a body now -- ProjectBody::structure -- and the old entries are
+// skipped on load, see ProjectFile::unsupported_lattices.)
+enum class EntityType { Wing, Fuselage, Nacelle, LoftedNacelle, Propeller, Primitive, Boolean };
 const char* EntityTypeName(EntityType t);
 EntityType ParseEntityType(const std::string& s);
 
@@ -179,30 +181,18 @@ struct ProjectBoolean {
 	MassSpec mass;
 };
 
-// `mass:` as every scene item writes it (entity, boolean result, lattice).
+// `mass:` as every scene item wrote it before the bodies carried their
+// structure (entity, boolean result); still read as the legacy form.
 YAML::Node EncodeMassSpec(const MassSpec& m);
 MassSpec DecodeMassSpec(const YAML::Node& node);
 
 YAML::Node Encode(const ProjectBoolean& b);
 ProjectBoolean DecodeProjectBoolean(const YAML::Node& node);
 
-// A lattice infill (Lattice -> Generate Lattice...): the OpenLattice
-// parameters (lattice.hpp), the bodies it fills and the reserved volumes
-// it leaves alone, all by scene name like a boolean's operands.
-struct ProjectLattice {
-	std::string name;
-	LatticeSpec spec;
-	std::vector<BooleanOperand> targets;
-	std::vector<BooleanOperand> exclusions;
-	bool hidden = false;
-	std::optional<std::array<double, 3>> color;
-	MassSpec mass;
-};
-
+// The OpenLattice parameters of an infill (lattice.hpp), as a body's
+// `infill: {lattice: ...}` writes them.
 YAML::Node Encode(const LatticeSpec& spec);
 LatticeSpec DecodeLatticeSpec(const YAML::Node& node);
-YAML::Node Encode(const ProjectLattice& l);
-ProjectLattice DecodeProjectLattice(const YAML::Node& node);
 
 struct ProjectFile {
 	// What every length and mass in the file means (units.hpp). Always
@@ -213,14 +203,18 @@ struct ProjectFile {
 	// placements below are always the full-scale aircraft; a replica is this
 	// times smaller, every solid scaled about the origin and every placement
 	// with it (feature_tree.hpp Place), with the materials' skin thicknesses
-	// and the lattices' parameters as typed. Written when it is not 1;
+	// and the structures' build figures as typed. Written when it is not 1;
 	// absent on load means 1 (full size). Must be a positive number.
 	double scale = 1.0;
 	std::vector<ProjectEntity> entities;
 	// In build order; every operand names something listed before it.
 	std::vector<ProjectBoolean> booleans;
-	// After the booleans; targets name entities or boolean results.
-	std::vector<ProjectLattice> lattices;
+	// The names of the `lattices:` entries of a file from before 2026-11-08,
+	// NOT decoded: a lattice scene entity no longer exists (the infill is
+	// a body's attribute), so the loader skips them like any dependency
+	// that cannot be satisfied and the application reports them by name.
+	// Never written.
+	std::vector<std::string> unsupported_lattices;
 };
 
 ProjectFile LoadProjectYaml(const std::string& path);

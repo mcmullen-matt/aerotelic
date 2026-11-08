@@ -34,7 +34,7 @@ public:
 	TSharedPtr<FUICommandInfo> BooleanOperation;
 	TSharedPtr<FUICommandInfo> MaterialLibrary;
 
-	// Lattice exports (File menu)
+	// Tetrahedral exports of the generated structures (File menu)
 	TSharedPtr<FUICommandInfo> ExportSkinVtk;
 	TSharedPtr<FUICommandInfo> ExportTetVtk;
 

@@ -49,7 +49,7 @@
 // Last: OCCT's Handle() macro vs engine headers.
 #include "Entity/AerotelicDocumentSubsystem.h"
 #include "Entity/AerotelicEntityActor.h"
-#include "Entity/AerotelicLatticeModel.h"
+#include "Entity/AerotelicBodyStructure.h"
 
 #define LOCTEXT_NAMESPACE "StructuralFeaDialog"
 
@@ -114,17 +114,16 @@ namespace
 	}
 
 	// The SOLID BODIES the analysis picks among: every body of every scene
-	// operand but the lattices themselves (a lattice is the infill of a
-	// body, analysed as that body's homogenised core). A wing's flap, a
-	// propeller's blade, a boolean result's separate shell is each a row of
-	// its own; an operand whose bodies are not known yet (never
-	// tessellated) is one row for all of them.
+	// operand (a body's infill is analysed as its homogenised core). A
+	// wing's flap, a propeller's blade, a boolean result's separate shell
+	// is each a row of its own; an operand whose bodies are not known yet
+	// (never tessellated) is one row for all of them.
 	TArray<FAerotelicBodyChoicePtr> AnalysableChoices()
 	{
 		TArray<FAerotelicBodyChoicePtr> Out;
 		for (const FAerotelicBodyChoicePtr& C : SceneBodyChoices())
 		{
-			if (!C->Operand.Entity.IsValid() || C->Operand.Entity->GetEntityType() == EntityType::Lattice) continue;
+			if (!C->Operand.Entity.IsValid()) continue;
 			const TArray<FAerotelicBody>& Bodies = C->Operand.Entity->GetBodies();
 			if (Bodies.Num() <= 1)
 			{
@@ -144,24 +143,22 @@ namespace
 		return Out;
 	}
 
-	// The lattice that fills a body, if one does. The body is what the user
-	// picked; the lattice is looked up from it and lends its MATERIAL CARD
-	// (the cell to homogenise, the skin thickness) -- never its geometry.
-	AAerotelicEntityActor* LatticeFilling(const FAerotelicBooleanOperand& Op)
+	// The structure of the body a choice names (its own role, or the first
+	// body of an operand whose bodies are not known), null when the entity
+	// has no such body.
+	const aerotelic::BodyStructure* StructureOf(const FAerotelicBodyChoice& C)
 	{
-		const UAerotelicDocumentSubsystem* Doc = UAerotelicDocumentSubsystem::Get();
-		if (Doc == nullptr) return nullptr;
-		for (const auto& Weak : Doc->GetEntities())
-		{
-			if (!Weak.IsValid() || Weak->GetEntityType() != EntityType::Lattice) continue;
-			const FAerotelicLatticeModel* M = Weak->GetModelAs<FAerotelicLatticeModel>();
-			if (M == nullptr) continue;
-			for (const FAerotelicBooleanOperand& T : M->Targets)
-			{
-				if (SameOperand(T, Op)) return Weak.Get();
-			}
-		}
-		return nullptr;
+		if (!C.Operand.Entity.IsValid()) return nullptr;
+		const AAerotelicEntityActor* E = C.Operand.Entity.Get();
+		if (const aerotelic::BodyStructure* S = E->GetBodyStructure(C.Body)) return S;
+		return E->GetBodies().Num() > 0 ? &E->GetBodyStructure(0) : nullptr;
+	}
+
+	FString RoleOf(const FAerotelicBodyChoice& C)
+	{
+		if (!C.Body.IsEmpty() || !C.Operand.Entity.IsValid()) return C.Body;
+		const TArray<FAerotelicBody>& Bodies = C.Operand.Entity->GetBodies();
+		return Bodies.Num() > 0 ? Bodies[0].Name : FString();
 	}
 
 	// ---- the pictures' geometry: flat-shaded triangles, every one in both
@@ -438,10 +435,10 @@ namespace
 		int32 DragPlane = -1, DragKind = -1;
 		int32 HoverHandle = -1;
 
-		// The three ways a lattice-filled body may be analysed (ModelOptions):
-		// shells on its own grid over a homogenised core; the lattice's
-		// skin / core tetrahedra at full resolution; or with the lattice
-		// IGNORED, the body as its Material Properties alone say it is.
+		// The three ways a body with an infill may be analysed (ModelOptions):
+		// shells on its own grid over a homogenised core; the generated
+		// structure's skin / core tetrahedra at full resolution; or with the
+		// infill IGNORED, the body as its skin and material alone say it is.
 		bool bFullResolution() const { return ModelIndex == 1; }
 		bool bIgnoreLattices() const { return ModelIndex == 2; }
 		bool IsSolving() const { return Job.IsValid() && Job->IsRunning(); }
@@ -496,13 +493,22 @@ namespace
 			return Out;
 		}
 
-		// What a body is, from its (inherited) material properties and
-		// whether a lattice fills it; the reason when it cannot be analysed.
+		// What a body is, from its structure (body_structure.hpp: its
+		// material and skin, its infill); the reason when it cannot be
+		// analysed. The plane networks are not in the model yet (2026-11-08:
+		// they enter as embedded rib shells in a later step) and are named
+		// on the Set-up tab as left out.
 		struct FKind
 		{
 			bool bOk = false;
-			AAerotelicEntityActor* Lattice = nullptr;
+			// The body's skin material and thickness as the regions take them.
 			aerotelic::MassSpec Spec;
+			aerotelic::BodyStructure S;
+			// The infill applies (the body has one and the model does not
+			// ignore it); Generated is its generated structure when the model
+			// is full resolution and it has been generated.
+			bool bInfill = false;
+			const FAerotelicBodyStructure* Generated = nullptr;
 			FString Text;
 		};
 		FKind Classify(const FAerotelicBodyChoice& C) const
@@ -510,44 +516,43 @@ namespace
 			FKind K;
 			const FAerotelicBooleanOperand& Op = C.Operand;
 			if (!Op.Entity.IsValid()) { K.Text = TEXT("(removed entity)"); return K; }
-			K.Spec = Op.Entity->GetEffectiveMassSpec();
-			const AAerotelicEntityActor* Source = Op.Entity->GetMassSpecSource();
-			const FString From = Source != nullptr && Source != Op.Entity.Get() ? FString::Printf(TEXT(" (inherited from %s)"), *Source->EntityName) : FString();
+			const aerotelic::BodyStructure* Own = StructureOf(C);
+			if (Own == nullptr) { K.Text = C.Label + TEXT(": the body is not known yet (never built)"); return K; }
+			K.S = *Own;
+			K.Spec = aerotelic::MassSpecFromBodyStructure(K.S);
 			if (!HasStructuralMaterial(K.Spec))
 			{
-				K.Text = FString::Printf(TEXT("%s: NO STRUCTURAL MATERIAL%s -- set one under Material Properties in the Scene tree"), *C.Label, *From);
+				K.Text = FString::Printf(TEXT("%s: NO STRUCTURAL MATERIAL -- set one under Structure... in the Scene tree"), *C.Label);
 				return K;
 			}
-			// The lattice that fills the body, if one does and the model
-			// does not ignore it. Said plainly on the Set-up tab either way:
-			// the user picked the body, not the lattice, and must see what
-			// the lattice is lending.
-			AAerotelicEntityActor* Filling = LatticeFilling(Op);
-			K.Lattice = bIgnoreLattices() ? nullptr : Filling;
+			const bool bHasInfill = K.S.IsSkin() && K.S.infill.has_value();
+			K.bInfill = bHasInfill && !bIgnoreLattices();
+			K.Generated = bFullResolution() ? Op.Entity->GetGeneratedStructure(RoleOf(C)) : nullptr;
 			const FString Material = UTF8_TO_TCHAR(K.Spec.material.name.c_str());
 			const FString Length = UnitName(Units.LengthName());
 			const bool bTenNode = SecondOrderCheck.IsValid() && SecondOrderCheck->IsChecked();
-			if (K.Lattice != nullptr)
+			const FString Ribs = K.S.networks.empty() ? FString() : FString::Printf(TEXT(" (%d plane network(s) not in the model yet)"), static_cast<int32>(K.S.networks.size()));
+			if (K.bInfill)
 			{
-				const FAerotelicLatticeModel* M = K.Lattice->GetModelAs<FAerotelicLatticeModel>();
-				const double T = FAerotelicLatticeModel::SkinThicknessFor(Op);
-				const FString Cell = FString::Printf(TEXT("the homogenised %s %s lattice at %.0f%% (cell %.4g %s, %d voxels across)"),
-					UTF8_TO_TCHAR(aerotelic::LatticeFamilyName(M->Spec.family)), UTF8_TO_TCHAR(M->Spec.type.c_str()), 100.0 * M->Spec.volume_fraction, M->Spec.cell_size, *Length, static_cast<int32>(Voxels));
+				const aerotelic::LatticeSpec& L = K.S.infill->lattice;
+				const FString InfillMaterial = UTF8_TO_TCHAR(K.S.infill->material.name.c_str());
+				const FString Cell = FString::Printf(TEXT("the homogenised %s %s lattice at %.0f%% (cell %.4g %s, %d voxels across) of %s"),
+					UTF8_TO_TCHAR(aerotelic::LatticeFamilyName(L.family)), UTF8_TO_TCHAR(L.type.c_str()), 100.0 * L.volume_fraction, L.cell_size, *Length, static_cast<int32>(Voxels), *InfillMaterial);
 				K.Text = bFullResolution()
-					? FString::Printf(TEXT("%s: %s%s -- FILLED BY %s (not chosen; it lends its skin / core tetrahedra, meshed on ITS copy of the surface): %s skin tetrahedra of %s over core tetrahedra with %s, %s"),
-						*C.Label, *Material, *From, *K.Lattice->EntityName, bTenNode ? TEXT("10-node") : TEXT("4-node"), *Material, *Cell, bTenNode ? TEXT("10-node too") : TEXT("4-node"))
-					: FString::Printf(TEXT("%s: %s%s -- FILLED BY %s (not chosen; it lends its material card only): shells %.4g %s thick on %s's OWN grid (the Mesh tab's, what the viewport shows) over 4-node tetrahedra at the cell size carrying %s, the struts of %s"),
-						*C.Label, *Material, *From, *K.Lattice->EntityName, T, *Length, *OperandLabel(Op), *Cell, *Material);
+					? FString::Printf(TEXT("%s: %s skin %.4g %s -- the generated structure's skin / core tetrahedra%s: %s skin tetrahedra of %s over core tetrahedra with %s, %s%s"),
+						*C.Label, *Material, K.S.skin_thickness, *Length, K.Generated != nullptr ? TEXT("") : TEXT(" (NOT GENERATED: Scene tree > body > Generate Structure first)"),
+						bTenNode ? TEXT("10-node") : TEXT("4-node"), *Material, *Cell, bTenNode ? TEXT("10-node too") : TEXT("4-node"), *Ribs)
+					: FString::Printf(TEXT("%s: %s -- shells %.4g %s thick on the body's OWN grid (the Mesh tab's, what the viewport shows) over 4-node tetrahedra at the cell size carrying %s%s"),
+						*C.Label, *Material, K.S.skin_thickness, *Length, *Cell, *Ribs);
 			}
 			else if (K.Spec.skin_thickness > 0.0)
 			{
-				K.Text = FString::Printf(TEXT("%s: %s%s -- a thin-walled body: shells %.4g %s thick on its own grid, nothing inside%s"), *C.Label, *Material, *From, K.Spec.skin_thickness, *Length,
-					Filling != nullptr ? *FString::Printf(TEXT(" (%s fills it; ignored, as asked under Model)"), *Filling->EntityName) : TEXT(""));
+				K.Text = FString::Printf(TEXT("%s: %s -- a thin-walled body: shells %.4g %s thick on its own grid, nothing inside%s%s"), *C.Label, *Material, K.Spec.skin_thickness, *Length,
+					bHasInfill ? TEXT(" (its infill ignored, as asked under Model)") : TEXT(""), *Ribs);
 			}
 			else
 			{
-				K.Text = FString::Printf(TEXT("%s: %s%s -- a solid: %s tetrahedra of %s at the element size (no skin thickness set)%s"), *C.Label, *Material, *From, bTenNode ? TEXT("10-node") : TEXT("4-node"), *Material,
-					Filling != nullptr ? *FString::Printf(TEXT(" (%s fills it; ignored, as asked under Model)"), *Filling->EntityName) : TEXT(""));
+				K.Text = FString::Printf(TEXT("%s: %s -- a solid: %s tetrahedra of %s at the element size (no skin thickness set)"), *C.Label, *Material, bTenNode ? TEXT("10-node") : TEXT("4-node"), *Material);
 			}
 			K.bOk = true;
 			return K;
@@ -623,7 +628,8 @@ namespace
 			TSharedRef<FBuilt> B = MakeShared<FBuilt>();
 			AerotelicStructuralFea::FRequest& Request = B->Request;
 			aerotelic::TetMesh& Mesh = B->FullMesh;
-			TMap<AAerotelicEntityActor*, int32> CellOf;
+			// The voxelised unit cells, one per distinct infill spec.
+			TMap<FString, int32> CellOf;
 			int32 NextId = 1;
 
 			FBox Bounds(ForceInit);
@@ -664,35 +670,39 @@ namespace
 					if (NM.mesh.IsEmpty()) continue;
 					if (!C->Body.IsEmpty() && Placed.size() > 1 && FString(UTF8_TO_TCHAR(NM.name.c_str())) != C->Body) continue;
 					const FString BodyLabel = Placed.size() > 1 ? FString::Printf(TEXT("%s / %s"), *EntityLabel, UTF8_TO_TCHAR(NM.name.c_str())) : EntityLabel;
-					if (K.Lattice != nullptr)
+					if (K.bInfill)
 					{
-						const FAerotelicLatticeModel* M = K.Lattice->GetModelAs<FAerotelicLatticeModel>();
-						int32* CellIndex = CellOf.Find(K.Lattice);
+						// The infill's cell, voxelised once per distinct spec (the
+						// skin's and the infill's materials are each their own).
+						const aerotelic::LatticeSpec& Spec = K.S.infill->lattice;
+						const aerotelic::Material& InfillMaterial = K.S.infill->material;
+						const FString CellKey = FString::Printf(TEXT("%s|%s|%.9g|%.9g|%.9g|%d|%d"), UTF8_TO_TCHAR(aerotelic::LatticeFamilyName(Spec.family)), UTF8_TO_TCHAR(Spec.type.c_str()),
+							Spec.cell_size, Spec.volume_fraction, Spec.wall_thickness, Spec.resolution, static_cast<int32>(Spec.phase));
+						int32* CellIndex = CellOf.Find(CellKey);
 						if (CellIndex == nullptr)
 						{
 							try
 							{
-								B->Cells.push_back(std::make_unique<aerotelic::UnitCellSamples>(aerotelic::SampleUnitCell(M->Spec, static_cast<int32>(Voxels))));
+								B->Cells.push_back(std::make_unique<aerotelic::UnitCellSamples>(aerotelic::SampleUnitCell(Spec, static_cast<int32>(Voxels))));
 							}
 							catch (const std::exception& E)
 							{
-								B->Problems.Add(FString::Printf(TEXT("%s: the lattice cell of %s could not be voxelised: %s"), *BodyLabel, *K.Lattice->EntityName, UTF8_TO_TCHAR(E.what())));
+								B->Problems.Add(FString::Printf(TEXT("%s: the infill's lattice cell could not be voxelised: %s"), *BodyLabel, UTF8_TO_TCHAR(E.what())));
 								continue;
 							}
-							CellIndex = &CellOf.Add(K.Lattice, static_cast<int32>(B->Cells.size()) - 1);
+							CellIndex = &CellOf.Add(CellKey, static_cast<int32>(B->Cells.size()) - 1);
 						}
 						const aerotelic::UnitCellSamples* Cell = B->Cells[*CellIndex].get();
 						if (bFullResolution())
 						{
-							// The lattice's own skin / core tetrahedra: the one model
-							// that is meshed on the lattice's copy of the surface, since
-							// the skin's inner boundary is MeshLib's offset of that copy.
-							const std::vector<FAerotelicLatticeModel::FTetMesh>& Meshes = M->GetTetMeshes();
-							const FAerotelicLatticeModel::FTetMesh* TM = nullptr;
-							for (const FAerotelicLatticeModel::FTetMesh& X : Meshes) if (X.Label == BodyLabel) { TM = &X; break; }
+							// The generated structure's skin / core tetrahedra: meshed
+							// on the generation's copy of the surface, since the skin's
+							// inner boundary is MeshLib's offset of that copy.
+							FString Note;
+							const FAerotelicBodyStructure::FTetMesh* TM = K.Generated != nullptr ? K.Generated->GetTetMesh(Note) : nullptr;
 							if (TM == nullptr)
 							{
-								B->Problems.Add(FString::Printf(TEXT("%s: %s has no skin / core tetrahedral mesh of it (%s)"), *BodyLabel, *K.Lattice->EntityName, *FString::Join(M->GetTetNotes(), TEXT("; "))));
+								B->Problems.Add(FString::Printf(TEXT("%s: no skin / core tetrahedral mesh (%s)"), *BodyLabel, K.Generated == nullptr ? TEXT("the structure has not been generated: Scene tree > body > Generate Structure") : *Note));
 								continue;
 							}
 							const int32 SkinId = NextId++, CoreId = NextId++;
@@ -701,21 +711,22 @@ namespace
 							Skin.Id = SkinId; Skin.Label = BodyLabel + TEXT(" skin"); Skin.Core = Material; Skin.bSolid = true; Skin.Body = BodyIndex;
 							Request.Regions.Add(Skin);
 							AerotelicStructuralFea::FRegion Core;
-							Core.Id = CoreId; Core.Label = BodyLabel + TEXT(" core (") + K.Lattice->EntityName + TEXT(")"); Core.Core = Material; Core.Cell = Cell; Core.Body = BodyIndex;
+							Core.Id = CoreId; Core.Label = BodyLabel + TEXT(" core (infill)"); Core.Core = InfillMaterial; Core.Cell = Cell; Core.Body = BodyIndex;
 							Request.Regions.Add(Core);
 						}
 						else
 						{
 							// Shells over a homogenised core, on the body's own grid:
 							// gmsh fills exactly these triangles at the cell size. The
-							// lattice gives the cell (above) and the skin thickness.
+							// structure gives the cell (above), the skin thickness and
+							// the two materials.
 							if (!NM.mesh.IsClosedManifold() || !(NM.mesh.SignedVolume() > 0.0))
 							{
 								B->Problems.Add(BodyLabel + TEXT(": not a closed, outward surface"));
 								continue;
 							}
 							FString Error;
-							const AerotelicTetGmsh::FResult* TR = TetMeshFor(NM.mesh, M->Spec.cell_size, BodyLabel, Error);
+							const AerotelicTetGmsh::FResult* TR = TetMeshFor(NM.mesh, Spec.cell_size, BodyLabel, Error);
 							if (TR == nullptr)
 							{
 								B->Problems.Add(FString::Printf(TEXT("%s: its own grid could not be filled with tetrahedra at the cell size: %s"), *BodyLabel, *Error));
@@ -725,8 +736,8 @@ namespace
 							AppendTets(TR->Mesh, [Id](int32) { return Id; });
 							AerotelicStructuralFea::FRegion R;
 							R.Id = Id; R.Label = BodyLabel; R.Body = BodyIndex;
-							R.Skin = Material; R.SkinThickness = FAerotelicLatticeModel::SkinThicknessFor(Op);
-							R.Core = Material; R.Cell = Cell;
+							R.Skin = Material; R.SkinThickness = K.S.skin_thickness;
+							R.Core = InfillMaterial; R.Cell = Cell;
 							// A material card, not a bending problem: first order,
 							// whatever the checkbox says (it multiplied a fuselage's
 							// nodes by seven for nothing, 2026-11-05).
@@ -1987,9 +1998,9 @@ void ShowAerotelicStructuralFeaDialog(TFunction<void(const FText&)> Status)
 	S->Units = Doc != nullptr ? Doc->GetUnits() : aerotelic::UnitSystem{};
 	S->Choices = Choices;
 	S->ModelOptions = {
-		MakeShared<FString>(TEXT("Shells on the body's own grid over a homogenised lattice core (for a desktop)")),
-		MakeShared<FString>(TEXT("The lattice's skin and core tetrahedra (full resolution)")),
-		MakeShared<FString>(TEXT("Ignore the lattices: each body as its Material Properties say (shells or solid)")) };
+		MakeShared<FString>(TEXT("Shells on the body's own grid over a homogenised infill core (for a desktop)")),
+		MakeShared<FString>(TEXT("The generated structure's skin and core tetrahedra (full resolution; Generate Structure first)")),
+		MakeShared<FString>(TEXT("Ignore the infill: each body as its skin and material alone say (shells or solid)")) };
 	S->SolverOptions = {
 		MakeShared<FString>(FString::Printf(TEXT("Automatic (direct up to %s DOF, iterative beyond)"), *Thousands(AerotelicStructuralFea::kAutoDirectDofs))),
 		MakeShared<FString>(TEXT("sparse_lu (direct; exact; one thread)")),
@@ -2091,7 +2102,7 @@ void ShowAerotelicStructuralFeaDialog(TFunction<void(const FText&)> Status)
 			MakeGroup(LOCTEXT("ModelGroup", "Model"),
 				SNew(SVerticalBox)
 				+ SVerticalBox::Slot().AutoHeight().Padding(0, 2)
-				[ FormRow(LOCTEXT("Model", "Lattice-filled bodies as:"), Combo(&FState::ModelOptions, &FState::ModelIndex, true)) ]
+				[ FormRow(LOCTEXT("Model", "Bodies with an infill as:"), Combo(&FState::ModelOptions, &FState::ModelIndex, true)) ]
 				+ SVerticalBox::Slot().AutoHeight().Padding(0, 2)
 				[ FormRow(LOCTEXT("Voxels", "Voxels across the cell:"), Spin(&FState::Voxels, 8.0, 96.0, 4.0, FText::GetEmpty(), true)) ]
 				+ SVerticalBox::Slot().AutoHeight().Padding(0, 2)

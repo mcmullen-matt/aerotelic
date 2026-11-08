@@ -12,7 +12,6 @@
 #include "Dialogs/AirfoilLibraryDialog.h"
 #include "Dialogs/BooleanOperationDialog.h"
 #include "Dialogs/ExportDialogs.h"
-#include "Dialogs/LatticeDialog.h"
 #include "Dialogs/PotentialFlowDialog.h"
 #include "Dialogs/HighOrderPanelDialog.h"
 #include "Dialogs/MassPropertiesDialog.h"
@@ -450,8 +449,8 @@ void SAerotelicMainShell::BindCommands()
 	}));
 	Commands->MapAction(C.MaterialLibrary, FExecuteAction::CreateLambda([this]() { ShowAerotelicMaterialLibraryDialog([this](const FText& T) { SetStatus(T); }); }));
 
-	// Lattice exports (Generate Lattice and Regenerate are on the Scene
-	// tree's rows: a lattice is made within a body one picks)
+	// Tetrahedral exports of the generated structures (Generate Structure
+	// is on the Scene tree's body rows and in the Structure dialog)
 	Commands->MapAction(C.ExportSkinVtk, FExecuteAction::CreateLambda([this]() { ShowAerotelicExportSkinVtkDialog([this](const FText& T) { SetStatus(T); }); }));
 	Commands->MapAction(C.ExportTetVtk, FExecuteAction::CreateLambda([this]() { ShowAerotelicExportTetVtkDialog([this](const FText& T) { SetStatus(T); }); }));
 
@@ -1185,9 +1184,8 @@ void SAerotelicMainShell::OnCopyEntity()
 	// these so the reason reaches the user.
 	if (!UAerotelicDocumentSubsystem::CanCopyEntity(Selected))
 	{
-		SetStatus(FText::Format(LOCTEXT("CopyDerived", "{0} cannot be copied: a {1} is a solid built from other entities, not a parameterisation of its own. Copy the entities it is built from instead."),
-			FText::FromString(Selected->EntityName),
-			Selected->GetEntityType() == aerotelic::project_yaml::EntityType::Lattice ? LOCTEXT("ALattice", "lattice") : LOCTEXT("ABoolean", "boolean result")));
+		SetStatus(FText::Format(LOCTEXT("CopyDerived", "{0} cannot be copied: a boolean result is a solid built from other entities, not a parameterisation of its own. Copy the entities it is built from instead."),
+			FText::FromString(Selected->EntityName)));
 		return;
 	}
 	if (!Doc->CopyEntityToClipboard(Selected))

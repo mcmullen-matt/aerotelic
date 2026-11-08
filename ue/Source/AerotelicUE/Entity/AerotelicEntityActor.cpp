@@ -10,7 +10,6 @@
 
 #include "AerotelicDocumentSubsystem.h"
 #include "AerotelicBooleanModel.h"
-#include "AerotelicLatticeModel.h"
 #include "AerotelicMeshing.h"
 #include "Misc/PackageName.h"
 
@@ -142,11 +141,12 @@ namespace
 		{
 			return FString::Printf(TEXT("Body %d"), Index + 1);
 		}
-		if (Type == EntityType::Lattice)
-		{
-			return FString(TEXT("Lattice"));
-		}
 		return Count > 1 ? FString::Printf(TEXT("Part %d"), Index + 1) : FString(TEXT("Main"));
+	}
+
+	FString LayerStateKey(const FString& Role, const FString& Layer)
+	{
+		return Role + TEXT("|") + Layer;
 	}
 }
 
@@ -207,6 +207,23 @@ AAerotelicEntityActor::AAerotelicEntityActor()
 		MirrorEdgeMesh->SetUsingAbsoluteLocation(true);
 		MirrorEdgeMesh->SetUsingAbsoluteRotation(true);
 		MirrorEdgeMesh->SetUsingAbsoluteScale(true);
+
+		// The generated structure's layers: no collision (the body's own
+		// surface is picked), the surface copies lit like the bodies, the
+		// edge copies like the bodies' edges; the mirrored pair in world
+		// space.
+		StructureMesh = MakeEdgeMesh(TEXT("StructureMesh"));
+		StructureMesh->SetCastShadow(true);
+		StructureEdgeMesh = MakeEdgeMesh(TEXT("StructureEdgeMesh"));
+		MirrorStructureMesh = MakeEdgeMesh(TEXT("MirrorStructureMesh"));
+		MirrorStructureMesh->SetCastShadow(true);
+		MirrorStructureEdgeMesh = MakeEdgeMesh(TEXT("MirrorStructureEdgeMesh"));
+		for (UProceduralMeshComponent* M : { MirrorStructureMesh.Get(), MirrorStructureEdgeMesh.Get() })
+		{
+			M->SetUsingAbsoluteLocation(true);
+			M->SetUsingAbsoluteRotation(true);
+			M->SetUsingAbsoluteScale(true);
+		}
 	}
 }
 
@@ -271,6 +288,8 @@ void AAerotelicEntityActor::ApplyEdgeOffset()
 	const float Offset = static_cast<float>(FMath::Max(1.5e-3 * Diagonal, 1.0e-7));
 	for (UMaterialInstanceDynamic* Mid : EdgeMaterials) if (Mid != nullptr) Mid->SetScalarParameterValue(TEXT("EdgeOffset"), Offset);
 	for (UMaterialInstanceDynamic* Mid : MirrorEdgeMaterials) if (Mid != nullptr) Mid->SetScalarParameterValue(TEXT("EdgeOffset"), Offset);
+	for (UMaterialInstanceDynamic* Mid : LayerEdgeMaterials) if (Mid != nullptr) Mid->SetScalarParameterValue(TEXT("EdgeOffset"), Offset);
+	for (UMaterialInstanceDynamic* Mid : MirrorLayerEdgeMaterials) if (Mid != nullptr) Mid->SetScalarParameterValue(TEXT("EdgeOffset"), Offset);
 }
 
 
@@ -336,7 +355,6 @@ FLinearColor AAerotelicEntityActor::DefaultColorFor(aerotelic::project_yaml::Ent
 	case EType::Propeller:     return FLinearColor(0.66f, 0.68f, 0.74f); // propeller aluminium
 	case EType::Primitive:     return FLinearColor(0.85f, 0.80f, 0.30f); // primitive ochre
 	case EType::Boolean:       return FLinearColor(0.62f, 0.56f, 0.78f); // boolean result lilac
-	case EType::Lattice:       return FLinearColor(0.42f, 0.76f, 0.70f); // lattice teal
 	case EType::Wing:
 	default:                   return FLinearColor(0.20f, 0.50f, 0.90f); // steel blue
 	}
@@ -422,6 +440,18 @@ void AAerotelicEntityActor::ApplyColors()
 			MirrorEdgeMaterials[i]->SetVectorParameterValue(TEXT("Color"), bSelected ? kSelectedColor : (bWire ? GetBodyDisplayColor(i) : kMeshEdgeColor));
 		}
 	}
+	// The layers: their own colour (or their kind's), the same edge rule.
+	for (int32 Li = 0; Li < Layers.Num(); ++Li)
+	{
+		const FAerotelicLayerView& L = Layers[Li];
+		if (L.Section == INDEX_NONE) continue;
+		const FLinearColor C = GetLayerDisplayColor(Li);
+		if (LayerMaterials.IsValidIndex(L.Section) && LayerMaterials[L.Section] != nullptr) LayerMaterials[L.Section]->SetVectorParameterValue(TEXT("Color"), C);
+		if (MirrorLayerMaterials.IsValidIndex(L.Section) && MirrorLayerMaterials[L.Section] != nullptr) MirrorLayerMaterials[L.Section]->SetVectorParameterValue(TEXT("Color"), C);
+		const FLinearColor E = bSelected ? kSelectedColor : (bWire ? C : kMeshEdgeColor);
+		if (LayerEdgeMaterials.IsValidIndex(L.Section) && LayerEdgeMaterials[L.Section] != nullptr) LayerEdgeMaterials[L.Section]->SetVectorParameterValue(TEXT("Color"), E);
+		if (MirrorLayerEdgeMaterials.IsValidIndex(L.Section) && MirrorLayerEdgeMaterials[L.Section] != nullptr) MirrorLayerEdgeMaterials[L.Section]->SetVectorParameterValue(TEXT("Color"), E);
+	}
 }
 
 FString AAerotelicEntityActor::SurfaceMaterialPackage()
@@ -438,6 +468,8 @@ void AAerotelicEntityActor::ApplySurfaceStyle(const FAerotelicSurfaceStyle& Styl
 {
 	for (UMaterialInstanceDynamic* Mid : BodyMaterials) ApplyStyleTo(Mid, Style);
 	for (UMaterialInstanceDynamic* Mid : MirrorMaterials) ApplyStyleTo(Mid, Style);
+	for (UMaterialInstanceDynamic* Mid : LayerMaterials) ApplyStyleTo(Mid, Style);
+	for (UMaterialInstanceDynamic* Mid : MirrorLayerMaterials) ApplyStyleTo(Mid, Style);
 }
 
 void AAerotelicEntityActor::ApplyRenderStyle(EAerotelicRenderStyle Style)
@@ -453,6 +485,10 @@ void AAerotelicEntityActor::ApplySectionPlane(const FAerotelicSectionPlane& Plan
 	for (UMaterialInstanceDynamic* Mid : MirrorMaterials) ApplyClipTo(Mid, Plane);
 	for (UMaterialInstanceDynamic* Mid : EdgeMaterials) ApplyClipTo(Mid, Plane);
 	for (UMaterialInstanceDynamic* Mid : MirrorEdgeMaterials) ApplyClipTo(Mid, Plane);
+	for (UMaterialInstanceDynamic* Mid : LayerMaterials) ApplyClipTo(Mid, Plane);
+	for (UMaterialInstanceDynamic* Mid : MirrorLayerMaterials) ApplyClipTo(Mid, Plane);
+	for (UMaterialInstanceDynamic* Mid : LayerEdgeMaterials) ApplyClipTo(Mid, Plane);
+	for (UMaterialInstanceDynamic* Mid : MirrorLayerEdgeMaterials) ApplyClipTo(Mid, Plane);
 }
 
 void AAerotelicEntityActor::ApplyMeshVisibility()
@@ -467,6 +503,48 @@ void AAerotelicEntityActor::ApplyMeshVisibility()
 	if (EdgeMesh != nullptr)       EdgeMesh->SetVisibility(bHasTessellation && bEdges);
 	if (MirrorMesh != nullptr)     MirrorMesh->SetVisibility(bMirrorHasTessellation && bSurface);
 	if (MirrorEdgeMesh != nullptr) MirrorEdgeMesh->SetVisibility(bMirrorHasTessellation && bEdges);
+	if (StructureMesh != nullptr)           StructureMesh->SetVisibility(bHasLayers && bSurface);
+	if (StructureEdgeMesh != nullptr)       StructureEdgeMesh->SetVisibility(bHasLayers && bEdges);
+	if (MirrorStructureMesh != nullptr)     MirrorStructureMesh->SetVisibility(bMirrorHasLayers && bSurface);
+	if (MirrorStructureEdgeMesh != nullptr) MirrorStructureEdgeMesh->SetVisibility(bMirrorHasLayers && bEdges);
+}
+
+bool AAerotelicEntityActor::IsSkinLayerShown(int32 BodyIndex, bool bMirror) const
+{
+	for (const FAerotelicLayerView& L : Layers)
+	{
+		if (L.BodyIndex == BodyIndex && L.Kind == FAerotelicStructureLayer::EKind::Skin && L.Section != INDEX_NONE && (bMirror ? L.bMirrorVisible : L.bVisible))
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+void AAerotelicEntityActor::ApplySectionVisibility()
+{
+	// The bodies: shown when flagged, unless the skin layer stands in for
+	// the surface (the same outer surface twice would z-fight).
+	for (int32 i = 0; i < Bodies.Num(); ++i)
+	{
+		const bool bBody = Bodies[i].bVisible && !IsSkinLayerShown(i, false);
+		const bool bMirrorBody = Bodies[i].bMirrorVisible && !IsSkinLayerShown(i, true);
+		if (ProxyMesh != nullptr) ProxyMesh->SetMeshSectionVisible(i, bBody);
+		if (EdgeMesh != nullptr) EdgeMesh->SetMeshSectionVisible(i, bBody);
+		if (MirrorMesh != nullptr) MirrorMesh->SetMeshSectionVisible(i, bMirrorBody);
+		if (MirrorEdgeMesh != nullptr) MirrorEdgeMesh->SetMeshSectionVisible(i, bMirrorBody);
+	}
+	// The layers: their own flags, and never while their body is hidden.
+	for (const FAerotelicLayerView& L : Layers)
+	{
+		if (L.Section == INDEX_NONE) continue;
+		const bool bBodyShown = Bodies.IsValidIndex(L.BodyIndex) && Bodies[L.BodyIndex].bVisible;
+		const bool bMirrorBodyShown = Bodies.IsValidIndex(L.BodyIndex) && Bodies[L.BodyIndex].bMirrorVisible;
+		if (StructureMesh != nullptr) StructureMesh->SetMeshSectionVisible(L.Section, L.bVisible && bBodyShown);
+		if (StructureEdgeMesh != nullptr) StructureEdgeMesh->SetMeshSectionVisible(L.Section, L.bVisible && bBodyShown);
+		if (MirrorStructureMesh != nullptr) MirrorStructureMesh->SetMeshSectionVisible(L.Section, L.bMirrorVisible && bMirrorBodyShown);
+		if (MirrorStructureEdgeMesh != nullptr) MirrorStructureEdgeMesh->SetMeshSectionVisible(L.Section, L.bMirrorVisible && bMirrorBodyShown);
+	}
 }
 
 void AAerotelicEntityActor::SetSelected(bool bInSelected)
@@ -501,16 +579,9 @@ void AAerotelicEntityActor::SetBodyVisible(int32 Index, bool bVisible)
 	}
 	// A body and its mirrored copy are shown or hidden independently, as
 	// WingDesigner's two rows are; only hiding the whole entity takes
-	// both away.
+	// both away. Its layers go with it.
 	Bodies[Index].bVisible = bVisible;
-	if (ProxyMesh != nullptr)
-	{
-		ProxyMesh->SetMeshSectionVisible(Index, bVisible);
-	}
-	if (EdgeMesh != nullptr)
-	{
-		EdgeMesh->SetMeshSectionVisible(Index, bVisible);
-	}
+	ApplySectionVisibility();
 }
 
 bool AAerotelicEntityActor::IsBodyVisible(int32 Index) const
@@ -525,14 +596,7 @@ void AAerotelicEntityActor::SetMirrorBodyVisible(int32 Index, bool bVisible)
 		return;
 	}
 	Bodies[Index].bMirrorVisible = bVisible;
-	if (MirrorMesh != nullptr)
-	{
-		MirrorMesh->SetMeshSectionVisible(Index, bVisible);
-	}
-	if (MirrorEdgeMesh != nullptr)
-	{
-		MirrorEdgeMesh->SetMeshSectionVisible(Index, bVisible);
-	}
+	ApplySectionVisibility();
 }
 
 bool AAerotelicEntityActor::IsMirrorBodyVisible(int32 Index) const
@@ -565,6 +629,14 @@ FBox AAerotelicEntityActor::GetVisibleWorldBounds() const
 	if (MirrorMesh != nullptr && bMirrorHasTessellation)
 	{
 		Box += MirrorMesh->Bounds.GetBox();
+	}
+	if (StructureMesh != nullptr && bHasLayers)
+	{
+		Box += StructureMesh->Bounds.GetBox();
+	}
+	if (MirrorStructureMesh != nullptr && bMirrorHasLayers)
+	{
+		Box += MirrorStructureMesh->Bounds.GetBox();
 	}
 	for (const UStaticMeshComponent* Edge : ProxyEdges)
 	{
@@ -609,9 +681,10 @@ void AAerotelicEntityActor::RefreshMirror()
 		MirrorMesh->ClearAllMeshSections();
 		MirrorEdgeMesh->ClearAllMeshSections();
 		bMirrorHasTessellation = false;
-		ApplyMeshVisibility();
 		MirrorMaterials.Reset();
 		MirrorEdgeMaterials.Reset();
+		RefreshStructureMirror();
+		ApplyMeshVisibility();
 		return;
 	}
 
@@ -654,13 +727,9 @@ void AAerotelicEntityActor::RefreshMirror()
 		Roles = RefreshTessellatedMesh(Placed, MirrorMesh, MirrorMaterials, MirrorEdgeMesh, MirrorEdgeMaterials);
 	}
 	bMirrorHasTessellation = Roles.Num() > 0;
+	RefreshStructureMirror();
 	ApplyMeshVisibility();
-	for (int32 i = 0; i < Roles.Num(); ++i)
-	{
-		const bool bVisible = !Bodies.IsValidIndex(i) || Bodies[i].bMirrorVisible;
-		MirrorMesh->SetMeshSectionVisible(i, bVisible);
-		MirrorEdgeMesh->SetMeshSectionVisible(i, bVisible);
-	}
+	ApplySectionVisibility();
 	ApplyColors();
 }
 
@@ -711,6 +780,10 @@ void AAerotelicEntityActor::RefreshProxy()
 		LastMeshes.clear();
 		bHasTessellation = false;
 		bMirrorHasTessellation = false;
+		// The layers were generated from a body that is gone: nothing of
+		// it shows until it builds again (the document regenerates then).
+		for (FAerotelicBody& Body : Bodies) Body.Generated.Reset();
+		RefreshStructureLayers();
 		ApplyMeshVisibility();
 		for (UStaticMeshComponent* Edge : ProxyEdges)
 		{
@@ -766,6 +839,11 @@ void AAerotelicEntityActor::RefreshProxy()
 			Body.bHasColor = Old->bHasColor;
 			Body.Color = Old->Color;
 			Body.Structure = Old->Structure;
+			// The generated layers stay on screen (in the body's frame, they
+			// still fit a body that merely moved) but are stale: the document
+			// regenerates them once the scene settles.
+			Body.Generated = Old->Generated;
+			if (Body.Generated.IsValid()) Body.Generated->MarkStale();
 		}
 		else if (const aerotelic::BodyStructure* Parked = OrphanedStructures.Find(BodyRole))
 		{
@@ -790,14 +868,11 @@ void AAerotelicEntityActor::RefreshProxy()
 
 	// Triangles on screen need components; the bodies above exist without.
 	bHasTessellation = Roles.Num() > 0 && ProxyMesh != nullptr;
+	RefreshStructureLayers();
 	ApplyMeshVisibility();
 	if (bHasTessellation)
 	{
-		for (int32 i = 0; i < Bodies.Num(); ++i)
-		{
-			ProxyMesh->SetMeshSectionVisible(i, Bodies[i].bVisible);
-			EdgeMesh->SetMeshSectionVisible(i, Bodies[i].bVisible);
-		}
+		ApplySectionVisibility();
 		for (UStaticMeshComponent* Edge : ProxyEdges)
 		{
 			Edge->SetVisibility(false);
@@ -991,17 +1066,16 @@ TArray<FString> AAerotelicEntityActor::RefreshMeshFromTriangles(const std::vecto
 void AAerotelicEntityActor::CreateBodySection(int32 Section, const TArray<FVector>& Vertices, const TArray<int32>& Triangles, const TArray<FVector>& Normals,
 	UProceduralMeshComponent* Target, TArray<TObjectPtr<UMaterialInstanceDynamic>>& Materials,
 	UProceduralMeshComponent* EdgeTarget, TArray<TObjectPtr<UMaterialInstanceDynamic>>& EdgeMaterialsOut,
-	TArray<TObjectPtr<UMaterialInstanceDynamic>>& NewMaterials, TArray<TObjectPtr<UMaterialInstanceDynamic>>& NewEdgeMaterials)
+	TArray<TObjectPtr<UMaterialInstanceDynamic>>& NewMaterials, TArray<TObjectPtr<UMaterialInstanceDynamic>>& NewEdgeMaterials, bool bCollision)
 {
 	UMaterialInterface* Base = BaseMaterial();
 	UMaterialInterface* Wire = WireMaterial();
 	UAerotelicDocumentSubsystem* Doc = UAerotelicDocumentSubsystem::Get();
 
-	// bCreateCollision = true: the triangle mesh doubles as the pick
-	// geometry for the standalone app's click-to-select. A lattice (often
+	// bCreateCollision: the triangle mesh doubles as the pick geometry for
+	// the standalone app's click-to-select. A structure layer (often
 	// millions of triangles) does without: cooking its collision would
-	// take far longer than generating it, and it is selected in the tree.
-	const bool bCollision = EntityType != aerotelic::project_yaml::EntityType::Lattice;
+	// take far longer than generating it, and its body is picked instead.
 	Target->CreateMeshSection(Section, Vertices, Triangles, Normals, TArray<FVector2D>(), TArray<FColor>(), TArray<FProcMeshTangent>(), bCollision);
 
 	// Reuse the section's material instance across rebuilds; make one
@@ -1060,12 +1134,215 @@ double AAerotelicEntityActor::DisplayTolerance() const
 
 bool AAerotelicEntityActor::IsDerived() const
 {
-	return EntityType == aerotelic::project_yaml::EntityType::Boolean || EntityType == aerotelic::project_yaml::EntityType::Lattice;
+	return EntityType == aerotelic::project_yaml::EntityType::Boolean;
 }
 
-double AAerotelicEntityActor::LatticeSkinThickness(const aerotelic::MassSpec& Spec)
+// ------------------------------------------------- generated structure
+
+const FAerotelicBodyStructure* AAerotelicEntityActor::GetGeneratedStructure(const FString& BodyRole) const
 {
-	return Spec.mode == aerotelic::MassMode::Material ? FMath::Max(Spec.skin_thickness, 0.0) : 0.0;
+	const int32 Index = FindBodyIndex(BodyRole);
+	return Bodies.IsValidIndex(Index) ? Bodies[Index].Generated.Get() : nullptr;
+}
+
+void AAerotelicEntityActor::SetGeneratedStructure(const FString& BodyRole, TSharedPtr<FAerotelicBodyStructure> InGenerated)
+{
+	const int32 Index = FindBodyIndex(BodyRole);
+	if (!Bodies.IsValidIndex(Index))
+	{
+		return;
+	}
+	Bodies[Index].Generated = InGenerated;
+	RefreshStructureLayers();
+	RefreshStructureMirror();
+	ApplyMeshVisibility();
+	ApplySectionVisibility();
+	ApplyColors();
+	ApplyEdgeOffset();
+	OnBodiesChanged.Broadcast(this);
+}
+
+void AAerotelicEntityActor::ClearGeneratedStructure(const FString& BodyRole)
+{
+	const int32 Index = FindBodyIndex(BodyRole);
+	if (!Bodies.IsValidIndex(Index) || !Bodies[Index].Generated.IsValid())
+	{
+		return;
+	}
+	SetGeneratedStructure(BodyRole, nullptr);
+}
+
+int32 AAerotelicEntityActor::FindLayer(const FString& BodyRole, const FString& LayerName) const
+{
+	return Layers.IndexOfByPredicate([&](const FAerotelicLayerView& L) { return L.BodyRole == BodyRole && L.Name == LayerName; });
+}
+
+FString AAerotelicEntityActor::GetLayerDisplayName(int32 Layer) const
+{
+	if (!Layers.IsValidIndex(Layer)) return FString();
+	return FString::Printf(TEXT("%s / %s"), *GetBodyDisplayName(Layers[Layer].BodyIndex), *Layers[Layer].Name);
+}
+
+FString AAerotelicEntityActor::GetMirrorLayerDisplayName(int32 Layer) const
+{
+	if (!Layers.IsValidIndex(Layer)) return FString();
+	return FString::Printf(TEXT("%s / %s"), *GetMirrorBodyDisplayName(Layers[Layer].BodyIndex), *Layers[Layer].Name);
+}
+
+void AAerotelicEntityActor::SetLayerVisible(int32 Layer, bool bVisible)
+{
+	if (!Layers.IsValidIndex(Layer)) return;
+	Layers[Layer].bVisible = bVisible;
+	LayerDisplayStates.FindOrAdd(LayerStateKey(Layers[Layer].BodyRole, Layers[Layer].Name)) = Layers[Layer];
+	ApplySectionVisibility();
+}
+
+bool AAerotelicEntityActor::IsLayerVisible(int32 Layer) const
+{
+	return Layers.IsValidIndex(Layer) && Layers[Layer].bVisible;
+}
+
+void AAerotelicEntityActor::SetMirrorLayerVisible(int32 Layer, bool bVisible)
+{
+	if (!Layers.IsValidIndex(Layer)) return;
+	Layers[Layer].bMirrorVisible = bVisible;
+	LayerDisplayStates.FindOrAdd(LayerStateKey(Layers[Layer].BodyRole, Layers[Layer].Name)) = Layers[Layer];
+	ApplySectionVisibility();
+}
+
+bool AAerotelicEntityActor::IsMirrorLayerVisible(int32 Layer) const
+{
+	return Layers.IsValidIndex(Layer) && Layers[Layer].bMirrorVisible;
+}
+
+void AAerotelicEntityActor::SetLayerColor(int32 Layer, TOptional<FLinearColor> InColor)
+{
+	if (!Layers.IsValidIndex(Layer)) return;
+	Layers[Layer].bHasColor = InColor.IsSet();
+	if (InColor.IsSet()) Layers[Layer].Color = InColor.GetValue();
+	LayerDisplayStates.FindOrAdd(LayerStateKey(Layers[Layer].BodyRole, Layers[Layer].Name)) = Layers[Layer];
+	ApplyColors();
+}
+
+FLinearColor AAerotelicEntityActor::GetLayerDisplayColor(int32 Layer) const
+{
+	if (!Layers.IsValidIndex(Layer)) return GetDisplayColor();
+	const FAerotelicLayerView& L = Layers[Layer];
+	if (L.bHasColor) return L.Color;
+	return FAerotelicStructureLayer::DefaultColor(L.Kind, GetBodyDisplayColor(L.BodyIndex));
+}
+
+std::vector<aerotelic::NamedMesh> AAerotelicEntityActor::GetPlacedLayerMeshes(const FString& BodyRole, bool bMirror) const
+{
+	std::vector<aerotelic::NamedMesh> Out;
+	const FAerotelicBodyStructure* G = GetGeneratedStructure(BodyRole);
+	if (G == nullptr || !G->IsGenerated()) return Out;
+	const FTransform Transform = GetActorTransform();
+	for (const FAerotelicStructureLayer& L : G->GetLayers())
+	{
+		if (L.Mesh.IsEmpty()) continue;
+		aerotelic::NamedMesh M;
+		M.name = TCHAR_TO_UTF8(*L.Name);
+		M.mesh = L.Mesh;
+		AerotelicMeshing::PlaceMesh(M.mesh, Transform);
+		if (bMirror) AerotelicMeshing::MirrorY(M.mesh);
+		Out.push_back(std::move(M));
+	}
+	return Out;
+}
+
+void AAerotelicEntityActor::RefreshStructureLayers()
+{
+	// The list: every generated layer of every body, with the display state
+	// it had under the same name.
+	Layers.Reset();
+	for (int32 b = 0; b < Bodies.Num(); ++b)
+	{
+		const FAerotelicBodyStructure* G = Bodies[b].Generated.Get();
+		if (G == nullptr || !G->IsGenerated()) continue;
+		const std::vector<FAerotelicStructureLayer>& Gen = G->GetLayers();
+		for (int32 l = 0; l < static_cast<int32>(Gen.size()); ++l)
+		{
+			FAerotelicLayerView V;
+			V.BodyRole = Bodies[b].Name;
+			V.BodyIndex = b;
+			V.LayerIndex = l;
+			V.Name = Gen[l].Name;
+			V.Kind = Gen[l].Kind;
+			if (const FAerotelicLayerView* Old = LayerDisplayStates.Find(LayerStateKey(V.BodyRole, V.Name)))
+			{
+				V.bVisible = Old->bVisible;
+				V.bMirrorVisible = Old->bMirrorVisible;
+				V.bHasColor = Old->bHasColor;
+				V.Color = Old->Color;
+			}
+			Layers.Add(V);
+		}
+	}
+	if (StructureMesh == nullptr)
+	{
+		bHasLayers = false;
+		return;
+	}
+	// The meshes: one section per non-empty layer, in the body's frame.
+	StructureMesh->ClearAllMeshSections();
+	StructureEdgeMesh->ClearAllMeshSections();
+	TArray<TObjectPtr<UMaterialInstanceDynamic>> NewMaterials, NewEdgeMaterials;
+	int32 Section = 0;
+	for (FAerotelicLayerView& V : Layers)
+	{
+		const FAerotelicStructureLayer& L = Bodies[V.BodyIndex].Generated->GetLayers()[V.LayerIndex];
+		if (L.Mesh.IsEmpty())
+		{
+			V.Section = INDEX_NONE;
+			continue;
+		}
+		TArray<FVector> Vertices;
+		TArray<int32> Triangles;
+		TArray<FVector> Normals;
+		AerotelicMeshing::ToProceduralMesh(L.Mesh, Vertices, Triangles, Normals);
+		CreateBodySection(Section, Vertices, Triangles, Normals, StructureMesh, LayerMaterials, StructureEdgeMesh, LayerEdgeMaterials, NewMaterials, NewEdgeMaterials, false);
+		V.Section = Section++;
+	}
+	LayerMaterials = MoveTemp(NewMaterials);
+	LayerEdgeMaterials = MoveTemp(NewEdgeMaterials);
+	bHasLayers = Section > 0;
+}
+
+void AAerotelicEntityActor::RefreshStructureMirror()
+{
+	if (MirrorStructureMesh == nullptr || IsRunningCommandlet())
+	{
+		return;
+	}
+	MirrorStructureMesh->ClearAllMeshSections();
+	MirrorStructureEdgeMesh->ClearAllMeshSections();
+	if (!bMirrored || !bHasLayers)
+	{
+		bMirrorHasLayers = false;
+		MirrorLayerMaterials.Reset();
+		MirrorLayerEdgeMaterials.Reset();
+		return;
+	}
+	// The layers placed and reflected about Y = 0, as the bodies are.
+	const FTransform Transform = GetActorTransform();
+	TArray<TObjectPtr<UMaterialInstanceDynamic>> NewMaterials, NewEdgeMaterials;
+	int32 Section = 0;
+	for (const FAerotelicLayerView& V : Layers)
+	{
+		if (V.Section == INDEX_NONE) continue;
+		aerotelic::TriMesh Mesh = Bodies[V.BodyIndex].Generated->GetLayers()[V.LayerIndex].Mesh;
+		AerotelicMeshing::PlaceMesh(Mesh, Transform);
+		AerotelicMeshing::MirrorY(Mesh);
+		TArray<FVector> Vertices;
+		TArray<int32> Triangles;
+		TArray<FVector> Normals;
+		AerotelicMeshing::ToProceduralMesh(Mesh, Vertices, Triangles, Normals);
+		CreateBodySection(Section++, Vertices, Triangles, Normals, MirrorStructureMesh, MirrorLayerMaterials, MirrorStructureEdgeMesh, MirrorLayerEdgeMaterials, NewMaterials, NewEdgeMaterials, false);
+	}
+	MirrorLayerMaterials = MoveTemp(NewMaterials);
+	MirrorLayerEdgeMaterials = MoveTemp(NewEdgeMaterials);
+	bMirrorHasLayers = Section > 0;
 }
 
 // ------------------------------------------------------- structure per body
@@ -1161,24 +1438,16 @@ aerotelic::MassSpec AAerotelicEntityActor::GetMassSpec() const
 
 const AAerotelicEntityActor* AAerotelicEntityActor::GetMassSpecSource() const
 {
-	// A body of its own first; else follow the first operand / first target
-	// down to one that has -- a bounded walk, since a chain of derived
-	// entities is finite and a cycle cannot be authored.
+	// A body of its own first; else follow the first operand down to one
+	// that has -- a bounded walk, since a chain of derived entities is
+	// finite and a cycle cannot be authored.
 	const AAerotelicEntityActor* E = this;
 	for (int32 Depth = 0; Depth < 32 && E != nullptr; ++Depth)
 	{
 		if (!E->IsDerived() || E->GetBodyStructure(0).IsSet()) return E;
 		const FAerotelicBooleanOperand* First = nullptr;
-		if (E->EntityType == aerotelic::project_yaml::EntityType::Boolean)
-		{
-			const FAerotelicBooleanModel* M = static_cast<const FAerotelicBooleanModel*>(E->GetModel());
-			if (M != nullptr && M->Operands.Num() > 0) First = &M->Operands[0];
-		}
-		else
-		{
-			const FAerotelicLatticeModel* M = static_cast<const FAerotelicLatticeModel*>(E->GetModel());
-			if (M != nullptr && M->Targets.Num() > 0) First = &M->Targets[0];
-		}
+		const FAerotelicBooleanModel* M = static_cast<const FAerotelicBooleanModel*>(E->GetModel());
+		if (M != nullptr && M->Operands.Num() > 0) First = &M->Operands[0];
 		E = (First != nullptr && First->Entity.IsValid()) ? First->Entity.Get() : nullptr;
 	}
 	return nullptr;

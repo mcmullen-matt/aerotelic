@@ -1,5 +1,6 @@
 #include "AerotelicMassProperties.h"
 
+#include "AerotelicBodyStructure.h"
 #include "AerotelicEntityActor.h"
 
 using aerotelic::InertiaTensor;
@@ -118,34 +119,56 @@ FAerotelicMassReport ComputeAerotelicMassReport(const TArray<FAerotelicBooleanOp
 
 		for (const aerotelic::NamedMesh& M : Meshes)
 		{
+			const FString Role = UTF8_TO_TCHAR(M.name.c_str());
 			const FString BodyLabel = Entity->EntityName
-				+ (Meshes.size() > 1 ? TEXT(" / ") + FString(UTF8_TO_TCHAR(M.name.c_str())) : FString())
+				+ (Meshes.size() > 1 ? TEXT(" / ") + Role : FString())
 				+ Suffix;
-			// Each body weighs by ITS structure. A derived entity whose
-			// bodies carry none still takes the first operand's / first
-			// filled body's for now (the bridge); a lattice's two bodies --
-			// the hollowed shell and the struts -- are real solids, so an
-			// inherited skin thickness does not apply to them.
+			// Each body weighs by ITS structure (a boolean result's bodies own
+			// theirs; nothing is inherited).
 			aerotelic::BodyStructure S;
-			FString Inherited;
-			if (const aerotelic::BodyStructure* Own = Entity->GetBodyStructure(UTF8_TO_TCHAR(M.name.c_str())); Own != nullptr && Own->IsSet())
+			if (const aerotelic::BodyStructure* Own = Entity->GetBodyStructure(Role); Own != nullptr && Own->IsSet())
 			{
 				S = *Own;
 			}
-			else if (Entity->IsDerived())
+			// A body whose structure has been GENERATED weighs by its layers:
+			// each a closed solid of its own material, exactly, in place of
+			// the estimates from the figures. An asserted mass still stands
+			// in for all of it.
+			const FAerotelicBodyStructure* G = Entity->GetGeneratedStructure(Role);
+			if (G != nullptr && G->IsGenerated() && S.IsSkin() && !S.asserted_mass)
 			{
-				const AAerotelicEntityActor* Source = Entity->GetMassSpecSource();
-				if (Source != nullptr && Source != Entity)
+				const std::vector<aerotelic::NamedMesh> LayerMeshes = Entity->GetPlacedLayerMeshes(Role, Op.bMirror);
+				for (const FAerotelicStructureLayer& L : G->GetLayers())
 				{
-					S = aerotelic::BodyStructureFromMassSpec(Source->GetMassSpec());
-					Inherited = FString::Printf(TEXT("inherited from %s"), *Source->EntityName);
-					if (Entity->GetEntityType() == aerotelic::project_yaml::EntityType::Lattice)
+					FAerotelicMassLine Line;
+					Line.Label = BodyLabel + TEXT(" / ") + L.Name;
+					Line.Mode = aerotelic::MassMode::Material;
+					const aerotelic::NamedMesh* Placed = nullptr;
+					for (const aerotelic::NamedMesh& LM : LayerMeshes) if (FString(UTF8_TO_TCHAR(LM.name.c_str())) == L.Name) Placed = &LM;
+					if (Placed == nullptr || Placed->mesh.IsEmpty())
 					{
-						S.skin_thickness = 0.0;
-						S.infill.reset();
-						S.networks.clear();
+						Line.Note = L.Note.IsEmpty() ? TEXT("the layer came out empty") : L.Note;
 					}
+					else if (!L.Material.HasDensity())
+					{
+						Line.Note = FString::Printf(TEXT("no material on the %s"), FAerotelicStructureLayer::KindName(L.Kind));
+					}
+					else
+					{
+						Line.Props = aerotelic::SolidMassProperties(Placed->mesh, L.Material.density / Units.DensityToSI());
+						Line.bIncluded = true;
+						Line.Note = FString::Printf(TEXT("%s, %s%s"), FAerotelicStructureLayer::KindName(L.Kind), UTF8_TO_TCHAR(L.Material.name.c_str()),
+							G->IsStale() ? TEXT("; generated before the body's last change") : TEXT(""));
+						if (!Placed->mesh.IsClosedManifold()) Line.Note += TEXT("; not a closed surface");
+					}
+					if (Line.bIncluded)
+					{
+						Included.push_back(Line.Props);
+						++Report.IncludedCount;
+					}
+					Report.Bodies.Add(Line);
 				}
+				continue;
 			}
 			const std::vector<aerotelic::StructureMassPart> Parts = aerotelic::StructureMassParts(M.mesh, S, R, T, Scale, Op.bMirror, Units.DensityToSI());
 			for (const aerotelic::StructureMassPart& Part : Parts)
@@ -158,13 +181,12 @@ FAerotelicMassReport ComputeAerotelicMassReport(const TArray<FAerotelicBooleanOp
 				Line.Note = UTF8_TO_TCHAR(Part.note.c_str());
 				if (!S.IsSet())
 				{
-					Line.Note = TEXT("no material assigned (Scene tree > Material Properties)");
+					Line.Note = TEXT("no material assigned (Scene tree > Structure...)");
 				}
 				else if (Part.label == "skin" && Part.included)
 				{
 					Line.Note = FString::Printf(TEXT("skin %.4g %s thick"), S.skin_thickness, UTF8_TO_TCHAR(Units.LengthName()));
 				}
-				if (!Inherited.IsEmpty()) Line.Note += (Line.Note.IsEmpty() ? TEXT("") : TEXT("; ")) + Inherited;
 				if (Line.bIncluded)
 				{
 					Included.push_back(Line.Props);

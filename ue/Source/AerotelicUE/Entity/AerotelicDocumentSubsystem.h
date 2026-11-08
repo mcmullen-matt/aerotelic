@@ -92,14 +92,14 @@ public:
 	// full-scale aircraft, as typed into its panel and as saved; the
 	// entity actors are placed at the scaled translation with a uniform
 	// scale (AAerotelicEntityActor::ApplyPlacement), so the viewport, the
-	// placed meshes and solids, the booleans, the lattices and every
-	// analysis see the replica -- a 1:4 model at 0.25. Materials (skin
-	// thickness) and lattice parameters are not scaled: they are what the
-	// replica is to be built from. Saved with the project (written when it
-	// is not 1); New resets it to 1, Open takes the file's. SetModelScale
-	// re-places every entity, which rebuilds the booleans and regenerates
-	// the lattices over them; false, and nothing changed, for anything but
-	// a positive number.
+	// placed meshes and solids, the booleans, the generated structures and
+	// every analysis see the replica -- a 1:4 model at 0.25. The structures'
+	// build figures (skin, rib thickness, lattice cell) are not scaled: they
+	// are what the replica is to be built from. Saved with the project
+	// (written when it is not 1); New resets it to 1, Open takes the file's.
+	// SetModelScale re-places every entity, which rebuilds the booleans and
+	// regenerates the structures over them; false, and nothing changed, for
+	// anything but a positive number.
 	double GetModelScale() const { return ModelScale; }
 	bool SetModelScale(double InScale);
 
@@ -130,43 +130,42 @@ public:
 	// A default "BoolOp n" (_unique_label).
 	FString NextBooleanName() const;
 
-	// Lattice -> Generate Lattice: a new scene item, the lattice of Spec
-	// generated inside the placed bodies of Targets and kept out of
-	// Exclusions (see FAerotelicLatticeModel). Generated once up front so a
-	// failure adds nothing: null with OutError then.
-	AAerotelicEntityActor* AddLattice(const FString& Name, const aerotelic::LatticeSpec& Spec, const TArray<struct FAerotelicBooleanOperand>& Targets,
-		const TArray<struct FAerotelicBooleanOperand>& Exclusions, FString& OutError);
-	// Re-parameterises an existing lattice and regenerates it. False with
-	// OutError (and the lattice unchanged) if the new one cannot be built.
-	bool UpdateLattice(AAerotelicEntityActor* Lattice, const aerotelic::LatticeSpec& Spec, const TArray<struct FAerotelicBooleanOperand>& Targets,
-		const TArray<struct FAerotelicBooleanOperand>& Exclusions, FString& OutError);
-	// Regenerates one lattice over its targets as they now stand. False
-	// with OutError (and the lattice as it was) if it cannot be built.
-	bool RegenerateLattice(AAerotelicEntityActor* Lattice, FString& OutError);
-	// Lattice -> Regenerate Lattices: rebuilds every lattice over its
-	// targets as they now stand. Returns how many; OutErrors lists any that
-	// failed (left as they were).
-	int32 RegenerateLattices(TArray<FString>& OutErrors);
+	// ---- Generated structure (per body, 2026-11-08) ----
+	// Generates the structure of one body -- its skin shell, infill and
+	// ribs as its BodyStructure describes them (FAerotelicBodyStructure) --
+	// over the body as it now stands and the reserved volumes its
+	// exclusions name, and hands the layers to the entity (shown under the
+	// body in the Scene tree, weighed by the mass report, exported as STL,
+	// meshed for the analyses). Synchronous (seconds). False with OutError
+	// when the body has no skin (a solid has nothing to generate; what was
+	// generated is dropped), is not closed, or MeshLib refuses; the layers
+	// it had are kept then. An exclusion that names nothing in the scene is
+	// skipped with a log line, as any dependency that cannot be satisfied.
+	bool GenerateBodyStructure(AAerotelicEntityActor* Entity, const FString& BodyRole, FString& OutError);
+	// Regenerates every body whose structure has been generated, over the
+	// bodies as they now stand. Returns how many; OutErrors lists failures.
+	int32 RegenerateStructures(TArray<FString>& OutErrors);
+
 	// ---- What follows an Apply ----
-	// Every boolean result and lattice over an entity that changed (a
-	// design panel's Apply, the Transform dialog's Apply) is queued here,
-	// in build order, and rebuilt one per tick: a boolean as soon as its
-	// turn comes, a lattice (seconds of work) once the scene has settled
-	// for kLatticeSettleSeconds, so one Apply that changes an entity and
-	// then the booleans over it regenerates the lattice over those once.
+	// Every boolean result over an entity that changed (a design panel's
+	// Apply, the Transform dialog's Apply) and every GENERATED body
+	// structure downstream of it -- the entity's own bodies', those of the
+	// booleans over it, and any body whose exclusions name it -- is queued
+	// here, in build order, and rebuilt one per tick: a boolean as soon as
+	// its turn comes, a structure (seconds of work) once the scene has
+	// settled for kStructureSettleSeconds, so one Apply that changes an
+	// entity and then the booleans over it regenerates each structure once.
 	// One per tick so the window repaints between them, which is what the
 	// status bar's progress shows: GetRebuildProgress() is the share of the
-	// parameterisations queued by the last Apply (the entity itself
-	// included) that have been rebuilt -- 1 when nothing is waiting. A
-	// rough measure on purpose: every item counts one whatever it costs,
-	// and nothing is timed.
+	// items queued by the last Apply (the entity itself included) that have
+	// been rebuilt -- 1 when nothing is waiting. A rough measure on purpose:
+	// every item counts one whatever it costs, and nothing is timed.
 	//
 	// A changed body STRUCTURE whose geometry differs (a skin thickness, an
 	// infill, a network's planes; AAerotelicEntityActor::OnBodyStructureChanged
-	// with bGeometry) queues the same way, lattices only: a lattice is
-	// hollowed by the skin of each body it fills, so it is downstream of
-	// that figure as it is of the body's shape; a boolean result is not (it
-	// reads no material).
+	// with bGeometry) queues that body's regeneration the same way when it
+	// has been generated; a body never generated waits for the dialog's
+	// Generate. A boolean result reads no material and stands.
 	//
 	// FlushPendingRebuilds() drains the queue at once (a commandlet has no
 	// tick), reporting failures as the tick would.
@@ -181,22 +180,20 @@ public:
 	// handed to a fresh model's constructor), so the panel's curve editors
 	// can hold pointers into it for as long as the panel lives.
 	//
-	// Null for a boolean result or a lattice, which have no spec of their
-	// own (they are edited through their own dialogs).
+	// Null for a boolean result, which has no spec of its own (its operands
+	// have).
 	std::unique_ptr<aerotelic::ISolidModel> CloneEntityModel(const AAerotelicEntityActor* Entity) const;
 	// Apply: a fresh model built from Draft's spec replaces Entity's and the
-	// entity rebuilds; boolean results over it rebuild at once and lattices
-	// over it regenerate on the next tick. Draft itself is left alone (the
-	// panel keeps editing it). False with OutError, and the entity as it
-	// was, if the draft cannot be built.
+	// entity rebuilds; boolean results over it rebuild at once and the
+	// generated structures over it regenerate on the next tick. Draft
+	// itself is left alone (the panel keeps editing it). False with
+	// OutError, and the entity as it was, if the draft cannot be built.
 	bool ApplyEntityModel(AAerotelicEntityActor* Entity, const aerotelic::ISolidModel& Draft, FString& OutError);
-	// A default "Lattice n".
-	FString NextLatticeName() const;
-	// True if Entity is a boolean result or lattice built on Other.
+	// True if Entity is a boolean result built on Other.
 	static bool DependsOn(const AAerotelicEntityActor* Entity, const AAerotelicEntityActor* Other);
 
-	// Removes Entity and every boolean result or lattice that depends on
-	// it (the feature tree's cascading remove).
+	// Removes Entity and every boolean result that depends on it (the
+	// feature tree's cascading remove).
 	void RemoveEntity(AAerotelicEntityActor* Entity);
 
 	// ---- Edit -> Copy / Paste (Ctrl+C / Ctrl+V) ----
@@ -206,11 +203,11 @@ public:
 	// shares no state with its source and neither one's edits reach the
 	// other.
 	//
-	// Only the authored types can be copied. A boolean result or a lattice
-	// is a solid built *from* other entities rather than a parameterisation
-	// of its own, so there is nothing to feed a constructor: a "copy" could
-	// only point at the same operands, which is the link this is meant not
-	// to be.
+	// Only the authored types can be copied. A boolean result is a solid
+	// built *from* other entities rather than a parameterisation of its
+	// own, so there is nothing to feed a constructor: a "copy" could only
+	// point at the same operands, which is the link this is meant not to
+	// be.
 	static bool CanCopyEntity(const AAerotelicEntityActor* Entity);
 	// Takes a snapshot of Entity's parameterisation, placement and display
 	// state. A snapshot by value, so editing or deleting the source
@@ -322,26 +319,38 @@ private:
 
 	void ApplySectionPlaneToEntities();
 
-	// The rebuild queue (see HasPendingRebuilds).
+	// The rebuild queue (see HasPendingRebuilds): a boolean result (Role
+	// empty) to rebuild, or one body's structure to regenerate.
+	struct FRebuildItem
+	{
+		TWeakObjectPtr<AAerotelicEntityActor> Entity;
+		FString Role;
+		bool operator==(const FRebuildItem& O) const { return Entity == O.Entity && Role == O.Role; }
+	};
 	FDelegateHandle GeometryChangedHandle;
 	FDelegateHandle BodyStructureChangedHandle;
-	TArray<TWeakObjectPtr<AAerotelicEntityActor>> RebuildQueue;
+	TArray<FRebuildItem> RebuildQueue;
 	TArray<FString> RebuildErrors;
 	FTSTicker::FDelegateHandle RebuildTick;
 	double LastQueueTime = 0.0;
 	int32 RebuildTotal = 0;
 	int32 RebuildDone = 0;
-	static constexpr double kLatticeSettleSeconds = 0.3;
+	static constexpr double kStructureSettleSeconds = 0.3;
 	void OnEntityGeometryChanged(AAerotelicEntityActor* Entity);
 	void OnEntityBodyStructureChanged(AAerotelicEntityActor* Entity, const FString& Role, bool bGeometry);
-	// Queues what is built over Entity: the boolean results and lattices
-	// (a shape changed), or the lattices alone (bLatticesOnly: a skin
-	// thickness changed, which no boolean reads).
-	void QueueDependentRebuilds(const AAerotelicEntityActor* Entity, bool bLatticesOnly = false);
+	// Queues what is built over Entity: the boolean results over it and the
+	// generated structures downstream of it (bStructuresOnly: the latter
+	// alone).
+	void QueueDependentRebuilds(const AAerotelicEntityActor* Entity, bool bStructuresOnly = false);
+	void QueueRebuild(const FRebuildItem& Item);
+	void StartRebuildTicker();
 	// The next queued item ready to rebuild (dropping dead entries), or
-	// INDEX_NONE; with bRespectSettle a lattice is not ready until the
+	// INDEX_NONE; with bRespectSettle a structure is not ready until the
 	// scene has settled.
 	int32 NextRebuild(bool bRespectSettle);
 	void RebuildAt(int32 Index);
 	void FinishRebuilds();
+	// Generates the structure of every body that has an interior (a skin
+	// with an infill or networks), as on load; failures into OutFailures.
+	void GenerateStructuresWithInterior(TArray<FString>& OutFailures);
 };

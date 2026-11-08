@@ -7,6 +7,7 @@
 
 #include "aerotelic/solid_model.hpp"
 #include "aerotelic/project_yaml.hpp"
+#include "AerotelicBodyStructure.h"
 #include "AerotelicViewStyle.h"
 
 #include "AerotelicEntityActor.generated.h"
@@ -45,6 +46,34 @@ struct FAerotelicBody
 	// 2026-11-08; kept by role name across rebuilds like the display state,
 	// saved under the entity's `bodies:`. Not reflected (a plain C++ value).
 	aerotelic::BodyStructure Structure;
+
+	// The structure's GENERATED geometry -- the skin shell, the infill, the
+	// ribs (AerotelicBodyStructure.h) -- once the document has generated it;
+	// null until then. Kept by role across rebuilds and marked stale by
+	// them (the document regenerates); not saved (regenerated on load for
+	// a body with an interior). Not reflected.
+	TSharedPtr<FAerotelicBodyStructure> Generated;
+};
+
+// One layer of generated structure as the actor draws and lists it: which
+// body's, which of its layers, and the layer's own display state (shown or
+// hidden on its own and on the mirrored half, a colour of its own). The
+// skin layer is the body's surface again with the hollow inside, so while
+// it is shown the body's own section is hidden.
+struct FAerotelicLayerView
+{
+	FString BodyRole;
+	int32 BodyIndex = INDEX_NONE;
+	int32 LayerIndex = INDEX_NONE;
+	FString Name;
+	FAerotelicStructureLayer::EKind Kind = FAerotelicStructureLayer::EKind::Skin;
+	bool bVisible = true;
+	bool bMirrorVisible = true;
+	bool bHasColor = false;
+	FLinearColor Color = FLinearColor::White;
+	// The section of the structure meshes this layer is drawn as; INDEX_NONE
+	// for an empty layer (nothing to draw, still listed).
+	int32 Section = INDEX_NONE;
 };
 
 // One scene entity: a live aerotelic model (WingModel/FuselageModel/...)
@@ -167,22 +196,47 @@ public:
 	// (feature_tree.hpp RotationMatrix; T the actor's location).
 	void GetPlacementMatrix(std::array<double, 9>& OutR, aerotelic::Vec3& OutT, double& OutScale) const;
 
+	// ---- generated structure (the layers) ----
+
+	// The generated geometry of a body's structure, null until the document
+	// has generated it (UAerotelicDocumentSubsystem::GenerateBodyStructure);
+	// Set hands a fresh generation over and redraws the layers, Clear drops
+	// them. Both broadcast OnBodiesChanged (the tree's rows change).
+	const FAerotelicBodyStructure* GetGeneratedStructure(const FString& BodyRole) const;
+	void SetGeneratedStructure(const FString& BodyRole, TSharedPtr<FAerotelicBodyStructure> InGenerated);
+	void ClearGeneratedStructure(const FString& BodyRole);
+	// Every generated layer of every body, in body order then layer order:
+	// what the Scene tree lists under the body rows and the pickers offer.
+	const TArray<FAerotelicLayerView>& GetLayers() const { return Layers; }
+	int32 FindLayer(const FString& BodyRole, const FString& LayerName) const;
+	// "<entity>-<n> / <layer>", and with "-mirror" for the mirrored half.
+	FString GetLayerDisplayName(int32 Layer) const;
+	FString GetMirrorLayerDisplayName(int32 Layer) const;
+	void SetLayerVisible(int32 Layer, bool bVisible);
+	bool IsLayerVisible(int32 Layer) const;
+	void SetMirrorLayerVisible(int32 Layer, bool bVisible);
+	bool IsMirrorLayerVisible(int32 Layer) const;
+	void SetLayerColor(int32 Layer, TOptional<FLinearColor> InColor);
+	// Its own colour, else the layer kind's default (the skin the body's
+	// colour, the infill amber, ribs steel blue).
+	FLinearColor GetLayerDisplayColor(int32 Layer) const;
+	// A body's generated layers as placed (or mirrored) meshes, named by
+	// layer -- what STL export and the mass report take. Empty when the
+	// body has none.
+	std::vector<aerotelic::NamedMesh> GetPlacedLayerMeshes(const FString& BodyRole, bool bMirror) const;
+
 	// ---- the old per-entity setting, as a bridge ----
 	// The one MassSpec a parameterisation used to carry, read and written
 	// through its bodies: Set gives every body the structure the spec
 	// amounts to (an asserted total split between them by area), Get is the
-	// first body's. Kept while the dialogs and the lattice move to the
-	// per-body API; a derived entity's Set is refused as before.
+	// first body's. Kept for the commandlets and the FEA dialog while they
+	// move to the per-body API.
 	void SetMassSpec(const aerotelic::MassSpec& InSpec);
 	aerotelic::MassSpec GetMassSpec() const;
-	// What a lattice hollows a body of this spec by: the skin thickness
-	// under a material, nothing otherwise.
-	static double LatticeSkinThickness(const aerotelic::MassSpec& Spec);
-	// Built on other entities (a boolean result, a lattice).
+	// Built on other entities (a boolean result).
 	bool IsDerived() const;
 	// The spec that applies to the first body: its own when set; for a
-	// derived entity whose bodies carry nothing, the first operand's /
-	// first filled body's (the inheritance the lattice still relies on).
+	// boolean result whose bodies carry nothing, the first operand's.
 	aerotelic::MassSpec GetEffectiveMassSpec() const;
 	// The entity the effective spec comes from (this one when its own), or
 	// null.
@@ -340,8 +394,45 @@ private:
 	UPROPERTY()
 	TArray<TObjectPtr<class UMaterialInstanceDynamic>> MirrorEdgeMaterials;
 
+	// The generated structure's layers (skin shells, infill, ribs), one
+	// section per layer, in the body's frame under the actor like ProxyMesh
+	// -- the layers are generated in the body's own frame, so a move needs
+	// no rebuild -- and the mirrored copy in world space like MirrorMesh.
+	// No collision: the body's own surface is the pick geometry.
+	UPROPERTY(VisibleAnywhere, Category = "Aerotelic")
+	TObjectPtr<class UProceduralMeshComponent> StructureMesh;
+
+	UPROPERTY(VisibleAnywhere, Category = "Aerotelic")
+	TObjectPtr<class UProceduralMeshComponent> MirrorStructureMesh;
+
+	UPROPERTY(VisibleAnywhere, Category = "Aerotelic")
+	TObjectPtr<class UProceduralMeshComponent> StructureEdgeMesh;
+
+	UPROPERTY(VisibleAnywhere, Category = "Aerotelic")
+	TObjectPtr<class UProceduralMeshComponent> MirrorStructureEdgeMesh;
+
+	UPROPERTY()
+	TArray<TObjectPtr<class UMaterialInstanceDynamic>> LayerMaterials;
+
+	UPROPERTY()
+	TArray<TObjectPtr<class UMaterialInstanceDynamic>> MirrorLayerMaterials;
+
+	UPROPERTY()
+	TArray<TObjectPtr<class UMaterialInstanceDynamic>> LayerEdgeMaterials;
+
+	UPROPERTY()
+	TArray<TObjectPtr<class UMaterialInstanceDynamic>> MirrorLayerEdgeMaterials;
+
 	UPROPERTY()
 	TArray<FAerotelicBody> Bodies;
+
+	// The layers as drawn and listed (see FAerotelicLayerView), rebuilt by
+	// RefreshStructureLayers from the bodies' generated structures; their
+	// display state survives a regeneration by "<role>|<layer>".
+	TArray<FAerotelicLayerView> Layers;
+	TMap<FString, FAerotelicLayerView> LayerDisplayStates;
+	bool bHasLayers = false;
+	bool bMirrorHasLayers = false;
 
 	aerotelic::project_yaml::EntityType EntityType = aerotelic::project_yaml::EntityType::Primitive;
 	std::unique_ptr<aerotelic::ISolidModel> Model;
@@ -374,6 +465,17 @@ private:
 	void EnsureProxyEdges();
 	void ApplyColors();
 	void ApplyMeshVisibility();
+	// Every section's visibility -- the bodies' and the layers', on the
+	// surface, edge and mirror meshes -- from the bodies' and layers' flags
+	// (a body's section hidden while its skin layer is shown).
+	void ApplySectionVisibility();
+	// Rebuilds the layer list and the structure meshes from the bodies'
+	// generated structures (and the mirrored copy).
+	void RefreshStructureLayers();
+	void RefreshStructureMirror();
+	// True when body Index's skin layer is drawn (on the mirror when
+	// bMirror), which stands in for the body's own surface.
+	bool IsSkinLayerShown(int32 BodyIndex, bool bMirror) const;
 	// The wireframe material's nudge towards the camera, a fraction of this
 	// body's PLACED size (so a replica's edges sit on its surface as the
 	// full-size vehicle's do), on every edge material. After every rebuild
@@ -395,12 +497,15 @@ private:
 	TArray<FString> RefreshMeshFromTriangles(const std::vector<aerotelic::NamedMesh>& Meshes,
 		class UProceduralMeshComponent* Target, TArray<TObjectPtr<class UMaterialInstanceDynamic>>& Materials,
 		class UProceduralMeshComponent* EdgeTarget, TArray<TObjectPtr<class UMaterialInstanceDynamic>>& EdgeMaterialsOut);
-	// Writes one body's triangles as section Section of Target and
-	// EdgeTarget, reusing or creating its material instances.
+	// Writes one body's (or layer's) triangles as section Section of Target
+	// and EdgeTarget, reusing or creating its material instances. The
+	// bodies' sections carry collision (the pick geometry); the layers' do
+	// not (often millions of triangles, and the body underneath is picked).
 	void CreateBodySection(int32 Section, const TArray<FVector>& Vertices, const TArray<int32>& Triangles, const TArray<FVector>& Normals,
 		class UProceduralMeshComponent* Target, TArray<TObjectPtr<class UMaterialInstanceDynamic>>& Materials,
 		class UProceduralMeshComponent* EdgeTarget, TArray<TObjectPtr<class UMaterialInstanceDynamic>>& EdgeMaterialsOut,
-		TArray<TObjectPtr<class UMaterialInstanceDynamic>>& NewMaterials, TArray<TObjectPtr<class UMaterialInstanceDynamic>>& NewEdgeMaterials);
+		TArray<TObjectPtr<class UMaterialInstanceDynamic>>& NewMaterials, TArray<TObjectPtr<class UMaterialInstanceDynamic>>& NewEdgeMaterials,
+		bool bCollision = true);
 	// Rebuilds MirrorMesh from the placed-then-reflected shape. Cheap no-op
 	// when the entity is not mirrored.
 	void RefreshMirror();

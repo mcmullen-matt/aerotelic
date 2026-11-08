@@ -7,7 +7,7 @@
 #include "Entity/AerotelicDocumentSubsystem.h"
 #include "Entity/AerotelicEntityActor.h"
 #include "Entity/AerotelicBooleanModel.h"
-#include "Entity/AerotelicLatticeModel.h"
+#include "Entity/AerotelicBodyStructure.h"
 #include "Entity/AerotelicMeshLib.h"
 #include "Entity/AerotelicPotentialFlow.h"
 #include "Entity/AerotelicMassProperties.h"
@@ -444,163 +444,187 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 		Check(Dup == nullptr && !Error.IsEmpty(), "a duplicate name is refused");
 	}
 
-	// A lattice generated inside the sphere (a small one: a 2-unit sphere at
-	// a 0.5 cell and 6 voxels per cell), saved under `lattices:` and
-	// regenerated on load.
-	UE_LOG(LogAerotelicDocumentTest, Display, TEXT("step: AddLattice"));
+	// The sphere's STRUCTURE generated (2026-11-08: the infill is an
+	// attribute of the body, not a scene entity of its own): its 0.05 skin
+	// of the "Custom" density-2 material set in the mass step, a gyroid
+	// infill (a small one: a 2-unit sphere at a 0.5 cell and 6 voxels per
+	// cell) in a material of its own, and two ribs normal to x. Saved under
+	// the body's `bodies:` entry and regenerated on load.
+	UE_LOG(LogAerotelicDocumentTest, Display, TEXT("step: BodyStructure"));
 	{
-		TArray<FAerotelicBooleanOperand> Targets;
-		FAerotelicBooleanOperand T;
-		T.Entity = Primitive;
-		Targets.Add(T);
-		aerotelic::LatticeSpec Spec;
-		Spec.family = aerotelic::LatticeFamily::Tpms;
-		Spec.type = "Gyroid";
-		Spec.phase = aerotelic::TpmsPhase::Network;
-		Spec.cell_size = 0.5;
-		Spec.volume_fraction = 0.35;
-		Spec.resolution = 6;
+		aerotelic::BodyStructure S = Primitive->GetBodyStructure(0);
+		Check(S.IsSkin() && FMath::IsNearlyEqual(S.skin_thickness, 0.05, 1e-12) && FMath::IsNearlyEqual(S.material.density, 2.0, 1e-12), "structure: the sphere carries the mass step's 0.05 skin of the density-2 material");
+		aerotelic::InfillSpec Infill;
+		Infill.lattice.family = aerotelic::LatticeFamily::Tpms;
+		Infill.lattice.type = "Gyroid";
+		Infill.lattice.phase = aerotelic::TpmsPhase::Network;
+		Infill.lattice.cell_size = 0.5;
+		Infill.lattice.volume_fraction = 0.35;
+		Infill.lattice.resolution = 6;
 		// Slid a little off the sphere's centre: the offsets travel through
 		// the file (checked after the reopen below).
-		Spec.origin = aerotelic::Vec3{0.1, -0.05, 0.02};
-		// No skin thickness of the lattice's own: the sphere carries 0.05
-		// under Material Properties (set in the mass step) and is hollowed
-		// by that; a body without one is refused by name.
-		Spec.skin_thickness = 0.0;
+		Infill.lattice.origin = aerotelic::Vec3{0.1, -0.05, 0.02};
+		Infill.material.name = "infill foam";
+		Infill.material.density = 0.5;
+		S.infill = Infill;
+		aerotelic::PlaneNetwork Ribs;
+		Ribs.name = "Ribs";
+		Ribs.axis = aerotelic::PlaneAxis::X;
+		Ribs.start = -0.3;
+		Ribs.spacing = 0.6;
+		Ribs.count = 2;
+		Ribs.thickness = 0.04;
+		Ribs.material.name = "rib ply";
+		Ribs.material.density = 1.0;
+		S.networks.push_back(Ribs);
 		FString Error;
+		// A body without a skin has nothing to generate: refused by name,
+		// and nothing is kept for it.
+		Check(!Doc->GenerateBodyStructure(Wing, TEXT("Main"), Error) && Error.Contains(Wing->EntityName) && Error.Contains(TEXT("material")),
+			FString::Printf(TEXT("structure: a body without a material is refused by name: %s"), *Error));
+		Check(Wing->GetGeneratedStructure(TEXT("Main")) == nullptr, "structure: nothing is generated for the refused body");
+		// Setting a structure with an interior on a body never generated
+		// queues nothing: Generate is explicit the first time.
+		Check(Primitive->SetBodyStructure(TEXT("Main"), S), "structure: the sphere takes the skin, infill and ribs");
+		Check(!Doc->HasPendingRebuilds(), "structure: a body never generated is not queued by a structure edit");
+		Check(Doc->GenerateBodyStructure(Primitive, TEXT("Main"), Error), FString::Printf(TEXT("structure: the sphere's structure generated: %s"), *Error));
+		Check(Doc->GetEntities().Num() == 4, "structure: generating adds no scene item -- the layers belong to the body");
+		const FAerotelicBodyStructure* G = Primitive->GetGeneratedStructure(TEXT("Main"));
+		Check(G != nullptr && G->IsGenerated() && !G->IsStale(), "structure: the body holds its generated structure");
+		if (G != nullptr && G->IsGenerated())
 		{
-			FAerotelicBooleanOperand W;
-			W.Entity = Wing;   // no material set
-			Check(FMath::IsNearlyEqual(FAerotelicLatticeModel::SkinThicknessFor(T), 0.05, 1e-12), "skin per body: the sphere's thickness is its Material Properties figure");
-			Check(FAerotelicLatticeModel::SkinThicknessFor(W) == 0.0, "skin per body: a body without a material has no skin thickness");
-			TArray<FAerotelicBooleanOperand> WithWing = Targets;
-			WithWing.Add(W);
-			AAerotelicEntityActor* Refused = Doc->AddLattice(TEXT("Lattice 1"), Spec, WithWing, TArray<FAerotelicBooleanOperand>(), Error);
-			Check(Refused == nullptr && Error.Contains(Wing->EntityName) && Error.Contains(TEXT("skin thickness")), FString::Printf(TEXT("a body without a skin thickness is refused by name: %s"), *Error));
-		}
-		AAerotelicEntityActor* Lattice = Doc->AddLattice(TEXT("Lattice 1"), Spec, Targets, TArray<FAerotelicBooleanOperand>(), Error);
-		Check(Lattice != nullptr, FString::Printf(TEXT("gyroid lattice in the sphere generated: %s"), *Error));
-		Check(Doc->GetEntities().Num() == 5, "the lattice is a fifth scene item");
-		Check(Doc->NextLatticeName() == TEXT("Lattice 2"), "next default lattice name is Lattice 2");
-		if (Lattice != nullptr)
-		{
-			const FAerotelicLatticeModel* M = Lattice->GetModelAs<FAerotelicLatticeModel>();
-			Check(M->GetStats().Triangles > 0, "the lattice has triangles");
-			Check(FMath::IsNearlyEqual(M->MinSkinThickness(), 0.05, 1e-12) && M->GetTetBodies().size() == 1 && FMath::IsNearlyEqual(M->GetTetBodies()[0].SkinThickness, 0.05, 1e-12),
-				"skin per body: the sphere was hollowed by its own 0.05 skin");
-			// The lattice inherits the sphere's material; it has none of its own
-			// to set, and the mass report weighs its two bodies by that density.
-			Check(Lattice->IsDerived() && Lattice->GetMassSpecSource() == Primitive && Lattice->GetEffectiveMassSpec().material.name == "Custom"
-				&& FMath::IsNearlyEqual(Lattice->GetEffectiveMassSpec().material.density, 2.0, 1e-12), "inheritance: the lattice's material is the sphere's");
-			{
-				FAerotelicBooleanOperand LOp;
-				LOp.Entity = Lattice;
-				const FAerotelicMassReport LatticeReport = ComputeAerotelicMassReport({ LOp }, 2e-3, Doc->GetUnits());
-				double LatticeMass = 0.0, LatticeVolume = 0.0;
-				bool bAll = LatticeReport.Bodies.Num() == 2;
-				for (const FAerotelicMassLine& Line : LatticeReport.Bodies) { bAll = bAll && Line.bIncluded && Line.Note.Contains(TEXT("inherited")); LatticeMass += Line.Props.mass; LatticeVolume += Line.Props.volume; }
-				Check(bAll && FMath::IsNearlyEqual(LatticeMass, 2.0 * LatticeVolume, 1e-9 * LatticeMass), FString::Printf(TEXT("inheritance: the lattice's skin and infill weigh by the sphere's density as solids (%.4g over %.4g)"), LatticeMass, LatticeVolume));
-			}
-			// The fraction is of the interior domain (inside the explicit skin).
-			Check(FMath::Abs(M->GetStats().AchievedFraction - 0.35) < 0.1, FString::Printf(TEXT("the lattice's achieved volume fraction (%.3f) is near the 0.35 asked"), M->GetStats().AchievedFraction));
-			Check(M->GetStats().SkinTriangles > 0 && M->GetStats().LatticeTriangles > 0, "the skin and the lattice both have triangles");
-			// The tetrahedra (Export Skin Tetrahedra / Export Tetrahedral Mesh)
-			// are built on request over the body and its MeshLib offset: skin
-			// + core fill the sphere's mesh exactly, the core fills the offset.
-			Check(M->GetTetBodies().size() == 1 && M->GetTetBodies()[0].bInnerUsable && !M->GetTetBodies()[0].Inner.IsEmpty(), "the generation kept the body and a usable offset surface for the tetrahedral mesher");
-			const std::vector<FAerotelicLatticeModel::FTetMesh>& Tets = M->GetTetMeshes();
-			Check(Tets.size() == 1 && M->MergedTets(1).tets.size() > 0 && M->MergedTets(-1).tets.size() > M->MergedTets(1).tets.size(), FString::Printf(TEXT("the skin and core tetrahedra can be built for export (%s)"), *FString::Join(M->GetTetNotes(), TEXT("; "))));
-			if (Tets.size() == 1)
-			{
-				const AerotelicTetGmsh::FResult& S = Tets[0].Result;
-				const double Body = M->GetTetBodies()[0].Outer.SignedVolume();
-				const double Inner = M->GetTetBodies()[0].Inner.SignedVolume();
-				Check(S.VolumeError <= 1e-9, FString::Printf(TEXT("skin + core tetrahedra (%.9g) fill the body's volume (%.9g): relative %.2e"), S.SkinVolume + S.CoreVolume, Body, S.VolumeError));
-				Check(FMath::Abs(S.CoreVolume - Inner) <= 1e-9 * Body, FString::Printf(TEXT("the core tetrahedra (%.9g) fill the offset's volume (%.9g) exactly"), S.CoreVolume, Inner));
-				Check(S.Degenerate == 0 && S.MinQuality > 0.0, FString::Printf(TEXT("no tetrahedron is flat or inverted (%d degenerate, worst quality %.4f)"), S.Degenerate, S.MinQuality));
-				// gmsh adds interior nodes only, so the surfaces survive
-				// node for node and the boundary is the sphere's own mesh.
-				Check(S.Nodes > M->GetTetBodies()[0].Outer.vertices.size() + M->GetTetBodies()[0].Inner.vertices.size(),
-					FString::Printf(TEXT("the mesh keeps both surfaces' nodes and adds interior ones (%d nodes over %d on the surfaces)"), S.Nodes,
-						(int32)(M->GetTetBodies()[0].Outer.vertices.size() + M->GetTetBodies()[0].Inner.vertices.size())));
-			}
-			std::vector<aerotelic::NamedMesh> Meshes = Lattice->GetPlacedMeshes(false, 1e-3);
-			Check(Meshes.size() == 2 && Meshes[0].name == "Skin" && Meshes[1].name == "Lattice", "the lattice is two bodies, Skin then Lattice");
-			// The skin solid's volume is the 0.05 shell of the unit sphere (a
-			// few percent under: the sphere is meshed coarsely at this voxel,
-			// and an inscribed polyhedron is smaller than its sphere).
-			if (Meshes.size() == 2)
+			const std::vector<FAerotelicStructureLayer>& Layers = G->GetLayers();
+			Check(Layers.size() == 3 && Layers[0].Name == TEXT("Skin") && Layers[1].Name == TEXT("Ribs") && Layers[2].Name == TEXT("Infill"),
+				FString::Printf(TEXT("structure: three layers, Skin, Ribs, Infill (%d)"), (int32)Layers.size()));
+			Check(G->GetStats().Triangles > 0 && FMath::IsNearlyEqual(G->GetStructure().skin_thickness, 0.05, 1e-12), "structure: the layers have triangles and were generated from the 0.05 skin");
+			Check(Primitive->GetLayers().Num() == 3 && Primitive->GetLayers()[0].Kind == FAerotelicStructureLayer::EKind::Skin && Primitive->GetLayers()[1].Kind == FAerotelicStructureLayer::EKind::Ribs,
+				"structure: the actor lists the layers under the body");
+			// The materials: the skin the body's, the ribs and the infill
+			// their own.
+			Check(Layers.size() == 3 && Layers[0].Material.name == "Custom" && Layers[1].Material.name == "rib ply" && Layers[2].Material.name == "infill foam",
+				"structure: each layer carries its own material");
+			// The fraction is of the interior domain (inside the skin, less
+			// the ribs).
+			Check(FMath::Abs(G->GetStats().AchievedFraction - 0.35) < 0.1, FString::Printf(TEXT("structure: the infill's achieved volume fraction (%.3f) is near the 0.35 asked"), G->GetStats().AchievedFraction));
+			// The layers as placed: closed, outward, inside the sphere; the
+			// infill inside the skin's offset; the skin's volume the 0.05
+			// shell of the unit sphere (a few percent under: the sphere is
+			// meshed coarsely at this voxel, and an inscribed polyhedron is
+			// smaller than its sphere); the ribs two discs of the inner sphere
+			// at x = +-0.3, 0.04 thick, less what the infill domain gave up.
+			std::vector<aerotelic::NamedMesh> Meshes = Primitive->GetPlacedLayerMeshes(TEXT("Main"), false);
+			Check(Meshes.size() == 3 && Meshes[0].name == "Skin" && Meshes[1].name == "Ribs" && Meshes[2].name == "Infill", "structure: the placed layer meshes are Skin, Ribs, Infill");
+			if (Meshes.size() == 3)
 			{
 				const double Shell = 4.0 / 3.0 * PI * (1.0 - 0.95 * 0.95 * 0.95);
-				Check(FMath::Abs(Meshes[0].mesh.SignedVolume() - Shell) < 0.06 * Shell, FString::Printf(TEXT("the skin body encloses the shell's volume (%.4f vs %.4f)"), Meshes[0].mesh.SignedVolume(), Shell));
+				Check(FMath::Abs(Meshes[0].mesh.SignedVolume() - Shell) < 0.06 * Shell, FString::Printf(TEXT("structure: the skin layer encloses the shell's volume (%.4f vs %.4f)"), Meshes[0].mesh.SignedVolume(), Shell));
+				const double Disc = PI * (0.95 * 0.95 - 0.3 * 0.3) * 0.04;
+				Check(FMath::Abs(Meshes[1].mesh.SignedVolume() - 2.0 * Disc) < 0.1 * 2.0 * Disc, FString::Printf(TEXT("structure: the ribs are two discs of the inner sphere (%.4f vs %.4f)"), Meshes[1].mesh.SignedVolume(), 2.0 * Disc));
+				bool bClosed = true;
+				for (const aerotelic::NamedMesh& NM : Meshes) bClosed = bClosed && NM.mesh.IsClosedManifold() && NM.mesh.SignedVolume() > 0.0;
+				Check(bClosed, "structure: every layer is a closed, outward body");
+				double Worst = 0.0, WorstInfill = 0.0;
+				int32 InfillInRibs = 0;
+				for (const aerotelic::NamedMesh& NM : Meshes)
+					for (const aerotelic::Vec3& V : NM.mesh.vertices)
+					{
+						Worst = FMath::Max(Worst, aerotelic::Length(V) - 1.0);
+						if (NM.name == "Infill")
+						{
+							WorstInfill = FMath::Max(WorstInfill, aerotelic::Length(V) - 0.95);
+							if (FMath::Abs(FMath::Abs(V.x) - 0.3) < 0.02 - 1e-6) ++InfillInRibs;
+						}
+					}
+				Check(Worst < 0.1, FString::Printf(TEXT("structure: the layers stay inside the sphere (worst overshoot %.4f)"), Worst));
+				Check(WorstInfill < 0.1, FString::Printf(TEXT("structure: the infill stays inside the skin (worst overshoot %.4f)"), WorstInfill));
+				Check(InfillInRibs == 0, FString::Printf(TEXT("structure: the infill keeps out of the ribs' slabs (%d vertices inside)"), InfillInRibs));
 			}
-			bool bClosed = Meshes.size() == 2;
-			for (const aerotelic::NamedMesh& NM : Meshes) bClosed = bClosed && NM.mesh.IsClosedManifold() && NM.mesh.SignedVolume() > 0.0;
-			Check(bClosed, "both the skin and the lattice are closed, outward bodies");
-			// Every mesh vertex lies inside the sphere (radius 1 at the origin);
-			// the lattice's inside the skin's inner offset.
-			double Worst = 0.0, WorstLattice = 0.0;
-			for (const aerotelic::NamedMesh& NM : Meshes)
-				for (const aerotelic::Vec3& V : NM.mesh.vertices)
-				{
-					Worst = FMath::Max(Worst, aerotelic::Length(V) - 1.0);
-					if (NM.name == "Lattice") WorstLattice = FMath::Max(WorstLattice, aerotelic::Length(V) - 0.95);
-				}
-			Check(Worst < 0.1, FString::Printf(TEXT("the lattice stays inside the sphere (worst overshoot %.4f)"), Worst));
-			Check(WorstLattice < 0.1, FString::Printf(TEXT("the infill stays inside the skin (worst overshoot %.4f)"), WorstLattice));
-			bool bThrew = false;
-			try { Lattice->GetModel()->BuildSolid(); } catch (const std::exception&) { bThrew = true; }
-			Check(bThrew, "a lattice has no B-rep solid (BuildSolid throws)");
-
-			// A changed skin thickness under Material Properties regenerates
-			// the lattice (2026-11-04): the sphere's 0.05 becomes 0.08, the
-			// document queues the lattice as it does after an Apply, and once
-			// flushed the lattice is hollowed by 0.08. The same spec set again,
-			// or a density edited under the same skin, queues nothing (a
-			// lattice is built from the skin alone).
+			// The mass report weighs the generated layers, each by its own
+			// material, exactly (solids of the layer meshes).
 			{
-				aerotelic::MassSpec Changed = Primitive->GetMassSpec();
-				Primitive->SetMassSpec(Changed);
-				Check(!Doc->HasPendingRebuilds(), "skin change: the same material properties set again queue nothing");
+				FAerotelicBooleanOperand POp;
+				POp.Entity = Primitive;
+				const FAerotelicMassReport LayerReport = ComputeAerotelicMassReport({ POp }, 2e-3, Doc->GetUnits());
+				Check(LayerReport.Bodies.Num() == 3 && LayerReport.Bodies[0].Label.Contains(TEXT("Skin")) && LayerReport.Bodies[1].Label.Contains(TEXT("Ribs")) && LayerReport.Bodies[2].Label.Contains(TEXT("Infill")),
+					FString::Printf(TEXT("structure: the mass report has one line per layer (%d)"), LayerReport.Bodies.Num()));
+				if (LayerReport.Bodies.Num() == 3 && Meshes.size() == 3)
+				{
+					Check(LayerReport.Bodies[0].bIncluded && FMath::IsNearlyEqual(LayerReport.Bodies[0].Props.mass, 2.0 * Meshes[0].mesh.SignedVolume(), 1e-9 * LayerReport.Bodies[0].Props.mass),
+						"structure: the skin layer weighs the body's density over its own volume");
+					Check(LayerReport.Bodies[1].bIncluded && FMath::IsNearlyEqual(LayerReport.Bodies[1].Props.mass, 1.0 * Meshes[1].mesh.SignedVolume(), 1e-9 * LayerReport.Bodies[1].Props.mass),
+						"structure: the ribs weigh their own material");
+					Check(LayerReport.Bodies[2].bIncluded && FMath::IsNearlyEqual(LayerReport.Bodies[2].Props.mass, 0.5 * Meshes[2].mesh.SignedVolume(), 1e-9 * LayerReport.Bodies[2].Props.mass),
+						"structure: the infill weighs its own material");
+					Check(LayerReport.Bodies[0].Note.Contains(TEXT("skin")) && LayerReport.Bodies[1].Note.Contains(TEXT("rib ply")), "structure: the lines name the layer kind and material");
+				}
+			}
+			// The tetrahedra (Export Skin Tetrahedra / Export Tetrahedral Mesh,
+			// the full-resolution FEA) are built on request over the body and
+			// its MeshLib offset: skin + core fill the sphere's mesh exactly,
+			// the core fills the offset.
+			Check(G->IsInnerUsable() && !G->GetInner().IsEmpty(), "structure: the generation kept the body and a usable offset surface for the tetrahedral mesher");
+			FString Note;
+			const FAerotelicBodyStructure::FTetMesh* TM = G->GetTetMesh(Note);
+			Check(TM != nullptr && TM->Result.SkinTets > 0 && TM->Result.CoreTets > 0, FString::Printf(TEXT("structure: the skin and core tetrahedra can be built for export (%s)"), *Note));
+			if (TM != nullptr)
+			{
+				const AerotelicTetGmsh::FResult& TR = TM->Result;
+				const double Body = G->GetOuter().SignedVolume();
+				const double Inner = G->GetInner().SignedVolume();
+				Check(TR.VolumeError <= 1e-9, FString::Printf(TEXT("structure: skin + core tetrahedra (%.9g) fill the body's volume (%.9g): relative %.2e"), TR.SkinVolume + TR.CoreVolume, Body, TR.VolumeError));
+				Check(FMath::Abs(TR.CoreVolume - Inner) <= 1e-9 * Body, FString::Printf(TEXT("structure: the core tetrahedra (%.9g) fill the offset's volume (%.9g) exactly"), TR.CoreVolume, Inner));
+				Check(TR.Degenerate == 0 && TR.MinQuality > 0.0, FString::Printf(TEXT("structure: no tetrahedron is flat or inverted (%d degenerate, worst quality %.4f)"), TR.Degenerate, TR.MinQuality));
+				Check(TR.Nodes > G->GetOuter().vertices.size() + G->GetInner().vertices.size(),
+					FString::Printf(TEXT("structure: the mesh keeps both surfaces' nodes and adds interior ones (%d nodes over %d on the surfaces)"), TR.Nodes, (int32)(G->GetOuter().vertices.size() + G->GetInner().vertices.size())));
+				Check(FMath::IsNearlyEqual(TM->SkinThickness, 0.05, 1e-12), "structure: the tetrahedral mesh carries the skin thickness it was hollowed by");
+			}
+
+			// A changed skin thickness regenerates the structure: 0.05 becomes
+			// 0.08, the document queues the body as it does after an Apply,
+			// and once flushed the layers are hollowed by 0.08. The same
+			// structure set again, or a density edited under the same skin
+			// and planes, queues nothing (the geometry is built from those
+			// alone).
+			{
+				aerotelic::BodyStructure Changed = Primitive->GetBodyStructure(0);
+				Primitive->SetBodyStructure(TEXT("Main"), Changed);
+				Check(!Doc->HasPendingRebuilds(), "skin change: the same structure set again queues nothing");
 				Changed.material.density = 3.0;
-				Primitive->SetMassSpec(Changed);
+				Primitive->SetBodyStructure(TEXT("Main"), Changed);
 				Check(!Doc->HasPendingRebuilds(), "skin change: a density edited under the same skin queues nothing");
 				Changed.material.density = 2.0;
 				Changed.skin_thickness = 0.08;
-				Primitive->SetMassSpec(Changed);
-				Check(Doc->HasPendingRebuilds(), "skin change: a new skin thickness queues the lattice over the sphere");
+				Primitive->SetBodyStructure(TEXT("Main"), Changed);
+				Check(Doc->HasPendingRebuilds(), "skin change: a new skin thickness queues the sphere's structure");
 				Doc->FlushPendingRebuilds();
-				Check(!Doc->HasPendingRebuilds() && FMath::IsNearlyEqual(M->MinSkinThickness(), 0.08, 1e-12) && M->GetTetBodies().size() == 1 && FMath::IsNearlyEqual(M->GetTetBodies()[0].SkinThickness, 0.08, 1e-12),
-					FString::Printf(TEXT("skin change: the lattice regenerated over the 0.08 skin (hollowed by %.3g)"), M->GetTetBodies().size() == 1 ? M->GetTetBodies()[0].SkinThickness : -1.0));
+				const FAerotelicBodyStructure* G2 = Primitive->GetGeneratedStructure(TEXT("Main"));
+				Check(!Doc->HasPendingRebuilds() && G2 != nullptr && FMath::IsNearlyEqual(G2->GetStructure().skin_thickness, 0.08, 1e-12) && !G2->IsStale(),
+					FString::Printf(TEXT("skin change: the structure regenerated over the 0.08 skin (hollowed by %.3g)"), G2 != nullptr ? G2->GetStructure().skin_thickness : -1.0));
 				// Back to 0.05 for the steps that follow (the round trip, Apply).
 				Changed.skin_thickness = 0.05;
-				Primitive->SetMassSpec(Changed);
-				Check(Doc->HasPendingRebuilds(), "skin change: back to 0.05 queues the lattice again");
+				Primitive->SetBodyStructure(TEXT("Main"), Changed);
+				Check(Doc->HasPendingRebuilds(), "skin change: back to 0.05 queues the structure again");
 				Doc->FlushPendingRebuilds();
-				Check(FMath::IsNearlyEqual(M->MinSkinThickness(), 0.05, 1e-12), "skin change: regenerated over the 0.05 skin again");
+				G2 = Primitive->GetGeneratedStructure(TEXT("Main"));
+				Check(G2 != nullptr && FMath::IsNearlyEqual(G2->GetStructure().skin_thickness, 0.05, 1e-12), "skin change: regenerated over the 0.05 skin again");
 			}
 		}
-		AAerotelicEntityActor* Bad = Doc->AddLattice(TEXT("Lattice 1"), Spec, Targets, TArray<FAerotelicBooleanOperand>(), Error);
-		Check(Bad == nullptr && !Error.IsEmpty(), "a duplicate lattice name is refused");
 	}
 
 	// A design panel's Apply: the panel edits a DRAFT, an independent copy
 	// of the entity's model, and nothing in the scene changes until the
 	// draft is applied -- at which point the entity gets a fresh model of
-	// its own and the lattice over it follows.
+	// its own and the generated structure of its body follows.
 	UE_LOG(LogAerotelicDocumentTest, Display, TEXT("step: apply"));
 	if (Primitive != nullptr && Wing != nullptr)
 	{
-		AAerotelicEntityActor* Lattice = nullptr;
 		AAerotelicEntityActor* Boolean = nullptr;
 		for (auto& Weak : Doc->GetEntities())
 		{
 			if (!Weak.IsValid()) continue;
-			if (Weak->GetEntityType() == aerotelic::project_yaml::EntityType::Lattice) Lattice = Weak.Get();
 			if (Weak->GetEntityType() == aerotelic::project_yaml::EntityType::Boolean) Boolean = Weak.Get();
 		}
 		Check(Doc->CloneEntityModel(Boolean) == nullptr, "apply: a boolean result has no draft to edit (its operands have)");
-		Check(Doc->CloneEntityModel(Lattice) == nullptr, "apply: a lattice has no draft to edit (its own dialog applies)");
 
 		std::unique_ptr<aerotelic::ISolidModel> Draft = Doc->CloneEntityModel(Primitive);
 		Check(Draft != nullptr, "apply: the sphere clones for editing");
@@ -623,23 +647,27 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 			Check(FMath::IsNearlyEqual(Primitive->GetModelAs<aerotelic::PrimitiveModel>()->radius, R0 * 1.5, 1e-12),
 				"apply: editing the draft after Apply still leaves the entity alone until the next Apply");
 
-			// The boolean and the lattice over the sphere follow: queued by
-			// the Apply, rebuilt by the flush (the ticker's job in the
-			// application). Three parameterisations in all -- the sphere,
-			// done, then those two -- so the bar stands at a third.
-			Check(Doc->HasPendingRebuilds(), "apply: the boolean and the lattice over the sphere are queued to follow");
+			// The boolean over the sphere and the sphere's generated structure
+			// follow: queued by the Apply, rebuilt by the flush (the ticker's
+			// job in the application). Three items in all -- the sphere,
+			// done, then those two -- so the bar stands at a third. Until the
+			// flush the layers stand as generated and are marked stale.
+			Check(Doc->HasPendingRebuilds(), "apply: the boolean and the structure over the sphere are queued to follow");
 			Check(FMath::IsNearlyEqual(Doc->GetRebuildProgress(), 1.0f / 3.0f, 1e-6f), FString::Printf(TEXT("apply: the progress bar shows one of three rebuilt (%.3f)"), Doc->GetRebuildProgress()));
+			{
+				const FAerotelicBodyStructure* Stale = Primitive->GetGeneratedStructure(TEXT("Main"));
+				Check(Stale != nullptr && Stale->IsStale() && Stale->IsGenerated(), "apply: the layers are kept, marked stale, until the regeneration");
+			}
 			Doc->FlushPendingRebuilds();
 			Check(!Doc->HasPendingRebuilds() && Doc->GetRebuildProgress() == 1.0f, "apply: the flush rebuilt what was queued and the bar is full again");
-			if (Lattice != nullptr)
 			{
-				const FAerotelicLatticeModel* M = Lattice->GetModelAs<FAerotelicLatticeModel>();
-				Check(M->IsValid() && M->GetStats().Triangles > 0, "apply: the lattice is generated again");
-				std::vector<aerotelic::NamedMesh> Meshes = Lattice->GetPlacedMeshes(false, 1e-3);
+				const FAerotelicBodyStructure* G = Primitive->GetGeneratedStructure(TEXT("Main"));
+				Check(G != nullptr && G->IsGenerated() && !G->IsStale() && G->GetStats().Triangles > 0, "apply: the structure is generated again");
+				std::vector<aerotelic::NamedMesh> Meshes = Primitive->GetPlacedLayerMeshes(TEXT("Main"), false);
 				double Reach = 0.0;
 				for (const aerotelic::NamedMesh& NM : Meshes)
 					for (const aerotelic::Vec3& V : NM.mesh.vertices) Reach = FMath::Max(Reach, aerotelic::Length(V));
-				Check(Reach > 1.3 * R0 && Reach < 1.6 * R0, FString::Printf(TEXT("apply: the lattice now fills the larger sphere (reaches %.3f of a %.3f radius)"), Reach, 1.5 * R0));
+				Check(Reach > 1.3 * R0 && Reach < 1.6 * R0, FString::Printf(TEXT("apply: the layers now fill the larger sphere (reach %.3f of a %.3f radius)"), Reach, 1.5 * R0));
 			}
 
 			// Back to the unit sphere for the rest of the run.
@@ -670,9 +698,9 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 	// The viewport's OCCT-free meshes: every entity's model builds its
 	// bodies straight from its curves, closed and outward.
 	// Structural analysis (Analysis -> Structural (Kratos FEA)) on the
-	// sphere four ways, each held to closed forms. The sphere's material is
-	// the aluminium set in the mass step (skin 0.05); the lattice that
-	// fills it inherits it. The aluminium skin of a unit sphere over a very
+	// sphere four ways, each held to closed forms. The sphere's skin is the
+	// 0.05 set in the mass step; its generated structure lends the skin /
+	// core tetrahedra. The aluminium skin of a unit sphere over a very
 	// soft core, stood on its bottom under its own weight and 1 bar: the
 	// reactions carry the weight exactly (the pressure's resultant over a
 	// closed surface is zero), the surface moves inward, and the skin's
@@ -684,12 +712,10 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 	}
 	else
 	{
-		AAerotelicEntityActor* FeaLattice = nullptr;
-		for (auto& Weak : Doc->GetEntities())
-		{
-			if (Weak.IsValid() && Weak->GetEntityType() == aerotelic::project_yaml::EntityType::Lattice) FeaLattice = Weak.Get();
-		}
-		const FAerotelicLatticeModel* FeaModel = FeaLattice ? FeaLattice->GetModelAs<FAerotelicLatticeModel>() : nullptr;
+		const FAerotelicBodyStructure* FeaModel = Primitive != nullptr ? Primitive->GetGeneratedStructure(TEXT("Main")) : nullptr;
+		const aerotelic::LatticeSpec FeaCell = FeaModel != nullptr && FeaModel->GetStructure().infill ? FeaModel->GetStructure().infill->lattice : aerotelic::LatticeSpec();
+		FString FeaTetNote;
+		const FAerotelicBodyStructure::FTetMesh* FeaTet = FeaModel != nullptr ? FeaModel->GetTetMesh(FeaTetNote) : nullptr;
 		const aerotelic::Material Al = *aerotelic::FindMaterialPreset("Aluminium 2024-T3 sheet");
 		aerotelic::Material Soft;
 		Soft.name = "soft core";
@@ -713,8 +739,8 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 		// 7e5 times stiffer than this core, which the iterative solver
 		// converges on poorly (its force balance closed to 1.7% and its
 		// peak stress wandered).
-		aerotelic::TetMesh FeaMesh = FeaModel ? FeaModel->MergedTets(-1) : aerotelic::TetMesh();
-		Check(!FeaMesh.tets.empty(), "fea: the lattice's skin and core tetrahedra are the model");
+		aerotelic::TetMesh FeaMesh = FeaTet != nullptr ? FeaTet->Result.Mesh : aerotelic::TetMesh();
+		Check(!FeaMesh.tets.empty(), FString::Printf(TEXT("fea: the generated structure's skin and core tetrahedra are the model (%s)"), *FeaTetNote));
 		if (!FeaMesh.tets.empty())
 		{
 			AerotelicStructuralFea::FRequest Request;
@@ -735,7 +761,7 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 			Check(bSolved, FString::Printf(TEXT("fea: the sphere solved (%s)"), bSolved ? *FString::Printf(TEXT("%d nodes, %d elements, %d dof, %.1f s"), R.Nodes, R.Elements, R.Dofs, R.Seconds) : *Error));
 			if (bSolved)
 			{
-				const AerotelicTetGmsh::FResult& S = FeaModel->GetTetMeshes()[0].Result;
+				const AerotelicTetGmsh::FResult& S = FeaTet->Result;
 				const double ExpectedMass = Al.density *S.SkinVolume + 50.0 * S.CoreVolume;
 				Check(R.bSecondOrder && R.Nodes > static_cast<int32>(FeaMesh.nodes.size()), "fea: solved on 10-node tetrahedra (mid-edge nodes added)");
 				Check(FMath::IsNearlyEqual(R.Mass, ExpectedMass, 1e-6 * ExpectedMass),
@@ -823,9 +849,10 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 			Check(OwnGrid.size() == 1 && OwnGrid[0].mesh.IsClosedManifold() && OwnGrid[0].mesh.SignedVolume() > 0.0, "fea (shells): the body's own grid (tolerance 0) is one closed, outward body");
 			Check(OwnGrid.size() == 1 && Finer.size() == 1 && OwnGrid[0].mesh.triangles.size() < Finer[0].mesh.triangles.size(),
 				FString::Printf(TEXT("fea (shells): the own grid is the viewport's, coarser than a finer tolerance asks for (%d vs %d triangles)"), OwnGrid.size() ? (int32)OwnGrid[0].mesh.triangles.size() : -1, Finer.size() ? (int32)Finer[0].mesh.triangles.size() : -1));
-			// The lattice's private copy, hollowed at a quarter of the skin, is
-			// NOT what the solver gets: its triangle count differs from the grid's.
-			Check(FeaModel->GetTetBodies().size() == 1, "fea (shells): the lattice keeps its one hollowed body to itself");
+			// The generation's private copy, hollowed at a quarter of the skin,
+			// is NOT what the solver gets: its triangle count differs from the
+			// grid's.
+			Check(!FeaModel->GetOuter().IsEmpty() && FeaModel->GetOuter().IsClosedManifold() && !FeaModel->GetInner().IsEmpty(), "fea (shells): the generation keeps its hollowed copy of the body (and its offset) to itself");
 			AerotelicTetGmsh::FResult S;
 			bool bMeshed = false;
 			if (OwnGrid.size() == 1)
@@ -833,7 +860,7 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 				AerotelicTetGmsh::FRequest G;
 				G.Outer = &OwnGrid[0].mesh;
 				G.Inner = nullptr;
-				G.CoreSize = FeaModel->Spec.cell_size;
+				G.CoreSize = FeaCell.cell_size;
 				G.Algorithm = 1;
 				G.bOptimize = true;
 				G.bOptimizeNetgen = true;
@@ -853,7 +880,7 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 				CoreMesh.material.assign(CoreMesh.tets.size(), 1);
 				aerotelic::UnitCellSamples Cell;
 				bool bSampled = true;
-				try { Cell = aerotelic::SampleUnitCell(FeaModel->Spec, 24); } catch (const std::exception&) { bSampled = false; }
+				try { Cell = aerotelic::SampleUnitCell(FeaCell, 24); } catch (const std::exception&) { bSampled = false; }
 				Check(bSampled && Cell.nx == 24 && FMath::Abs(Cell.solid_fraction - 0.35) < 0.05, FString::Printf(TEXT("fea (shells): the gyroid cell voxelises near its 0.35 fraction (%.3f)"), Cell.solid_fraction));
 				AerotelicStructuralFea::FRequest Request;
 				Request.Mesh = &CoreMesh;
@@ -1381,7 +1408,12 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 		FullBounds = Wing->GetPlacedBounds(false);
 		FAerotelicBooleanOperand P;
 		P.Entity = Primitive;
-		FullMass = ComputeAerotelicMassReport({ P }, 2e-3, Doc->GetUnits()).Assembly.mass;
+		double FullSkinMass = 0.0;
+		{
+			const FAerotelicMassReport Full = ComputeAerotelicMassReport({ P }, 2e-3, Doc->GetUnits());
+			FullMass = Full.Assembly.mass;
+			for (const FAerotelicMassLine& L : Full.Bodies) if (L.Label.Contains(TEXT("Skin"))) FullSkinMass = L.Props.mass;
+		}
 		Doc->FlushPendingRebuilds();
 
 		Check(Doc->SetModelScale(0.25) && Doc->GetModelScale() == 0.25, "scale: set to 1:4");
@@ -1415,16 +1447,27 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 			Check(!B.IsVoid() && FMath::IsNearlyEqual(Y1 - Y0, FullBounds.GetSize().Y * 0.25, 2e-3 * FullBounds.GetSize().Y),
 				FString::Printf(TEXT("scale: the placed solid is the replica's (span %.4f vs full %.4f)"), Y1 - Y0, FullBounds.GetSize().Y));
 		}
+		Check(Doc->HasPendingRebuilds(), "scale: the boolean and the sphere's structure are queued to follow");
+		Doc->FlushPendingRebuilds();
+		Check(!Doc->HasPendingRebuilds(), "scale: ... and rebuilt");
 		{
+			// The sphere's generated layers were rebuilt over the replica: the
+			// skin is still 0.05 thick (as typed, not scaled), so on a 0.25
+			// sphere it is the shell between 0.25 and 0.20 -- not a sixteenth
+			// of the full-size shell (1 to 0.95), since a thick skin's volume
+			// is not linear in the area. As a ratio of the full-size skin
+			// layer's mass, so the project's units (changed earlier in the
+			// run) drop out.
 			const FAerotelicMassReport R = ComputeAerotelicMassReport({ P }, 2e-3, Doc->GetUnits());
 			const aerotelic::MassSpec Spec = Primitive->GetMassSpec();
 			Check(Spec.IsSkin(), "scale: the sphere weighs as a skin (set in the mass step)");
-			Check(FullMass > 0.0 && FMath::IsNearlyEqual(R.Assembly.mass, FullMass / 16.0, 1e-2 * FullMass / 16.0),
-				FString::Printf(TEXT("scale: a skin's mass goes as the area, 1/16 (%.5g vs %.5g full), its thickness as typed"), R.Assembly.mass, FullMass));
+			const FAerotelicMassLine* SkinLine = nullptr;
+			for (const FAerotelicMassLine& L : R.Bodies) if (L.Label.Contains(TEXT("Skin"))) SkinLine = &L;
+			const double Ratio = (FMath::Pow(0.25, 3.0) - FMath::Pow(0.20, 3.0)) / (1.0 - FMath::Pow(0.95, 3.0));
+			Check(SkinLine != nullptr && SkinLine->bIncluded && FullSkinMass > 0.0 && FMath::IsNearlyEqual(SkinLine->Props.mass, Ratio * FullSkinMass, 0.08 * Ratio * FullSkinMass),
+				FString::Printf(TEXT("scale: the regenerated skin layer is the 0.05 shell of the quarter-size sphere, its thickness as typed (%.5g vs %.5g = %.4f of the full-size skin %.5g)"), SkinLine ? SkinLine->Props.mass : -1.0, Ratio * FullSkinMass, Ratio, FullSkinMass));
+			Check(FullMass > 0.0 && R.Assembly.mass < FullMass / 8.0, "scale: the replica weighs far less than the full-size sphere");
 		}
-		Check(Doc->HasPendingRebuilds(), "scale: the boolean and the lattice over the wing and sphere are queued to follow");
-		Doc->FlushPendingRebuilds();
-		Check(!Doc->HasPendingRebuilds(), "scale: ... and rebuilt");
 	}
 
 	UE_LOG(LogAerotelicDocumentTest, Display, TEXT("step: save"));
@@ -1450,7 +1493,7 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 	// short-circuits without showing a dialog.
 	Check(Doc->OpenProjectPath(TmpPath), "reopen succeeded");
 	UE_LOG(LogAerotelicDocumentTest, Display, TEXT("step: reopen done"));
-	Check(Doc->GetEntities().Num() == 5, "reopened scene has 3 entities, the boolean result and the lattice");
+	Check(Doc->GetEntities().Num() == 4, "reopened scene has 3 entities and the boolean result");
 	Check(Doc->GetUnits().length == aerotelic::LengthUnit::Foot && Doc->GetUnits().mass == aerotelic::MassUnit::PoundMass,
 		"units: feet and pounds came back with the project");
 	{
@@ -1475,22 +1518,19 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 	Check(Doc->SetModelScale(1.0) && Doc->GetModelScale() == 1.0, "scale: back to full size for the rest of the run");
 	Doc->FlushPendingRebuilds();
 
-	// Copy refuses the derived kinds, while they are still in the scene: a
-	// boolean result and a lattice are solids built FROM other entities,
-	// with no parameterisation of their own to hand a constructor.
+	// Copy refuses the derived kind, while it is still in the scene: a
+	// boolean result is a solid built FROM other entities, with no
+	// parameterisation of its own to hand a constructor.
 	{
 		AAerotelicEntityActor* AnyBoolean = nullptr;
-		AAerotelicEntityActor* AnyLattice = nullptr;
 		AAerotelicEntityActor* AnyWing = nullptr;
 		for (auto& Weak : Doc->GetEntities())
 		{
 			if (!Weak.IsValid()) continue;
 			if (Weak->GetEntityType() == aerotelic::project_yaml::EntityType::Boolean) AnyBoolean = Weak.Get();
-			if (Weak->GetEntityType() == aerotelic::project_yaml::EntityType::Lattice) AnyLattice = Weak.Get();
 			if (Weak->GetEntityType() == aerotelic::project_yaml::EntityType::Wing) AnyWing = Weak.Get();
 		}
 		Check(!UAerotelicDocumentSubsystem::CanCopyEntity(AnyBoolean), "copy: a boolean result cannot be copied");
-		Check(!UAerotelicDocumentSubsystem::CanCopyEntity(AnyLattice), "copy: a lattice cannot be copied");
 		Check(!UAerotelicDocumentSubsystem::CanCopyEntity(nullptr), "copy: nothing selected cannot be copied");
 		Check(UAerotelicDocumentSubsystem::CanCopyEntity(AnyWing), "copy: a wing can be copied");
 		// A refused copy must leave whatever was on the clipboard alone
@@ -1501,7 +1541,7 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 			"copy: the refused copy left the wing on the clipboard untouched");
 	}
 
-	bool bFoundWing = false, bFoundFuselage = false, bFoundPrimitive = false, bFoundBoolean = false, bFoundLattice = false;
+	bool bFoundWing = false, bFoundFuselage = false, bFoundPrimitive = false, bFoundBoolean = false;
 	AAerotelicEntityActor* ReopenedFuselage = nullptr;
 	AAerotelicEntityActor* ReopenedPrimitive = nullptr;
 	for (auto& WeakEntity : Doc->GetEntities())
@@ -1543,25 +1583,28 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 			}
 			break;
 		}
-		case aerotelic::project_yaml::EntityType::Lattice:
-		{
-			bFoundLattice = true;
-			Check(E->EntityName == TEXT("Lattice 1"), "lattice kept its name");
-			const FAerotelicLatticeModel* M = static_cast<const FAerotelicLatticeModel*>(E->GetModel());
-			Check(M->Spec.type == "Gyroid" && M->Spec.resolution == 6 && FMath::IsNearlyEqual(M->Spec.cell_size, 0.5) && FMath::IsNearlyEqual(M->Spec.volume_fraction, 0.35),
-				"lattice parameters round-tripped");
-			Check(FMath::IsNearlyEqual(M->Spec.origin.x, 0.1, 1e-12) && FMath::IsNearlyEqual(M->Spec.origin.y, -0.05, 1e-12) && FMath::IsNearlyEqual(M->Spec.origin.z, 0.02, 1e-12),
-				"lattice offsets (origin) round-tripped");
-			Check(M->Targets.Num() == 1 && M->Targets[0].Entity.IsValid() && M->Targets[0].Entity->GetEntityType() == aerotelic::project_yaml::EntityType::Primitive,
-				"lattice target resolved to the reopened sphere");
-			Check(M->IsValid() && M->GetStats().Triangles > 0, "lattice regenerated on load");
-			break;
-		}
 		default:
 			break;
 		}
 	}
-	Check(bFoundWing && bFoundFuselage && bFoundPrimitive && bFoundBoolean && bFoundLattice, "all three entity types, the boolean and the lattice survived the round trip");
+	Check(bFoundWing && bFoundFuselage && bFoundPrimitive && bFoundBoolean, "all three entity types and the boolean survived the round trip");
+	// The sphere's structure came back with it -- the infill's parameters
+	// (its offsets included) and the ribs -- and was regenerated on load,
+	// since it has an interior.
+	if (ReopenedPrimitive != nullptr)
+	{
+		const aerotelic::BodyStructure& S = ReopenedPrimitive->GetBodyStructure(0);
+		Check(S.infill.has_value() && S.infill->lattice.type == "Gyroid" && S.infill->lattice.resolution == 6 && FMath::IsNearlyEqual(S.infill->lattice.cell_size, 0.5) && FMath::IsNearlyEqual(S.infill->lattice.volume_fraction, 0.35),
+			"structure: the infill's lattice parameters round-tripped");
+		Check(S.infill.has_value() && FMath::IsNearlyEqual(S.infill->lattice.origin.x, 0.1, 1e-12) && FMath::IsNearlyEqual(S.infill->lattice.origin.y, -0.05, 1e-12) && FMath::IsNearlyEqual(S.infill->lattice.origin.z, 0.02, 1e-12),
+			"structure: the infill's offsets (origin) round-tripped");
+		Check(S.infill.has_value() && S.infill->material.name == "infill foam" && FMath::IsNearlyEqual(S.infill->material.density, 0.5, 1e-12), "structure: the infill's own material round-tripped");
+		Check(S.networks.size() == 1 && S.networks[0].name == "Ribs" && S.networks[0].axis == aerotelic::PlaneAxis::X && S.networks[0].count == 2
+			&& FMath::IsNearlyEqual(S.networks[0].start, -0.3, 1e-12) && FMath::IsNearlyEqual(S.networks[0].spacing, 0.6, 1e-12) && FMath::IsNearlyEqual(S.networks[0].thickness, 0.04, 1e-12)
+			&& S.networks[0].material.name == "rib ply", "structure: the plane network round-tripped");
+		const FAerotelicBodyStructure* G = ReopenedPrimitive->GetGeneratedStructure(TEXT("Main"));
+		Check(G != nullptr && G->IsGenerated() && G->GetLayers().size() == 3, "structure: regenerated on load (three layers)");
+	}
 
 	// Deleting an operand cascades to the result built on it.
 	// The mass settings set before the save came back with their entities.
@@ -1583,13 +1626,13 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 	if (ReopenedFuselage != nullptr)
 	{
 		Doc->RemoveEntity(ReopenedFuselage);
-		Check(Doc->GetEntities().Num() == 3, "deleting an operand removed the boolean result with it (the lattice, on the sphere, stays)");
+		Check(Doc->GetEntities().Num() == 2, "deleting an operand removed the boolean result with it (the sphere, structure and all, stays)");
 	}
-	// ... and deleting a filled body cascades to the lattice.
+	// ... and the sphere's structure goes with the sphere, being its own.
 	if (ReopenedPrimitive != nullptr)
 	{
 		Doc->RemoveEntity(ReopenedPrimitive);
-		Check(Doc->GetEntities().Num() == 1, "deleting the filled body removed the lattice with it");
+		Check(Doc->GetEntities().Num() == 1, "deleting the structured body leaves the wing alone");
 	}
 
 	IFileManager::Get().Delete(*TmpPath);

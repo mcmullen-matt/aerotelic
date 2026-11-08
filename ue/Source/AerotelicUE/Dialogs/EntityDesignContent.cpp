@@ -61,7 +61,6 @@ FAerotelicDesignContent MakeEntityDesignContent(AAerotelicEntityActor* Entity)
 	case project_yaml::EntityType::Propeller: BuildPropellerDesignContent(Entity, static_cast<PropellerModel*>(Draft), OnChanged, Out); break;
 	case project_yaml::EntityType::Primitive: BuildPrimitiveDesignContent(Entity, static_cast<PrimitiveModel*>(Draft), OnChanged, Out); break;
 	case project_yaml::EntityType::Boolean: break;
-	case project_yaml::EntityType::Lattice: break;
 	}
 	if (!Out.Widget.IsValid())
 	{
