@@ -1,5 +1,6 @@
 #include "aerotelic/mass_properties.hpp"
 
+#include <algorithm>
 #include <cctype>
 #include <cmath>
 #include <stdexcept>
@@ -222,6 +223,205 @@ void PrincipalInertia(const InertiaTensor& inertia, std::array<double, 3>& momen
 	}
 	// A right-handed frame, so the third axis is the cross of the first two.
 	if (Dot(Cross(axes[0], axes[1]), axes[2]) < 0.0) axes[2] = -axes[2];
+}
+
+// ---- a body under its structure --------------------------------------------
+
+BodyStructure BodyStructureFromMassSpec(const MassSpec& m) {
+	BodyStructure s;
+	if (m.mode == MassMode::Asserted) {
+		s.asserted_mass = m.mass;
+	} else if (m.mode == MassMode::Material) {
+		s.material = m.material;
+		s.skin_thickness = std::max(m.skin_thickness, 0.0);
+	}
+	return s;
+}
+
+MassSpec MassSpecFromBodyStructure(const BodyStructure& s) {
+	MassSpec m;
+	if (s.asserted_mass) {
+		m.mode = MassMode::Asserted;
+		m.mass = *s.asserted_mass;
+	} else if (s.material.HasDensity()) {
+		// (A default Material is named "Custom" with no density: not a setting.)
+		m.mode = MassMode::Material;
+		m.material = s.material;
+		m.skin_thickness = s.skin_thickness;
+	}
+	return m;
+}
+
+MassMode MassModeOf(const BodyStructure& s) {
+	if (s.asserted_mass) return MassMode::Asserted;
+	return s.material.HasDensity() ? MassMode::Material : MassMode::Unset;
+}
+
+namespace {
+
+// A loop's signed area in the plane and its area centroid (the shoelace
+// formula in the (u, v) basis about `origin`); the mean of the points
+// when the area is nothing.
+void LoopAreaCentroid(const std::vector<Vec3>& loop, const Vec3& u, const Vec3& v, const Vec3& origin, double* area, Vec3* centroid) {
+	double a = 0.0, cx = 0.0, cy = 0.0;
+	Vec3 mean;
+	const size_t n = loop.size();
+	for (size_t i = 0; i < n; ++i) {
+		const Vec3 p = loop[i] - origin, q = loop[(i + 1) % n] - origin;
+		const double x0 = Dot(p, u), y0 = Dot(p, v), x1 = Dot(q, u), y1 = Dot(q, v);
+		const double cross = x0 * y1 - x1 * y0;
+		a += cross;
+		cx += (x0 + x1) * cross;
+		cy += (y0 + y1) * cross;
+		mean += loop[i];
+	}
+	a *= 0.5;
+	*area = a;
+	if (std::fabs(a) > 1e-300) {
+		*centroid = origin + u * (cx / (6.0 * a)) + v * (cy / (6.0 * a));
+	} else {
+		*centroid = n > 0 ? mean / static_cast<double>(n) : origin;
+	}
+}
+
+} // namespace
+
+std::vector<StructureMassPart> StructureMassParts(const TriMesh& placed, const BodyStructure& s,
+	const std::array<double, 9>& R, const Vec3& T, double scale, bool mirror, double density_to_si) {
+	std::vector<StructureMassPart> out;
+	auto leave_out = [&](const std::string& label, const std::string& note) {
+		StructureMassPart part;
+		part.label = label;
+		part.included = false;
+		part.note = note;
+		out.push_back(part);
+	};
+	if (!s.IsSet()) {
+		leave_out("structure", "no material assigned");
+		return out;
+	}
+	if (s.asserted_mass) {
+		StructureMassPart part;
+		part.label = "asserted";
+		part.props = ShellMassProperties(placed, *s.asserted_mass);
+		part.note = "asserted total, spread over the surface";
+		out.push_back(part);
+		return out;
+	}
+	if (!s.material.HasDensity()) {
+		leave_out("material", "the material has no density");
+		return out;
+	}
+	const double rho = s.material.density / density_to_si;
+	const bool closed = placed.IsClosedManifold();
+	if (!(s.skin_thickness > 0.0)) {
+		StructureMassPart part;
+		part.label = "solid";
+		part.props = SolidMassProperties(placed, rho);
+		if (!closed) part.note = "open surface: the enclosed volume, and so this mass, is not well defined -- give the material a skin thickness or assert the mass instead";
+		out.push_back(part);
+		return out;
+	}
+	{
+		StructureMassPart part;
+		part.label = "skin";
+		part.props = SkinMassProperties(placed, rho, s.skin_thickness);
+		part.note = "skin, rho t A over the surface";
+		out.push_back(part);
+	}
+	const double volume = closed ? std::fabs(placed.SignedVolume()) : 0.0;
+	const double area = placed.SurfaceArea();
+	double ribs_volume = 0.0;
+	for (const PlaneNetwork& n : s.networks) {
+		std::vector<MassProperties> pieces;
+		int planes_hit = 0;
+		const double rho_n = n.material.HasDensity() ? n.material.density / density_to_si : 0.0;
+		for (int k = 0; k < n.count; ++k) {
+			Plane p = PlacedPlane(NetworkPlane(n, k), R, T, scale);
+			if (mirror) p = MirrorPlaneY(p);
+			const PlaneSection sec = SectionByPlane(placed, p);
+			if (sec.loops.empty()) continue;
+			++planes_hit;
+			Vec3 u, v;
+			PlaneBasis(p.normal, &u, &v);
+			const Vec3 origin = p.normal * p.offset;
+			double area_sum = 0.0, length_sum = 0.0;
+			Vec3 area_centroid_sum, length_centroid_sum;
+			for (const auto& loop : sec.loops) {
+				double a;
+				Vec3 c;
+				LoopAreaCentroid(loop, u, v, origin, &a, &c);
+				area_sum += a;
+				area_centroid_sum += c * a;
+				for (size_t i = 0; i < loop.size(); ++i) {
+					const Vec3 a0 = loop[i], a1 = loop[(i + 1) % loop.size()];
+					const double len = Distance(a0, a1);
+					length_sum += len;
+					length_centroid_sum += (a0 + a1) * (0.5 * len);
+				}
+			}
+			double vol;
+			Vec3 centre;
+			if (n.height > 0.0) {
+				// A rib that stops `height` in from the surface: a band along
+				// the section's outline.
+				vol = n.thickness * length_sum * n.height;
+				centre = length_sum > 0.0 ? length_centroid_sum / length_sum : origin;
+			} else {
+				vol = n.thickness * area_sum;
+				centre = std::fabs(area_sum) > 1e-300 ? area_centroid_sum / area_sum : origin;
+			}
+			if (!(vol > 0.0)) continue;
+			MassProperties mp;
+			mp.mass = rho_n * vol;
+			mp.centre = centre;
+			mp.volume = vol;
+			mp.area = std::fabs(area_sum);
+			pieces.push_back(mp);
+			ribs_volume += vol;
+		}
+		StructureMassPart part;
+		part.label = n.name;
+		part.estimated = true;
+		if (pieces.empty()) {
+			part.included = false;
+			part.note = "none of its planes crosses the body";
+		} else if (!n.material.HasDensity()) {
+			part.included = false;
+			part.note = "its material has no density";
+		} else {
+			part.props = CombineMassProperties(pieces);
+			part.note = "estimated from the planes' sections (" + std::to_string(planes_hit) + " of " + std::to_string(n.count)
+				+ " planes cross the body); generate the structure for the exact figure";
+		}
+		out.push_back(part);
+	}
+	if (s.infill) {
+		StructureMassPart part;
+		part.label = "infill";
+		part.estimated = true;
+		if (!closed) {
+			part.included = false;
+			part.note = "open surface: the interior volume is not defined";
+		} else if (!s.infill->material.HasDensity()) {
+			part.included = false;
+			part.note = "its material has no density";
+		} else {
+			const LatticeSpec& spec = s.infill->lattice;
+			double fraction = spec.volume_fraction;
+			if (spec.family == LatticeFamily::Honeycomb && spec.wall_sizing == WallSizing::Thickness) {
+				// Sized by its wall, the fraction follows from it.
+				try { fraction = CellSolidFraction(spec, 0.5 * spec.wall_thickness); } catch (const std::exception&) {}
+			}
+			const double interior = std::max(volume - area * s.skin_thickness - ribs_volume, 0.0);
+			const double mass = s.infill->material.density / density_to_si * fraction * interior;
+			part.props = SolidMassProperties(placed, volume > 0.0 ? mass / volume : 0.0);
+			part.props.volume = fraction * interior;
+			part.note = "estimated: the volume fraction of what the skin and the ribs leave of the interior, spread over the body; generate the structure for the exact figure";
+		}
+		out.push_back(part);
+	}
+	return out;
 }
 
 } // namespace aerotelic

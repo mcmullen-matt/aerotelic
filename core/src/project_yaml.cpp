@@ -700,7 +700,8 @@ InfillSpec DecodeInfillSpec(const YAML::Node& node) {
 }
 
 void EncodeBodyStructure(const BodyStructure& s, YAML::Node& into) {
-	if (s.material.HasDensity() || !s.material.name.empty()) into["material"] = EncodeMaterial(s.material);
+	// A default Material is named "Custom" with no density: nothing to write.
+	if (s.material.HasDensity()) into["material"] = EncodeMaterial(s.material);
 	if (s.skin_thickness > 0.0) into["skin_thickness"] = s.skin_thickness;
 	if (s.infill) into["infill"] = Encode(*s.infill);
 	if (!s.networks.empty()) {

@@ -367,6 +367,128 @@ void CheckModeNames() {
 	Check(threw, "an unknown mass mode is refused");
 }
 
+// A body under its structure (StructureMassParts): the rules, and the
+// estimates of ribs and infill on a box where every figure is analytic.
+void CheckStructureParts() {
+	const TriMesh box = BoxMesh(2.0, 4.0, 6.0);   // volume 48, area 88
+	const std::array<double, 9> I{1, 0, 0, 0, 1, 0, 0, 0, 1};
+	const Vec3 O;
+
+	BodyStructure s;
+	auto parts = StructureMassParts(box, s, I, O, 1.0, false, 1.0);
+	Check(parts.size() == 1 && !parts[0].included, "structure parts: nothing assigned is one part left out");
+
+	s.asserted_mass = 12.5;
+	parts = StructureMassParts(box, s, I, O, 1.0, false, 1.0);
+	Check(parts.size() == 1 && parts[0].included && parts[0].label == "asserted", "structure parts: an asserted mass is one part");
+	CheckClose(parts[0].props.mass, 12.5, 1e-12, "structure parts: the asserted total");
+	s.asserted_mass.reset();
+
+	s.material.name = "test";
+	s.material.density = 1000.0;
+	parts = StructureMassParts(box, s, I, O, 1.0, false, 1.0);
+	Check(parts.size() == 1 && parts[0].label == "solid" && parts[0].included, "structure parts: a material alone is a solid");
+	CheckClose(parts[0].props.mass, 48000.0, 1e-6, "structure parts: solid mass = rho V");
+
+	// SI densities divided by the conversion: 1000 kg/m^3 in a project in
+	// grams and millimetres would be 1e-3 g/mm^3.
+	parts = StructureMassParts(box, s, I, O, 1.0, false, 1e6);
+	CheckClose(parts[0].props.mass, 48.0 * 1e-3, 1e-12, "structure parts: the density is converted to the project's units");
+
+	s.skin_thickness = 0.01;
+	PlaneNetwork ribs;
+	ribs.name = "Ribs";
+	ribs.axis = PlaneAxis::Y;
+	ribs.start = -1.0;
+	ribs.spacing = 1.0;
+	ribs.count = 3;         // y = -1, 0, 1: each section 2 x 6 = 12
+	ribs.thickness = 0.02;
+	ribs.material.name = "rib";
+	ribs.material.density = 500.0;
+	PlaneNetwork cap;
+	cap.name = "Cap";
+	cap.axis = PlaneAxis::X;
+	cap.start = 0.0;
+	cap.count = 1;          // x = 0: section 4 x 6, perimeter 20
+	cap.thickness = 0.01;
+	cap.height = 0.1;
+	cap.material.name = "cap";
+	cap.material.density = 500.0;
+	s.networks = {ribs, cap};
+	InfillSpec infill;
+	infill.material.name = "foam";
+	infill.material.density = 1200.0;
+	infill.lattice.volume_fraction = 0.3;
+	s.infill = infill;
+	parts = StructureMassParts(box, s, I, O, 1.0, false, 1.0);
+	Check(parts.size() == 4 && parts[0].label == "skin" && parts[1].label == "Ribs" && parts[2].label == "Cap" && parts[3].label == "infill",
+		"structure parts: skin, the two networks and the infill, in that order");
+	if (parts.size() == 4) {
+		CheckClose(parts[0].props.mass, 1000.0 * 0.01 * 88.0, 1e-9, "structure parts: skin mass = rho t A");
+		Check(!parts[0].estimated && parts[1].estimated && parts[2].estimated && parts[3].estimated, "structure parts: the interior is estimated, the skin is not");
+		CheckClose(parts[1].props.mass, 500.0 * 0.02 * 12.0 * 3, 1e-9, "structure parts: three full ribs = rho t x three 2 x 6 sections");
+		CheckClose(parts[1].props.centre.y, 0.0, 1e-9, "structure parts: the ribs' centre is the middle plane");
+		CheckClose(parts[1].props.centre.x, 0.0, 1e-9, "structure parts: the ribs' centre is on the box's axis");
+		CheckClose(parts[2].props.mass, 500.0 * 0.01 * 20.0 * 0.1, 1e-9, "structure parts: a height-limited rib = rho t x perimeter x height");
+		CheckClose(parts[2].props.centre.x, 0.0, 1e-9, "structure parts: the cap sits on its plane");
+		const double interior = 48.0 - 88.0 * 0.01 - (0.02 * 12.0 * 3 + 0.01 * 20.0 * 0.1);
+		CheckClose(parts[3].props.mass, 1200.0 * 0.3 * interior, 1e-6, "structure parts: infill = rho x fraction x what the skin and ribs leave");
+		Check(parts[1].note.find("3 of 3") != std::string::npos, "structure parts: the note says how many planes crossed");
+	}
+
+	// A network whose planes miss the body is left out, not counted as zero.
+	PlaneNetwork miss = ribs;
+	miss.name = "Miss";
+	miss.start = 10.0;
+	miss.count = 1;
+	s.networks = {miss};
+	s.infill.reset();
+	parts = StructureMassParts(box, s, I, O, 1.0, false, 1.0);
+	Check(parts.size() == 2 && !parts[1].included && parts[1].note.find("crosses") != std::string::npos, "structure parts: a network missing the body is left out with the reason");
+
+	// A single plane at y = 1 mirrored in y lands at y = -1.
+	PlaneNetwork one = ribs;
+	one.start = 1.0;
+	one.count = 1;
+	s.networks = {one};
+	parts = StructureMassParts(box, s, I, O, 1.0, true, 1.0);
+	Check(parts.size() == 2 && parts[1].included, "structure parts: a mirrored body's plane crosses it");
+	CheckClose(parts[1].props.centre.y, -1.0, 1e-9, "structure parts: the mirrored half's plane is reflected in y");
+
+	// A placed body: the box turned a quarter turn about z and moved to
+	// x = 10, at half scale; the network's plane x = 0.5 (the box's local
+	// x, 2 wide) follows it. The placed mesh is the box so transformed.
+	const std::array<double, 9> Rz{0, -1, 0, 1, 0, 0, 0, 0, 1};
+	const Vec3 T{10.0, 0.0, 0.0};
+	TriMesh placed = BoxMesh(2.0 * 0.5, 4.0 * 0.5, 6.0 * 0.5);
+	placed.Transform(Rz, T);
+	PlaneNetwork local_x = cap;
+	local_x.height = 0.0;
+	local_x.start = 0.5;   // local x = 0.5 -> world y = 0.25 at half scale
+	s.networks = {local_x};
+	parts = StructureMassParts(placed, s, Rz, T, 0.5, false, 1.0);
+	Check(parts.size() == 2 && parts[1].included, "structure parts: a placed, scaled body's plane still crosses it");
+	// The section at local x = 0.5 is the 4 x 6 face at half scale: 2 x 3.
+	CheckClose(parts[1].props.mass, 500.0 * 0.01 * 6.0, 1e-9, "structure parts: the rib's section follows the placement and the scale");
+	CheckClose(parts[1].props.centre.y, 0.25, 1e-9, "structure parts: the rib sits on the placed plane");
+	CheckClose(parts[1].props.centre.x, 10.0, 1e-9, "structure parts: ...at the placed body's position");
+
+	// The bridge from the old setting and back.
+	MassSpec old;
+	old.mode = MassMode::Material;
+	old.material.name = "x";
+	old.material.density = 2700.0;
+	old.skin_thickness = 0.002;
+	const BodyStructure bs = BodyStructureFromMassSpec(old);
+	Check(bs.IsSkin() && bs.material.density == 2700.0 && bs.skin_thickness == 0.002 && !bs.asserted_mass, "bridge: a material skin becomes a skinned body");
+	const MassSpec back = MassSpecFromBodyStructure(bs);
+	Check(back.mode == MassMode::Material && back.skin_thickness == 0.002 && back.material.density == 2700.0, "bridge: ...and back");
+	old.mode = MassMode::Asserted;
+	old.mass = 3.0;
+	Check(BodyStructureFromMassSpec(old).asserted_mass.value_or(0.0) == 3.0 && MassModeOf(BodyStructureFromMassSpec(old)) == MassMode::Asserted, "bridge: an asserted mass");
+	Check(MassModeOf(BodyStructure{}) == MassMode::Unset && MassSpecFromBodyStructure(BodyStructure{}).mode == MassMode::Unset, "bridge: nothing stays unset");
+}
+
 } // namespace
 
 int main() {
@@ -379,6 +501,7 @@ int main() {
 		CheckInvariances();
 		CheckCombine();
 		CheckModeNames();
+		CheckStructureParts();
 	} catch (const std::exception& e) {
 		std::cout << "UNEXPECTED EXCEPTION: " << e.what() << "\n";
 		return 1;

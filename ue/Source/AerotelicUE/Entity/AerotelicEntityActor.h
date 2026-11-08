@@ -39,6 +39,12 @@ struct FAerotelicBody
 
 	UPROPERTY()
 	FLinearColor Color = FLinearColor::White;
+
+	// What the body is made of and built with (body_structure.hpp): its
+	// material, skin, infill, plane networks, asserted mass. Per body since
+	// 2026-11-08; kept by role name across rebuilds like the display state,
+	// saved under the entity's `bodies:`. Not reflected (a plain C++ value).
+	aerotelic::BodyStructure Structure;
 };
 
 // One scene entity: a live aerotelic model (WingModel/FuselageModel/...)
@@ -130,48 +136,56 @@ public:
 	FLinearColor GetDisplayColor() const;
 	static FLinearColor DefaultColorFor(aerotelic::project_yaml::EntityType Type);
 
-	// ---- mass ----
+	// ---- structure (per body, 2026-11-08) ----
 
-	// What this parameterisation is made of (the Scene tree's Material
-	// Properties dialog): an asserted total spread over its surface, a
-	// material's density times its enclosed volume, or that density over a
-	// skin of the given thickness on every body. Per entity, not per body;
-	// saved with it. Unset means Analysis -> Mass Properties leaves it out
-	// and says so.
+	// What each body is made of and built with -- its material, skin
+	// thickness, lattice infill, plane networks, exclusions, asserted mass
+	// (aerotelic::BodyStructure) -- addressed by the body's role name. Kept
+	// by role across rebuilds like the display state; a role that vanishes
+	// (a flap removed, a blade count lowered) parks its structure and gets
+	// it back if the role returns. Every entity's bodies carry their own,
+	// boolean results included (no inheritance any more: a fused airframe's
+	// body is given its structure directly).
 	//
-	// A PARAMETERISATION's own, only. A derived entity -- a boolean result
-	// or a lattice -- never carries one and has no Material Properties
-	// menu: it INHERITS from what it is built on (2026-10-31), the first
-	// operand or the first filled body, through GetEffectiveMassSpec, which
-	// is what every analysis reads. There is no global default anywhere: a
-	// lattice hollows each body by that body's own skin thickness and takes
-	// its material for the struts.
-	//
-	// The skin thickness is GEOMETRY downstream (2026-11-04): a lattice over
-	// this entity is hollowed by it, so a change to it broadcasts
-	// OnSkinThicknessChanged and the document subsystem regenerates those
-	// lattices as it does after an Apply. The material's figures (density,
-	// stiffness, allowable) and an asserted mass are read on demand by the
-	// analyses and the mass report; nothing is built from them, so they
-	// broadcast nothing.
+	// SetBodyStructure broadcasts OnBodyStructureChanged with bGeometry true
+	// when a regeneration would give different geometry (the skin, the
+	// infill lattice, a network's planes, the exclusions -- see
+	// SameStructureGeometry); a material or an asserted mass alone is read
+	// on demand by the analyses and the mass report and broadcasts false.
+	int32 FindBodyIndex(const FString& BodyRole) const;
+	// Null when there is no such body (or the role is empty and the entity
+	// has more than one body; an empty role on a single-body entity is that
+	// body).
+	const aerotelic::BodyStructure* GetBodyStructure(const FString& BodyRole) const;
+	const aerotelic::BodyStructure& GetBodyStructure(int32 Index) const;
+	// False when there is no such body.
+	bool SetBodyStructure(const FString& BodyRole, const aerotelic::BodyStructure& InStructure);
+	DECLARE_MULTICAST_DELEGATE_ThreeParams(FOnAerotelicBodyStructureChanged, AAerotelicEntityActor*, const FString& /*Role*/, bool /*bGeometry*/);
+	static FOnAerotelicBodyStructureChanged OnBodyStructureChanged;
+	// The placement as the plane geometry wants it: a point x of the
+	// parameterisation's frame sits at OutScale * R x + T in the world
+	// (feature_tree.hpp RotationMatrix; T the actor's location).
+	void GetPlacementMatrix(std::array<double, 9>& OutR, aerotelic::Vec3& OutT, double& OutScale) const;
+
+	// ---- the old per-entity setting, as a bridge ----
+	// The one MassSpec a parameterisation used to carry, read and written
+	// through its bodies: Set gives every body the structure the spec
+	// amounts to (an asserted total split between them by area), Get is the
+	// first body's. Kept while the dialogs and the lattice move to the
+	// per-body API; a derived entity's Set is refused as before.
 	void SetMassSpec(const aerotelic::MassSpec& InSpec);
-	const aerotelic::MassSpec& GetMassSpec() const { return MassSpec; }
+	aerotelic::MassSpec GetMassSpec() const;
 	// What a lattice hollows a body of this spec by: the skin thickness
-	// under a material, nothing otherwise (FAerotelicLatticeModel::
-	// SkinThicknessFor reads it through GetEffectiveMassSpec).
+	// under a material, nothing otherwise.
 	static double LatticeSkinThickness(const aerotelic::MassSpec& Spec);
-	// Fired after SetMassSpec changed the figure a lattice over this entity
-	// is hollowed by. Static, like OnGeometryChanged.
-	DECLARE_MULTICAST_DELEGATE_OneParam(FOnAerotelicSkinThicknessChanged, AAerotelicEntityActor*);
-	static FOnAerotelicSkinThicknessChanged OnSkinThicknessChanged;
-	// Built on other entities (a boolean result, a lattice): inherits.
+	// Built on other entities (a boolean result, a lattice).
 	bool IsDerived() const;
-	// The spec that applies: its own for a parameterisation; the first
-	// operand's (recursively) for a boolean result; the first filled body's
-	// for a lattice. Unset where the chain ends on nothing.
+	// The spec that applies to the first body: its own when set; for a
+	// derived entity whose bodies carry nothing, the first operand's /
+	// first filled body's (the inheritance the lattice still relies on).
 	aerotelic::MassSpec GetEffectiveMassSpec() const;
-	// The entity the effective spec comes from (this one for a
-	// parameterisation), or null.
+	// The entity the effective spec comes from (this one when its own), or
+	// null.
 	const AAerotelicEntityActor* GetMassSpecSource() const;
 
 	// ---- surface finish, style, section ----
@@ -339,7 +353,9 @@ private:
 	bool bMirrorHasTessellation = false;
 	EAerotelicRenderStyle RenderStyle = EAerotelicRenderStyle::Shaded;
 	TOptional<FLinearColor> ColorOverride;
-	aerotelic::MassSpec MassSpec;
+	// Structures of body roles that are not currently produced (a removed
+	// flap), by role, restored if the role comes back. Not saved.
+	TMap<FString, aerotelic::BodyStructure> OrphanedStructures;
 	FDelegateHandle TransformHandle;
 	// The model's solid from the last build that needed OCCT (unplaced):
 	// a boolean result, or a body whose model has no mesh builder. Null

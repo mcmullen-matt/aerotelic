@@ -26,6 +26,7 @@
 #include <string>
 #include <vector>
 
+#include "aerotelic/body_structure.hpp"
 #include "aerotelic/materials.hpp"
 #include "aerotelic/mesh.hpp"
 
@@ -58,6 +59,15 @@ struct MassSpec {
 
 const char* MassModeName(MassMode m);
 MassMode ParseMassMode(const std::string& s);
+
+// The old per-parameterisation setting as one body's structure, and back:
+// Asserted -> asserted_mass, Material -> material + skin_thickness. The
+// bridge while the application moves from the one to the other
+// (2026-11-08); the file's legacy `mass:` is read through it.
+BodyStructure BodyStructureFromMassSpec(const MassSpec& m);
+MassSpec MassSpecFromBodyStructure(const BodyStructure& s);
+// The mode a structure amounts to, for the report's column.
+MassMode MassModeOf(const BodyStructure& s);
 
 // Row-major symmetric 3x3 in the engineer's convention: the diagonal
 // holds the moments Ixx, Iyy, Izz; the off-diagonals hold MINUS the
@@ -106,5 +116,37 @@ MassProperties CombineMassProperties(const std::vector<MassProperties>& parts);
 // (rows of a right-handed frame): the eigen-decomposition of the symmetric
 // tensor, by Jacobi rotations.
 void PrincipalInertia(const InertiaTensor& inertia, std::array<double, 3>& moments, std::array<Vec3, 3>& axes);
+
+// ---- a body under its structure --------------------------------------------
+
+// One part of a body's weight: its skin, its solid, its asserted total,
+// its infill or one of its rib networks.
+struct StructureMassPart {
+	std::string label;       // "solid", "skin", "asserted", "infill", or the network's name
+	MassProperties props;
+	bool included = true;    // false: left out, `note` says why
+	bool estimated = false;  // from the spec's figures, not from generated geometry
+	std::string note;
+};
+
+// How a body weighs under its structure, before (or without) its interior
+// geometry being generated. `placed` is the body's mesh as placed in the
+// scene (project units); the materials' SI densities are divided by
+// `density_to_si` to match it. Rules:
+//   - nothing assigned: one part, not included;
+//   - an asserted mass: one part, the total spread over the surface;
+//   - a solid (no skin): density over the enclosed volume (an open surface
+//     is kept with a caveat);
+//   - a skin: rho t A over the surface; then, ESTIMATED, each network as
+//     thickness x the planes' section areas (or x their perimeters x the
+//     height, for a rib that stops short of the far wall), a point mass at
+//     each section's centroid, and the infill as its volume fraction of
+//     what the skin and the ribs leave of the enclosed volume, spread as a
+//     solid. The planes are placed by (R, T, scale) and reflected in y
+//     when `mirror`, as the body itself is.
+// Generated layers replace the estimates with the geometry's own figures
+// (the application does that; this is the rule it falls back on).
+std::vector<StructureMassPart> StructureMassParts(const TriMesh& placed, const BodyStructure& s,
+	const std::array<double, 9>& R, const Vec3& T, double scale, bool mirror, double density_to_si);
 
 } // namespace aerotelic

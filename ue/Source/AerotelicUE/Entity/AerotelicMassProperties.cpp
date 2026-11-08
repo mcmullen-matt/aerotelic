@@ -100,89 +100,78 @@ FAerotelicMassReport ComputeAerotelicMassReport(const TArray<FAerotelicBooleanOp
 			continue;
 		}
 		const FString Suffix = Op.bMirror ? TEXT(" (mirror)") : TEXT("");
-		// A derived entity inherits (the first operand's / first filled
-		// body's). A lattice's two bodies -- the hollowed shell and the
-		// struts -- are real solids, so its inherited skin thickness does
-		// not apply to them: they weigh by density over their volume.
-		aerotelic::MassSpec Spec = Entity->GetEffectiveMassSpec();
-		const AAerotelicEntityActor* Source = Entity->GetMassSpecSource();
-		const FString Inherited = Source != nullptr && Source != Entity ? FString::Printf(TEXT("inherited from %s"), *Source->EntityName) : FString();
-		if (Entity->GetEntityType() == aerotelic::project_yaml::EntityType::Lattice)
-		{
-			Spec.skin_thickness = 0.0;
-		}
 		const std::vector<aerotelic::NamedMesh> Meshes = Entity->GetPlacedMeshes(Op.bMirror, Tolerance);
 		if (Meshes.empty())
 		{
 			FAerotelicMassLine None;
 			None.Label = Entity->EntityName + Suffix;
-			None.Mode = Spec.mode;
 			None.Note = TEXT("no geometry could be built");
 			Report.Bodies.Add(None);
 			continue;
 		}
-
-		// An asserted mass is the whole entity's; its bodies share it by
-		// area, the same uniform shell the integrals assume. The mirrored
-		// half is a second part and carries the whole mass again.
-		double TotalArea = 0.0;
-		if (Spec.mode == MassMode::Asserted)
-		{
-			for (const aerotelic::NamedMesh& M : Meshes) TotalArea += M.mesh.SurfaceArea();
-		}
+		// The placement, for the networks' planes (parameterisation-frame
+		// geometry placed with the body).
+		std::array<double, 9> R;
+		Vec3 T;
+		double Scale = 1.0;
+		Entity->GetPlacementMatrix(R, T, Scale);
 
 		for (const aerotelic::NamedMesh& M : Meshes)
 		{
-			FAerotelicMassLine Line;
-			Line.Label = Entity->EntityName
+			const FString BodyLabel = Entity->EntityName
 				+ (Meshes.size() > 1 ? TEXT(" / ") + FString(UTF8_TO_TCHAR(M.name.c_str())) : FString())
 				+ Suffix;
-			Line.Mode = Spec.mode;
-			switch (Spec.mode)
+			// Each body weighs by ITS structure. A derived entity whose
+			// bodies carry none still takes the first operand's / first
+			// filled body's for now (the bridge); a lattice's two bodies --
+			// the hollowed shell and the struts -- are real solids, so an
+			// inherited skin thickness does not apply to them.
+			aerotelic::BodyStructure S;
+			FString Inherited;
+			if (const aerotelic::BodyStructure* Own = Entity->GetBodyStructure(UTF8_TO_TCHAR(M.name.c_str())); Own != nullptr && Own->IsSet())
 			{
-			case MassMode::Unset:
-				Line.Note = Inherited.IsEmpty() ? TEXT("no material assigned (Scene tree > Material Properties)")
-					: FString::Printf(TEXT("no material assigned on %s, which it inherits from (Scene tree > Material Properties)"), *Source->EntityName);
-				break;
-			case MassMode::Material:
-				if (!Spec.material.HasDensity())
-				{
-					Line.Note = TEXT("the material has no density (Scene tree > Material Properties)");
-					break;
-				}
-				// The material's density is SI; the mesh is in project units.
-				if (Spec.IsSkin())
-				{
-					// A skin of the material: every body of the entity is a shell
-					// of the thickness, rho t A; open or closed alike.
-					Line.Props = aerotelic::SkinMassProperties(M.mesh, Spec.material.density / Units.DensityToSI(), Spec.skin_thickness);
-					Line.bIncluded = true;
-					Line.Note = FString::Printf(TEXT("skin %.4g %s thick"), Spec.skin_thickness, UTF8_TO_TCHAR(Units.LengthName()));
-					break;
-				}
-				Line.Props = aerotelic::SolidMassProperties(M.mesh, Spec.material.density / Units.DensityToSI());
-				Line.bIncluded = true;
-				if (!M.mesh.IsClosedManifold())
-				{
-					Line.Note = TEXT("open surface: the enclosed volume, and so this mass, is not well defined -- give the material a skin thickness or assert the mass instead");
-				}
-				break;
-			case MassMode::Asserted:
-			{
-				const double Area = M.mesh.SurfaceArea();
-				const double Share = TotalArea > 0.0 ? Spec.mass * Area / TotalArea : 0.0;
-				Line.Props = aerotelic::ShellMassProperties(M.mesh, Share);
-				Line.bIncluded = true;
-				break;
+				S = *Own;
 			}
-			}
-			if (Line.bIncluded)
+			else if (Entity->IsDerived())
 			{
-				Included.push_back(Line.Props);
-				++Report.IncludedCount;
+				const AAerotelicEntityActor* Source = Entity->GetMassSpecSource();
+				if (Source != nullptr && Source != Entity)
+				{
+					S = aerotelic::BodyStructureFromMassSpec(Source->GetMassSpec());
+					Inherited = FString::Printf(TEXT("inherited from %s"), *Source->EntityName);
+					if (Entity->GetEntityType() == aerotelic::project_yaml::EntityType::Lattice)
+					{
+						S.skin_thickness = 0.0;
+						S.infill.reset();
+						S.networks.clear();
+					}
+				}
+			}
+			const std::vector<aerotelic::StructureMassPart> Parts = aerotelic::StructureMassParts(M.mesh, S, R, T, Scale, Op.bMirror, Units.DensityToSI());
+			for (const aerotelic::StructureMassPart& Part : Parts)
+			{
+				FAerotelicMassLine Line;
+				Line.Label = Parts.size() > 1 ? BodyLabel + TEXT(" / ") + FString(UTF8_TO_TCHAR(Part.label.c_str())) : BodyLabel;
+				Line.Mode = aerotelic::MassModeOf(S);
+				Line.Props = Part.props;
+				Line.bIncluded = Part.included;
+				Line.Note = UTF8_TO_TCHAR(Part.note.c_str());
+				if (!S.IsSet())
+				{
+					Line.Note = TEXT("no material assigned (Scene tree > Material Properties)");
+				}
+				else if (Part.label == "skin" && Part.included)
+				{
+					Line.Note = FString::Printf(TEXT("skin %.4g %s thick"), S.skin_thickness, UTF8_TO_TCHAR(Units.LengthName()));
+				}
 				if (!Inherited.IsEmpty()) Line.Note += (Line.Note.IsEmpty() ? TEXT("") : TEXT("; ")) + Inherited;
+				if (Line.bIncluded)
+				{
+					Included.push_back(Line.Props);
+					++Report.IncludedCount;
+				}
+				Report.Bodies.Add(Line);
 			}
-			Report.Bodies.Add(Line);
 		}
 	}
 

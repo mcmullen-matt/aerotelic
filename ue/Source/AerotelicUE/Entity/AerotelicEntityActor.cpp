@@ -547,7 +547,7 @@ FString AAerotelicEntityActor::GetMirrorBodyDisplayName(int32 Index) const
 
 AAerotelicEntityActor::FOnAerotelicBodiesChanged AAerotelicEntityActor::OnBodiesChanged;
 AAerotelicEntityActor::FOnAerotelicGeometryChanged AAerotelicEntityActor::OnGeometryChanged;
-AAerotelicEntityActor::FOnAerotelicSkinThicknessChanged AAerotelicEntityActor::OnSkinThicknessChanged;
+AAerotelicEntityActor::FOnAerotelicBodyStructureChanged AAerotelicEntityActor::OnBodyStructureChanged;
 
 FBox AAerotelicEntityActor::GetVisibleWorldBounds() const
 {
@@ -675,13 +675,15 @@ void AAerotelicEntityActor::RefreshProxy()
 	// Creating/registering components hung indefinitely the one time this
 	// ran under `-run=` (a commandlet's world has no real rendering context,
 	// which RegisterComponent()'s render-state setup apparently blocks on).
-	// Real interactive use (the only place either visual matters) always
-	// runs inside the application or the full Editor, never a commandlet.
-	if (IsRunningCommandlet())
+	// Under a commandlet the model is still built and the BODIES listed --
+	// they carry the structure, which the tests set and read -- but no
+	// component is touched (the mesh components are never created there,
+	// the box edges are not made here).
+	const bool bCommandlet = IsRunningCommandlet();
+	if (!bCommandlet)
 	{
-		return;
+		EnsureProxyEdges();
 	}
-	EnsureProxyEdges();
 
 	// The model's own meshes first (every lofted body and primitive builds
 	// them straight from its section curves, in milliseconds); the OCCT
@@ -720,8 +722,10 @@ void AAerotelicEntityActor::RefreshProxy()
 
 	LastBuildError.Empty();
 
-	// Keep each body's display state across a rebuild by role name, so a
-	// hidden or recoloured blade stays so when the propeller is edited.
+	// Keep each body's display state and structure across a rebuild by role
+	// name, so a hidden or recoloured blade stays so when the propeller is
+	// edited and a flap keeps its skin; a role that goes parks its
+	// structure for its return.
 	const TArray<FAerotelicBody> Previous = Bodies;
 	TArray<FString> Roles;
 	LastLocalBounds = FBox(ForceInit);
@@ -761,8 +765,22 @@ void AAerotelicEntityActor::RefreshProxy()
 			Body.bMirrorVisible = Old->bMirrorVisible;
 			Body.bHasColor = Old->bHasColor;
 			Body.Color = Old->Color;
+			Body.Structure = Old->Structure;
+		}
+		else if (const aerotelic::BodyStructure* Parked = OrphanedStructures.Find(BodyRole))
+		{
+			Body.Structure = *Parked;
+			OrphanedStructures.Remove(BodyRole);
 		}
 		Bodies.Add(Body);
+	}
+	for (const FAerotelicBody& Old : Previous)
+	{
+		const bool bStillThere = Bodies.ContainsByPredicate([&Old](const FAerotelicBody& B) { return B.Name == Old.Name; });
+		if (!bStillThere && (Old.Structure.IsSet() || Old.Structure.HasInterior()))
+		{
+			OrphanedStructures.Add(Old.Name, Old.Structure);
+		}
 	}
 	bool bBodiesChanged = Previous.Num() != Bodies.Num();
 	for (int32 i = 0; !bBodiesChanged && i < Bodies.Num(); ++i)
@@ -770,7 +788,8 @@ void AAerotelicEntityActor::RefreshProxy()
 		bBodiesChanged = Previous[i].Name != Bodies[i].Name;
 	}
 
-	bHasTessellation = Roles.Num() > 0;
+	// Triangles on screen need components; the bodies above exist without.
+	bHasTessellation = Roles.Num() > 0 && ProxyMesh != nullptr;
 	ApplyMeshVisibility();
 	if (bHasTessellation)
 	{
@@ -784,7 +803,7 @@ void AAerotelicEntityActor::RefreshProxy()
 			Edge->SetVisibility(false);
 		}
 	}
-	else
+	else if (!bCommandlet)
 	{
 		ShowBoxFallback(Shape);
 	}
@@ -805,6 +824,13 @@ TArray<FString> AAerotelicEntityActor::RefreshTessellatedMesh(const TopoDS_Shape
 	TArray<FString> Roles;
 	if (Target == nullptr)
 	{
+		// Nothing to draw (a commandlet), but the bodies are still the
+		// shape's top-level solids, named as they would be on screen.
+		const TArray<TopoDS_Shape> Solids = TopLevelSolids(Shape);
+		for (int32 s = 0; s < Solids.Num(); ++s)
+		{
+			Roles.Add(RoleName(EntityType, s, Solids.Num()));
+		}
 		return Roles;
 	}
 	Target->ClearAllMeshSections();
@@ -924,15 +950,17 @@ TArray<FString> AAerotelicEntityActor::RefreshMeshFromTriangles(const std::vecto
 	UProceduralMeshComponent* Target, TArray<TObjectPtr<UMaterialInstanceDynamic>>& Materials,
 	UProceduralMeshComponent* EdgeTarget, TArray<TObjectPtr<UMaterialInstanceDynamic>>& EdgeMaterialsOut)
 {
+	// The roles are the bodies whatever is drawn: without components (a
+	// commandlet) the list is still built, so the bodies can carry their
+	// structure and be addressed by name.
 	TArray<FString> Roles;
-	if (Target == nullptr)
+	if (Target != nullptr)
 	{
-		return Roles;
-	}
-	Target->ClearAllMeshSections();
-	if (EdgeTarget != nullptr)
-	{
-		EdgeTarget->ClearAllMeshSections();
+		Target->ClearAllMeshSections();
+		if (EdgeTarget != nullptr)
+		{
+			EdgeTarget->ClearAllMeshSections();
+		}
 	}
 	TArray<TObjectPtr<UMaterialInstanceDynamic>> NewMaterials;
 	TArray<TObjectPtr<UMaterialInstanceDynamic>> NewEdgeMaterials;
@@ -942,15 +970,21 @@ TArray<FString> AAerotelicEntityActor::RefreshMeshFromTriangles(const std::vecto
 		{
 			continue;
 		}
-		TArray<FVector> Vertices;
-		TArray<int32> Triangles;
-		TArray<FVector> Normals;
-		AerotelicMeshing::ToProceduralMesh(M.mesh, Vertices, Triangles, Normals);
-		CreateBodySection(Roles.Num(), Vertices, Triangles, Normals, Target, Materials, EdgeTarget, EdgeMaterialsOut, NewMaterials, NewEdgeMaterials);
+		if (Target != nullptr)
+		{
+			TArray<FVector> Vertices;
+			TArray<int32> Triangles;
+			TArray<FVector> Normals;
+			AerotelicMeshing::ToProceduralMesh(M.mesh, Vertices, Triangles, Normals);
+			CreateBodySection(Roles.Num(), Vertices, Triangles, Normals, Target, Materials, EdgeTarget, EdgeMaterialsOut, NewMaterials, NewEdgeMaterials);
+		}
 		Roles.Add(UTF8_TO_TCHAR(M.name.c_str()));
 	}
-	Materials = MoveTemp(NewMaterials);
-	EdgeMaterialsOut = MoveTemp(NewEdgeMaterials);
+	if (Target != nullptr)
+	{
+		Materials = MoveTemp(NewMaterials);
+		EdgeMaterialsOut = MoveTemp(NewEdgeMaterials);
+	}
 	return Roles;
 }
 
@@ -1034,32 +1068,106 @@ double AAerotelicEntityActor::LatticeSkinThickness(const aerotelic::MassSpec& Sp
 	return Spec.mode == aerotelic::MassMode::Material ? FMath::Max(Spec.skin_thickness, 0.0) : 0.0;
 }
 
+// ------------------------------------------------------- structure per body
+
+int32 AAerotelicEntityActor::FindBodyIndex(const FString& BodyRole) const
+{
+	if (BodyRole.IsEmpty())
+	{
+		return Bodies.Num() == 1 ? 0 : INDEX_NONE;
+	}
+	return Bodies.IndexOfByPredicate([&BodyRole](const FAerotelicBody& B) { return B.Name == BodyRole; });
+}
+
+const aerotelic::BodyStructure* AAerotelicEntityActor::GetBodyStructure(const FString& BodyRole) const
+{
+	const int32 Index = FindBodyIndex(BodyRole);
+	return Bodies.IsValidIndex(Index) ? &Bodies[Index].Structure : nullptr;
+}
+
+const aerotelic::BodyStructure& AAerotelicEntityActor::GetBodyStructure(int32 Index) const
+{
+	static const aerotelic::BodyStructure None;
+	return Bodies.IsValidIndex(Index) ? Bodies[Index].Structure : None;
+}
+
+bool AAerotelicEntityActor::SetBodyStructure(const FString& BodyRole, const aerotelic::BodyStructure& InStructure)
+{
+	const int32 Index = FindBodyIndex(BodyRole);
+	if (!Bodies.IsValidIndex(Index))
+	{
+		return false;
+	}
+	// Only what the geometry is built from counts as a geometry change: a
+	// density or a modulus edited under the same skin and planes regenerates
+	// nothing (seconds of work for no change in shape), and so does the same
+	// structure set again.
+	const bool bGeometry = !aerotelic::SameStructureGeometry(Bodies[Index].Structure, InStructure);
+	Bodies[Index].Structure = InStructure;
+	OnBodyStructureChanged.Broadcast(this, Bodies[Index].Name, bGeometry);
+	return true;
+}
+
+void AAerotelicEntityActor::GetPlacementMatrix(std::array<double, 9>& OutR, aerotelic::Vec3& OutT, double& OutScale) const
+{
+	const aerotelic::EntityTransform X = GetEntityTransform();
+	OutR = aerotelic::RotationMatrix({X.ax, X.ay, X.az}, X.angle_deg);
+	OutScale = X.scale;
+	OutT = aerotelic::Vec3{X.tx * X.scale, X.ty * X.scale, X.tz * X.scale};
+}
+
+// ------------------------------------------- the old per-entity setting
+
 void AAerotelicEntityActor::SetMassSpec(const aerotelic::MassSpec& InSpec)
 {
 	if (IsDerived())
 	{
 		return;
 	}
-	const double Before = LatticeSkinThickness(MassSpec);
-	MassSpec = InSpec;
-	// Only the figure a lattice is built from counts: a density or a
-	// modulus edited under the same skin regenerates nothing (seconds of
-	// work for no change in geometry), and so does the same spec set again.
-	if (!FMath::IsNearlyEqual(Before, LatticeSkinThickness(MassSpec), 1e-15))
+	const aerotelic::BodyStructure Common = aerotelic::BodyStructureFromMassSpec(InSpec);
+	// An asserted total was the whole parameterisation's: its bodies share
+	// it by surface area, as the mass report always spread it.
+	std::vector<double> Areas;
+	double TotalArea = 0.0;
+	if (Common.asserted_mass && Bodies.Num() > 1)
 	{
-		OnSkinThicknessChanged.Broadcast(this);
+		const std::vector<aerotelic::NamedMesh> Meshes = GetPlacedMeshes(false);
+		for (const FAerotelicBody& Body : Bodies)
+		{
+			double Area = 0.0;
+			for (const aerotelic::NamedMesh& M : Meshes)
+			{
+				if (FString(UTF8_TO_TCHAR(M.name.c_str())) == Body.Name) Area = M.mesh.SurfaceArea();
+			}
+			Areas.push_back(Area);
+			TotalArea += Area;
+		}
 	}
+	for (int32 i = 0; i < Bodies.Num(); ++i)
+	{
+		aerotelic::BodyStructure S = Common;
+		if (Common.asserted_mass && Bodies.Num() > 1)
+		{
+			S.asserted_mass = TotalArea > 0.0 ? *Common.asserted_mass * Areas[i] / TotalArea : *Common.asserted_mass / Bodies.Num();
+		}
+		SetBodyStructure(Bodies[i].Name, S);
+	}
+}
+
+aerotelic::MassSpec AAerotelicEntityActor::GetMassSpec() const
+{
+	return aerotelic::MassSpecFromBodyStructure(GetBodyStructure(0));
 }
 
 const AAerotelicEntityActor* AAerotelicEntityActor::GetMassSpecSource() const
 {
-	// Follow the first operand / first target down to a parameterisation;
-	// a bounded walk, since a chain of derived entities is finite and a
-	// cycle cannot be authored.
+	// A body of its own first; else follow the first operand / first target
+	// down to one that has -- a bounded walk, since a chain of derived
+	// entities is finite and a cycle cannot be authored.
 	const AAerotelicEntityActor* E = this;
 	for (int32 Depth = 0; Depth < 32 && E != nullptr; ++Depth)
 	{
-		if (!E->IsDerived()) return E;
+		if (!E->IsDerived() || E->GetBodyStructure(0).IsSet()) return E;
 		const FAerotelicBooleanOperand* First = nullptr;
 		if (E->EntityType == aerotelic::project_yaml::EntityType::Boolean)
 		{
@@ -1079,7 +1187,7 @@ const AAerotelicEntityActor* AAerotelicEntityActor::GetMassSpecSource() const
 aerotelic::MassSpec AAerotelicEntityActor::GetEffectiveMassSpec() const
 {
 	const AAerotelicEntityActor* Source = GetMassSpecSource();
-	return Source != nullptr ? Source->MassSpec : aerotelic::MassSpec();
+	return Source != nullptr ? Source->GetMassSpec() : aerotelic::MassSpec();
 }
 
 std::vector<aerotelic::NamedMesh> AAerotelicEntityActor::GetPlacedMeshes(bool bMirror, double Tolerance) const

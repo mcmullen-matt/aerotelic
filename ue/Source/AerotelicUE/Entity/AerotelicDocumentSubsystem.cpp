@@ -138,13 +138,13 @@ void UAerotelicDocumentSubsystem::Initialize(FSubsystemCollectionBase& Collectio
 {
 	Super::Initialize(Collection);
 	GeometryChangedHandle = AAerotelicEntityActor::OnGeometryChanged.AddUObject(this, &UAerotelicDocumentSubsystem::OnEntityGeometryChanged);
-	SkinThicknessChangedHandle = AAerotelicEntityActor::OnSkinThicknessChanged.AddUObject(this, &UAerotelicDocumentSubsystem::OnEntitySkinThicknessChanged);
+	BodyStructureChangedHandle = AAerotelicEntityActor::OnBodyStructureChanged.AddUObject(this, &UAerotelicDocumentSubsystem::OnEntityBodyStructureChanged);
 }
 
 void UAerotelicDocumentSubsystem::Deinitialize()
 {
 	AAerotelicEntityActor::OnGeometryChanged.Remove(GeometryChangedHandle);
-	AAerotelicEntityActor::OnSkinThicknessChanged.Remove(SkinThicknessChangedHandle);
+	AAerotelicEntityActor::OnBodyStructureChanged.Remove(BodyStructureChangedHandle);
 	if (RebuildTick.IsValid())
 	{
 		FTSTicker::GetCoreTicker().RemoveTicker(RebuildTick);
@@ -222,6 +222,64 @@ bool UAerotelicDocumentSubsystem::ApplyEntityModel(AAerotelicEntityActor* Entity
 	return true;
 }
 
+// ------------------------------------------------ the bodies in the file
+
+namespace
+{
+	// Every body of the entity whose display state or structure differs from
+	// the defaults, as the file lists them (`bodies:`). The encoder drops the
+	// entries with nothing set.
+	std::vector<ProjectBody> ProjectBodiesOf(const AAerotelicEntityActor* Entity)
+	{
+		std::vector<ProjectBody> Out;
+		for (const FAerotelicBody& Body : Entity->GetBodies())
+		{
+			ProjectBody Pb;
+			Pb.name = TCHAR_TO_UTF8(*Body.Name);
+			if (Body.bHasColor)
+			{
+				Pb.color = std::array<double, 3>{ Body.Color.R, Body.Color.G, Body.Color.B };
+			}
+			Pb.hidden = !Body.bVisible;
+			Pb.structure = Body.Structure;
+			if (!Pb.IsDefault()) Out.push_back(Pb);
+		}
+		return Out;
+	}
+
+	// The file's bodies onto the actor's, by role name (a role the entity
+	// no longer produces is parked by SetBodyStructure's caller -- here it
+	// is simply not applied). When no body carries a structure and the file
+	// has the old entity-level `mass:`, every body takes that.
+	void ApplyProjectBodies(AAerotelicEntityActor* Actor, const std::vector<ProjectBody>& Bodies, const MassSpec& LegacyMass)
+	{
+		bool bAnyStructure = false;
+		for (const ProjectBody& Body : Bodies)
+		{
+			const FString Role = UTF8_TO_TCHAR(Body.name.c_str());
+			const int32 Index = Actor->FindBodyIndex(Role);
+			if (Index == INDEX_NONE) continue;
+			if (Body.color)
+			{
+				Actor->SetBodyColor(Index, FLinearColor((float)(*Body.color)[0], (float)(*Body.color)[1], (float)(*Body.color)[2]));
+			}
+			if (Body.hidden)
+			{
+				Actor->SetBodyVisible(Index, false);
+			}
+			if (Body.structure.IsSet() || Body.structure.HasInterior() || !Body.structure.exclusions.empty())
+			{
+				Actor->SetBodyStructure(Role, Body.structure);
+				bAnyStructure = true;
+			}
+		}
+		if (!bAnyStructure && LegacyMass.mode != MassMode::Unset)
+		{
+			Actor->SetMassSpec(LegacyMass);
+		}
+	}
+}
+
 // ------------------------------------ rebuilds downstream of an Apply
 
 void UAerotelicDocumentSubsystem::OnEntityGeometryChanged(AAerotelicEntityActor* Entity)
@@ -229,12 +287,16 @@ void UAerotelicDocumentSubsystem::OnEntityGeometryChanged(AAerotelicEntityActor*
 	QueueDependentRebuilds(Entity);
 }
 
-void UAerotelicDocumentSubsystem::OnEntitySkinThicknessChanged(AAerotelicEntityActor* Entity)
+void UAerotelicDocumentSubsystem::OnEntityBodyStructureChanged(AAerotelicEntityActor* Entity, const FString& /*Role*/, bool bGeometry)
 {
 	// The lattices over the entity (through any boolean over it: a lattice
-	// filling a fuse inherits the first operand's skin) regenerate; the
-	// booleans themselves read no material and stand.
-	QueueDependentRebuilds(Entity, true);
+	// filling a fuse inherits the first operand's skin) regenerate when the
+	// geometry the structure describes changed; the booleans themselves read
+	// no material and stand, and a material edit regenerates nothing.
+	if (bGeometry)
+	{
+		QueueDependentRebuilds(Entity, true);
+	}
 }
 
 void UAerotelicDocumentSubsystem::QueueDependentRebuilds(const AAerotelicEntityActor* Entity, bool bLatticesOnly)
@@ -946,7 +1008,7 @@ bool UAerotelicDocumentSubsystem::CopyEntityToClipboard(const AAerotelicEntityAc
 		Snapshot.color = std::array<double, 3>{ Color->R, Color->G, Color->B };
 	}
 	Snapshot.hidden = !Entity->IsEntityVisible();
-	Snapshot.mass = Entity->GetMassSpec();
+	Snapshot.bodies = ProjectBodiesOf(Entity);
 	Snapshot.mesh = Entity->GetModel()->mesh;
 	Clipboard = MoveTemp(Snapshot);
 	return true;
@@ -1022,7 +1084,7 @@ AAerotelicEntityActor* UAerotelicDocumentSubsystem::PasteEntity(FString& OutErro
 	{
 		Actor->SetEntityVisible(false);
 	}
-	Actor->SetMassSpec(Clipboard->mass);
+	ApplyProjectBodies(Actor, Clipboard->bodies, Clipboard->mass);
 	SetSelectedEntity(Actor);
 	return Actor;
 }
@@ -1271,7 +1333,10 @@ bool UAerotelicDocumentSubsystem::OpenProjectPath(const FString& InPath, bool bA
 			{
 				Actor->SetEntityVisible(false);
 			}
-			Actor->SetMassSpec(Entity.mass);
+			// The bodies' colours, visibility and structure; a file from
+			// before the bodies carried their own (one `mass:` for the
+			// entity) gives every body that setting.
+			ApplyProjectBodies(Actor, Entity.bodies, Entity.mass);
 		}
 	}
 	// The boolean operations, in build order, over what is now in the
@@ -1309,30 +1374,13 @@ bool UAerotelicDocumentSubsystem::OpenProjectPath(const FString& InPath, bool bA
 			continue;
 		}
 		Actor->RefreshProxy();
-		// A `mass:` on a boolean in an older file is ignored: it inherits
-		// its first operand's.
+		// A `mass:` on a boolean in an older file is ignored (it inherited
+		// its first operand's then); its bodies carry their own now.
 		if (B.color)
 		{
 			Actor->SetColorOverride(FLinearColor((float)(*B.color)[0], (float)(*B.color)[1], (float)(*B.color)[2]));
 		}
-		for (const ProjectBooleanBody& Body : B.bodies)
-		{
-			const FString Role = UTF8_TO_TCHAR(Body.name.c_str());
-			for (int32 i = 0; i < Actor->GetBodies().Num(); ++i)
-			{
-				if (Actor->GetBodies()[i].Name == Role)
-				{
-					if (Body.color)
-					{
-						Actor->SetBodyColor(i, FLinearColor((float)(*Body.color)[0], (float)(*Body.color)[1], (float)(*Body.color)[2]));
-					}
-					if (Body.hidden)
-					{
-						Actor->SetBodyVisible(i, false);
-					}
-				}
-			}
-		}
+		ApplyProjectBodies(Actor, B.bodies, MassSpec());
 		if (B.hidden)
 		{
 			Actor->SetEntityVisible(false);
@@ -1436,7 +1484,9 @@ bool UAerotelicDocumentSubsystem::SaveProjectToPath(const FString& InPath)
 			Pe.color = std::array<double, 3>{ Color->R, Color->G, Color->B };
 		}
 		Pe.hidden = !Entity->IsEntityVisible();
-		Pe.mass = Entity->GetMassSpec();
+		// The bodies carry the material, skin and structure (`bodies:`); the
+		// entity-level `mass:` is no longer written.
+		Pe.bodies = ProjectBodiesOf(Entity);
 		if (Entity->GetModel() != nullptr) Pe.mesh = Entity->GetModel()->mesh;
 		SpecFromEntityModel(*Entity, Pe.model);
 		RelativiseReferenceImagePaths(Pe.model, FPaths::GetPath(Path));
@@ -1469,26 +1519,13 @@ bool UAerotelicDocumentSubsystem::SaveProjectToPath(const FString& InPath)
 			Pb.operands.push_back(Ref);
 		}
 		Pb.hidden = !Entity->IsEntityVisible();
-		// No mass: a boolean result inherits its first operand's.
 		if (const TOptional<FLinearColor> Color = Entity->GetColorOverride(); Color.IsSet())
 		{
 			Pb.color = std::array<double, 3>{ Color->R, Color->G, Color->B };
 		}
-		for (const FAerotelicBody& Body : Entity->GetBodies())
-		{
-			if (!Body.bHasColor && Body.bVisible)
-			{
-				continue;
-			}
-			ProjectBooleanBody Bb;
-			Bb.name = TCHAR_TO_UTF8(*Body.Name);
-			if (Body.bHasColor)
-			{
-				Bb.color = std::array<double, 3>{ Body.Color.R, Body.Color.G, Body.Color.B };
-			}
-			Bb.hidden = !Body.bVisible;
-			Pb.bodies.push_back(Bb);
-		}
+		// Its bodies' display state and structure (a boolean result's bodies
+		// own theirs).
+		Pb.bodies = ProjectBodiesOf(Entity);
 		Project.booleans.push_back(std::move(Pb));
 	}
 
