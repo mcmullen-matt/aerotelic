@@ -733,7 +733,7 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 			if (bSolved)
 			{
 				const AerotelicTetGmsh::FResult& S = FeaModel->GetTetMeshes()[0].Result;
-				const double ExpectedMass = 2780.0 * S.SkinVolume + 50.0 * S.CoreVolume;
+				const double ExpectedMass = Al.density *S.SkinVolume + 50.0 * S.CoreVolume;
 				Check(R.bSecondOrder && R.Nodes > static_cast<int32>(FeaMesh.nodes.size()), "fea: solved on 10-node tetrahedra (mid-edge nodes added)");
 				Check(FMath::IsNearlyEqual(R.Mass, ExpectedMass, 1e-6 * ExpectedMass),
 					FString::Printf(TEXT("fea: the mass is the material densities over the regions' volumes (%.6g vs %.6g)"), R.Mass, ExpectedMass));
@@ -980,7 +980,7 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 				if (bSolved)
 				{
 					Check(R.Tets == 0 && R.Shells == static_cast<int32>(Surface.triangles.size()) && !R.bSecondOrder && R.Dofs == 6 * R.Nodes, "fea (shells only): shells on every triangle and no tetrahedra, six degrees of freedom a node");
-					const double ExpectedMass = 2780.0 * 0.05 * Surface.SurfaceArea();
+					const double ExpectedMass = Al.density *0.05 * Surface.SurfaceArea();
 					Check(FMath::IsNearlyEqual(R.Mass, ExpectedMass, 1e-6 * ExpectedMass), FString::Printf(TEXT("fea (shells only): the mass is rho t A (%.6g vs %.6g)"), R.Mass, ExpectedMass));
 					const double Weight = ExpectedMass * 9.80665;
 					Check(FMath::Abs(R.Reaction[2] - Weight) <= 0.02 * Weight && FMath::Abs(R.Reaction[0]) <= 0.02 * Weight && FMath::Abs(R.Reaction[1]) <= 0.02 * Weight,
@@ -1078,7 +1078,7 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 					Check(bSolved, FString::Printf(TEXT("fea (solid): the solid sphere solved (%s)"), bSolved ? *FString::Printf(TEXT("%d nodes, %d tetrahedra, %d dof, %.1f s"), R.Nodes, R.Tets, R.Dofs, R.Seconds) : *Error));
 					if (bSolved)
 					{
-						const double ExpectedMass = 2780.0 * (TR.SkinVolume + TR.CoreVolume);
+						const double ExpectedMass = Al.density *(TR.SkinVolume + TR.CoreVolume);
 						Check(R.Shells == 0 && R.bSecondOrder && R.Dofs == 3 * R.Nodes, "fea (solid): 10-node tetrahedra and no shells, three degrees of freedom a node");
 						{
 							AerotelicFeaPreprocess::FModel PreCost;
