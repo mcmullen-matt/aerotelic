@@ -9,6 +9,7 @@
 #include "Entity/AerotelicBooleanModel.h"
 #include "Entity/AerotelicBodyStructure.h"
 #include "Entity/AerotelicMeshLib.h"
+#include "Entity/AerotelicMeshing.h"
 #include "Entity/AerotelicPotentialFlow.h"
 #include "Entity/AerotelicMassProperties.h"
 #include "Entity/AerotelicStructuralFea.h"
@@ -527,6 +528,26 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 				bool bOnPlanes = true;
 				for (const aerotelic::Vec3& V : Meshes[0].mesh.vertices) bOnPlanes = bOnPlanes && (FMath::Abs(FMath::Abs(V.x) - 0.3) < 1e-6);
 				Check(bOnPlanes, "structure: every rib vertex lies on one of the two planes x = +-0.3");
+				// The two-sided render mesh of the discs, called directly: under
+				// a commandlet the actor has no components, so this is the only
+				// place the helper runs headless (it crashed in the live app on
+				// 2026-11-08, appending an array's own elements to it).
+				TArray<FVector> V2, N2;
+				TArray<int32> T2;
+				AerotelicMeshing::ToTwoSidedProceduralMesh(Meshes[0].mesh, V2, T2, N2);
+				const int32 Nv = static_cast<int32>(Meshes[0].mesh.vertices.size());
+				const int32 Nt = static_cast<int32>(Meshes[0].mesh.triangles.size());
+				bool bMirrored = V2.Num() == 2 * Nv && N2.Num() == 2 * Nv && T2.Num() == 6 * Nt;
+				for (int32 i = 0; bMirrored && i < Nv; ++i)
+				{
+					bMirrored = V2[i].Equals(V2[i + Nv], 0.0) && N2[i + Nv].Equals(-N2[i], 1e-9);
+				}
+				for (int32 t = 0; bMirrored && t < Nt; ++t)
+				{
+					// The back triangle is the front one reversed over the copies.
+					bMirrored = T2[3 * (Nt + t)] == T2[3 * t] + Nv && T2[3 * (Nt + t) + 1] == T2[3 * t + 2] + Nv && T2[3 * (Nt + t) + 2] == T2[3 * t + 1] + Nv;
+				}
+				Check(bMirrored, FString::Printf(TEXT("structure: the two-sided render mesh doubles the discs with flipped normals and reversed winding (%d vertices, %d indices)"), V2.Num(), T2.Num()));
 			}
 			// The mass report weighs the generated layers as thin shells, each
 			// by its own material: the skin rho t A over the sphere's mesh at

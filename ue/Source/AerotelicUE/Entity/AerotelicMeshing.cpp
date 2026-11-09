@@ -162,11 +162,18 @@ namespace AerotelicMeshing
 			N = N.GetSafeNormal();
 		}
 		// The back: the vertices again with the normals flipped, the
-		// triangles reversed over them.
+		// triangles reversed over them. Each value is copied out before it is
+		// appended: TArray::Add refuses an element that lives in the array
+		// being grown (it may reallocate under the reference), and that
+		// assertion is what crashed Generate on the P-38 wing on 2026-11-08.
+		OutVertices.Reserve(2 * Nv);
+		OutNormals.Reserve(2 * Nv);
 		for (int32 i = 0; i < Nv; ++i)
 		{
-			OutVertices.Add(OutVertices[i]);
-			OutNormals.Add(-OutNormals[i]);
+			const FVector V = OutVertices[i];
+			const FVector N = -OutNormals[i];
+			OutVertices.Add(V);
+			OutNormals.Add(N);
 		}
 		for (const auto& T : Mesh.triangles)
 		{
