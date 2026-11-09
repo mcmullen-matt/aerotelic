@@ -961,6 +961,31 @@ bool UAerotelicDocumentSubsystem::GenerateBodyStructure(AAerotelicEntityActor* E
 	return true;
 }
 
+bool UAerotelicDocumentSubsystem::ApplyBodyStructure(AAerotelicEntityActor* Entity, const FString& BodyRole, const aerotelic::BodyStructure& Structure, FString& OutError)
+{
+	if (Entity == nullptr)
+	{
+		OutError = TEXT("The entity is no longer in the scene.");
+		return false;
+	}
+	if (!Entity->SetBodyStructure(BodyRole, Structure))
+	{
+		OutError = FString::Printf(TEXT("%s has no body '%s'."), *Entity->EntityName, *BodyRole);
+		return false;
+	}
+	const int32 Index = Entity->FindBodyIndex(BodyRole);
+	const FString Role = Index != INDEX_NONE ? Entity->GetBodies()[Index].Name : BodyRole;
+	// The change handler queued a regeneration for a generated body; it is
+	// done right here instead.
+	RebuildQueue.RemoveAll([&](const FRebuildItem& I) { return I.Entity.Get() == Entity && I.Role == Role; });
+	if (!Structure.IsSkin())
+	{
+		// A solid: the handler dropped any layers; nothing to build.
+		return true;
+	}
+	return GenerateBodyStructure(Entity, Role, OutError);
+}
+
 int32 UAerotelicDocumentSubsystem::RegenerateStructures(TArray<FString>& OutErrors)
 {
 	int32 Count = 0;

@@ -16,9 +16,11 @@ class AAerotelicEntityActor;
 //           estimate of what the structure weighs;
 // over the body's own geometry (enclosed volume, surface area). MODELESS,
 // one window per body: while the Planes tab is edited the 3D view shows the
-// network's planes as translucent rectangles over the body, live. Apply
-// writes the structure to the body (a structure already generated
-// regenerates when its geometry changed); Revert re-reads the body's. A
-// mirrored half shares the body's structure. (An Infill tab for a lattice
-// filling the interior was removed 2026-11-08 with the lattice infill.)
+// SELECTED network's planes as translucent rectangles over the body, live
+// (the other networks are not drawn). Apply writes the structure to the
+// body and builds its layers at once (UAerotelicDocumentSubsystem::
+// ApplyBodyStructure; the separate Generate button went 2026-11-08 night);
+// Revert re-reads the body's. A mirrored half shares the body's structure.
+// (An Infill tab for a lattice filling the interior was removed 2026-11-08
+// with the lattice infill.)
 void OpenAerotelicStructureDialog(AAerotelicEntityActor* Entity, const FString& BodyRole);

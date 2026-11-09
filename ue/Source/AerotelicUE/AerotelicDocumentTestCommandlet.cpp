@@ -478,6 +478,25 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 		Check(!Doc->HasPendingRebuilds(), "structure: a body never generated is not queued by a structure edit");
 		Check(Doc->GenerateBodyStructure(Primitive, TEXT("Main"), Error), FString::Printf(TEXT("structure: the sphere's structure generated: %s"), *Error));
 		Check(Doc->GetEntities().Num() == 4, "structure: generating adds no scene item -- the layers belong to the body");
+		{
+			// The dialog's Apply (2026-11-08 night): the structure is set and
+			// built in one call, and the regeneration the change queues is
+			// taken back out, so nothing is left for the tick. Three planes,
+			// then back to the two the rest of the step expects.
+			aerotelic::BodyStructure Three = S;
+			Three.networks[0].start = -0.4;
+			Three.networks[0].spacing = 0.4;
+			Three.networks[0].count = 3;
+			Check(Doc->ApplyBodyStructure(Primitive, TEXT("Main"), Three, Error), FString::Printf(TEXT("structure: Apply sets and builds in one step: %s"), *Error));
+			Check(!Doc->HasPendingRebuilds(), "structure: Apply leaves no regeneration queued (it did the work)");
+			const FAerotelicBodyStructure* G3 = Primitive->GetGeneratedStructure(TEXT("Main"));
+			const aerotelic::BodyStructure* Own3 = Primitive->GetBodyStructure(TEXT("Main"));
+			Check(Own3 != nullptr && Own3->networks.size() == 1 && Own3->networks[0].count == 3, "structure: Apply gave the body the three-plane network");
+			Check(G3 != nullptr && G3->IsGenerated() && !G3->IsStale() && G3->GetLayers().size() == 2 && G3->GetStructure().networks[0].count == 3,
+				"structure: Apply's layers are the three-plane network's");
+			Check(Doc->ApplyBodyStructure(Primitive, TEXT("Main"), S, Error), FString::Printf(TEXT("structure: Apply back to two planes: %s"), *Error));
+			Check(!Doc->HasPendingRebuilds(), "structure: ... again with nothing queued");
+		}
 		const FAerotelicBodyStructure* G = Primitive->GetGeneratedStructure(TEXT("Main"));
 		Check(G != nullptr && G->IsGenerated() && !G->IsStale(), "structure: the body holds its generated structure");
 		if (G != nullptr && G->IsGenerated())

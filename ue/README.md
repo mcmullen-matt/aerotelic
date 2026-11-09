@@ -2459,6 +2459,21 @@ own visibility and colour. The rule of the morning ("the body's own
 section hides while its Skin layer shows") is gone with the layer it
 described.
 
+**Apply builds; the preview shows one network (later that night).** Two
+usability notes from Matt's first session with it. The Generate button
+"did nothing": it did generate, but the discs are inside the skin and so
+invisible until the Skin row is hidden, and once a body had been generated
+Apply regenerated it anyway -- two buttons for one action. The dialog's
+Apply now gives the body the structure and builds its layers in one step
+(`UAerotelicDocumentSubsystem::ApplyBodyStructure`, which also takes the
+regeneration the change had queued back out of the queue so the work is
+not done twice); the Generate button is gone, the Scene tree's Generate /
+Regenerate Structure entries remain for building without the dialog. And
+the plane preview draws only the network selected in the Planes list --
+every other network's planes were clutter on a wing with several. A third
+proposal, hiding the body's surface while the dialog is open so the applied
+ribs show, Matt declined.
+
 **Mass.** Density x area x thickness for skin and ribs alike,
 `aerotelic::SkinMassProperties` on the skin's grid and on each rib disc,
 the same formula whether the structure has been generated or is estimated

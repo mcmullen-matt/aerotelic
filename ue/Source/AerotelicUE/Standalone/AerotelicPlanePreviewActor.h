@@ -12,9 +12,10 @@ class UStaticMeshComponent;
 class UMaterialInstanceDynamic;
 
 // The Structure dialog's cutting planes in the 3D view: every plane of the
-// body's networks as a translucent rectangle covering the body's bounds,
-// with an outline, the network being edited amber and the others grey, the
-// mirrored half's planes with it. Follows the document's structure preview
+// network being edited (the Planes list's selection -- the other networks
+// are not drawn, since 2026-11-08 night) as an amber translucent rectangle
+// covering the body's bounds, with an outline, the mirrored half's planes
+// with it. Follows the document's structure preview
 // (UAerotelicDocumentSubsystem::OnStructurePreviewChanged) and the body's
 // geometry; shows nothing while no dialog is editing planes. Collides with
 // nothing, so the entity pick passes through it.

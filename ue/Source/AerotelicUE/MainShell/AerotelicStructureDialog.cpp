@@ -250,7 +250,7 @@ void OpenAerotelicStructureDialog(AAerotelicEntityActor* Entity, const FString& 
 		[
 			MakeInfoLabel(LOCTEXT("SkinHint",
 				"The material this body is made of -- its solid when the skin thickness is zero, its skin otherwise. Materials are defined under Model > Material Properties (the presets and your own); the body takes a copy of the one picked. "
-				"A skin thickness is a build figure in the project's length unit, not scaled with the model: the body's surface is the skin, that thick -- what Analysis > Structural gives its shells, what the mass report weighs as rho t A, and what Generate lists as the Skin layer. Behind a skin the Planes tab puts ribs, spars and frames: the planar shells the planes cut out of the body, bounded by its surface; a solid body has none."))
+				"A skin thickness is a build figure in the project's length unit, not scaled with the model: the body's surface is the skin, that thick -- what Analysis > Structural gives its shells, what the mass report weighs as rho t A, and what Apply lists as the Skin layer. Behind a skin the Planes tab puts ribs, spars and frames: the planar shells the planes cut out of the body, bounded by its surface; a solid body has none."))
 		]
 		+ SVerticalBox::Slot().AutoHeight().Padding(0, 12, 0, 0)
 		[
@@ -492,7 +492,7 @@ void OpenAerotelicStructureDialog(AAerotelicEntityActor* Entity, const FString& 
 				if (!Weak.IsValid()) return LOCTEXT("Gone", "The entity is no longer in the scene.");
 				const std::string Why = aerotelic::BodyStructureProblem(D->S);
 				if (!Why.empty()) return FText::FromString(FString::Printf(TEXT("Cannot apply: %s."), UTF8_TO_TCHAR(Why.c_str())));
-				return D->bDirty ? LOCTEXT("Edited", "Edited here only -- press Apply to give the body this structure.") : LOCTEXT("Clean", "As the body is.");
+				return D->bDirty ? LOCTEXT("Edited", "Edited here only -- press Apply to give the body this structure and build its ribs.") : LOCTEXT("Clean", "As the body is.");
 			})
 		]
 		+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 0, 6, 0)
@@ -503,30 +503,22 @@ void OpenAerotelicStructureDialog(AAerotelicEntityActor* Entity, const FString& 
 		]
 		+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 0, 6, 0)
 		[
-			SNew(SButton).Text(LOCTEXT("Apply", "Apply")).ToolTipText(LOCTEXT("ApplyTip", "Give the body this structure. Analysis > Mass Properties weighs by it and Analysis > Structural analyses with it; a structure already generated regenerates when the geometry changed."))
+			// Apply gives the body the structure and builds it in one step
+			// (2026-11-08 night: the separate Generate button went -- it only
+			// mattered for the first build, and its ribs are inside the skin,
+			// so pressing it seemed to do nothing).
+			SNew(SButton).Text(LOCTEXT("Apply", "Apply")).ToolTipText(LOCTEXT("ApplyTip", "Give the body this structure and build it: the body is cut by the plane networks and the ribs meshed as shells (gmsh, under a second), listed as layers under the body in the Scene tree. Analysis > Mass Properties weighs by it and Analysis > Structural analyses with it. The ribs sit inside the skin: hide the Skin row to see them alone."))
 			.IsEnabled_Lambda([D, Weak]() { return D->bDirty && Weak.IsValid() && aerotelic::BodyStructureProblem(D->S).empty(); })
-			.OnClicked_Lambda([D]()
-			{
-				if (D->Entity.IsValid() && D->Entity->SetBodyStructure(D->Role, D->S))
-				{
-					D->bDirty = false;
-				}
-				return FReply::Handled();
-			})
-		]
-		+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
-		[
-			SNew(SButton).Text(LOCTEXT("Generate", "Generate")).ToolTipText(LOCTEXT("GenerateTip", "Apply, then cut the body by its plane networks and mesh the ribs as shells (gmsh, under a second). The Skin row then stands for the body's surface: hide it to see the ribs alone."))
-			.IsEnabled_Lambda([D, Weak]() { return Weak.IsValid() && aerotelic::BodyStructureProblem(D->S).empty() && D->S.IsSkin(); })
 			.OnClicked_Lambda([D]()
 			{
 				UAerotelicDocumentSubsystem* Doc = UAerotelicDocumentSubsystem::Get();
 				if (!D->Entity.IsValid() || Doc == nullptr) return FReply::Handled();
-				if (D->bDirty && D->Entity->SetBodyStructure(D->Role, D->S)) D->bDirty = false;
 				FString Error;
-				if (!Doc->GenerateBodyStructure(D->Entity.Get(), D->Role, Error))
+				const bool bOk = Doc->ApplyBodyStructure(D->Entity.Get(), D->Role, D->S, Error);
+				if (D->Entity->GetBodyStructure(D->Role) != nullptr) D->bDirty = false;
+				if (!bOk)
 				{
-					AerotelicMessageBox(EAppMsgType::Ok, FText::FromString(Error), LOCTEXT("GenerateTitle", "Generate Structure"));
+					AerotelicMessageBox(EAppMsgType::Ok, FText::FromString(Error), LOCTEXT("ApplyTitle", "Apply Structure"));
 				}
 				return FReply::Handled();
 			})

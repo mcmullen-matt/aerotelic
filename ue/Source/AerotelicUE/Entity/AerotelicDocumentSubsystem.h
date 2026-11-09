@@ -142,6 +142,14 @@ public:
 	// exclusion that names nothing in the scene is skipped with a log line,
 	// as any dependency that cannot be satisfied.
 	bool GenerateBodyStructure(AAerotelicEntityActor* Entity, const FString& BodyRole, FString& OutError);
+	// The Structure dialog's Apply (2026-11-08 night, replacing its Generate
+	// button): gives the body the structure AND, when it is a skin, builds
+	// its layers at once -- generation is under a second, so there is no
+	// reason to make the user ask twice. The regeneration the change would
+	// have queued is taken out of the queue, since it is done here. False
+	// with OutError when the structure could not be set, or was set but
+	// could not be generated (the body keeps the structure then).
+	bool ApplyBodyStructure(AAerotelicEntityActor* Entity, const FString& BodyRole, const aerotelic::BodyStructure& Structure, FString& OutError);
 	// Regenerates every body whose structure has been generated, over the
 	// bodies as they now stand. Returns how many; OutErrors lists failures.
 	int32 RegenerateStructures(TArray<FString>& OutErrors);

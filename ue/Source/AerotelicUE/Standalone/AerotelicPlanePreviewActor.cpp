@@ -22,7 +22,6 @@ namespace
 	// Outlines are drawn for up to this many planes; beyond, the quads alone.
 	constexpr int32 kMaxOutlinedPlanes = 64;
 	const FLinearColor kActive(1.0f, 0.7f, 0.1f, 1.0f);
-	const FLinearColor kOther(0.75f, 0.75f, 0.8f, 1.0f);
 
 	UMaterialInterface* LoadMaterial(const FString& Package)
 	{
@@ -180,10 +179,14 @@ void AAerotelicPlanePreviewActor::Rebuild()
 
 	int32 Section = 0;
 	int32 BarIndex = 0;
+	// Only the network being edited (the Planes list's selection) is drawn:
+	// the others cluttered a wing with several networks (Matt, 2026-11-08
+	// night) and their ribs, once applied, are in the body anyway.
 	for (size_t n = 0; n < Preview.Networks.size(); ++n)
 	{
 		const aerotelic::PlaneNetwork& Net = Preview.Networks[n];
 		const bool bActive = static_cast<int32>(n) == Preview.ActiveIndex;
+		if (!bActive) continue;
 		while (NetworkMIDs.Num() <= static_cast<int32>(n))
 		{
 			NetworkMIDs.Add(QuadMat != nullptr ? UMaterialInstanceDynamic::Create(QuadMat, this) : nullptr);
@@ -191,8 +194,8 @@ void AAerotelicPlanePreviewActor::Rebuild()
 		UMaterialInstanceDynamic* MID = NetworkMIDs[static_cast<int32>(n)];
 		if (MID != nullptr)
 		{
-			MID->SetVectorParameterValue(TEXT("Color"), bActive ? kActive : kOther);
-			MID->SetScalarParameterValue(TEXT("Opacity"), bActive ? 0.30f : 0.10f);
+			MID->SetVectorParameterValue(TEXT("Color"), kActive);
+			MID->SetScalarParameterValue(TEXT("Opacity"), 0.30f);
 		}
 		if (!aerotelic::PlaneNetworkProblem(Net).empty()) continue;
 		for (int k = 0; k < Net.count; ++k)
@@ -218,7 +221,7 @@ void AAerotelicPlanePreviewActor::Rebuild()
 				{
 					for (int32 e = 0; e < 4; ++e)
 					{
-						PlaceBar(Bar(BarIndex++), V[e], V[(e + 1) % 4], bActive ? BarThickness : 0.5 * BarThickness);
+						PlaceBar(Bar(BarIndex++), V[e], V[(e + 1) % 4], BarThickness);
 					}
 				}
 			}
