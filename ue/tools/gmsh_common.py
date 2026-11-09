@@ -5,8 +5,7 @@ Importing this module first is what makes the others work from a bare
 python.exe: ``_bootstrap_dlls`` puts the environment's ``Library\\bin`` on
 PATH (numpy's BLAS and gmsh's own DLLs live there, and it is on PATH only
 inside an activated environment; the application runs the interpreter
-directly, as tools/structure_meshlib.py does) before numpy and gmsh are
-imported.
+directly) before numpy and gmsh are imported.
 
 What lives here is what every gmsh job needs of a triangulated surface:
 the ``.tri`` reader, the closed-surface check, the divergence-theorem
@@ -35,7 +34,7 @@ import sys
 def _bootstrap_dlls():
     """numpy's BLAS and gmsh's own DLLs live in <env>\\Library\\bin, which is
     only on PATH inside an activated environment; the application runs
-    python.exe directly (as tools/structure_meshlib.py does)."""
+    python.exe directly."""
     lib_bin = os.path.join(sys.prefix, "Library", "bin")
     if os.path.isdir(lib_bin):
         os.environ["PATH"] = lib_bin + os.pathsep + os.environ.get("PATH", "")

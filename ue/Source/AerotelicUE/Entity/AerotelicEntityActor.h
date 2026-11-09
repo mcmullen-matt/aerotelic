@@ -47,9 +47,9 @@ struct FAerotelicBody
 	// saved under the entity's `bodies:`. Not reflected (a plain C++ value).
 	aerotelic::BodyStructure Structure;
 
-	// The structure's GENERATED geometry -- the skin shell and the ribs
-	// (AerotelicBodyStructure.h) -- once the document has generated it;
-	// null until then. Kept by role across rebuilds and marked stale by
+	// The structure's GENERATED geometry -- the skin and the rib discs, as
+	// shells (AerotelicBodyStructure.h) -- once the document has generated
+	// it; null until then. Kept by role across rebuilds and marked stale by
 	// them (the document regenerates); not saved (regenerated on load for
 	// a body with an interior). Not reflected.
 	TSharedPtr<FAerotelicBodyStructure> Generated;
@@ -58,8 +58,9 @@ struct FAerotelicBody
 // One layer of generated structure as the actor draws and lists it: which
 // body's, which of its layers, and the layer's own display state (shown or
 // hidden on its own and on the mirrored half, a colour of its own). The
-// skin layer is the body's surface again with the hollow inside, so while
-// it is shown the body's own section is hidden.
+// Skin layer IS the body's surface -- it has no mesh and no section of its
+// own -- so its flag shows or hides the body's own section, and hiding it
+// leaves the ribs alone on screen (IsBodySurfaceShown).
 struct FAerotelicLayerView
 {
 	FString BodyRole;
@@ -220,8 +221,10 @@ public:
 	// Its own colour, else the layer kind's default (the skin the body's
 	// colour, ribs steel blue).
 	FLinearColor GetLayerDisplayColor(int32 Layer) const;
-	// A body's generated layers as placed (or mirrored) meshes, named by
-	// layer -- what STL export and the mass report take. Empty when the
+	// A body's generated layers that have a mesh -- the Ribs layers, open
+	// discs -- as placed (or mirrored) meshes, named by layer: what STL
+	// export and the mass report take. The Skin layer has no mesh (the
+	// body's own placed mesh is the skin) and is not listed. Empty when the
 	// body has none.
 	std::vector<aerotelic::NamedMesh> GetPlacedLayerMeshes(const FString& BodyRole, bool bMirror) const;
 
@@ -300,18 +303,19 @@ public:
 	// This entity's bodies as placed (or mirrored) triangle meshes within
 	// Tolerance of the surface: the model's own OCCT-free meshes
 	// (ISolidModel::BuildMeshes, reusing the viewport's when they are fine
-	// enough), else the OCCT solid tessellated. What STL export and the
-	// structure's hollowing consume. Empty if nothing can be built.
+	// enough), else the OCCT solid tessellated. What STL export, the mass
+	// report and the structure's generation consume. Empty if nothing can
+	// be built.
 	//
 	// A Tolerance of 0 or less asks for THE BODY'S OWN GRID (2026-11-05):
 	// the mesh the viewport shows, built by the entity's Mesh tab spec at
 	// the viewport's tolerance rule (DisplayTolerance, 0.15% of the body's
 	// diagonal) -- so an analysis that asks for it solves on exactly the
-	// triangles the user sees and set. The structural analysis, mass
-	// properties and the material dialog ask for it; a caller with a
-	// tolerance of its own (STL export, the structure's hollowing, which
-	// needs the surface finer than its distance field's voxel) gets a
-	// private copy at that tolerance and must not hand it to a solver.
+	// triangles the user sees and set. The structural analysis, the
+	// structure's generation (its ribs' rims are this grid's vertices),
+	// mass properties and the material dialog ask for it; a caller with a
+	// tolerance of its own (STL export) gets a private copy at that
+	// tolerance and must not hand it to a solver.
 	std::vector<aerotelic::NamedMesh> GetPlacedMeshes(bool bMirror, double Tolerance = 0.0) const;
 	// World bounds of the placed (or mirrored) bodies; invalid if none.
 	FBox GetPlacedBounds(bool bMirror) const;
@@ -454,7 +458,7 @@ private:
 	// builds it on demand then.
 	TopoDS_Shape LastSolid;
 	// The model's own meshes from the last RefreshProxy() (unplaced), at
-	// LastMeshTolerance; the mirror, export and the structure's hollowing
+	// LastMeshTolerance; the mirror, export and the structure's generation
 	// reuse them.
 	std::vector<aerotelic::NamedMesh> LastMeshes;
 	double LastMeshTolerance = 0.0;
@@ -467,15 +471,16 @@ private:
 	void ApplyMeshVisibility();
 	// Every section's visibility -- the bodies' and the layers', on the
 	// surface, edge and mirror meshes -- from the bodies' and layers' flags
-	// (a body's section hidden while its skin layer is shown).
+	// (a body's section hidden while its Skin layer is).
 	void ApplySectionVisibility();
-	// Rebuilds the layer list and the structure meshes from the bodies'
-	// generated structures (and the mirrored copy).
+	// Rebuilds the layer list and the structure meshes (the rib discs, both
+	// sides) from the bodies' generated structures (and the mirrored copy).
 	void RefreshStructureLayers();
 	void RefreshStructureMirror();
-	// True when body Index's skin layer is drawn (on the mirror when
-	// bMirror), which stands in for the body's own surface.
-	bool IsSkinLayerShown(int32 BodyIndex, bool bMirror) const;
+	// True when body Index's own surface is to be drawn (on the mirror when
+	// bMirror): the body's flag, and -- when the body has a generated Skin
+	// layer, found by kind since it has no section -- that layer's flag.
+	bool IsBodySurfaceShown(int32 BodyIndex, bool bMirror) const;
 	// The wireframe material's nudge towards the camera, a fraction of this
 	// body's PLACED size (so a replica's edges sit on its surface as the
 	// full-size vehicle's do), on every edge material. After every rebuild

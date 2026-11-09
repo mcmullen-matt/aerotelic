@@ -12,6 +12,15 @@ is, every rib face is indexed within the nodes written, the spar and the
 ribs share their chord nodes, no two rib nodes coincide, and a limited
 height turns the ribs into frames. A failing job (a plane that meets no
 edge of the surface) is reported as a note, not an error.
+
+Reserved volumes: a 0.5 x 4 x 0.5 box bay inside the body (its grid rows
+on the rib planes, so no cut is needed either) with the rib at y = 0 and
+the spar at x = 0 through both: the rib area is the sections less the
+bay's, no rib face centroid lies in the bay's section, the bay's rim nodes
+are written after the surface's and the spar and rib share them. Then the
+same bay against a rib it misses (no hole, the full disc), a bay wider
+than the body (crosses the rim: a note, the full disc) and a bay larger
+than the body (encloses the disc: a note, no faces).
 """
 
 import json
@@ -150,6 +159,81 @@ def main(argv):
             result4 = json.load(f)
         ok &= check(code == 0 and result4.get("ok") and result4["rib_faces"] == 0 and len(result4["rib_notes"]) == 1,
                     "ribs (uncut plane): no faces and one note (%s)" % "; ".join(result4.get("rib_notes", [])))
+
+        # A reserved volume: a 0.5 x 4 x 0.5 bay in the middle of the body
+        # (2 x 8 x 2 cells: its vertices lie on y = 0 and x = 0, so the
+        # planes below need no cut), the rib at y = 0 and the spar at x = 0
+        # through both.
+        def run_holes(tag, bay_dims, bay_cells, rib_list):
+            bv, bf = sfc.box_shell(*bay_dims, *bay_cells)
+            tg.write_tri(os.path.join(job_dir, "hole_%s.tri" % tag), bv, bf)
+            jobh = dict(job)
+            jobh["holes"] = ["hole_%s.tri" % tag]
+            jobh["ribs"] = rib_list
+            jobh["outputs"] = {"nodes": "nodes_%s.bin" % tag, "result": "result_%s.json" % tag, "ribs": "ribs_%s.bin" % tag}
+            with open(os.path.join(job_dir, "job.json"), "w", encoding="utf-8") as f:
+                json.dump(jobh, f, indent=1)
+            code = rg.main(["rib_gmsh.py", job_dir])
+            with open(os.path.join(job_dir, "result_%s.json" % tag), "r", encoding="utf-8") as f:
+                res = json.load(f)
+            return code, res
+
+        bay = (0.5, 4.0, 0.5)
+        code, result5 = run_holes("bay", bay, (2, 8, 2),
+                                  [{"id": 1, "normal": [0.0, 1.0, 0.0], "offset": 0.0, "height": 0.0},
+                                   {"id": 2, "normal": [1.0, 0.0, 0.0], "offset": 0.0, "height": 0.0}])
+        ok &= check(code == 0 and result5.get("ok"), "ribs (bay): the job succeeded: %s" % result5.get("error", ""))
+        if result5.get("ok"):
+            nodes5 = read_nodes(os.path.join(job_dir, "nodes_bay.bin"))
+            rib_faces5, rib_ids5 = read_ribs(os.path.join(job_dir, "ribs_bay.bin"))
+            ok &= check(result5["holes"] == 2 and result5["rib_notes"] == [], "ribs (bay): two hole loops used (one per disc), no notes (%s)" % "; ".join(result5["rib_notes"]))
+            # The rib: 1 x 1 less the bay's 0.5 x 0.5; the spar: 10 x 1 less 4 x 0.5.
+            rib_expected = 1.0 - 0.5 * 0.5
+            spar_expected = 10.0 - 4.0 * 0.5
+            rib_got = tg.surface_area(nodes5, rib_faces5[rib_ids5 == 1])
+            spar_got = tg.surface_area(nodes5, rib_faces5[rib_ids5 == 2])
+            ok &= check(abs(rib_got - rib_expected) < 0.01 * rib_expected, "ribs (bay): the rib's area is the section less the bay's, %.4g (got %.6g)" % (rib_expected, rib_got))
+            ok &= check(abs(spar_got - spar_expected) < 0.01 * spar_expected, "ribs (bay): the spar's area is the web less the bay's, %.4g (got %.6g)" % (spar_expected, spar_got))
+            ok &= check(abs(result5["rib_area"] - rib_expected - spar_expected) < 0.01 * (rib_expected + spar_expected), "ribs (bay): result rib_area agrees (%.6g)" % result5["rib_area"])
+            # No face centroid inside the bay's section (|x| < 0.25, |y| < 2, |z| < 0.25).
+            cent = nodes5[rib_faces5].mean(axis=1)
+            in_bay = (np.abs(cent[:, 0]) < 0.25 - 1e-9) & (np.abs(cent[:, 1]) < 2.0 - 1e-9) & (np.abs(cent[:, 2]) < 0.25 - 1e-9)
+            ok &= check(not in_bay.any(), "ribs (bay): no rib face centroid lies in the bay's section (%d do)" % int(in_bay.sum()))
+            # The bay's rim nodes (on the bay's surface) are written after the
+            # surface's nodes, and none of them is a surface node.
+            rib_nodes5 = np.unique(rib_faces5)
+            p = nodes5[rib_nodes5]
+            on_bay = (np.abs(np.abs(p[:, 0]) - 0.25) < 1e-9) & (np.abs(p[:, 2]) <= 0.25 + 1e-9) & (np.abs(p[:, 1]) <= 2.0 + 1e-9)
+            on_bay |= (np.abs(np.abs(p[:, 2]) - 0.25) < 1e-9) & (np.abs(p[:, 0]) <= 0.25 + 1e-9) & (np.abs(p[:, 1]) <= 2.0 + 1e-9)
+            on_bay |= (np.abs(np.abs(p[:, 1]) - 2.0) < 1e-9) & (np.abs(p[:, 0]) <= 0.25 + 1e-9) & (np.abs(p[:, 2]) <= 0.25 + 1e-9)
+            ok &= check(int(on_bay.sum()) > 0 and bool(np.all(rib_nodes5[on_bay] >= len(verts))), "ribs (bay): the %d bay rim nodes come after the %d surface nodes" % (int(on_bay.sum()), len(verts)))
+            ok &= check(len(nodes5) >= len(verts) and np.allclose(nodes5[:len(verts)], verts, atol=1e-12), "ribs (bay): the first nodes are still the surface's vertices in order")
+            ok &= check(len(np.unique(rib_faces5[rib_faces5 >= len(verts)])) == len(nodes5) - len(verts), "ribs (bay): every interior node written belongs to a rib face")
+            # The spar and the rib share the bay's rim vertices on both planes
+            # ((0, 0, +-0.25)) and their chord nodes outside the bay.
+            spar_nodes = set(np.unique(rib_faces5[rib_ids5 == 2]).tolist())
+            rib_only = set(np.unique(rib_faces5[rib_ids5 == 1]).tolist())
+            shared5 = [n for n in spar_nodes & rib_only if abs(nodes5[n][0]) < 1e-9 and abs(nodes5[n][1]) < 1e-9]
+            corner = [n for n in shared5 if abs(abs(nodes5[n][2]) - 0.25) < 1e-9]
+            ok &= check(len(corner) == 2 and len(shared5) >= 4, "ribs (bay): the spar and the rib share the bay's rim vertices on their chord (%d shared, %d on the bay)" % (len(shared5), len(corner)))
+            keyed = np.round(nodes5[rib_nodes5] * 1e9).astype(np.int64)
+            ok &= check(len(np.unique(keyed, axis=0)) == len(rib_nodes5), "ribs (bay): no two rib nodes coincide")
+
+        # The bay misses the plane (the rib at y = -2.5 is clear of y in [-2, 2]).
+        code, result6 = run_holes("miss", bay, (2, 8, 2), [{"id": 1, "normal": [0.0, 1.0, 0.0], "offset": -2.5, "height": 0.0}])
+        ok &= check(code == 0 and result6.get("ok") and result6["holes"] == 0 and result6["rib_notes"] == [] and abs(result6["rib_area"] - 1.0) < 1e-6,
+                    "ribs (bay missed): no hole, no note, the full disc (area %.6g, %d holes)" % (result6.get("rib_area", -1.0), result6.get("holes", -1)))
+
+        # The bay crosses the body's boundary (2 wide against a 1 wide body): a note, the full disc.
+        code, result7 = run_holes("cross", (2.0, 4.0, 0.5), (2, 8, 2), [{"id": 1, "normal": [0.0, 1.0, 0.0], "offset": 0.0, "height": 0.0}])
+        ok &= check(code == 0 and result7.get("ok") and result7["holes"] == 0 and len(result7["rib_notes"]) == 1 and "crosses the rib's boundary" in result7["rib_notes"][0]
+                    and abs(result7["rib_area"] - 1.0) < 1e-6,
+                    "ribs (bay crossing): no hole, one note, the full disc (area %.6g; %s)" % (result7.get("rib_area", -1.0), "; ".join(result7.get("rib_notes", []))))
+
+        # The bay encloses the whole disc: a note, no faces.
+        code, result8 = run_holes("enclose", (3.0, 4.0, 3.0), (2, 8, 2), [{"id": 1, "normal": [0.0, 1.0, 0.0], "offset": 0.0, "height": 0.0}])
+        ok &= check(code == 0 and result8.get("ok") and result8["holes"] == 0 and result8["rib_faces"] == 0 and len(result8["rib_notes"]) == 1,
+                    "ribs (bay enclosing): no faces, one note (%s)" % "; ".join(result8.get("rib_notes", [])))
     finally:
         if keep:
             print("kept %s" % keep)

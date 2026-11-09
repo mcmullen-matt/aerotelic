@@ -31,13 +31,28 @@ the two discs carry the same nodes along it, and those nodes are merged
 by position when the discs are assembled. A rib of limited ``height``
 (a frame, a cap) keeps only the triangles within that distance of the rim.
 
-FILES. ``outer.tri`` is the application's format (gmsh_common.py:
-``AEROTRI1``, counts, float64 xyz, int32 abc). ``nodes.bin`` is 8 bytes
-``AERONOD1``, uint32 node count, float64 xyz per node -- the SURFACE'S
-VERTICES FIRST, in their own order, then the ribs' interior nodes (the
-application relies on that order to splice the rib faces onto the body's
-grid). ``ribs.bin`` is uint32 face count, int32 node triples (rows into
-nodes.bin), then an int32 rib id per face.
+RESERVED VOLUMES (payload bays the ribs must leave alone) come in as
+closed surfaces (``holes``), already cut by every rib plane like the body.
+For each rib plane the bay's own rim loops are read off its surface the
+same way; a loop whose vertices all lie strictly inside the disc's outer
+loop (and in none of the disc's own holes) is meshed as a HOLE of the
+disc, its rim transfinite with two nodes per segment like the outer rim.
+A bay loop entirely outside the disc is ignored; one that crosses the
+disc's boundary is left out with a note (partial exclusions are not
+supported yet); one that encloses the whole disc empties the rib with a
+note. The bay's rim vertices are NOT surface nodes: they are written as
+interior nodes (rows at or after the surface's), once however many discs
+carry them (a crossing spar and rib share them by position like chord
+nodes), and only when a kept face uses them.
+
+FILES. ``outer.tri`` and the ``holes`` are the application's format
+(gmsh_common.py: ``AEROTRI1``, counts, float64 xyz, int32 abc).
+``nodes.bin`` is 8 bytes ``AERONOD1``, uint32 node count, float64 xyz per
+node -- the SURFACE'S VERTICES FIRST, in their own order, then the ribs'
+interior nodes, the bays' rim nodes among them (the application relies on
+that order to splice the rib faces onto the body's grid). ``ribs.bin`` is
+uint32 face count, int32 node triples (rows into nodes.bin), then an int32
+rib id per face.
 
 History: this was the ribs half of tools/tet_gmsh.py, the skin / core
 tetrahedral mesher, whose volume path (tetrahedra, offset surfaces,
@@ -150,6 +165,54 @@ def distance_to_polylines(points, polylines):
             proj = a[i] + t[:, None] * ab[i]
             best = np.minimum(best, np.linalg.norm(points - proj, axis=1))
     return best
+
+
+def points_strictly_inside_loop(verts, points, loop, normal, tol):
+    """Whether each of `points` (vertex ids into `verts`) lies strictly
+    inside the closed `loop` (vertex ids) in the plane of `normal`: the
+    even-odd rule on the loop projected onto the plane's 2-D basis, and
+    farther than `tol` from the loop's segments (a point on the rim is not
+    inside)."""
+    _, u, v = plane_basis(normal)
+    poly = verts[np.array(loop)]
+    px, py = poly @ u, poly @ v
+    qx, qy = verts[np.array(points)] @ u, verts[np.array(points)] @ v
+    inside = np.zeros(len(points), dtype=bool)
+    n = len(loop)
+    for i in range(n):
+        ax, ay = px[i], py[i]
+        bx, by = px[(i + 1) % n], py[(i + 1) % n]
+        if ay == by:
+            continue
+        crosses = (ay > qy) != (by > qy)
+        x_at = ax + (qy - ay) * (bx - ax) / (by - ay)
+        inside ^= crosses & (qx < x_at)
+    inside &= distance_to_polylines(verts[np.array(points)], [poly]) > tol
+    return inside
+
+
+def classify_hole_loop(verts, hole_loop, disc_loops, normal, tol):
+    """How a reserved volume's rim loop sits against a disc's loops (the
+    outer loop first, its own holes after): 'hole' (all its vertices
+    strictly inside the outer loop and in none of the holes), 'outside'
+    (none inside the outer loop, or all inside one of its holes),
+    'encloses' (the outer loop's vertices all lie inside it) or 'partial'
+    (anything else: it crosses a rim)."""
+    outer = disc_loops[0]
+    in_outer = points_strictly_inside_loop(verts, hole_loop, outer, normal, tol)
+    if not in_outer.any():
+        if points_strictly_inside_loop(verts, outer, hole_loop, normal, tol).all():
+            return "encloses"
+        return "outside"
+    if not in_outer.all():
+        return "partial"
+    for existing in disc_loops[1:]:
+        in_hole = points_strictly_inside_loop(verts, hole_loop, existing, normal, tol)
+        if in_hole.all():
+            return "outside"
+        if in_hole.any():
+            return "partial"
+    return "hole"
 
 
 # ---------------------------------------------------------------------------
@@ -265,6 +328,11 @@ def run_job(job_dir):
 
         outer         the body's surface (.tri), closed and outward, one
                       connected shell, already cut by every rib plane
+        holes         optional ["hole_0.tri", ...]: reserved volumes
+                      (payload bays) as closed surfaces in the same frame,
+                      already cut by every rib plane; where a bay's section
+                      lies inside a rib's disc the disc gets a hole there
+                      (see classify_hole_loop for the other cases)
         ribs          [{id, normal: [x, y, z], offset, height}]: the rib
                       planes normal . x = offset; `id` is the plane
                       network's (several ribs share it, and the faces carry
@@ -280,9 +348,11 @@ def run_job(job_dir):
 
     result.json: ok, nodes (the count written), surface_nodes (the first
     that many are the surface's vertices), outer_volume, rib_faces,
-    rib_area, rib_notes (a list of strings: a plane that met no edge of
-    the surface, and the like), seconds, gmsh (the API version). A failure
-    writes {ok: false, error} instead and exits 1.
+    rib_area, holes (the count of bay loops meshed as holes of the discs,
+    over all ribs), rib_notes (a list of strings: a plane that met no edge
+    of the surface, a bay crossing a rib's boundary, and the like),
+    seconds, gmsh (the API version). A failure writes {ok: false, error}
+    instead and exits 1.
 
     Returns the result dictionary.
     """
@@ -314,22 +384,57 @@ def run_job(job_dir):
     if n_shells != 1:
         raise JobError("the body is %d separate closed shells; mesh them one at a time." % n_shells)
 
+    # The reserved volumes. Their vertices follow the surface's in one
+    # combined array `allv` (vertex ids >= len(ov) are a bay's), so a disc
+    # can be meshed from the body's rim and the bays' rims alike.
+    hole_files = list(job.get("holes", []) or [])
+    hole_meshes = []             # (file name, vertices, faces, offset into allv)
+    allv = ov
+    for name in hole_files:
+        hv, hf = tg.read_tri(os.path.join(job_dir, name))
+        tg.check_closed(hv, hf, "the reserved volume '%s'" % name)
+        hole_meshes.append((name, hv, hf, len(allv)))
+        allv = np.concatenate([allv, hv])
+    if hole_meshes:
+        log("  %d reserved volume(s), %d vertices" % (len(hole_meshes), len(allv) - len(ov)))
+
     # The ribs' rims on the body's surface, before gmsh is touched.
     rib_notes = []
     loops_by_rib = []
+    holes_used = 0
     for r in ribs:
         loops = rib_loops(ov, of, r["normal"], float(r["offset"]), plane_tolerance)
         # The outer loop first (the largest area), the holes after.
         loops.sort(key=lambda loop: -abs(loop_area(ov, loop, r["normal"])))
         if not loops:
             rib_notes.append("rib %d: its plane meets no edge of the surface (was the surface cut by it?)" % int(r["id"]))
+            loops_by_rib.append(loops)
+            continue
+        # The bays' rims on this plane: holes of the disc where they lie
+        # inside it.
+        for name, hv, hf, off in hole_meshes:
+            for hloop in rib_loops(hv, hf, r["normal"], float(r["offset"]), plane_tolerance):
+                hloop = [v + off for v in hloop]
+                kind = classify_hole_loop(allv, hloop, loops, r["normal"], plane_tolerance)
+                if kind == "hole":
+                    loops.append(hloop)
+                    holes_used += 1
+                elif kind == "partial":
+                    rib_notes.append("rib %d: the reserved volume '%s' crosses the rib's boundary; left out (partial exclusions are not supported yet)" % (int(r["id"]), name))
+                elif kind == "encloses":
+                    rib_notes.append("rib %d: the reserved volume '%s' contains the whole rib; the rib is empty there" % (int(r["id"]), name))
+                    loops = []
+                    break
+            if not loops:
+                break
         loops_by_rib.append(loops)
-    chords = rib_chords(ov, loops_by_rib, ribs, plane_tolerance, rib_size) if ribs else {}
+    chords = rib_chords(allv, loops_by_rib, ribs, plane_tolerance, rib_size) if ribs else {}
 
     # The nodes: the surface's vertices first, in order; the ribs' interior
-    # nodes after, a chord node once however many discs carry it.
+    # nodes after, a chord node or a bay's rim vertex once however many
+    # discs carry it.
     new_xyz = []                 # the interior nodes, in order of creation
-    shared = {}                  # rounded xyz -> node row, for the chords
+    shared = {}                  # rounded xyz -> node row, for the chords and the bays' rims
     key_scale = 1.0 / max(1e-9 * diagonal, 1e-300)
     rib_rows, rib_ids = [], []
     gmsh.initialize()
@@ -341,7 +446,7 @@ def run_job(job_dir):
         for i, r in enumerate(ribs):
             if not loops_by_rib[i]:
                 continue
-            coords, rim, chord_nodes, tris = mesh_rib_disc("rib_%d" % i, ov, loops_by_rib[i], chords.get(i, []), rib_size)
+            coords, rim, chord_nodes, tris = mesh_rib_disc("rib_%d" % i, allv, loops_by_rib[i], chords.get(i, []), rib_size)
             if not len(tris):
                 rib_notes.append("rib %d: gmsh meshed no triangle into its disc" % int(r["id"]))
                 continue
@@ -350,14 +455,16 @@ def run_job(job_dir):
                 # A limited height: only the triangles within it of the rim
                 # (their centroids) are rib faces.
                 cent = np.array([(coords[int(a)] + coords[int(b)] + coords[int(c)]) / 3.0 for a, b, c in tris])
-                polylines = [ov[np.array(loop)] for loop in loops_by_rib[i]]
+                polylines = [allv[np.array(loop)] for loop in loops_by_rib[i]]
                 keep = distance_to_polylines(cent, polylines) <= float(r["height"])
             row_of_scratch = {}
             for st in sorted(coords):
-                if st in rim:
+                if st in rim and int(rim[st]) < len(ov):
                     row_of_scratch[st] = int(rim[st])       # the surface's own vertex
                     continue
-                key = tuple(np.round(coords[st] * key_scale).astype(np.int64)) if st in chord_nodes else None
+                # A bay's rim vertex or a chord node: an interior node, shared
+                # by position with the other discs carrying it.
+                key = tuple(np.round(coords[st] * key_scale).astype(np.int64)) if (st in chord_nodes or st in rim) else None
                 if key is not None and key in shared:
                     row_of_scratch[st] = shared[key]        # a chord node another disc made
                     continue
@@ -398,14 +505,15 @@ def run_job(job_dir):
         "outer_volume": outer_volume,
         "rib_faces": int(len(rib_faces)),
         "rib_area": rib_area,
+        "holes": int(holes_used),
         "rib_notes": rib_notes,
         "seconds": time.time() - t_start,
         "gmsh": gmsh.GMSH_API_VERSION if hasattr(gmsh, "GMSH_API_VERSION") else "",
     }
     with open(os.path.join(job_dir, outputs.get("result", "result.json")), "w", encoding="utf-8") as f:
         json.dump(result, f, indent=1)
-    log("  %d nodes (%d the surface's, %d in the ribs); %d rib faces, area %.6g; %d note(s); %.2f s"
-        % (result["nodes"], result["surface_nodes"], result["nodes"] - result["surface_nodes"], result["rib_faces"], rib_area, len(rib_notes), result["seconds"]))
+    log("  %d nodes (%d the surface's, %d in the ribs); %d rib faces, area %.6g; %d hole(s); %d note(s); %.2f s"
+        % (result["nodes"], result["surface_nodes"], result["nodes"] - result["surface_nodes"], result["rib_faces"], rib_area, holes_used, len(rib_notes), result["seconds"]))
     return result
 
 

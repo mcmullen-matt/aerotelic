@@ -130,22 +130,33 @@ FAerotelicMassReport ComputeAerotelicMassReport(const TArray<FAerotelicBooleanOp
 			{
 				S = *Own;
 			}
-			// A body whose structure has been GENERATED weighs by its layers:
-			// each a closed solid of its own material, exactly, in place of
-			// the estimates from the figures. An asserted mass still stands
-			// in for all of it.
+			// A body whose structure has been GENERATED weighs by its layers,
+			// each a THIN SHELL of its own material and thickness (density x
+			// area x thickness, the core's SkinMassProperties): the skin on
+			// the body's own placed mesh -- the Skin layer has no mesh, the
+			// body's surface is the skin -- and each Ribs layer on its placed
+			// discs, in place of the estimates from the figures. An asserted
+			// mass still stands in for all of it.
 			const FAerotelicBodyStructure* G = Entity->GetGeneratedStructure(Role);
 			if (G != nullptr && G->IsGenerated() && S.IsSkin() && !S.asserted_mass)
 			{
 				const std::vector<aerotelic::NamedMesh> LayerMeshes = Entity->GetPlacedLayerMeshes(Role, Op.bMirror);
+				const TCHAR* Stale = G->IsStale() ? TEXT("; generated before the body's last change") : TEXT("");
 				for (const FAerotelicStructureLayer& L : G->GetLayers())
 				{
 					FAerotelicMassLine Line;
 					Line.Label = BodyLabel + TEXT(" / ") + L.Name;
 					Line.Mode = aerotelic::MassMode::Material;
-					const aerotelic::NamedMesh* Placed = nullptr;
-					for (const aerotelic::NamedMesh& LM : LayerMeshes) if (FString(UTF8_TO_TCHAR(LM.name.c_str())) == L.Name) Placed = &LM;
-					if (Placed == nullptr || Placed->mesh.IsEmpty())
+					const aerotelic::TriMesh* Shell = nullptr;
+					if (L.Kind == FAerotelicStructureLayer::EKind::Skin)
+					{
+						Shell = &M.mesh;
+					}
+					else
+					{
+						for (const aerotelic::NamedMesh& LM : LayerMeshes) if (FString(UTF8_TO_TCHAR(LM.name.c_str())) == L.Name) Shell = &LM.mesh;
+					}
+					if (Shell == nullptr || Shell->IsEmpty())
 					{
 						Line.Note = L.Note.IsEmpty() ? TEXT("the layer came out empty") : L.Note;
 					}
@@ -153,13 +164,17 @@ FAerotelicMassReport ComputeAerotelicMassReport(const TArray<FAerotelicBooleanOp
 					{
 						Line.Note = FString::Printf(TEXT("no material on the %s"), FAerotelicStructureLayer::KindName(L.Kind));
 					}
+					else if (!(L.Thickness > 0.0))
+					{
+						Line.Note = FString::Printf(TEXT("no thickness on the %s"), FAerotelicStructureLayer::KindName(L.Kind));
+					}
 					else
 					{
-						Line.Props = aerotelic::SolidMassProperties(Placed->mesh, L.Material.density / Units.DensityToSI());
+						Line.Props = aerotelic::SkinMassProperties(*Shell, L.Material.density / Units.DensityToSI(), L.Thickness);
 						Line.bIncluded = true;
-						Line.Note = FString::Printf(TEXT("%s, %s%s"), FAerotelicStructureLayer::KindName(L.Kind), UTF8_TO_TCHAR(L.Material.name.c_str()),
-							G->IsStale() ? TEXT("; generated before the body's last change") : TEXT(""));
-						if (!Placed->mesh.IsClosedManifold()) Line.Note += TEXT("; not a closed surface");
+						Line.Note = FString::Printf(TEXT("%s %.4g %s thick, %s%s"),
+							L.Kind == FAerotelicStructureLayer::EKind::Skin ? TEXT("skin") : TEXT("rib shells"),
+							L.Thickness, UTF8_TO_TCHAR(Units.LengthName()), UTF8_TO_TCHAR(L.Material.name.c_str()), Stale);
 					}
 					if (Line.bIncluded)
 					{

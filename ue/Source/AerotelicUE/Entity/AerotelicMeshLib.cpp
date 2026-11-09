@@ -4,7 +4,6 @@
 #include "HAL/FileManager.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
-#include "Misc/Guid.h"
 #include "Dom/JsonObject.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
@@ -16,84 +15,6 @@ namespace AerotelicMeshLib
 	namespace
 	{
 		constexpr const char* kTriMagic = "AEROTRI1";
-
-		// A JSON string literal (quotes, backslashes and control characters escaped).
-		FString JsonString(const FString& S)
-		{
-			FString Out = TEXT("\"");
-			for (TCHAR C : S)
-			{
-				switch (C)
-				{
-				case TEXT('"'): Out += TEXT("\\\""); break;
-				case TEXT('\\'): Out += TEXT("\\\\"); break;
-				case TEXT('\n'): Out += TEXT("\\n"); break;
-				case TEXT('\r'): Out += TEXT("\\r"); break;
-				case TEXT('\t'): Out += TEXT("\\t"); break;
-				default:
-					if (C < 0x20) Out += FString::Printf(TEXT("\\u%04x"), (int32)C);
-					else Out.AppendChar(C);
-				}
-			}
-			return Out + TEXT("\"");
-		}
-
-		FString Num(double V)
-		{
-			return FString::Printf(TEXT("%.17g"), V);
-		}
-
-		// A list of {label, file} entries, writing each body's .tri on the way.
-		bool WriteBodies(const TArray<FBody>& Bodies, const FString& Dir, const TCHAR* Prefix, FString& OutJson, FString& OutError)
-		{
-			OutJson = TEXT("[");
-			for (int32 i = 0; i < Bodies.Num(); ++i)
-			{
-				const FString File = FString::Printf(TEXT("%s_%d.tri"), Prefix, i);
-				if (Bodies[i].Mesh == nullptr || !WriteTri(*Bodies[i].Mesh, FPaths::Combine(Dir, File)))
-				{
-					OutError = FString::Printf(TEXT("could not write the mesh of '%s' for MeshLib"), *Bodies[i].Label);
-					return false;
-				}
-				FString Own;
-				if (Bodies[i].SkinThickness > 0.0) Own += FString::Printf(TEXT(", \"skin_thickness\": %s"), *Num(Bodies[i].SkinThickness));
-				if (Bodies[i].InnerRemeshEdge > 0.0) Own += FString::Printf(TEXT(", \"inner_remesh_edge\": %s"), *Num(Bodies[i].InnerRemeshEdge));
-				if (Bodies[i].PrecomputedInner != nullptr && !Bodies[i].PrecomputedInner->IsEmpty())
-				{
-					const FString InnerFile = FString::Printf(TEXT("%s_%d_cached_inner.tri"), Prefix, i);
-					if (!WriteTri(*Bodies[i].PrecomputedInner, FPaths::Combine(Dir, InnerFile)))
-					{
-						OutError = FString::Printf(TEXT("could not write the cached offset of '%s' for MeshLib"), *Bodies[i].Label);
-						return false;
-					}
-					Own += FString::Printf(TEXT(", \"inner_file\": %s"), *JsonString(InnerFile));
-				}
-				OutJson += FString::Printf(TEXT("%s{\"label\": %s, \"file\": %s%s}"), i ? TEXT(", ") : TEXT(""), *JsonString(Bodies[i].Label), *JsonString(File), *Own);
-			}
-			OutJson += TEXT("]");
-			return true;
-		}
-
-		FString NetworksJson(const TArray<FNetwork>& Networks)
-		{
-			FString Out = TEXT("[");
-			for (int32 i = 0; i < Networks.Num(); ++i)
-			{
-				const FNetwork& N = Networks[i];
-				FString Planes = TEXT("[");
-				for (int32 k = 0; k < N.Planes.Num(); ++k)
-				{
-					const aerotelic::Plane& P = N.Planes[k];
-					Planes += FString::Printf(TEXT("%s{\"normal\": [%s, %s, %s], \"offset\": %s}"), k ? TEXT(", ") : TEXT(""),
-						*Num(P.normal.x), *Num(P.normal.y), *Num(P.normal.z), *Num(P.offset));
-				}
-				Planes += TEXT("]");
-				Out += FString::Printf(TEXT("%s{\"label\": %s, \"planes\": %s, \"thickness\": %s, \"height\": %s, \"centre\": [%s, %s, %s], \"half_extent\": %s}"),
-					i ? TEXT(", ") : TEXT(""), *JsonString(N.Label), *Planes, *Num(N.Thickness), *Num(N.Height),
-					*Num(N.Centre.x), *Num(N.Centre.y), *Num(N.Centre.z), *Num(N.HalfExtent));
-			}
-			return Out + TEXT("]");
-		}
 	}
 
 	bool WriteTri(const aerotelic::TriMesh& Mesh, const FString& Path)
@@ -194,12 +115,6 @@ namespace AerotelicMeshLib
 			}
 		}
 		return FString();
-	}
-
-	FString FindScript()
-	{
-		const FString Script = FPaths::Combine(FPaths::ProjectDir(), TEXT("tools"), TEXT("structure_meshlib.py"));
-		return FPaths::FileExists(Script) ? FPaths::ConvertRelativePathToFull(Script) : FString();
 	}
 
 	bool RunJob(const FString& Script, const FString& Dir, TSharedPtr<FJsonObject>& OutResult, FString& OutError, FJobProgress* Progress)
@@ -309,154 +224,6 @@ namespace AerotelicMeshLib
 			OutError = Reason.IsEmpty() ? FString::Printf(TEXT("%s exited with code %d (see the log)."), *Name, Code) : Reason;
 			return false;
 		}
-		return true;
-	}
-
-	bool Run(const FRequest& Request, FResult& Out, FString& OutError)
-	{
-		const FString Python = FindPython();
-		if (Python.IsEmpty())
-		{
-			OutError = TEXT("MeshLib's Python interpreter was not found: install MeshLib (pip install meshlib) in the WingDesigner micromamba environment, or point AEROTELIC_MESHLIB_PYTHON at a python.exe that has it.");
-			return false;
-		}
-		const FString Script = FindScript();
-		if (Script.IsEmpty())
-		{
-			OutError = TEXT("tools\\structure_meshlib.py was not found beside the application.");
-			return false;
-		}
-		if (Request.Targets.Num() == 0)
-		{
-			OutError = TEXT("no body to hollow");
-			return false;
-		}
-
-		// The job folder: the bodies and job.json.
-		const FString Dir = FPaths::Combine(FPlatformProcess::UserTempDir(), TEXT("aerotelic_structure_") + FGuid::NewGuid().ToString(EGuidFormats::Short));
-		IFileManager::Get().MakeDirectory(*Dir, true);
-		auto Cleanup = [&Dir]() { IFileManager::Get().DeleteDirectory(*Dir, false, true); };
-
-		FString TargetsJson, ReservedJson;
-		if (!WriteBodies(Request.Targets, Dir, TEXT("target"), TargetsJson, OutError) || !WriteBodies(Request.Reserved, Dir, TEXT("reserved"), ReservedJson, OutError))
-		{
-			Cleanup();
-			return false;
-		}
-		const FString Job = FString::Printf(
-			TEXT("{\n \"skin_thickness\": %s,\n \"offset_voxel\": %s,\n \"offset_mode\": %s,\n \"decimate_tolerance\": %s,\n \"min_pocket_volume\": %s,\n \"inner_opening\": %s,\n \"inner_remesh_edge\": %s,\n")
-			TEXT(" \"targets\": %s,\n \"reserved\": %s,\n \"networks\": %s,\n")
-			TEXT(" \"outputs\": {\"skin\": \"skin.tri\", \"result\": \"result.json\", \"inner_prefix\": \"inner\", \"ribs_prefix\": \"ribs\"}\n}\n"),
-			*Num(Request.SkinThickness), *Num(Request.OffsetVoxel), *JsonString(Request.OffsetMode), *Num(Request.DecimateTolerance), *Num(Request.MinPocketVolume), *Num(Request.InnerOpening), *Num(Request.InnerRemeshEdge),
-			*TargetsJson, *ReservedJson, *NetworksJson(Request.Networks));
-		if (!FFileHelper::SaveStringToFile(Job, *FPaths::Combine(Dir, TEXT("job.json")), FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM))
-		{
-			OutError = TEXT("could not write the MeshLib job file");
-			Cleanup();
-			return false;
-		}
-
-		// Run it, collecting its output for the log.
-		TSharedPtr<FJsonObject> Result;
-		if (!RunJob(Script, Dir, Result, OutError))
-		{
-			Cleanup();
-			return false;
-		}
-
-		FString ReadError;
-		if (!ReadTri(FPaths::Combine(Dir, TEXT("skin.tri")), Out.Skin, ReadError))
-		{
-			OutError = ReadError;
-			Cleanup();
-			return false;
-		}
-		Out.SkinVolume = Result->GetNumberField(TEXT("skin_volume"));
-		Out.DomainVolume = Result->GetNumberField(TEXT("domain_volume"));
-		Out.RibsVolume = 0.0;
-		Result->TryGetNumberField(TEXT("ribs_volume"), Out.RibsVolume);
-		Out.Interiors = static_cast<int32>(Result->GetNumberField(TEXT("interiors")));
-		Out.Seconds = Result->GetNumberField(TEXT("seconds"));
-		Out.Warnings.Reset();
-		const TArray<TSharedPtr<FJsonValue>>* Warnings = nullptr;
-		if (Result->TryGetArrayField(TEXT("warnings"), Warnings))
-		{
-			for (const TSharedPtr<FJsonValue>& W : *Warnings)
-			{
-				FString S;
-				if (W.IsValid() && W->TryGetString(S)) Out.Warnings.Add(S);
-			}
-		}
-		// The inner surfaces, one per target in order.
-		Out.Inners.Reset();
-		const TArray<TSharedPtr<FJsonValue>>* Targets = nullptr;
-		if (Result->TryGetArrayField(TEXT("targets"), Targets))
-		{
-			for (const TSharedPtr<FJsonValue>& V : *Targets)
-			{
-				const TSharedPtr<FJsonObject>* Obj = nullptr;
-				if (!V.IsValid() || !V->TryGetObject(Obj) || !Obj->IsValid())
-				{
-					continue;
-				}
-				FInner Inner;
-				(*Obj)->TryGetStringField(TEXT("label"), Inner.Label);
-				(*Obj)->TryGetBoolField(TEXT("inner_ok"), Inner.bUsable);
-				(*Obj)->TryGetStringField(TEXT("inner_note"), Inner.Note);
-				(*Obj)->TryGetNumberField(TEXT("inner_volume"), Inner.Volume);
-				double Components = 0.0;
-				(*Obj)->TryGetNumberField(TEXT("inner_components"), Components);
-				Inner.Components = static_cast<int32>(Components);
-				FString File;
-				if ((*Obj)->TryGetStringField(TEXT("inner_file"), File) && !ReadTri(FPaths::Combine(Dir, File), Inner.Mesh, ReadError))
-				{
-					Inner.bUsable = false;
-					Inner.Note = ReadError;
-				}
-				Out.Inners.Add(MoveTemp(Inner));
-			}
-		}
-		if (Out.Inners.Num() != Request.Targets.Num())
-		{
-			OutError = FString::Printf(TEXT("MeshLib returned %d inner surfaces for %d bodies"), Out.Inners.Num(), Request.Targets.Num());
-			Cleanup();
-			return false;
-		}
-		// The networks' ribs, one per request network in order.
-		Out.Ribs.Reset();
-		const TArray<TSharedPtr<FJsonValue>>* Networks = nullptr;
-		if (Result->TryGetArrayField(TEXT("networks"), Networks))
-		{
-			for (const TSharedPtr<FJsonValue>& V : *Networks)
-			{
-				const TSharedPtr<FJsonObject>* Obj = nullptr;
-				if (!V.IsValid() || !V->TryGetObject(Obj) || !Obj->IsValid())
-				{
-					continue;
-				}
-				FRibs R;
-				(*Obj)->TryGetStringField(TEXT("label"), R.Label);
-				(*Obj)->TryGetNumberField(TEXT("volume"), R.Volume);
-				double Planes = 0.0;
-				(*Obj)->TryGetNumberField(TEXT("planes"), Planes);
-				R.Planes = static_cast<int32>(Planes);
-				(*Obj)->TryGetStringField(TEXT("note"), R.Note);
-				FString File;
-				if ((*Obj)->TryGetStringField(TEXT("file"), File) && !ReadTri(FPaths::Combine(Dir, File), R.Mesh, ReadError))
-				{
-					R.Mesh.Clear();
-					R.Note = ReadError;
-				}
-				Out.Ribs.Add(MoveTemp(R));
-			}
-		}
-		if (Out.Ribs.Num() != Request.Networks.Num())
-		{
-			OutError = FString::Printf(TEXT("MeshLib returned %d rib bodies for %d networks"), Out.Ribs.Num(), Request.Networks.Num());
-			Cleanup();
-			return false;
-		}
-		Cleanup();
 		return true;
 	}
 }

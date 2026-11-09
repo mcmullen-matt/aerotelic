@@ -115,8 +115,8 @@ namespace AerotelicExport
 
 	FStlMesh MeshForStl(const TArray<FStlSource>& Sources, double LinearDeflection, double AngularDeflectionDeg, TArray<FString>& OutFailures)
 	{
-		// The bodies go through the operand path above; the layers are
-		// taken as generated.
+		// The bodies go through the operand path above; the layers (the rib
+		// discs, open shells) are taken as generated.
 		TArray<FAerotelicBooleanOperand> Operands;
 		TArray<FString> Labels;
 		for (const FStlSource& S : Sources)

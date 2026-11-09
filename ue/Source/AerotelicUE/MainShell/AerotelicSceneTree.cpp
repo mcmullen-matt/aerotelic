@@ -214,7 +214,9 @@ TSharedRef<ITableRow> SAerotelicSceneTree::GenerateRow(FItem Item, const TShared
 			if (!Entity->GetLayers().IsValidIndex(Layer)) return FText::GetEmpty();
 			const FAerotelicLayerView& L = Entity->GetLayers()[Layer];
 			FString Text = FAerotelicStructureLayer::KindName(L.Kind);
-			if (L.Section == INDEX_NONE) Text += TEXT(", empty");
+			// The Skin layer has no section of its own (the body's surface is
+			// the skin); a Ribs layer without one came out empty.
+			if (L.Kind == FAerotelicStructureLayer::EKind::Ribs && L.Section == INDEX_NONE) Text += TEXT(", empty");
 			const FAerotelicBodyStructure* G = Entity->GetGeneratedStructure(L.BodyRole);
 			if (G != nullptr && G->IsStale()) Text += TEXT(", stale");
 			return FText::FromString(Text);
@@ -230,7 +232,9 @@ TSharedRef<ITableRow> SAerotelicSceneTree::GenerateRow(FItem Item, const TShared
 		return Entity->GetBodyDisplayColor(Body);
 	};
 	// The tooltip: what the body is made of and built with (an entity's,
-	// one line per body); a layer's material, thickness and volume.
+	// one line per body); a layer's shell -- skin "<t> thick, <material>,
+	// area A"; ribs "<n> plane(s), <t> thick, <material>, area A" -- and
+	// the mesher's note on it.
 	auto Tip = [Entity, Kind, Body, Layer]()
 	{
 		if (!Entity.IsValid()) return FText::GetEmpty();
@@ -244,9 +248,15 @@ TSharedRef<ITableRow> SAerotelicSceneTree::GenerateRow(FItem Item, const TShared
 			const FAerotelicBodyStructure* G = Entity->GetGeneratedStructure(V.BodyRole);
 			if (G == nullptr || V.LayerIndex < 0 || V.LayerIndex >= static_cast<int32>(G->GetLayers().size())) return FText::GetEmpty();
 			const FAerotelicStructureLayer& L = G->GetLayers()[V.LayerIndex];
-			FString Text = FString::Printf(TEXT("%s: %s"), FAerotelicStructureLayer::KindName(L.Kind), UTF8_TO_TCHAR(L.Material.name.c_str()));
-			if (L.Thickness > 0.0) Text += FString::Printf(TEXT(", %.4g %s thick"), L.Thickness, UTF8_TO_TCHAR(Units.LengthName()));
-			Text += FString::Printf(TEXT("; %s triangles, volume %.5g %s^3"), *FText::AsNumber(static_cast<int64>(L.Mesh.triangles.size())).ToString(), L.Volume, UTF8_TO_TCHAR(Units.LengthName()));
+			const FString Len = UTF8_TO_TCHAR(Units.LengthName());
+			FString Text = FString::Printf(TEXT("%s: "), FAerotelicStructureLayer::KindName(L.Kind));
+			if (L.Kind == FAerotelicStructureLayer::EKind::Ribs)
+			{
+				const std::vector<aerotelic::PlaneNetwork>& Nets = G->GetStructure().networks;
+				const int32 Planes = L.NetworkIndex >= 0 && L.NetworkIndex < static_cast<int32>(Nets.size()) ? Nets[L.NetworkIndex].count : 0;
+				Text += FString::Printf(TEXT("%d plane%s, "), Planes, Planes == 1 ? TEXT("") : TEXT("s"));
+			}
+			Text += FString::Printf(TEXT("%.4g %s thick, %s, area %.5g %s^2"), L.Thickness, *Len, UTF8_TO_TCHAR(L.Material.name.c_str()), L.Area, *Len);
 			if (!L.Note.IsEmpty()) Text += TEXT("\n") + L.Note;
 			return FText::FromString(Text);
 		}
@@ -544,7 +554,7 @@ TSharedPtr<SWidget> SAerotelicSceneTree::MakeEntityMenu(FItem Item)
 			FSlateIcon(),
 			FUIAction(FExecuteAction::CreateLambda([Entity, Role]() { if (Entity.IsValid()) OpenAerotelicStructureDialog(Entity.Get(), Role); })));
 		Menu.AddMenuEntry(Entity->GetGeneratedStructure(Role) != nullptr ? LOCTEXT("RegenerateStructure", "Regenerate Structure") : LOCTEXT("GenerateStructure", "Generate Structure"),
-			LOCTEXT("GenerateStructureTip", "Build this body's skin shell and ribs from its structure (seconds of MeshLib work): they appear as layers under the body, and its mirrored half's, and follow every later edit of the body."),
+			LOCTEXT("GenerateStructureTip", "Cut the body by its plane networks and mesh the ribs as shells (gmsh, under a second): they appear as layers under the body, and its mirrored half's, and follow every later edit of the body. The Skin row then stands for the body's surface: hide it to see the ribs alone."),
 			FSlateIcon(),
 			FUIAction(FExecuteAction::CreateLambda([this, Entity, Role]() { if (Entity.IsValid()) GenerateStructure(Entity.Get(), Role); })));
 	}
@@ -634,7 +644,7 @@ TSharedPtr<SWidget> SAerotelicSceneTree::MakeBodyMenu(FItem Item)
 				FUIAction(FExecuteAction::CreateLambda([Entity, Role]() { if (Entity.IsValid()) OpenAerotelicStructureDialog(Entity.Get(), Role); })));
 			const bool bGenerated = Entity->GetGeneratedStructure(Role) != nullptr;
 			Menu.AddMenuEntry(bGenerated ? LOCTEXT("RegenerateStructure", "Regenerate Structure") : LOCTEXT("GenerateStructure", "Generate Structure"),
-				LOCTEXT("GenerateBodyStructureTip", "Build this body's skin shell and ribs from its structure (seconds of MeshLib work): they appear as layers under the body, and its mirrored half's, and follow every later edit of the body."),
+				LOCTEXT("GenerateBodyStructureTip", "Cut the body by its plane networks and mesh the ribs as shells (gmsh, under a second): they appear as layers under the body, and its mirrored half's, and follow every later edit of the body. The Skin row then stands for the body's surface: hide it to see the ribs alone."),
 				FSlateIcon(),
 				FUIAction(FExecuteAction::CreateLambda([this, Entity, Role]() { if (Entity.IsValid()) GenerateStructure(Entity.Get(), Role); })));
 			if (bGenerated)
@@ -672,7 +682,7 @@ TSharedPtr<SWidget> SAerotelicSceneTree::MakeLayerMenu(FItem Item)
 	FMenuBuilder Menu(true, nullptr, nullptr, false, &FCoreStyle::Get(), /*bSearchable*/ false);
 	Menu.AddMenuEntry(
 		bVisible ? LOCTEXT("Hide", "Hide") : LOCTEXT("Show", "Show"),
-		LOCTEXT("HideLayerTip", "Show or hide this layer in the 3D view (the body's own surface shows again while its skin layer is hidden)"),
+		LOCTEXT("HideLayerTip", "Show or hide this layer in the 3D view (the Skin row stands for the body's surface: hide it to see the ribs alone)"),
 		FSlateIcon(),
 		FUIAction(FExecuteAction::CreateLambda([Entity, Layer, bMirror, bVisible]()
 		{

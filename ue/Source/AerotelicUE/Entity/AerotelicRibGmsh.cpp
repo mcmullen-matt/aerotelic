@@ -121,8 +121,8 @@ namespace AerotelicRibGmsh
 			OutError = TEXT("no rib plane to mesh");
 			return false;
 		}
-		// The interpreter is the MeshLib backend's: the same environment
-		// holds MeshLib and gmsh.
+		// The interpreter is the one every backend shares (AerotelicMeshLib.h
+		// FindPython): the WingDesigner environment holds gmsh and Kratos.
 		const FString Python = AerotelicMeshLib::FindPython();
 		if (Python.IsEmpty())
 		{
@@ -155,10 +155,30 @@ namespace AerotelicRibGmsh
 				R.Id, *Num(R.Normal.x), *Num(R.Normal.y), *Num(R.Normal.z), *Num(R.Offset), *Num(FMath::Max(R.Height, 0.0)));
 		}
 		RibsJson += TEXT("]");
+		// The reserved volumes as hole_<i>.tri, listed under "holes"; the key
+		// is left out altogether when there are none (the script's default).
+		FString HolesJson;
+		{
+			int32 Written = 0;
+			for (const aerotelic::TriMesh* Hole : Request.Holes)
+			{
+				if (Hole == nullptr || Hole->IsEmpty()) continue;
+				const FString File = FString::Printf(TEXT("hole_%d.tri"), Written);
+				if (!AerotelicMeshLib::WriteTri(*Hole, FPaths::Combine(Dir, File)))
+				{
+					OutError = FString::Printf(TEXT("could not write reserved volume %d for gmsh"), Written);
+					Cleanup();
+					return false;
+				}
+				HolesJson += FString::Printf(TEXT("%s\"%s\""), Written ? TEXT(", ") : TEXT(""), *File);
+				++Written;
+			}
+			if (Written > 0) HolesJson = FString::Printf(TEXT(" \"holes\": [%s],\n"), *HolesJson);
+		}
 		const FString Job = FString::Printf(
-			TEXT("{\n \"outer\": \"outer.tri\",\n \"ribs\": %s,\n \"rib_size\": %s,\n \"plane_tolerance\": %s,\n")
+			TEXT("{\n \"outer\": \"outer.tri\",\n%s \"ribs\": %s,\n \"rib_size\": %s,\n \"plane_tolerance\": %s,\n")
 			TEXT(" \"outputs\": {\"nodes\": \"nodes.bin\", \"result\": \"result.json\", \"ribs\": \"ribs.bin\"}\n}\n"),
-			*RibsJson, *Num(FMath::Max(Request.RibSize, 0.0)), *Num(FMath::Max(Request.PlaneTolerance, 0.0)));
+			*HolesJson, *RibsJson, *Num(FMath::Max(Request.RibSize, 0.0)), *Num(FMath::Max(Request.PlaneTolerance, 0.0)));
 		if (!FFileHelper::SaveStringToFile(Job, *FPaths::Combine(Dir, TEXT("job.json")), FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM))
 		{
 			OutError = TEXT("could not write the gmsh job file");
@@ -195,6 +215,9 @@ namespace AerotelicRibGmsh
 		Out.SurfaceNodes = Result->HasField(TEXT("surface_nodes")) ? Int(TEXT("surface_nodes")) : static_cast<int32>(Request.Outer->vertices.size());
 		Out.OuterVolume = Real(TEXT("outer_volume"));
 		Out.RibArea = Real(TEXT("rib_area"));
+		// holes: how many reserved-volume loops became holes of the discs;
+		// absent from a script that was sent none.
+		Out.Holes = Int(TEXT("holes"));
 		{
 			const TArray<TSharedPtr<FJsonValue>>* Notes = nullptr;
 			if (Result->TryGetArrayField(TEXT("rib_notes"), Notes))

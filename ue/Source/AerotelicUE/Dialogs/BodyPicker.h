@@ -20,18 +20,19 @@ struct FAerotelicBodyChoice
 	// "Body 2"); empty means the operand's every body. The structural
 	// analysis picks bodies, the rest pick operands.
 	FString Body;
-	// One generated layer of that body ("Skin", a network's name;
-	// AAerotelicEntityActor::GetLayers): STL export offers the layers
-	// beside the bodies. Empty means the body itself.
+	// One generated layer of that body with a mesh of its own (a network's
+	// Ribs; AAerotelicEntityActor::GetLayers -- the Skin layer has none,
+	// the body is its skin): STL export offers them beside the bodies.
+	// Empty means the body itself.
 	FString Layer;
 };
 using FAerotelicBodyChoicePtr = TSharedPtr<FAerotelicBodyChoice>;
 
 // Every body the scene offers, in scene order.
 TArray<FAerotelicBodyChoicePtr> SceneBodyChoices();
-// Every generated structure layer of every body, in scene order, labelled
-// "<entity>[ (mirror)] / <body> / <layer>" (the body dropped for a
-// single-body entity).
+// Every generated structure layer with a mesh (the Ribs layers) of every
+// body, in scene order, labelled "<entity>[ (mirror)] / <body> / <layer>"
+// (the body dropped for a single-body entity).
 TArray<FAerotelicBodyChoicePtr> SceneLayerChoices();
 
 // The two-list body picker shared by the boolean, export and analysis

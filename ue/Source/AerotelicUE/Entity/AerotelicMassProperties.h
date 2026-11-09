@@ -13,7 +13,9 @@
 // enclosed volume, a skin as density times area times thickness with the
 // ribs estimated from the planes' sections, or an asserted total spread
 // over the surface -- or, once its structure has been GENERATED, by its
-// layers exactly (one line per layer, each a solid of its own material).
+// layers (one line per layer, each a thin shell of its own material:
+// density times area times thickness, the skin on the body's own surface
+// and each rib layer on its discs; 2026-11-08, late).
 // The assembly is the parallel-axis sum of the lines about their joint
 // centre. Headless, so the document commandlet can check it; the dialog
 // only shows the text.

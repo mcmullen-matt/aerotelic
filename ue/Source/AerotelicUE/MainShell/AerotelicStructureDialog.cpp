@@ -250,7 +250,7 @@ void OpenAerotelicStructureDialog(AAerotelicEntityActor* Entity, const FString& 
 		[
 			MakeInfoLabel(LOCTEXT("SkinHint",
 				"The material this body is made of -- its solid when the skin thickness is zero, its skin otherwise. Materials are defined under Model > Material Properties (the presets and your own); the body takes a copy of the one picked. "
-				"A skin thickness is a build figure in the project's length unit, not scaled with the model: it is what the body is hollowed by, what Analysis > Structural gives its shells, and what the mass report weighs as rho t A. Behind a skin the Planes tab puts ribs, spars and frames in the interior; a solid body has none."))
+				"A skin thickness is a build figure in the project's length unit, not scaled with the model: the body's surface is the skin, that thick -- what Analysis > Structural gives its shells, what the mass report weighs as rho t A, and what Generate lists as the Skin layer. Behind a skin the Planes tab puts ribs, spars and frames: the planar shells the planes cut out of the body, bounded by its surface; a solid body has none."))
 		]
 		+ SVerticalBox::Slot().AutoHeight().Padding(0, 12, 0, 0)
 		[
@@ -516,7 +516,7 @@ void OpenAerotelicStructureDialog(AAerotelicEntityActor* Entity, const FString& 
 		]
 		+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
 		[
-			SNew(SButton).Text(LOCTEXT("Generate", "Generate")).ToolTipText(LOCTEXT("GenerateTip", "Apply, then build the body's skin shell and ribs from this structure (seconds of MeshLib work). They appear as layers under the body in the Scene tree, and its mirrored half's, and follow every later edit of the body."))
+			SNew(SButton).Text(LOCTEXT("Generate", "Generate")).ToolTipText(LOCTEXT("GenerateTip", "Apply, then cut the body by its plane networks and mesh the ribs as shells (gmsh, under a second). The Skin row then stands for the body's surface: hide it to see the ribs alone."))
 			.IsEnabled_Lambda([D, Weak]() { return Weak.IsValid() && aerotelic::BodyStructureProblem(D->S).empty() && D->S.IsSkin(); })
 			.OnClicked_Lambda([D]()
 			{

@@ -901,14 +901,16 @@ bool UAerotelicDocumentSubsystem::GenerateBodyStructure(AAerotelicEntityActor* E
 		return false;
 	}
 
-	// The body's placed surface, fine enough for the offset's distance
-	// field (a private copy: the viewport's grid is coarser than the skin).
+	// The body's placed surface on its OWN grid (GetPlacedMeshes at tolerance
+	// 0: the viewport's triangles, the ones the structural analysis solves
+	// on), so the ribs' rims are that grid's vertices and the discs shown
+	// are the discs analysed.
 	FAerotelicBodyStructure::FInputs In;
 	In.Label = Label;
 	In.Structure = S;
 	Entity->GetPlacementMatrix(In.R, In.T, In.Scale);
 	{
-		const std::vector<aerotelic::NamedMesh> Meshes = Entity->GetPlacedMeshes(false, FAerotelicBodyStructure::BodyTolerance(S));
+		const std::vector<aerotelic::NamedMesh> Meshes = Entity->GetPlacedMeshes(false);
 		const aerotelic::NamedMesh* Found = nullptr;
 		for (const aerotelic::NamedMesh& M : Meshes)
 		{
@@ -921,9 +923,10 @@ bool UAerotelicDocumentSubsystem::GenerateBodyStructure(AAerotelicEntityActor* E
 		}
 		In.Body = Found->mesh;
 	}
-	// The reserved volumes, by scene name: an entity's bodies and, when it
-	// is mirrored, its mirrored half's. A name that is not in the scene is
-	// skipped, as any dependency that cannot be satisfied.
+	// The reserved volumes, by scene name -- an entity's bodies and, when it
+	// is mirrored, its mirrored half's, on their own grids too -- become
+	// holes in the ribs. A name that is not in the scene is skipped, as any
+	// dependency that cannot be satisfied.
 	for (const std::string& Name : S.exclusions)
 	{
 		const FString Wanted = UTF8_TO_TCHAR(Name.c_str());
@@ -939,28 +942,17 @@ bool UAerotelicDocumentSubsystem::GenerateBodyStructure(AAerotelicEntityActor* E
 		}
 		for (int32 Half = 0; Half < (Reserved->IsMirrored() ? 2 : 1); ++Half)
 		{
-			for (aerotelic::NamedMesh& M : Reserved->GetPlacedMeshes(Half == 1, FAerotelicBodyStructure::BodyTolerance(S)))
+			for (aerotelic::NamedMesh& M : Reserved->GetPlacedMeshes(Half == 1))
 			{
 				if (M.mesh.IsEmpty()) continue;
-				FAerotelicBodyStructure::FReserved Rv;
-				Rv.Label = Reserved->EntityName + (Half == 1 ? TEXT(" (mirror)") : TEXT("")) + (M.name.empty() ? FString() : TEXT(" / ") + FString(UTF8_TO_TCHAR(M.name.c_str())));
-				Rv.Mesh = std::move(M.mesh);
-				In.Reserved.push_back(std::move(Rv));
+				In.Reserved.push_back(std::move(M.mesh));
 			}
 		}
 	}
 
-	// The body's own generation object is reused: it keeps the offset of the
-	// last run, so editing the planes costs the booleans alone.
-	TSharedPtr<FAerotelicBodyStructure> G;
-	if (const FAerotelicBodyStructure* Existing = Entity->GetGeneratedStructure(Role))
-	{
-		G = MakeShared<FAerotelicBodyStructure>(*Existing);
-	}
-	else
-	{
-		G = MakeShared<FAerotelicBodyStructure>();
-	}
+	// A fresh generation every time: there is nothing worth carrying over
+	// from the last one (the cut and the rib mesh take under a second).
+	TSharedPtr<FAerotelicBodyStructure> G = MakeShared<FAerotelicBodyStructure>();
 	if (!G->Generate(In, OutError))
 	{
 		return false;

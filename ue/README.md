@@ -579,24 +579,28 @@ The layout follows the Python/Qt version's main window (`aerotelic/ui/main_windo
   and *Generate*; while the Planes tab is edited the 3D view shows every
   plane as a translucent rectangle over the body (the one being edited
   amber), through `Standalone/AerotelicPlanePreviewActor` and the
-  document's structure preview. *Generate* (also on the row menu) runs the
-  MeshLib job for that body alone and gives it LAYERS -- "Skin" and one
-  per network -- drawn under the body (and its mirrored half) in
-  the body's frame, listed under its row with their own visibility and
-  colour, exported as STL parts and weighed exactly by the mass report (a
-  solid of each layer's material); the body's own section hides while
-  its Skin layer shows. No scene entity is created. A generated body
+  document's structure preview. *Generate* (also on the row menu) builds
+  that body's structure alone and gives it LAYERS -- "Skin" and one
+  per network -- listed under its row with their own visibility and
+  colour, exported as STL parts and weighed by the mass report. Since the
+  evening of 2026-11-08 the layers are SHELLS (see *Structure as shells:
+  no offset surfaces* under *Materials and the structural analysis*): the
+  Skin layer is the body's own surface with the thickness as an attribute
+  and has no mesh of its own -- its row shows and hides the body's
+  surface, so the ribs can be viewed alone -- and each network's layer is
+  the planar discs its planes cut out of the body, meshed by gmsh
+  (`tools/rib_gmsh.py`) on the body's own cut grid with the reserved
+  volumes' sections as holes, drawn two-sided under the body (and its
+  mirrored half) in the body's frame. No scene entity is created. A
+  generated body
   follows every later edit of its body, of the booleans over it and of
   the volumes its exclusions name (the document's rebuild queue, by
   (entity, body)); a structure edit that changes the geometry regenerates
-  a generated body; bodies with an interior are regenerated on load. The
-  ribs are cut inside the MeshLib job (`tools/structure_meshlib.py`
-  `networks:`):
-  slabs about the planes intersected with the hollow, a limited height by
-  subtracting the body's deeper offset, earlier networks continuous and
-  later ones notched by them --
-  the SLAB is subtracted from the domain, never the rib (MeshLib's boolean
-  fails on coincident faces). Old files' `lattices:` entries are skipped
+  a generated body; bodies with a skin are regenerated on load. As first
+  written that morning the generation hollowed the body on MeshLib and
+  cut the ribs as slabs from the hollow (`tools/structure_meshlib.py`,
+  gone the same night -- see *Hollowing and ribs on MeshLib* below for
+  the record). Old files' `lattices:` entries are skipped
   by name, and a body's `infill:` key (the lattice infill the structure
   carried for a few days) is dropped; both are listed in "Project Opened
   With Problems".
@@ -615,7 +619,11 @@ The layout follows the Python/Qt version's main window (`aerotelic/ui/main_windo
   lines, no new rim nodes) and splits it along the chords where networks
   cross (the same transfinite node count on both discs, so they share
   their chord nodes). A limited height reports only the part of the disc
-  within it as rib faces. In `structural_fea.py` rib faces are shells
+  within it as rib faces. Since the evening of 2026-11-08 *Generate*
+  builds the SAME discs on the same cut surface with the same mesher for
+  the viewport and the mass report (plus the reserved volumes' sections
+  as holes), so what is drawn, weighed and solved is one rib. In
+  `structural_fea.py` rib faces are shells
   of their region's `rib` material and thickness and nothing else: not
   wetted, no surface load, no part in the mean normal displacement; their
   mass counts; their peak stress is a `kind: "rib"` entry and the VTK
@@ -630,72 +638,54 @@ The layout follows the Python/Qt version's main window (`aerotelic/ui/main_windo
   unit-square rim loop per plane on the skin, the mass rho t A of skin
   plus ribs, the clamp's reactions, the tip deflection a little under the
   unribbed Timoshenko box, a "rib" entry, kind-2 VTK cells).
-* **Hollowing and ribs on MeshLib** (2026-10-14; `Entity/AerotelicMeshLib.h`,
-  `tools/structure_meshlib.py`, `tools/structure_meshlib_check.py`; the
-  scripts were `lattice_meshlib*.py` until 2026-11-08). The
-  sampled skin and the tetrahedra-bounded skin both showed visible faults
-  (uneven skin thickness, stair-step artefacts where the interior met the
-  offset surface, a ragged interior volume), so the body's layers
-  are made by MeshLib (pip `meshlib` in the WingDesigner micromamba
-  environment), run as a separate process the way the STEP writer is:
-  the application writes the placed bodies as `.tri` files (its own
-  indexed format, so the loft's shared vertices survive) and
-  reads the layers back. *Hollowing*: each body is offset inward by
-  the skin thickness on MeshLib's OpenVDB distance field (voxel a quarter
-  of the skin, capped by a voxel
-  budget), which cannot self-intersect and rounds a concave crease from
-  the inside; the offset surface is decimated within a fifth of its voxel
-  and pockets smaller than four voxels cubed (slivers along a trailing
-  edge barely thicker than two skins) are filled solid; "Skin" is the
-  body's own surface outside and the inverted offset inside, so its
-  outer surface is exact. *Interior*: the union of the offset
-  interiors (a mesh boolean where they overlap) minus the reserved
-  volumes (mesh boolean difference) is the hollow the rib slabs are cut
-  from (see *Per-body structure*). Until 2026-11-08 a lattice field,
-  sampled by the core and sent as raw float32, went through MeshLib's
-  marching cubes and was cut to that hollow by an exact mesh boolean as
-  the "Lattice" / "Infill" layer; that step is gone.
-  The interpreter is `AEROTELIC_MESHLIB_PYTHON` if set, else the
-  WingDesigner environment's `python.exe` (the script puts the
-  environment's `Library\bin` on its own DLL path: numpy's BLAS lives
-  there); without MeshLib, generation is refused with a message saying
-  so. The script's self-check (`python tools\structure_meshlib_check.py
-  [body.stl] [--keep DIR]`) runs the pipeline on a unit sphere or an STL
-  and checks the layers are closed and outward and the skin's volume is
-  body minus interior (measured with the infill step still in: the
-  sphere in 0.35 s, the P-38 port wing in 0.19 s); on the default sphere
-  it then runs a second, hollow-only job of
-  two spheres, one carrying its own `skin_thickness` of 0.05 and one on
-  the job's 0.10, and checks each is hollowed to its own figure (the
-  per-body skin of 2026-10-31).
-* **The offset remesh cannot run away** (2026-11-01). Generating a lattice
-  on p38's `BoolOp 1` (six shells, every body carrying the FEA work's
-  1 mm skin) hung the application: 15 minutes, 18 GB, the machine in
-  swap. The inner surface's remesh edge was two skins = 2 mm, while the
-  voxel budget capped the offset voxel at 19.5 mm over the airframe's
-  bounds, so a 19.5 mm marching-cubes surface was being remeshed to a
-  2 mm edge over ~148 m^2: ~85 M triangles, which MeshLib's split cap
-  stopped at 20 M per body (the night before, one body took 932 s). Two
-  guards now (the hollowing is the same step today, so both still
-  apply): `FAerotelicBodyStructure` (then `FAerotelicLatticeModel`)
-  floors the remesh edge at two
-  offset voxels (`kInnerRemeshEdgeOverVoxel`: the surface carries no
-  detail finer than its voxel, so a finer remesh only multiplies
-  triangles; p38a's measured "two skins" was eight voxels), and
-  `structure_meshlib.py` holds a job's inner surfaces together under
-  `MAX_INNER_FACES` (1 M) by raising every body's edge to the one at
-  which the bodies' total area fits, saying so in the result's warnings
-  (the budget is the job's, not each body's: six shells at 2 M each were
-  still 12 minutes in). The same job then took 33 s as the application
-  sent it (1.18 M skin + 413 k lattice triangles) and 5 s with the voxel
-  floor (430 k + 163 k), the same 29.7% fraction either way; the sphere
-  self-check has a `check_remesh_budget` that lowers the budget to trip
-  the guard. The 1 mm skin itself is still thinner than that voxel, which
-  the result reports as before ("the inner surface touches the body's
-  surface"), and the job folder in
-  `%TEMP%\aerotelic_structure_*` (then `aerotelic_lattice_*`) survives a
-  killed editor -- as does the
-  child `python.exe`, which keeps running until stopped.
+* **Hollowing and ribs on MeshLib** (2026-10-14; removed 2026-11-08,
+  late; kept as the record). From 2026-10-14 until the evening of
+  2026-11-08 a body's layers were made by MeshLib (pip `meshlib` in the
+  WingDesigner micromamba environment; `tools/structure_meshlib.py` and
+  its self-check `structure_meshlib_check.py`, named `lattice_meshlib*.py`
+  until that morning), run as a separate process the way the STEP writer
+  is -- the placed bodies out as `.tri` files, the layers back -- because
+  the sampled skin and the tetrahedra-bounded skin had both shown visible
+  faults (uneven thickness, stair-steps where the interior met the offset,
+  a ragged interior). Each body was offset inward by its skin thickness
+  on MeshLib's OpenVDB distance field (voxel a quarter of the skin under a
+  voxel budget), which cannot self-intersect and rounds a concave crease
+  from the inside -- the lesson of *Explicit skin layer* below; the offset
+  was decimated, small pockets filled, and "Skin" was the body's surface
+  outside and the inverted offset inside, a closed solid; the union of
+  the offset interiors minus the reserved volumes was the hollow the rib
+  SLABS were cut from (slabs about the planes intersected with the
+  hollow, a limited height by subtracting a deeper offset, the slab
+  subtracted from the domain and never the rib, since MeshLib's boolean
+  fails on coincident faces), and until the morning of 2026-11-08 the
+  lattice infill was marching-cubed and booleaned to that hollow as well.
+  What ended it is in *Structure as shells: no offset surfaces* under
+  *Materials and the structural analysis*: the closed Skin layer looked
+  like an offset copy of the body and hid the ribs, and on the 1 mm skin
+  an airframe actually has the voxel budget made the offset useless.
+  What survives of it is the process plumbing -- `Entity/AerotelicMeshLib.h`
+  is now only the shared Python job runner (`FindPython`, `RunJob`,
+  `WriteTri` / `ReadTri`, `FJobProgress`) for the rib mesher, the
+  structural analysis and the potential flow -- and the `.tri` format.
+* **The offset remesh cannot run away** (2026-11-01; removed with the
+  hollowing 2026-11-08, late). Generating a lattice on p38's `BoolOp 1`
+  (six shells, every body carrying the FEA work's 1 mm skin) hung the
+  application -- 15 minutes, 18 GB, the machine in swap -- because the
+  inner surface's remesh edge was two skins = 2 mm while the voxel budget
+  had capped the offset voxel at 19.5 mm over the airframe's bounds, so a
+  19.5 mm marching-cubes surface was being remeshed to a 2 mm edge over
+  ~148 m^2 (~85 M triangles, MeshLib's split cap stopping at 20 M per
+  body). Two guards went in: a floor on the remesh edge of two offset
+  voxels (`kInnerRemeshEdgeOverVoxel`; the surface carries no detail
+  finer than its voxel) and a job-wide `MAX_INNER_FACES` budget of 1 M
+  in the script; the same job then took 5 s. The same budget is what,
+  on 2026-11-08, made a 1 mm skin's offset voxel 7 mm and the inner
+  surface unusable ("the inner surface touches the body's surface") --
+  the guards made the offset finish, not resolve a thin skin -- and the
+  offset route went with it. The job folders `%TEMP%\aerotelic_structure_*`
+  (then `aerotelic_lattice_*`) are no longer written; a killed editor's
+  child `python.exe` still keeps running until stopped, for the jobs that
+  remain.
 * **Explicit skin layer** (`shell.hpp`, `src/shell.cpp`, 2026-10-11
   afternoon; the first step of the tetrahedral route Matt chose; REMOVED
   with that route on 2026-11-08, kept here as the record): the
@@ -736,8 +726,10 @@ The layout follows the Python/Qt version's main window (`aerotelic/ui/main_windo
   the skin, where it folded. The iso-surface rounds a concave corner from
   the inside and cannot self-intersect, which is the lesson that
   survives: an inward offset is a distance-field operation, not a copy of
-  the surface, and that is what MeshLib's OpenVDB hollowing has done
-  since 2026-10-14 (see *Hollowing and ribs on MeshLib* above). With the
+  the surface, and that is what MeshLib's OpenVDB hollowing did from
+  2026-10-14 until the hollowing itself went on the evening of 2026-11-08
+  (see *Hollowing and ribs on MeshLib* above; the structure is shells
+  with a thickness attribute now, and nothing is offset at all). With the
   tetrahedra gone on 2026-11-08 `shell.hpp` had no caller left and went
   with them.
   Also fixed on the way: `WingModel::AirfoilAt` now recognises
@@ -758,7 +750,10 @@ The layout follows the Python/Qt version's main window (`aerotelic/ui/main_windo
   deflection (OCCT's tessellation, with the angular deflection, only for
   bodies that need it). An ASCII STL holds one `solid <entity>/<body>` per
   body (spaces as underscores), so a body's Skin and Rib layers arrive as
-  separate parts; binary STL has no parts and holds the union.
+  separate parts; binary STL has no parts and holds the union. Since
+  2026-11-08 (late) the structure's parts are OPEN shell surfaces -- the
+  skin is the body's surface, a rib a planar disc -- not printable solids;
+  see *Structure as shells: no offset surfaces*.
 
 ### Tetrahedral mesh of the bodies (2026-10-12; removed 2026-11-08)
 
@@ -959,10 +954,11 @@ The route, and where each piece lives:
 * `Entity/AerotelicPotentialFlow.cpp` -- the bridge: the bodies as `.tri`
   files, the settings as `job.json`, `tools/potential_flow.py` run in the
   WingDesigner micromamba environment, statistics back as `result.json`.
-  The same pattern as the body structure's MeshLib backend and the rib
-  mesher (`AerotelicRibGmsh`; the tetrahedral mesher, when this was
-  written); the process plumbing those three shared by copy is now one
-  function, `AerotelicMeshLib::RunJob`.
+  The same pattern as the rib mesher (`AerotelicRibGmsh`; the
+  tetrahedral mesher, when this was written) and, until 2026-11-08, the
+  body structure's MeshLib backend; the process plumbing those three
+  shared by copy is now one function, `AerotelicMeshLib::RunJob`, which
+  is all `AerotelicMeshLib.h` holds today.
 * `tools/potential_flow.py` -- the fluid domain, the solve and the output.
 
 **The fluid domain is the other mesh.** The structural route puts shells
@@ -1395,9 +1391,26 @@ the thickness, its mass the density times that, spread over the surface
 as a thin shell (`aerotelic::SkinMassProperties`) -- open surfaces
 included, so a zero-thickness skin no longer has to be asserted. The
 report's Note column says "skin t thick" on such a row. The same figure
-is what the body's structure hollows the entity by and what the
-structural analysis gives its shells (since 2026-11-08 the skin
-thickness is also a per-body attribute -- see *Per-body structure*).
+is what the structural analysis gives its skin shells (since 2026-11-08
+the skin thickness is also a per-body attribute -- see *Per-body
+structure*; until that evening it was also what the structure's
+generation hollowed the entity by).
+
+**Generated structures weigh as shells (2026-11-08, late).** A body whose
+structure has been generated weighs by its layers, one report line each,
+and every layer is a THIN SHELL of its own material and thickness --
+density x area x thickness, `SkinMassProperties` -- the Skin on the
+body's own placed surface (the Skin layer has no mesh; the body's surface
+is the skin), each Ribs layer on its placed discs. The Note says "skin t
+thick, <material>" or "rib shells t thick, <material>", and "generated
+before the body's last change" when the layers are stale. Until that
+evening the layers were closed solids (the hollowed skin, the rib slabs)
+weighed by enclosed volume; the shell rule is the one the structural
+analysis uses, so the mass report and the solver agree by construction.
+The overlap of rib and skin along the rims and the skin's area taken on
+the outer surface are counted twice and over respectively, by a few
+percent at most -- accepted, see *Structure as shells: no offset
+surfaces*. An asserted mass still stands in for all of it.
 
 **Inheritance, and no defaults (2026-10-31, Matt's three rules).** A
 parameterisation's Material Properties are the one source of what it is
@@ -1408,12 +1421,14 @@ and has no Material Properties menu: it inherits, a boolean result from
 its first operand (a lattice from its first filled body), recursively
 (`AAerotelicEntityActor::GetEffectiveMassSpec`, `GetMassSpecSource`,
 `IsDerived`). Every analysis reads the effective spec: the mass report
-("inherited from X" in the Note), the hollowing (each body hollowed by
-its own skin thickness) and the structural analysis. There is no global
+("inherited from X" in the Note), the structure's generation (each
+body's skin at its own thickness; until 2026-11-08 late, each body
+hollowed by it) and the structural analysis. There is no global
 default anywhere (the lattice dialog of the time had no thickness field:
 the list under the parameters showed each chosen body's figure and named
 one that lacked it, which the generation refused by name), and the
-document commandlet checks the sphere is hollowed by its own 0.05 and
+document commandlet checks the sphere's structure is generated from its
+own 0.05 skin (the Skin layer's volume its area times 0.05) and
 that a wing without a material is refused.
 The dialog shows the entity's enclosed volume, surface area, whether the
 surface is closed, the material volume (enclosed, or area times
@@ -1441,8 +1456,9 @@ a mirrored half is a second part and carries the whole mass again. The
 report is text: shown in the dialog, copied, or saved beside the project.
 
 The integrals are `core/include/aerotelic/mass_properties.hpp`, OCCT-free
-so a boolean result or a generated layer -- which have no B-rep solid -- weigh the
-same way a wing does: every triangle and the origin make a tetrahedron
+so a boolean result -- which has no B-rep solid -- weighs the
+same way a wing does, and a generated layer (an open shell) by the same
+code's area rule: every triangle and the origin make a tetrahedron
 whose signed volume, first moment and second-moment matrix add up over a
 closed surface to the body's (the divergence theorem one simplex at a
 time; the one simplex formula serves the shell with area/12 in place of
@@ -2165,7 +2181,8 @@ tetrahedra:
    lists solid bodies; a body filled by a lattice was silently
    reclassified and its geometry taken from the lattice, which keeps a
    PRIVATE copy of each target's surface rebuilt at a quarter of the skin
-   thickness so that MeshLib's distance field can resolve the hollowing.
+   thickness so that MeshLib's distance field could resolve the hollowing
+   (both gone since 2026-11-08).
    For Center (1 mm skin) that copy is 28,074 triangles where the Mesh tab
    grid the viewport shows is 1,574. The core tetrahedra were built on
    that copy (`GetStructuralTetMeshes`, now gone), so the FEA shells were
@@ -2190,8 +2207,9 @@ What changed:
   rule if the viewport has not yet). The structural dialog, the material
   dialog and mass properties (whose tolerance box now takes 0 for this,
   and starts there; the report says so) all ask for it. A caller with a
-  tolerance of its own -- STL export, the structure's hollowing -- gets a
-  private copy and must not hand it to a solver.
+  tolerance of its own -- STL export (and, until 2026-11-08 late, the
+  structure's hollowing; the structure's Generate now cuts the body's own
+  grid) -- gets a private copy and must not hand it to a solver.
 * **The lattice lent its material card only; the Model combo; an element
   order per region** -- three changes of this day that went with the
   tetrahedra on 2026-11-08: the dialog meshing the body's own grid with
@@ -2324,7 +2342,8 @@ resolution / ignore the lattices), the second-order (10-node) option, the
 voxels and element-size rows, File's *Export Skin Tetrahedra (VTK)* and
 *Export Tetrahedral Mesh (VTK)*, the Structure dialog's Infill tab and
 `LatticeSpecControls`. The `lattice_meshlib*.py` scripts were renamed
-`structure_meshlib*.py`, since hollowing and rib slabs are what they do.
+`structure_meshlib*.py`, since hollowing and rib slabs were what they
+did -- for the rest of the day; they went that evening (next section).
 
 **The structural model now.** Every element is a shell. A body's skin is
 shells of its skin material and thickness on the body's OWN grid (the
@@ -2348,9 +2367,11 @@ reported. Both appear under "Project Opened With Problems"; everything
 else in such a file loads as before.
 
 **Kept, and why.** `sdf.hpp` (the BVH distance field) and Shewchuk's
-`predicates`: the mesh boolean needs both. MeshLib: the hollowing (the
-Skin layer) and the rib slabs (the Ribs layers) of a body's viewport and
-mass structure, `tools/structure_meshlib.py`. gmsh: the rib discs and the
+`predicates`: the mesh boolean needs both. MeshLib was kept at this point
+for the hollowing (the Skin layer) and the rib slabs (the Ribs layers) of
+a body's viewport and mass structure, `tools/structure_meshlib.py` -- for
+a few hours: it went the same evening, see *Structure as shells: no
+offset surfaces* next. gmsh: the rib discs and the
 potential flow's fluid domain -- a tetrahedral mesh of the AIR, a CFD
 mesh unrelated to the structure, which is the one place tetrahedra are
 still built. The matched-row loft rule (`LoftSource::mirror_v` /
@@ -2378,6 +2399,113 @@ the structural analysis*, and the Delaunay refinement references
 (Ruppert 1995, Üngör's off-centres, Shewchuk's 2002 survey) for whoever
 next needs a quality bound on a 2-D rib disc -- gmsh's own 2-D algorithms
 do that job today.
+
+### Structure as shells: no offset surfaces (2026-11-08, late)
+
+The same evening, after the editor build of the morning's work came up
+and Matt looked at a generated body in the viewport. What he saw: hiding
+and showing the Skin layer made it look like an offset COPY of the body
+sitting on it (which it was -- the body's surface outside and the
+inverted offset inside, a closed solid a skin thick); hiding the Skin
+layer brought the body's own display mesh back, so the ribs could never
+be seen on their own; and on a 1 mm skin the voxel budget had made the
+offset voxel 7 mm, so the inner surface was unusable -- the result the
+guards of 2026-11-01 report as "the inner surface touches the body's
+surface", on the one skin thickness an airframe actually has. His
+decision: no offset surfaces anywhere. The structure of a body is a pure
+SHELL model, and the viewport, the mass report and the structural
+analysis all read the same one.
+
+**The model.** The SKIN is the body's own surface -- the Mesh tab's grid,
+the triangles the viewport shows -- with the skin thickness as an
+attribute of the body. The Skin layer has no mesh of its own any more.
+A RIB, SPAR or FRAME is the planar shell disc its plane cuts out of the
+body, bounded by the body's surface, with the network's thickness and
+material as attributes. The thickness of a shell is a number carried
+beside its area, never a second surface; nothing is offset, hollowed,
+voxelised or booleaned to build a structure.
+
+**Generate now.** `FAerotelicBodyStructure::Generate` cuts the body's
+own grid (`GetPlacedMeshes`, tolerance 0; the job runs in world space,
+since the thicknesses are physical build figures and the planes are
+placed with the body) by
+every plane of every network with the core's `mesh_cut.hpp`
+`CutMeshByPlanes` -- the same cut the FEA model builder makes, so the
+viewport's ribs and the solver's rib shells are the same discs -- and
+cuts the reserved volumes (exclusions, payload bays) by the same planes.
+Both go to `tools/rib_gmsh.py` through `Entity/AerotelicRibGmsh`
+(`outer.tri`, the bays as `hole_k.tri` under a new `holes` job key, the
+planes as before). The script reads each rib's rim loops off the cut
+surface (the largest loop the outer boundary, any others holes of the
+section itself), then places each bay's section on that plane: a bay
+whose loop lies inside the rim is a HOLE of the disc; a bay crossing the rim is left out, with a
+note in the result ("crosses the rib's boundary"); a bay that contains the
+whole disc empties it, with a note. The disc is meshed in 2-D by gmsh
+with the surface's own vertices as the rim nodes (transfinite rim lines,
+no new rim nodes), crossing networks share their chord nodes, and a
+height-limited network keeps only the triangles within that height of
+the rim. The discs come back as the body's Rib layers, drawn two-sided
+(a shell has no inside) and brought back into the body's local frame, so
+they follow a move or a rotation without a job and are placed and
+mirrored with the body; a change of shape or of model scale regenerates
+them through the rebuild queue. `FStats` is now `Triangles`, `SkinArea`, `RibsArea`,
+`Seconds` and `Warnings` (the script's notes).
+
+**What the Scene tree shows.** The "Skin" row under a body controls the
+body's own surface -- there is nothing else for it to control -- so
+hiding it leaves the ribs alone in view, which is the picture Matt
+wanted and the hollowed layer could not give. The Rib layers keep their
+own visibility and colour. The rule of the morning ("the body's own
+section hides while its Skin layer shows") is gone with the layer it
+described.
+
+**Mass.** Density x area x thickness for skin and ribs alike,
+`aerotelic::SkinMassProperties` on the skin's grid and on each rib disc,
+the same formula whether the structure has been generated or is estimated
+from the body's surface and the planes' sections. A layer's "Volume" in
+the dialog and the report is area x thickness. The mass report's rows
+for generated layers are therefore shells spread over their surface, not
+closed solids -- see *Mass properties*.
+
+**Accepted errors** (Matt's call; typically under a few percent on an
+airframe part). The rib disc runs out to the OUTER surface, so rib and
+skin overlap along the rim: the double-counted material is the rim's
+perimeter x the skin thickness x the rib thickness per rib. The skin's
+area is taken on the outer surface rather than the mid-surface, so a
+curved panel is over by about t/R (a 1 mm skin on a 100 mm radius, 1%;
+a flat panel, nothing). Both are the price of a shell model with one
+surface, and both are far smaller than the uncertainty in the figures
+they multiply.
+
+**Removed.** MeshLib entirely: the hollowing, the inward offset and its
+voxel budget (the guards of *The offset remesh cannot run away*), the
+offset cache, `tools/structure_meshlib.py` and
+`tools/structure_meshlib_check.py`, the `pip meshlib` dependency of the
+WingDesigner environment and the "without MeshLib, generation is
+refused" message. `Entity/AerotelicMeshLib.h` keeps its name and is now
+only the shared Python job runner -- `FindPython`, `RunJob`,
+`WriteTri` / `ReadTri`, `FJobProgress` -- used by the rib mesher, the
+structural analysis and the potential flow. `FAerotelicBodyStructure`
+lost `Outer`, `Inner`, `IsInnerUsable` and `BodyTolerance`. Why the whole
+route and not a repair: an offset surface is what a SOLID model of a
+thin part needs, and the structural model is not one; a shell carries
+its thickness as a number, so the inner surface was work (a distance
+field, a voxel budget, a remesh, a cache) spent making a second surface
+whose only reader was the mass report -- and what it read there, the
+volume between two surfaces a skin apart, is area x thickness to within
+the t/R above. The solver never saw it.
+
+**Deferred.** STL export of the structure now writes OPEN shell
+surfaces: the body's skin and each rib disc as a part. The thick-solid
+layers for 3-D printing (a closed skin a thickness thick, closed rib
+slabs) will be revisited when printing comes back; that code is in git
+history at commit `2f48173`.
+
+**Verified.** `tools/rib_gmsh_check.py`, with new cases for the bays (a
+bay inside the rim: two hole loops, one per disc, no notes; a bay that
+misses the plane: the full disc; a bay crossing the rim: no hole, one
+note; a bay enclosing the disc: no faces, one note); the UE editor
+build; the Document (271), RealProject (43) and Licence (42) commandlets.
 
 ## The Model menu and the material library (2026-11-07)
 

@@ -135,6 +135,45 @@ namespace AerotelicMeshing
 		}
 	}
 
+	void ToTwoSidedProceduralMesh(const aerotelic::TriMesh& Mesh, TArray<FVector>& OutVertices, TArray<int32>& OutTriangles, TArray<FVector>& OutNormals)
+	{
+		const int32 Nv = static_cast<int32>(Mesh.vertices.size());
+		OutVertices.Reset(2 * Nv);
+		for (const aerotelic::Vec3& V : Mesh.vertices)
+		{
+			OutVertices.Add(FVector(V.x, V.y, V.z));
+		}
+		OutTriangles.Reset(static_cast<int32>(Mesh.triangles.size()) * 6);
+		OutNormals.SetNumZeroed(Nv);
+		// The front: the triangles as they are, smooth normals from them.
+		for (const auto& T : Mesh.triangles)
+		{
+			OutTriangles.Add(T[0]); OutTriangles.Add(T[1]); OutTriangles.Add(T[2]);
+			const FVector& A = OutVertices[T[0]];
+			const FVector& B = OutVertices[T[1]];
+			const FVector& C = OutVertices[T[2]];
+			const FVector N = FVector::CrossProduct(B - A, C - A);
+			OutNormals[T[0]] += N;
+			OutNormals[T[1]] += N;
+			OutNormals[T[2]] += N;
+		}
+		for (FVector& N : OutNormals)
+		{
+			N = N.GetSafeNormal();
+		}
+		// The back: the vertices again with the normals flipped, the
+		// triangles reversed over them.
+		for (int32 i = 0; i < Nv; ++i)
+		{
+			OutVertices.Add(OutVertices[i]);
+			OutNormals.Add(-OutNormals[i]);
+		}
+		for (const auto& T : Mesh.triangles)
+		{
+			OutTriangles.Add(T[0] + Nv); OutTriangles.Add(T[2] + Nv); OutTriangles.Add(T[1] + Nv);
+		}
+	}
+
 	FBox BoundsOf(const aerotelic::TriMesh& Mesh)
 	{
 		FBox Box(ForceInit);

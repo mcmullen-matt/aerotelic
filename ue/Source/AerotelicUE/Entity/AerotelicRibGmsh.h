@@ -9,15 +9,24 @@
 
 // The RIB SHELLS of a body, on gmsh (tools/rib_gmsh.py, run as a separate
 // process in the WingDesigner micromamba environment where gmsh is
-// pip-installed -- the same bridge pattern as the MeshLib backend,
-// AerotelicMeshLib.h, and the STEP writer).
+// pip-installed -- the same bridge pattern as the other Python backends
+// over AerotelicMeshLib.h's job runner, and the STEP writer).
 //
 // A body's structure (body_structure.hpp) holds PLANE NETWORKS -- ribs,
 // spars, frames: families of parallel planes, each with a material and a
 // thickness. The structural model (AerotelicFeaModelBuilder.h) is shells
 // only: the skin on the body's own grid, and one planar disc per plane,
 // its rim on the skin's nodes so the two share their degrees of freedom.
-// This is the mesher of those discs.
+// This is the mesher of those discs -- and since the evening of
+// 2026-11-08 also the mesher of the discs a body's Generate Structure
+// shows and weighs (AerotelicBodyStructure.h): the viewport, the mass
+// report and the analysis build the same ribs.
+//
+// RESERVED VOLUMES (a payload bay the ribs must leave alone) travel with
+// the request as Holes: closed surfaces, cut by the same planes as the
+// body, whose section loops become holes of the discs they fall inside
+// (see the script's docstring for the cases it handles and the notes it
+// leaves).
 //
 // The surface arrives ALREADY CUT by every plane (core mesh_cut.hpp
 // CutMeshByPlanes), so each plane's section of it is a closed loop (or
@@ -69,6 +78,12 @@ namespace AerotelicRibGmsh
 		double RibSize = 0.0;
 		// A vertex within this of a plane is on it (0: 1e-7 of the diagonal).
 		double PlaneTolerance = 0.0;
+		// Reserved volumes (closed surfaces, ALREADY CUT by the same planes
+		// as Outer, in the same frame): their section loops on a rib's plane
+		// are meshed as holes of that disc where they lie inside it. Written
+		// as hole_<i>.tri and listed in job.json as "holes"; nothing is
+		// written or listed when empty. Null entries are skipped.
+		TArray<const aerotelic::TriMesh*> Holes;
 	};
 
 	// One rib shell: its nodes (into FResult::Nodes) and the rib it belongs
@@ -93,8 +108,13 @@ namespace AerotelicRibGmsh
 		// The rib shells and their area (project units^2).
 		TArray<FRibFace> RibFaces;
 		double RibArea = 0.0;
+		// How many reserved-volume loops were meshed as holes of the discs,
+		// over all ribs (the script's "holes"; 0 when none were sent).
+		int32 Holes = 0;
 		// What the script had to say per rib (a plane that misses the body,
-		// a loop it could not close, a disc it trimmed to its height).
+		// a loop it could not close, a disc it trimmed to its height, a
+		// reserved volume it could not take as a hole). Each begins
+		// "rib <id>: ", so a caller can file it under the rib.
 		TArray<FString> Notes;
 		double Seconds = 0.0;
 	};

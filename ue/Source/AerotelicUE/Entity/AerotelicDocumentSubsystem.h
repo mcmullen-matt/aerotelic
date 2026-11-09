@@ -130,16 +130,17 @@ public:
 	FString NextBooleanName() const;
 
 	// ---- Generated structure (per body, 2026-11-08) ----
-	// Generates the structure of one body -- its skin shell and ribs as
-	// its BodyStructure describes them (FAerotelicBodyStructure) -- over
-	// the body as it now stands and the reserved volumes its exclusions
-	// name, and hands the layers to the entity (shown under the body in
-	// the Scene tree, weighed by the mass report, exported as STL, the
-	// hollow kept for the structural analysis). Synchronous (seconds). False with OutError
-	// when the body has no skin (a solid has nothing to generate; what was
-	// generated is dropped), is not closed, or MeshLib refuses; the layers
-	// it had are kept then. An exclusion that names nothing in the scene is
-	// skipped with a log line, as any dependency that cannot be satisfied.
+	// Generates the structure of one body -- its skin and its ribs as
+	// shells, as its BodyStructure describes them (FAerotelicBodyStructure)
+	// -- over the body's own grid as it now stands, with the reserved
+	// volumes its exclusions name as holes in the ribs, and hands the
+	// layers to the entity (shown under the body in the Scene tree, weighed
+	// by the mass report, the ribs exported as STL). Synchronous (under a
+	// second). False with OutError when the body has no skin (a solid has
+	// nothing to generate; what was generated is dropped), is not closed,
+	// or the rib mesher refuses; the layers it had are kept then. An
+	// exclusion that names nothing in the scene is skipped with a log line,
+	// as any dependency that cannot be satisfied.
 	bool GenerateBodyStructure(AAerotelicEntityActor* Entity, const FString& BodyRole, FString& OutError);
 	// Regenerates every body whose structure has been generated, over the
 	// bodies as they now stand. Returns how many; OutErrors lists failures.

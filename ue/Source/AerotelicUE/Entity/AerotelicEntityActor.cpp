@@ -509,32 +509,39 @@ void AAerotelicEntityActor::ApplyMeshVisibility()
 	if (MirrorStructureEdgeMesh != nullptr) MirrorStructureEdgeMesh->SetVisibility(bMirrorHasLayers && bEdges);
 }
 
-bool AAerotelicEntityActor::IsSkinLayerShown(int32 BodyIndex, bool bMirror) const
+bool AAerotelicEntityActor::IsBodySurfaceShown(int32 BodyIndex, bool bMirror) const
 {
+	if (!Bodies.IsValidIndex(BodyIndex)) return false;
+	if (!(bMirror ? Bodies[BodyIndex].bMirrorVisible : Bodies[BodyIndex].bVisible)) return false;
+	// The Skin layer, when the body has one, IS the body's surface (it has
+	// no mesh and so no section of its own -- found by kind, not by
+	// section): its flag shows or hides the surface, so hiding the Skin row
+	// leaves the ribs alone on screen.
 	for (const FAerotelicLayerView& L : Layers)
 	{
-		if (L.BodyIndex == BodyIndex && L.Kind == FAerotelicStructureLayer::EKind::Skin && L.Section != INDEX_NONE && (bMirror ? L.bMirrorVisible : L.bVisible))
+		if (L.BodyIndex == BodyIndex && L.Kind == FAerotelicStructureLayer::EKind::Skin)
 		{
-			return true;
+			return bMirror ? L.bMirrorVisible : L.bVisible;
 		}
 	}
-	return false;
+	return true;
 }
 
 void AAerotelicEntityActor::ApplySectionVisibility()
 {
-	// The bodies: shown when flagged, unless the skin layer stands in for
-	// the surface (the same outer surface twice would z-fight).
+	// The bodies: shown when flagged and, for a body with a generated
+	// structure, when its Skin layer is (IsBodySurfaceShown).
 	for (int32 i = 0; i < Bodies.Num(); ++i)
 	{
-		const bool bBody = Bodies[i].bVisible && !IsSkinLayerShown(i, false);
-		const bool bMirrorBody = Bodies[i].bMirrorVisible && !IsSkinLayerShown(i, true);
+		const bool bBody = IsBodySurfaceShown(i, false);
+		const bool bMirrorBody = IsBodySurfaceShown(i, true);
 		if (ProxyMesh != nullptr) ProxyMesh->SetMeshSectionVisible(i, bBody);
 		if (EdgeMesh != nullptr) EdgeMesh->SetMeshSectionVisible(i, bBody);
 		if (MirrorMesh != nullptr) MirrorMesh->SetMeshSectionVisible(i, bMirrorBody);
 		if (MirrorEdgeMesh != nullptr) MirrorEdgeMesh->SetMeshSectionVisible(i, bMirrorBody);
 	}
-	// The layers: their own flags, and never while their body is hidden.
+	// The layers with a section (the ribs): their own flags, and never
+	// while their body is hidden.
 	for (const FAerotelicLayerView& L : Layers)
 	{
 		if (L.Section == INDEX_NONE) continue;
@@ -1238,6 +1245,8 @@ std::vector<aerotelic::NamedMesh> AAerotelicEntityActor::GetPlacedLayerMeshes(co
 	const FAerotelicBodyStructure* G = GetGeneratedStructure(BodyRole);
 	if (G == nullptr || !G->IsGenerated()) return Out;
 	const FTransform Transform = GetActorTransform();
+	// Layers with a mesh only: the Ribs layers (open discs). The Skin layer
+	// has none -- the body's own placed mesh (GetPlacedMeshes) is the skin.
 	for (const FAerotelicStructureLayer& L : G->GetLayers())
 	{
 		if (L.Mesh.IsEmpty()) continue;
@@ -1284,7 +1293,9 @@ void AAerotelicEntityActor::RefreshStructureLayers()
 		bHasLayers = false;
 		return;
 	}
-	// The meshes: one section per non-empty layer, in the body's frame.
+	// The meshes: one section per layer with a mesh -- the Ribs layers, open
+	// discs drawn from both sides -- in the body's frame. The Skin layer has
+	// no mesh (the body's own surface is the skin) and no section.
 	StructureMesh->ClearAllMeshSections();
 	StructureEdgeMesh->ClearAllMeshSections();
 	TArray<TObjectPtr<UMaterialInstanceDynamic>> NewMaterials, NewEdgeMaterials;
@@ -1300,7 +1311,7 @@ void AAerotelicEntityActor::RefreshStructureLayers()
 		TArray<FVector> Vertices;
 		TArray<int32> Triangles;
 		TArray<FVector> Normals;
-		AerotelicMeshing::ToProceduralMesh(L.Mesh, Vertices, Triangles, Normals);
+		AerotelicMeshing::ToTwoSidedProceduralMesh(L.Mesh, Vertices, Triangles, Normals);
 		CreateBodySection(Section, Vertices, Triangles, Normals, StructureMesh, LayerMaterials, StructureEdgeMesh, LayerEdgeMaterials, NewMaterials, NewEdgeMaterials, false);
 		V.Section = Section++;
 	}
@@ -1324,7 +1335,8 @@ void AAerotelicEntityActor::RefreshStructureMirror()
 		MirrorLayerEdgeMaterials.Reset();
 		return;
 	}
-	// The layers placed and reflected about Y = 0, as the bodies are.
+	// The rib discs placed and reflected about Y = 0, as the bodies are,
+	// drawn from both sides like the originals.
 	const FTransform Transform = GetActorTransform();
 	TArray<TObjectPtr<UMaterialInstanceDynamic>> NewMaterials, NewEdgeMaterials;
 	int32 Section = 0;
@@ -1337,7 +1349,7 @@ void AAerotelicEntityActor::RefreshStructureMirror()
 		TArray<FVector> Vertices;
 		TArray<int32> Triangles;
 		TArray<FVector> Normals;
-		AerotelicMeshing::ToProceduralMesh(Mesh, Vertices, Triangles, Normals);
+		AerotelicMeshing::ToTwoSidedProceduralMesh(Mesh, Vertices, Triangles, Normals);
 		CreateBodySection(Section++, Vertices, Triangles, Normals, MirrorStructureMesh, MirrorLayerMaterials, MirrorStructureEdgeMesh, MirrorLayerEdgeMaterials, NewMaterials, NewEdgeMaterials, false);
 	}
 	MirrorLayerMaterials = MoveTemp(NewMaterials);

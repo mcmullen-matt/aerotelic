@@ -388,8 +388,8 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 			// The same material as a skin: every body a shell of the
 			// thickness, rho t A, its material volume t A rather than the
 			// enclosed volume. The setting stays on for the round trip below
-			// -- and the structure generated on this sphere below hollows it by
-			// THIS thickness.
+			// -- and the structure generated on this sphere below takes THIS
+			// thickness as its skin's.
 			ByDensity.skin_thickness = 0.05;
 			Primitive->SetMassSpec(ByDensity);
 			const FAerotelicMassReport SkinReport = ComputeAerotelicMassReport({ P }, 2e-3, Doc->GetUnits());
@@ -490,51 +490,74 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 			// The materials: the skin the body's, the ribs their own.
 			Check(Layers.size() == 2 && Layers[0].Material.name == "Custom" && Layers[1].Material.name == "rib ply",
 				"structure: each layer carries its own material");
-			// The layers as placed: closed, outward, inside the sphere; the
-			// skin's volume the 0.05 shell of the unit sphere (a few percent
-			// under: the sphere is meshed coarsely at this voxel, and an
-			// inscribed polyhedron is smaller than its sphere); the ribs two
-			// discs of the inner sphere at x = +-0.3, 0.04 thick.
-			std::vector<aerotelic::NamedMesh> Meshes = Primitive->GetPlacedLayerMeshes(TEXT("Main"), false);
-			Check(Meshes.size() == 2 && Meshes[0].name == "Skin" && Meshes[1].name == "Ribs", "structure: the placed layer meshes are Skin, Ribs");
-			if (Meshes.size() == 2)
+			// The layers under the SHELL model (2026-11-08 night: no offset
+			// surfaces). The Skin has no mesh of its own -- the sphere's
+			// surface is the skin -- and its area is the sphere's own grid's,
+			// its volume area x 0.05. The Ribs are two OPEN discs of the sphere
+			// at x = +-0.3, together 2 pi (R^2 - 0.09) in area (a shade under:
+			// the rims are inscribed polygons), their volume area x 0.04.
+			const double Radius = Primitive->GetModelAs<aerotelic::PrimitiveModel>()->radius;
+			double SphereArea = 0.0;
+			for (const aerotelic::NamedMesh& NM : Primitive->GetPlacedMeshes(false)) SphereArea += NM.mesh.SurfaceArea();
+			if (Layers.size() == 2)
 			{
-				const double Shell = 4.0 / 3.0 * PI * (1.0 - 0.95 * 0.95 * 0.95);
-				Check(FMath::Abs(Meshes[0].mesh.SignedVolume() - Shell) < 0.06 * Shell, FString::Printf(TEXT("structure: the skin layer encloses the shell's volume (%.4f vs %.4f)"), Meshes[0].mesh.SignedVolume(), Shell));
-				const double Disc = PI * (0.95 * 0.95 - 0.3 * 0.3) * 0.04;
-				Check(FMath::Abs(Meshes[1].mesh.SignedVolume() - 2.0 * Disc) < 0.1 * 2.0 * Disc, FString::Printf(TEXT("structure: the ribs are two discs of the inner sphere (%.4f vs %.4f)"), Meshes[1].mesh.SignedVolume(), 2.0 * Disc));
-				bool bClosed = true;
-				for (const aerotelic::NamedMesh& NM : Meshes) bClosed = bClosed && NM.mesh.IsClosedManifold() && NM.mesh.SignedVolume() > 0.0;
-				Check(bClosed, "structure: every layer is a closed, outward body");
-				double Worst = 0.0;
-				for (const aerotelic::NamedMesh& NM : Meshes)
-					for (const aerotelic::Vec3& V : NM.mesh.vertices) Worst = FMath::Max(Worst, aerotelic::Length(V) - 1.0);
-				Check(Worst < 0.1, FString::Printf(TEXT("structure: the layers stay inside the sphere (worst overshoot %.4f)"), Worst));
+				const FAerotelicStructureLayer& SkinLayer = Layers[0];
+				const FAerotelicStructureLayer& RibsLayer = Layers[1];
+				Check(SkinLayer.Mesh.IsEmpty() && FMath::Abs(SkinLayer.Area - SphereArea) < 0.02 * SphereArea,
+					FString::Printf(TEXT("structure: the Skin layer has no mesh and the sphere's area (%.4f vs %.4f)"), SkinLayer.Area, SphereArea));
+				Check(FMath::IsNearlyEqual(SkinLayer.Volume, SkinLayer.Area * 0.05, 1e-9 * SkinLayer.Volume) && FMath::IsNearlyEqual(SkinLayer.Thickness, 0.05, 1e-12),
+					"structure: the Skin layer's volume is its area times the 0.05 skin");
+				const double Discs = 2.0 * PI * (Radius * Radius - 0.3 * 0.3);
+				Check(!RibsLayer.Mesh.IsEmpty() && !RibsLayer.Mesh.IsClosedManifold(), "structure: the Ribs layer is an open mesh (discs, not solids)");
+				Check(FMath::Abs(RibsLayer.Area - Discs) < 0.03 * Discs, FString::Printf(TEXT("structure: the ribs are two discs of the sphere at x = +-0.3 (area %.4f vs %.4f)"), RibsLayer.Area, Discs));
+				Check(FMath::IsNearlyEqual(RibsLayer.Volume, RibsLayer.Area * 0.04, 1e-9 * RibsLayer.Volume) && FMath::IsNearlyEqual(RibsLayer.Thickness, 0.04, 1e-12),
+					"structure: the Ribs layer's volume is its area times the 0.04 thickness");
+				Check(FMath::IsNearlyEqual(G->GetStats().SkinArea, SkinLayer.Area, 1e-12) && FMath::IsNearlyEqual(G->GetStats().RibsArea, RibsLayer.Area, 1e-12), "structure: the stats carry the skin's and the ribs' areas");
 			}
-			// The mass report weighs the generated layers, each by its own
-			// material, exactly (solids of the layer meshes).
+			// Placed layer meshes: the Ribs alone (the Skin has none), every
+			// rib vertex on or inside the sphere -- the discs are bounded by
+			// the body's surface, not by an inner offset.
+			std::vector<aerotelic::NamedMesh> Meshes = Primitive->GetPlacedLayerMeshes(TEXT("Main"), false);
+			Check(Meshes.size() == 1 && Meshes[0].name == "Ribs", FString::Printf(TEXT("structure: the placed layer meshes are the Ribs alone (%d)"), (int32)Meshes.size()));
+			if (Meshes.size() == 1)
+			{
+				double Worst = -1.0;
+				for (const aerotelic::Vec3& V : Meshes[0].mesh.vertices) Worst = FMath::Max(Worst, aerotelic::Length(V) - Radius);
+				Check(Worst < 1e-6, FString::Printf(TEXT("structure: every rib vertex is within the sphere's radius (worst overshoot %.3g)"), Worst));
+				bool bOnPlanes = true;
+				for (const aerotelic::Vec3& V : Meshes[0].mesh.vertices) bOnPlanes = bOnPlanes && (FMath::Abs(FMath::Abs(V.x) - 0.3) < 1e-6);
+				Check(bOnPlanes, "structure: every rib vertex lies on one of the two planes x = +-0.3");
+			}
+			// The mass report weighs the generated layers as thin shells, each
+			// by its own material: the skin rho t A over the sphere's mesh at
+			// the report's tolerance, the ribs rho t A over the discs.
 			{
 				FAerotelicBooleanOperand POp;
 				POp.Entity = Primitive;
 				const FAerotelicMassReport LayerReport = ComputeAerotelicMassReport({ POp }, 2e-3, Doc->GetUnits());
 				Check(LayerReport.Bodies.Num() == 2 && LayerReport.Bodies[0].Label.Contains(TEXT("Skin")) && LayerReport.Bodies[1].Label.Contains(TEXT("Ribs")),
 					FString::Printf(TEXT("structure: the mass report has one line per layer (%d)"), LayerReport.Bodies.Num()));
-				if (LayerReport.Bodies.Num() == 2 && Meshes.size() == 2)
+				if (LayerReport.Bodies.Num() == 2 && Meshes.size() == 1)
 				{
-					Check(LayerReport.Bodies[0].bIncluded && FMath::IsNearlyEqual(LayerReport.Bodies[0].Props.mass, 2.0 * Meshes[0].mesh.SignedVolume(), 1e-9 * LayerReport.Bodies[0].Props.mass),
-						"structure: the skin layer weighs the body's density over its own volume");
-					Check(LayerReport.Bodies[1].bIncluded && FMath::IsNearlyEqual(LayerReport.Bodies[1].Props.mass, 1.0 * Meshes[1].mesh.SignedVolume(), 1e-9 * LayerReport.Bodies[1].Props.mass),
-						"structure: the ribs weigh their own material");
-					Check(LayerReport.Bodies[0].Note.Contains(TEXT("skin")) && LayerReport.Bodies[1].Note.Contains(TEXT("rib ply")), "structure: the lines name the layer kind and material");
+					double ReportArea = 0.0;
+					for (const aerotelic::NamedMesh& NM : Primitive->GetPlacedMeshes(false, 2e-3)) ReportArea += NM.mesh.SurfaceArea();
+					Check(LayerReport.Bodies[0].bIncluded && FMath::IsNearlyEqual(LayerReport.Bodies[0].Props.mass, 2.0 * 0.05 * ReportArea, 1e-9 * LayerReport.Bodies[0].Props.mass),
+						FString::Printf(TEXT("structure: the Skin line weighs density x 0.05 x the sphere's area (%.5f vs %.5f)"), LayerReport.Bodies[0].Props.mass, 2.0 * 0.05 * ReportArea));
+					const double RibArea = Meshes[0].mesh.SurfaceArea();
+					Check(LayerReport.Bodies[1].bIncluded && FMath::IsNearlyEqual(LayerReport.Bodies[1].Props.mass, 1.0 * 0.04 * RibArea, 1e-9 * LayerReport.Bodies[1].Props.mass),
+						FString::Printf(TEXT("structure: the Ribs line weighs density x 0.04 x the discs' area (%.5f vs %.5f)"), LayerReport.Bodies[1].Props.mass, 1.0 * 0.04 * RibArea));
+					Check(LayerReport.Bodies[0].Note.Contains(TEXT("skin")) && LayerReport.Bodies[0].Note.Contains(TEXT("thick")) && LayerReport.Bodies[1].Note.Contains(TEXT("rib shells")) && LayerReport.Bodies[1].Note.Contains(TEXT("rib ply")),
+						"structure: the lines say skin / rib shells, the thickness and the material");
 				}
 			}
 
 			// A changed skin thickness regenerates the structure: 0.05 becomes
 			// 0.08, the document queues the body as it does after an Apply,
-			// and once flushed the layers are hollowed by 0.08. The same
-			// structure set again, or a density edited under the same skin
-			// and planes, queues nothing (the geometry is built from those
-			// alone).
+			// and once flushed the layers are generated from the 0.08 skin
+			// (the Skin layer's volume follows it; the ribs are the same
+			// discs). The same structure set again, or a density edited under
+			// the same skin and planes, queues nothing (the geometry is built
+			// from those alone).
 			{
 				aerotelic::BodyStructure Changed = Primitive->GetBodyStructure(0);
 				Primitive->SetBodyStructure(TEXT("Main"), Changed);
@@ -549,7 +572,13 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 				Doc->FlushPendingRebuilds();
 				const FAerotelicBodyStructure* G2 = Primitive->GetGeneratedStructure(TEXT("Main"));
 				Check(!Doc->HasPendingRebuilds() && G2 != nullptr && FMath::IsNearlyEqual(G2->GetStructure().skin_thickness, 0.08, 1e-12) && !G2->IsStale(),
-					FString::Printf(TEXT("skin change: the structure regenerated over the 0.08 skin (hollowed by %.3g)"), G2 != nullptr ? G2->GetStructure().skin_thickness : -1.0));
+					FString::Printf(TEXT("skin change: the structure regenerated over the 0.08 skin (skin %.3g)"), G2 != nullptr ? G2->GetStructure().skin_thickness : -1.0));
+				if (G2 != nullptr && G2->GetLayers().size() == 2)
+				{
+					const FAerotelicStructureLayer& Skin2 = G2->GetLayers()[0];
+					Check(FMath::IsNearlyEqual(Skin2.Thickness, 0.08, 1e-12) && FMath::IsNearlyEqual(Skin2.Volume, Skin2.Area * 0.08, 1e-9 * Skin2.Volume),
+						"skin change: the Skin layer's thickness and volume follow the 0.08 skin");
+				}
 				// Back to 0.05 for the steps that follow (the round trip, Apply).
 				Changed.skin_thickness = 0.05;
 				Primitive->SetBodyStructure(TEXT("Main"), Changed);
@@ -613,11 +642,18 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 			{
 				const FAerotelicBodyStructure* G = Primitive->GetGeneratedStructure(TEXT("Main"));
 				Check(G != nullptr && G->IsGenerated() && !G->IsStale() && G->GetStats().Triangles > 0, "apply: the structure is generated again");
+				// The ribs' rims are the new sphere's surface at x = +-0.3: the
+				// discs reach the 1.5 R0 radius (and nothing beyond it).
 				std::vector<aerotelic::NamedMesh> Meshes = Primitive->GetPlacedLayerMeshes(TEXT("Main"), false);
 				double Reach = 0.0;
 				for (const aerotelic::NamedMesh& NM : Meshes)
 					for (const aerotelic::Vec3& V : NM.mesh.vertices) Reach = FMath::Max(Reach, aerotelic::Length(V));
-				Check(Reach > 1.3 * R0 && Reach < 1.6 * R0, FString::Printf(TEXT("apply: the layers now fill the larger sphere (reach %.3f of a %.3f radius)"), Reach, 1.5 * R0));
+				Check(Reach > 1.45 * R0 && Reach < 1.5 * R0 + 1e-6, FString::Printf(TEXT("apply: the ribs now reach the larger sphere's surface (reach %.3f of a %.3f radius)"), Reach, 1.5 * R0));
+				if (G != nullptr && G->GetLayers().size() == 2)
+				{
+					const double Discs = 2.0 * PI * (2.25 * R0 * R0 - 0.3 * 0.3);
+					Check(FMath::Abs(G->GetLayers()[1].Area - Discs) < 0.03 * Discs, FString::Printf(TEXT("apply: the ribs' area follows the radius (%.4f vs %.4f)"), G->GetLayers()[1].Area, Discs));
+				}
 			}
 
 			// Back to the unit sphere for the rest of the run.
@@ -1320,20 +1356,20 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 		Check(!Doc->HasPendingRebuilds(), "scale: ... and rebuilt");
 		{
 			// The sphere's generated layers were rebuilt over the replica: the
-			// skin is still 0.05 thick (as typed, not scaled), so on a 0.25
-			// sphere it is the shell between 0.25 and 0.20 -- not a sixteenth
-			// of the full-size shell (1 to 0.95), since a thick skin's volume
-			// is not linear in the area. As a ratio of the full-size skin
-			// layer's mass, so the project's units (changed earlier in the
-			// run) drop out.
+			// skin is still 0.05 thick (as typed, not scaled) and, as a SHELL
+			// (2026-11-08: density x area x thickness on the body's own
+			// surface, no offset), its mass scales with the area alone -- a
+			// sixteenth of the full-size skin on a quarter-size sphere. As a
+			// ratio of the full-size skin layer's mass, so the project's units
+			// (changed earlier in the run) drop out.
 			const FAerotelicMassReport R = ComputeAerotelicMassReport({ P }, 2e-3, Doc->GetUnits());
 			const aerotelic::MassSpec Spec = Primitive->GetMassSpec();
 			Check(Spec.IsSkin(), "scale: the sphere weighs as a skin (set in the mass step)");
 			const FAerotelicMassLine* SkinLine = nullptr;
 			for (const FAerotelicMassLine& L : R.Bodies) if (L.Label.Contains(TEXT("Skin"))) SkinLine = &L;
-			const double Ratio = (FMath::Pow(0.25, 3.0) - FMath::Pow(0.20, 3.0)) / (1.0 - FMath::Pow(0.95, 3.0));
-			Check(SkinLine != nullptr && SkinLine->bIncluded && FullSkinMass > 0.0 && FMath::IsNearlyEqual(SkinLine->Props.mass, Ratio * FullSkinMass, 0.08 * Ratio * FullSkinMass),
-				FString::Printf(TEXT("scale: the regenerated skin layer is the 0.05 shell of the quarter-size sphere, its thickness as typed (%.5g vs %.5g = %.4f of the full-size skin %.5g)"), SkinLine ? SkinLine->Props.mass : -1.0, Ratio * FullSkinMass, Ratio, FullSkinMass));
+			const double Ratio = 0.25 * 0.25;
+			Check(SkinLine != nullptr && SkinLine->bIncluded && FullSkinMass > 0.0 && FMath::IsNearlyEqual(SkinLine->Props.mass, Ratio * FullSkinMass, 0.03 * Ratio * FullSkinMass),
+				FString::Printf(TEXT("scale: the regenerated skin shell of the quarter-size sphere weighs a sixteenth of the full-size one, its thickness as typed (%.5g vs %.5g = %.4f of the full-size skin %.5g)"), SkinLine ? SkinLine->Props.mass : -1.0, Ratio * FullSkinMass, Ratio, FullSkinMass));
 			Check(FullMass > 0.0 && R.Assembly.mass < FullMass / 8.0, "scale: the replica weighs far less than the full-size sphere");
 		}
 	}

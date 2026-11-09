@@ -1,26 +1,21 @@
 #include "AerotelicBodyStructure.h"
 
-#include "AerotelicMeshLib.h"
+#include "AerotelicRibGmsh.h"
+
+#include "aerotelic/mesh_cut.hpp"
 
 #include <cmath>
 #include <stdexcept>
 
 namespace
 {
-	// The offset's distance field is kept under about this many voxels
-	// across the body's bounds (sparse, so the real count is far lower).
-	constexpr double kMaxOffsetVoxels = 60.0e6;
-	// The offset surface is remeshed to isotropic triangles of this many
-	// skin thicknesses (see the history in the lattice model this replaced:
-	// two skins is clean and meshes in seconds, one skin is not) ...
-	constexpr double kInnerRemeshEdgeOverSkin = 2.0;
-	// ... and never finer than this many offset voxels.
-	constexpr double kInnerRemeshEdgeOverVoxel = 2.0;
-	// The slabs reach this far from the body's centre in the plane: the
-	// bounding sphere's radius with margin.
-	constexpr double kSlabHalfExtentOverDiag = 0.75;
-
 	const FLinearColor kRibsColor(0.35f, 0.55f, 0.85f);     // steel blue
+
+	// The cut's tolerance as a fraction of the body's diagonal: a vertex
+	// within it of a plane is snapped onto the plane rather than split a hair
+	// away from it (the same figure the structural model builder uses, so
+	// the two cut the same surface the same way).
+	constexpr double kCutToleranceOverDiag = 1e-7;
 
 	void RequireClosedBody(const aerotelic::TriMesh& Mesh, const FString& Label, const TCHAR* Role)
 	{
@@ -36,16 +31,6 @@ namespace
 				TEXT("'%s' (%s) is turned inside out (its enclosed volume is not positive), so inside and outside cannot be told apart."),
 				*Label, Role)));
 		}
-	}
-
-	// A key for the offset cache: the body's bytes, the skin and the voxel.
-	uint64 InnerCacheKey(const aerotelic::TriMesh& Body, double Skin, double Voxel)
-	{
-		uint32 A = FCrc::MemCrc32(Body.vertices.data(), static_cast<int32>(Body.vertices.size() * sizeof(aerotelic::Vec3)));
-		A = FCrc::MemCrc32(Body.triangles.data(), static_cast<int32>(Body.triangles.size() * sizeof(std::array<int, 3>)), A);
-		uint32 B = FCrc::MemCrc32(&Skin, sizeof(Skin));
-		B = FCrc::MemCrc32(&Voxel, sizeof(Voxel), B);
-		return (static_cast<uint64>(A) << 32) | B;
 	}
 
 	// World -> the body's local frame: x = R^T (x' - T) / scale.
@@ -68,6 +53,37 @@ namespace
 		}
 		return Name;
 	}
+
+	// The faces of one rib id as a mesh of their own, over the nodes they
+	// use alone (the mesher's node table is the surface's vertices plus every
+	// rib's interior nodes). Open: a disc. Returns the summed triangle area.
+	double CompactRib(const AerotelicRibGmsh::FResult& Result, int32 Id, aerotelic::TriMesh& Out)
+	{
+		Out.Clear();
+		std::vector<int> Local(Result.Nodes.size(), -1);
+		double Area = 0.0;
+		for (const AerotelicRibGmsh::FRibFace& F : Result.RibFaces)
+		{
+			if (F.Id != Id) continue;
+			std::array<int, 3> Tri;
+			for (int k = 0; k < 3; ++k)
+			{
+				const int32 N = F.N[k];
+				if (Local[N] < 0)
+				{
+					Local[N] = static_cast<int>(Out.vertices.size());
+					Out.vertices.push_back(Result.Nodes[N]);
+				}
+				Tri[k] = Local[N];
+			}
+			Out.triangles.push_back(Tri);
+			const aerotelic::Vec3& A = Result.Nodes[F.N[0]];
+			const aerotelic::Vec3& B = Result.Nodes[F.N[1]];
+			const aerotelic::Vec3& C = Result.Nodes[F.N[2]];
+			Area += 0.5 * aerotelic::Length(aerotelic::Cross(B - A, C - A));
+		}
+		return Area;
+	}
 }
 
 FLinearColor FAerotelicStructureLayer::DefaultColor(EKind Kind, const FLinearColor& BodyColor)
@@ -88,15 +104,6 @@ const TCHAR* FAerotelicStructureLayer::KindName(EKind Kind)
 	case EKind::Skin:
 	default: return TEXT("skin");
 	}
-}
-
-double FAerotelicBodyStructure::BodyTolerance(const aerotelic::BodyStructure& S)
-{
-	// The body mesh is the skin's outer surface as it stands, and the
-	// offset's distance field sees it to a fraction of its voxel, so it is
-	// built a few voxels finer than the skin.
-	const double Tolerance = S.skin_thickness > 0.0 ? 0.25 * S.skin_thickness : 1e-3;
-	return FMath::Max(Tolerance, 1e-5);
 }
 
 const FAerotelicStructureLayer* FAerotelicBodyStructure::FindLayer(const FString& Name) const
@@ -126,147 +133,137 @@ bool FAerotelicBodyStructure::Generate(const FInputs& In, FString& OutError)
 	try
 	{
 		RequireClosedBody(In.Body, In.Label, TEXT("the body"));
-		for (const FReserved& Rv : In.Reserved)
-		{
-			RequireClosedBody(Rv.Mesh, Rv.Label, TEXT("a reserved volume"));
-		}
-		const aerotelic::Box3 Bounds = In.Body.Bounds();
-		const double Diag = FMath::Max(Bounds.Diagonal(), 1e-9);
+		TArray<FString> Warnings;
+		const double Diag = FMath::Max(In.Body.Bounds().Diagonal(), 1e-9);
+		const double CutTol = kCutToleranceOverDiag * Diag;
 
-		// The job. The offset's voxel is a quarter of the skin (so the
-		// shell's thickness is resolved), capped by a voxel budget across
-		// the bounds.
-		AerotelicMeshLib::FRequest Request;
-		{
-			double Voxel = 0.25 * S.skin_thickness;
-			const aerotelic::Vec3 Ext = Bounds.Extent() + aerotelic::Vec3{2.0, 2.0, 2.0} * S.skin_thickness;
-			const double Volume = Ext.x * Ext.y * Ext.z;
-			if (Volume / (Voxel * Voxel * Voxel) > kMaxOffsetVoxels)
-			{
-				Voxel = std::cbrt(Volume / kMaxOffsetVoxels);
-			}
-			Request.OffsetVoxel = FMath::Max(Voxel, 1e-6);
-		}
-		const double RemeshEdge = FMath::Max(kInnerRemeshEdgeOverSkin * S.skin_thickness, kInnerRemeshEdgeOverVoxel * Request.OffsetVoxel);
-		const uint64 Key = InnerCacheKey(In.Body, S.skin_thickness, Request.OffsetVoxel);
-		AerotelicMeshLib::FBody Target;
-		Target.Label = In.Label;
-		Target.Mesh = &In.Body;
-		Target.SkinThickness = S.skin_thickness;
-		Target.InnerRemeshEdge = RemeshEdge;
-		// The offset from the last run of the same body at the same skin
-		// is handed back: the distance field is the slow step, and editing
-		// the planes does not change it.
-		if (Key == InnerKey && !Inner.IsEmpty())
-		{
-			Target.PrecomputedInner = &Inner;
-		}
-		Request.Targets.Add(Target);
-		for (const FReserved& Rv : In.Reserved)
-		{
-			AerotelicMeshLib::FBody Volume;
-			Volume.Label = Rv.Label;
-			Volume.Mesh = &Rv.Mesh;
-			Request.Reserved.Add(Volume);
-		}
-		Request.SkinThickness = S.skin_thickness;
-		Request.OffsetMode = TEXT("standard");
-		Request.DecimateTolerance = 0.2 * Request.OffsetVoxel;
-		Request.MinPocketVolume = FMath::Pow(4.0 * Request.OffsetVoxel, 3.0);
-		Request.InnerOpening = 0.0;
-		Request.InnerRemeshEdge = RemeshEdge;
-		// The networks: each plane placed with the body (the normal rotated,
-		// the offset scaled and carried), the thickness and height as typed.
+		// The planes, placed with the body: every network's, in network order,
+		// and the mesher's ribs over them (rib id = network index + 1, as the
+		// structural model builder numbers them).
+		std::vector<aerotelic::Plane> AllPlanes;
+		TArray<AerotelicRibGmsh::FRequest::FRib> Ribs;
 		for (int32 n = 0; n < static_cast<int32>(S.networks.size()); ++n)
 		{
 			const aerotelic::PlaneNetwork& Net = S.networks[n];
-			AerotelicMeshLib::FNetwork N;
-			N.Label = UTF8_TO_TCHAR(Net.name.c_str());
 			for (int k = 0; k < Net.count; ++k)
 			{
-				N.Planes.Add(aerotelic::PlacedPlane(aerotelic::NetworkPlane(Net, k), In.R, In.T, In.Scale));
+				const aerotelic::Plane P = aerotelic::PlacedPlane(aerotelic::NetworkPlane(Net, k), In.R, In.T, In.Scale);
+				AllPlanes.push_back(P);
+				AerotelicRibGmsh::FRequest::FRib R;
+				R.Id = n + 1;
+				R.Normal = P.normal;
+				R.Offset = P.offset;
+				R.Height = Net.height;
+				Ribs.Add(R);
 			}
-			N.Thickness = Net.thickness;
-			N.Height = Net.height;
-			N.Centre = Bounds.Center();
-			N.HalfExtent = kSlabHalfExtentOverDiag * Diag;
-			Request.Networks.Add(N);
 		}
 
-		AerotelicMeshLib::FResult Result;
-		FString Error;
-		if (!AerotelicMeshLib::Run(Request, Result, Error))
+		// The body cut by every plane, so each plane's section is a loop of
+		// the surface's own vertices -- the rim gmsh meshes the disc inside.
+		aerotelic::TriMesh Cut;
+		std::vector<aerotelic::TriMesh> CutReserved;
+		AerotelicRibGmsh::FResult Result;
+		if (!AllPlanes.empty())
 		{
-			OutError = Error;
-			return false;
-		}
-		if (Result.Skin.IsEmpty())
-		{
-			OutError = FString::Printf(TEXT("%s: the skin came out empty."), *In.Label);
-			return false;
-		}
-		for (const FString& W : Result.Warnings)
-		{
-			UE_LOG(LogTemp, Warning, TEXT("AerotelicBodyStructure: %s: %s"), *In.Label, *W);
+			aerotelic::MeshCutStats CutStats;
+			Cut = aerotelic::CutMeshByPlanes(In.Body, AllPlanes, CutTol, nullptr, &CutStats);
+			if (!Cut.IsClosedManifold())
+			{
+				OutError = FString::Printf(TEXT("%s: the surface cut by the %d rib plane(s) is not a closed manifold."), *In.Label, static_cast<int32>(AllPlanes.size()));
+				return false;
+			}
+			UE_LOG(LogTemp, Log, TEXT("AerotelicBodyStructure: %s cut by %d plane(s): %d triangles split, %d vertices added, %d snapped"),
+				*In.Label, static_cast<int32>(AllPlanes.size()), CutStats.split_triangles, CutStats.new_vertices, CutStats.snapped_vertices);
+			// The reserved volumes by the same planes (the same tolerance, so
+			// their rims lie on the planes as the body's do); one that is not
+			// closed cannot bound a hole and is left out with a warning.
+			for (size_t i = 0; i < In.Reserved.size(); ++i)
+			{
+				const aerotelic::TriMesh& Rv = In.Reserved[i];
+				if (Rv.IsEmpty()) continue;
+				if (!Rv.IsClosedManifold() || !(Rv.SignedVolume() > 0.0))
+				{
+					Warnings.Add(FString::Printf(TEXT("reserved volume %d is not a closed outward surface; the ribs do not avoid it"), static_cast<int32>(i) + 1));
+					continue;
+				}
+				aerotelic::TriMesh RvCut = aerotelic::CutMeshByPlanes(Rv, AllPlanes, CutTol);
+				if (!RvCut.IsClosedManifold())
+				{
+					Warnings.Add(FString::Printf(TEXT("reserved volume %d cut by the planes is not a closed manifold; the ribs do not avoid it"), static_cast<int32>(i) + 1));
+					continue;
+				}
+				CutReserved.push_back(std::move(RvCut));
+			}
+
+			AerotelicRibGmsh::FRequest Request;
+			Request.Outer = &Cut;
+			Request.Ribs = Ribs;
+			Request.RibSize = 0.0;    // the surface's median edge
+			for (const aerotelic::TriMesh& H : CutReserved) Request.Holes.Add(&H);
+			FString Error;
+			if (!AerotelicRibGmsh::Run(Request, Result, Error))
+			{
+				OutError = FString::Printf(TEXT("%s: the ribs could not be meshed: %s"), *In.Label, *Error);
+				return false;
+			}
+			for (const FString& N : Result.Notes)
+			{
+				UE_LOG(LogTemp, Warning, TEXT("AerotelicBodyStructure: %s: %s"), *In.Label, *N);
+				Warnings.Add(N);
+			}
 		}
 
-		// Take the results: the layers in the body's frame, the hollowing's
-		// surfaces as they are for the structural analysis.
+		// The layers: the skin (the body's surface, no mesh of its own), then
+		// one Ribs layer per network -- its faces compacted to a disc mesh --
+		// every mesh brought back into the body's frame.
 		std::vector<FAerotelicStructureLayer> NewLayers;
 		{
 			FAerotelicStructureLayer Skin;
 			Skin.Name = TEXT("Skin");
 			Skin.Kind = FAerotelicStructureLayer::EKind::Skin;
-			Skin.Mesh = std::move(Result.Skin);
 			Skin.Material = S.material;
 			Skin.Thickness = S.skin_thickness;
-			Skin.Volume = Result.SkinVolume;
+			Skin.Area = In.Body.SurfaceArea();
+			Skin.Volume = Skin.Area * Skin.Thickness;
 			NewLayers.push_back(std::move(Skin));
 		}
-		for (int32 n = 0; n < Result.Ribs.Num() && n < static_cast<int32>(S.networks.size()); ++n)
+		double RibsArea = 0.0;
+		for (int32 n = 0; n < static_cast<int32>(S.networks.size()); ++n)
 		{
-			FAerotelicStructureLayer Ribs;
-			Ribs.Name = UniqueLayerName(UTF8_TO_TCHAR(S.networks[n].name.c_str()), NewLayers);
-			Ribs.Kind = FAerotelicStructureLayer::EKind::Ribs;
-			Ribs.NetworkIndex = n;
-			Ribs.Mesh = std::move(Result.Ribs[n].Mesh);
-			Ribs.Material = S.networks[n].material;
-			Ribs.Thickness = S.networks[n].thickness;
-			Ribs.Volume = Result.Ribs[n].Volume;
-			Ribs.Note = Result.Ribs[n].Note;
-			if (Ribs.Mesh.IsEmpty() && Ribs.Note.IsEmpty()) Ribs.Note = TEXT("the planes miss the interior");
-			NewLayers.push_back(std::move(Ribs));
-		}
-		for (FAerotelicStructureLayer& L : NewLayers)
-		{
-			if (!L.Mesh.IsEmpty() && !L.Mesh.IsClosedManifold())
+			FAerotelicStructureLayer Layer;
+			Layer.Name = UniqueLayerName(UTF8_TO_TCHAR(S.networks[n].name.c_str()), NewLayers);
+			Layer.Kind = FAerotelicStructureLayer::EKind::Ribs;
+			Layer.NetworkIndex = n;
+			Layer.Material = S.networks[n].material;
+			Layer.Thickness = S.networks[n].thickness;
+			Layer.Area = CompactRib(Result, n + 1, Layer.Mesh);
+			Layer.Volume = Layer.Area * Layer.Thickness;
+			RibsArea += Layer.Area;
+			// The mesher's notes on this network's ribs ("rib <id>: ...").
+			const FString Prefix = FString::Printf(TEXT("rib %d:"), n + 1);
+			TArray<FString> Notes;
+			for (const FString& N : Result.Notes)
 			{
-				UE_LOG(LogTemp, Warning, TEXT("AerotelicBodyStructure: %s: the %s layer is not a closed manifold"), *In.Label, *L.Name);
+				if (N.StartsWith(Prefix)) Notes.Add(N);
 			}
-			UnplaceMesh(L.Mesh, In.R, In.T, In.Scale);
+			Layer.Note = FString::Join(Notes, TEXT("\n"));
+			if (Layer.Mesh.IsEmpty() && Layer.Note.IsEmpty()) Layer.Note = TEXT("the planes miss the interior");
+			UnplaceMesh(Layer.Mesh, In.R, In.T, In.Scale);
+			NewLayers.push_back(std::move(Layer));
 		}
 
 		Layers = std::move(NewLayers);
 		Generated = S;
-		Outer = In.Body;
-		Inner = std::move(Result.Inners[0].Mesh);
-		bInnerUsable = Result.Inners[0].bUsable;
-		InnerNote = Result.Inners[0].Note;
-		InnerKey = Key;
-		SkinThickness = S.skin_thickness;
-
 		Stats = FStats();
 		for (const FAerotelicStructureLayer& L : Layers) Stats.Triangles += static_cast<int64>(L.Mesh.triangles.size());
-		Stats.SkinVolume = Result.SkinVolume;
-		Stats.DomainVolume = Result.DomainVolume;
-		Stats.RibsVolume = Result.RibsVolume;
-		Stats.Warnings = Result.Warnings;
+		Stats.SkinArea = Layers[0].Area;
+		Stats.RibsArea = RibsArea;
+		Stats.Warnings = Warnings;
 		Stats.Seconds = FPlatformTime::Seconds() - T0;
 		bGenerated = true;
 		bStale = false;
-		UE_LOG(LogTemp, Log, TEXT("AerotelicBodyStructure: %s: %d layer(s), %lld triangles, offset voxel %.4g, skin %.5g, interior %.5g, ribs %.5g, %.2f s (MeshLib %.2f s)"),
-			*In.Label, static_cast<int32>(Layers.size()), Stats.Triangles, Request.OffsetVoxel, Stats.SkinVolume, Stats.DomainVolume, Stats.RibsVolume,
-			Stats.Seconds, Result.Seconds);
+		UE_LOG(LogTemp, Log, TEXT("AerotelicBodyStructure: %s: %d layer(s), %d rib plane(s), %lld rib triangles, %d hole(s), skin area %.5g, ribs area %.5g, %.2f s (gmsh %.2f s)"),
+			*In.Label, static_cast<int32>(Layers.size()), Ribs.Num(), Stats.Triangles, Result.Holes, Stats.SkinArea, Stats.RibsArea, Stats.Seconds, Result.Seconds);
 		return true;
 	}
 	catch (const std::exception& e)

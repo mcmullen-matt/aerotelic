@@ -161,11 +161,9 @@ public class AerotelicUE : ModuleRules
 		// environment's python.exe as a separate process on a job directory
 		// (Entity/AerotelicMeshLib.cpp RunJob); the scripts are staged with
 		// the packaged build, the environment is the user's.
-		//   structure_meshlib.py  a body's Generate Structure: the hollowing
-		//                         and the plane networks' ribs on MeshLib
-		//                         (Entity/AerotelicMeshLib.cpp);
-		//   rib_gmsh.py           the rib shells for the structural analysis
-		//                         on gmsh (Entity/AerotelicRibGmsh.cpp);
+		//   rib_gmsh.py           the rib shells -- a body's Generate Structure
+		//                         and the structural analysis build the same
+		//                         discs -- on gmsh (Entity/AerotelicRibGmsh.cpp);
 		//   gmsh_common.py        the .tri reader, the DLL bootstrap and the
 		//                         surface checks rib_gmsh.py, potential_flow.py
 		//                         and structural_fea.py import;
@@ -178,9 +176,10 @@ public class AerotelicUE : ModuleRules
 		//                         packaged build had no structural solver.
 		// (tools/lattice_meshlib.py and tools/tet_gmsh.py, the lattice infill
 		// and the skin/core tetrahedral mesh, went with those features on
-		// 2026-11-08.)
+		// 2026-11-08; tools/structure_meshlib.py, the MeshLib hollowing, went
+		// that night when offset surfaces were dropped altogether.)
 		string[] ToolScripts = {
-			"structure_meshlib.py", "rib_gmsh.py", "gmsh_common.py", "potential_flow.py", "structural_fea.py",
+			"rib_gmsh.py", "gmsh_common.py", "potential_flow.py", "structural_fea.py",
 		};
 		foreach (string Script in ToolScripts) {
 			string ScriptPath = Path.GetFullPath(Path.Combine(ModuleDirectory, "..", "..", "tools", Script));

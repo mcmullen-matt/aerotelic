@@ -7,13 +7,18 @@
 #include "aerotelic/body_structure.hpp"
 #include "aerotelic/mesh.hpp"
 
-// One layer of a body's GENERATED structure: the skin shell or one
-// network's ribs -- a closed triangle mesh in the body's own
-// (parameterisation) frame, with the material it is made of. The layers
-// of a body are disjoint, so their volumes add to the skin plus the ribs;
-// the actor draws each as a section of its structure meshes, the Scene
-// tree lists each under the body, STL export writes each as a `solid` and
-// the mass report weighs each by its material.
+// One layer of a body's GENERATED structure: its skin, or one network's
+// ribs. Every layer is a THIN SHELL (2026-11-08, evening): the skin is
+// the body's own surface with the skin thickness as an attribute -- the
+// Skin layer carries NO mesh of its own, the body's surface stands in --
+// and a Ribs layer is the planar discs the network's planes cut out of
+// the body, bounded by the body's surface, as an OPEN triangle mesh in the
+// body's local (parameterisation) frame. A layer's material volume is its
+// area times its thickness and its mass that times the density; the
+// viewport draws the ribs as sections of the actor's structure meshes
+// (both sides), the Scene tree lists each layer under the body, STL
+// export writes the ribs' triangles, and the mass report weighs each as a
+// shell.
 struct FAerotelicStructureLayer
 {
 	enum class EKind : uint8 { Skin, Ribs };
@@ -23,16 +28,22 @@ struct FAerotelicStructureLayer
 	EKind Kind = EKind::Skin;
 	// The network this layer is the ribs of (Kind == Ribs), else INDEX_NONE.
 	int32 NetworkIndex = INDEX_NONE;
-	// Closed, outward, in the body's local frame (the parameterisation's,
-	// at full scale): place it with the entity's transform to get the
-	// world geometry, mirror it about Y = 0 for the mirrored half.
+	// Ribs: the discs, open, in the body's local frame (the
+	// parameterisation's, at full scale): place it with the entity's
+	// transform for the world geometry, mirror it about Y = 0 for the
+	// mirrored half. Skin: EMPTY -- the body's surface is the skin.
 	aerotelic::TriMesh Mesh;
 	aerotelic::Material Material;
 	// The skin's or the ribs' thickness (project units).
 	double Thickness = 0.0;
-	// The layer's volume as MeshLib measured it, in PLACED (replica) units.
+	// The shell's area in PLACED (replica) units: the body's surface area
+	// for the skin, the discs' summed triangle area for ribs.
+	double Area = 0.0;
+	// The shell's MATERIAL volume, Area x Thickness, placed units (the name
+	// predates the shell model, when it was an enclosed volume).
 	double Volume = 0.0;
-	// Why the layer is empty, when it is.
+	// Why the layer is empty, when it is, and what the mesher had to say
+	// about its ribs.
 	FString Note;
 
 	// The colour a layer is drawn in by default: the skin the body's own
@@ -42,41 +53,56 @@ struct FAerotelicStructureLayer
 };
 
 // The generated structure of one body (AAerotelicEntityActor's bodies
-// hold one each once Generate has run): the skin shell and the ribs that
-// a BodyStructure describes, built by the MeshLib job (AerotelicMeshLib.h,
-// tools/structure_meshlib.py) over the body's placed surface. The
-// hollow's two surfaces (the body and its inward offset) are kept for the
-// structural analysis, which lays its rib shells inside them.
+// hold one each once Generate has run): the skin and the ribs a
+// BodyStructure describes, as shells.
 //
-// This replaced the FAerotelicLatticeModel scene entity (2026-11-08): the
-// structure is an attribute of the body, not a body of its own; the same
-// day the lattice infill and the tetrahedral mesh were removed, so a body
-// is a skin with ribs or a solid. The generation runs in WORLD space --
-// the skin thickness and the ribs' thicknesses are physical build figures,
-// so they must be taken on the placed (replica) body -- and the results
-// are brought back into the body's local frame, so the layers follow the
-// body through a move or a rotation without a job; a change of model
-// scale, like any change of shape, regenerates them (the document's
-// rebuild queue).
+// WHY THERE ARE NO OFFSET SURFACES (the owner's decision, 2026-11-08
+// night). Until that evening the generation hollowed the body -- MeshLib
+// offset the surface inward by the skin and cut rib slabs from the hollow
+// as closed solids, with a distance field, booleans and a remesh in the
+// way (tools/structure_meshlib.py, gone). Now a body's skin is its own
+// surface with the thickness as an attribute, and a rib is the planar
+// disc its plane cuts out of the body, bounded by the body's surface and
+// not by an inner offset: mass = area x thickness x density, the same
+// shell model the structural analysis solves (AerotelicFeaModelBuilder
+// builds the same discs on the same cut surface, with the same mesher).
+// Two errors come with that and are accepted: the ribs overlap the skin
+// along their rims (a strip half a skin wide, both counted), and the skin's
+// area is taken on the outer surface rather than its mid-surface -- a few
+// percent at most for the thicknesses in question.
+//
+// HOW. The body's placed surface (its OWN grid, the one the viewport shows
+// and the analysis solves on) is cut by every network's placed planes
+// (core mesh_cut.hpp CutMeshByPlanes), so each plane's section is a loop
+// of the surface's own vertices; the reserved volumes the structure's
+// exclusions name are cut by the same planes; gmsh (AerotelicRibGmsh.h,
+// tools/rib_gmsh.py) triangulates the disc inside each loop, with the
+// reserved volumes' sections as holes, and the faces come back labelled by
+// rib id (network index + 1). Under a second for a wing. The generation
+// runs in WORLD space -- the thicknesses are physical build figures, so
+// the planes are placed with the body -- and the discs are brought back
+// into the body's local frame, so they follow the body through a move or a
+// rotation without a job; a change of model scale, like any change of
+// shape, regenerates them (the document's rebuild queue).
+//
+// History: this replaced the FAerotelicLatticeModel scene entity on
+// 2026-11-08 (the structure is an attribute of the body, not a body of its
+// own); the same day the lattice infill and the tetrahedral mesh went, and
+// that night the hollowing.
 class FAerotelicBodyStructure
 {
 public:
-	struct FReserved
-	{
-		FString Label;
-		aerotelic::TriMesh Mesh;   // placed, closed
-	};
-
 	struct FInputs
 	{
 		// "<entity>[ / <body>]" for the log and the notes.
 		FString Label;
-		// The body's placed (world) surface, closed and outward, fine enough
-		// for the offset's distance field (BodyTolerance).
+		// The body's placed surface on its OWN grid (GetPlacedMeshes at
+		// tolerance 0), closed and outward.
 		aerotelic::TriMesh Body;
 		aerotelic::BodyStructure Structure;
-		// The placed volumes the interior structure leaves alone.
-		std::vector<FReserved> Reserved;
+		// The placed volumes the ribs leave alone (own grids too): each
+		// closed; one that is not is skipped with a warning.
+		std::vector<aerotelic::TriMesh> Reserved;
 		// The placement the planes are carried by and the results are
 		// brought back through (AAerotelicEntityActor::GetPlacementMatrix).
 		std::array<double, 9> R{{1, 0, 0, 0, 1, 0, 0, 0, 1}};
@@ -84,26 +110,22 @@ public:
 		double Scale = 1.0;
 	};
 
-	// What the last generation produced.
+	// What the last generation produced (placed units).
 	struct FStats
 	{
+		// The ribs' triangles (the skin has none of its own).
 		int64 Triangles = 0;
-		double SkinVolume = 0.0;
-		double DomainVolume = 0.0;
-		double RibsVolume = 0.0;
+		double SkinArea = 0.0;
+		double RibsArea = 0.0;
 		double Seconds = 0.0;
+		// The mesher's notes and anything skipped on the way.
 		TArray<FString> Warnings;
 	};
 
-	// The surface tolerance the body is meshed at for a structure: a
-	// quarter of the skin, so the offset's distance field resolves the
-	// shell's thickness. Placed units.
-	static double BodyTolerance(const aerotelic::BodyStructure& S);
-
 	// Generates the layers. False with the reason when the structure has no
 	// skin (nothing to generate: a solid body), the body is not a closed
-	// outward surface, MeshLib is not installed or a boolean failed. On
-	// failure the previous layers are kept.
+	// outward surface, the cut surface is not a closed manifold, or the rib
+	// mesher is missing or refused. On failure the previous layers are kept.
 	bool Generate(const FInputs& Inputs, FString& OutError);
 
 	bool IsGenerated() const { return bGenerated; }
@@ -117,29 +139,10 @@ public:
 	bool IsStale() const { return bStale; }
 	void MarkStale() { bStale = true; }
 
-	// The hollow the ribs were cut from, WORLD space as generated: the
-	// body's placed surface and MeshLib's inward offset (empty where the
-	// body is nowhere thicker than two skins). IsInnerUsable says whether
-	// the offset is closed, outward and clear of the body (MeshLib's own
-	// checks); the structural analysis lays its rib shells inside them.
-	const aerotelic::TriMesh& GetOuter() const { return Outer; }
-	const aerotelic::TriMesh& GetInner() const { return Inner; }
-	bool IsInnerUsable() const { return bInnerUsable; }
-
 private:
 	bool bGenerated = false;
 	bool bStale = false;
 	aerotelic::BodyStructure Generated;
 	std::vector<FAerotelicStructureLayer> Layers;
 	FStats Stats;
-	// The hollowing's surfaces (world space).
-	aerotelic::TriMesh Outer;
-	aerotelic::TriMesh Inner;
-	bool bInnerUsable = false;
-	FString InnerNote;
-	double SkinThickness = 0.0;
-	// The offset cache: the inner surface is reused when the body, the skin
-	// and the voxel are what they were (editing the networks then costs
-	// the booleans alone, not the distance field).
-	uint64 InnerKey = 0;
 };

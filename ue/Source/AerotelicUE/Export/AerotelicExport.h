@@ -23,10 +23,13 @@ namespace AerotelicExport
 
 	// One body's run of triangles within FStlMesh::Triangles, named
 	// "<entity>/<body>" or, for a generated structure layer,
-	// "<entity>/<body>/<layer>" ("Wing/Flap 1/Skin", "Wing/Flap 1/Ribs"): an
-	// ASCII STL is written as one `solid` per part, so a mesher or FE
-	// pre-processor can pick the parts up separately (and give a body's
-	// shell and ribs different materials). Binary STL has no parts.
+	// "<entity>/<body>/<layer>" ("Wing/Flap 1/Ribs"): an ASCII STL is
+	// written as one `solid` per part, so a mesher or FE pre-processor can
+	// pick the parts up separately (and give a body's skin and ribs
+	// different materials). Binary STL has no parts. A Ribs layer is an
+	// OPEN shell -- the discs' triangles, written as a `solid` all the same
+	// (STL has no other word; the owner will revisit the export of shells)
+	// -- and the Skin layer has no mesh of its own: the body IS its skin.
 	struct FStlPart
 	{
 		FString Name;
@@ -53,9 +56,10 @@ namespace AerotelicExport
 		double LinearDeflection, double AngularDeflectionDeg, TArray<FString>& OutFailures);
 
 	// What the STL dialog picks: an operand (every body of it), or one
-	// generated structure layer of one of its bodies (Body and Layer set:
-	// AAerotelicEntityActor::GetPlacedLayerMeshes), which is written as it
-	// was generated, whatever the deflection.
+	// generated structure layer with a mesh -- a Ribs layer -- of one of
+	// its bodies (Body and Layer set: AAerotelicEntityActor::
+	// GetPlacedLayerMeshes), which is written as it was generated, whatever
+	// the deflection.
 	struct FStlSource
 	{
 		FAerotelicBooleanOperand Operand;
@@ -78,8 +82,8 @@ namespace AerotelicExport
 	// The shape to write for one body (_step_body_shape): an entity rebuilt
 	// at StationTol (unset: as it stands) and then placed; a mirror
 	// reflected from its source built the same way; a boolean result as it
-	// stands. A generated structure layer has no B-rep (it is a mesh:
-	// export it as STL).
+	// stands. A generated structure layer has no B-rep (it is an open
+	// shell mesh: export it as STL).
 	TopoDS_Shape StepBodyShape(const FAerotelicBooleanOperand& Operand, TOptional<double> StationTol, FString& OutError);
 
 	// Writes the bodies to one STEP file through aerotelic_step_writer, a

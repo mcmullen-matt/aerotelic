@@ -31,6 +31,15 @@ namespace AerotelicMeshing
 	// accumulated from one winding.
 	void ToProceduralMesh(const aerotelic::TriMesh& Mesh, TArray<FVector>& OutVertices, TArray<int32>& OutTriangles, TArray<FVector>& OutNormals);
 
+	// The same arrays for an OPEN mesh seen from both sides -- a rib disc
+	// (2026-11-08): the triangles once in their own winding over the
+	// vertices with smooth normals from that winding, then once more
+	// reversed over a DUPLICATE of the vertices with the normals flipped,
+	// so each side is lit by a normal that faces its viewer. (ToProceduralMesh
+	// shares one vertex set and one normal between the two windings, which
+	// is right for a closed surface whose back is never seen.)
+	void ToTwoSidedProceduralMesh(const aerotelic::TriMesh& Mesh, TArray<FVector>& OutVertices, TArray<int32>& OutTriangles, TArray<FVector>& OutNormals);
+
 	FBox BoundsOf(const aerotelic::TriMesh& Mesh);
 
 	// The connected shells of a mesh, each as its own mesh with only the

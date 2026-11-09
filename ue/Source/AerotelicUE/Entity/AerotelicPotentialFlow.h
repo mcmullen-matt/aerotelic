@@ -8,8 +8,8 @@
 // KratosMultiphysics' CompressiblePotentialFlowApplication
 // (tools/potential_flow.py, run as a separate process in the WingDesigner
 // micromamba environment where Kratos is pip-installed -- the same bridge
-// pattern as the structure's MeshLib backend, AerotelicMeshLib.h, the
-// rib mesher, AerotelicRibGmsh.h, and the STEP writer).
+// pattern as the rib mesher, AerotelicRibGmsh.h, over the job runner in
+// AerotelicMeshLib.h, and the STEP writer).
 //
 // The bodies travel as .tri files: the application's own triangulation,
 // placed as it sits in the scene. The script builds the FLUID domain
