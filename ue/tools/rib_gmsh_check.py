@@ -21,6 +21,15 @@ are written after the surface's and the spar and rib share them. Then the
 same bay against a rib it misses (no hole, the full disc), a bay wider
 than the body (crosses the rim: a note, the full disc) and a bay larger
 than the body (encloses the disc: a note, no faces).
+
+Sections in several pieces (2026-11-09, the port boom that lost its
+frames): a U-shaped prism (``cells_prism``: the 3 x 3 unit cells less the
+middle column's upper two, 1 high) with a rib normal to y at y = 2 that
+cuts the two legs separately -- two 1 x 1 discs, BOTH meshed -- and a spar
+normal to z at z = 0.5 (one U-shaped disc of area 7) crossing both legs,
+sharing a chord with each. Then a ring (the 3 x 3 cells less the middle
+one) with the spar alone: one disc with a real hole, area 8, no face in
+the hole.
 """
 
 import json
@@ -42,6 +51,39 @@ np = tg.np
 def check(cond, msg):
     print(("PASS " if cond else "FAIL ") + msg)
     return bool(cond)
+
+
+def cells_prism(keep, nz, dz=1.0):
+    """The closed, outward surface of the prism over the unit cells `keep`
+    (a set of (i, j) column/row indices, cell (i, j) = [i, i+1] x [j, j+1])
+    extruded in z through nz layers of height dz. Grid vertices only, so a
+    plane on a grid line needs no cut."""
+    ids, verts, faces = {}, [], []
+
+    def vid(i, j, k):
+        key = (i, j, k)
+        if key not in ids:
+            ids[key] = len(verts)
+            verts.append((float(i), float(j), k * dz))
+        return ids[key]
+
+    for (i, j) in keep:
+        # The bottom cap faces -z, the top +z.
+        faces.append((vid(i, j, 0), vid(i, j + 1, 0), vid(i + 1, j + 1, 0)))
+        faces.append((vid(i, j, 0), vid(i + 1, j + 1, 0), vid(i + 1, j, 0)))
+        faces.append((vid(i, j, nz), vid(i + 1, j, nz), vid(i + 1, j + 1, nz)))
+        faces.append((vid(i, j, nz), vid(i + 1, j + 1, nz), vid(i, j + 1, nz)))
+        # The sides: each cell edge, taken counter-clockwise around the
+        # cell, that no kept neighbour shares; (edge x z) points outward.
+        for a, b, nb in (((i, j), (i + 1, j), (i, j - 1)), ((i + 1, j), (i + 1, j + 1), (i + 1, j)),
+                         ((i + 1, j + 1), (i, j + 1), (i, j + 1)), ((i, j + 1), (i, j), (i - 1, j))):
+            if nb in keep:
+                continue
+            for k in range(nz):
+                a0, b0, b1, a1 = vid(a[0], a[1], k), vid(b[0], b[1], k), vid(b[0], b[1], k + 1), vid(a[0], a[1], k + 1)
+                faces.append((a0, b0, b1))
+                faces.append((a0, b1, a1))
+    return np.array(verts, dtype=np.float64), np.array(faces, dtype=np.int32)
 
 
 def read_nodes(path):
@@ -234,6 +276,62 @@ def main(argv):
         code, result8 = run_holes("enclose", (3.0, 4.0, 3.0), (2, 8, 2), [{"id": 1, "normal": [0.0, 1.0, 0.0], "offset": 0.0, "height": 0.0}])
         ok &= check(code == 0 and result8.get("ok") and result8["holes"] == 0 and result8["rib_faces"] == 0 and len(result8["rib_notes"]) == 1,
                     "ribs (bay enclosing): no faces, one note (%s)" % "; ".join(result8.get("rib_notes", [])))
+
+        # A section in two pieces: the U prism, the rib at y = 2 through
+        # both legs, the spar at z = 0.5 through the whole U.
+        def run_prism(tag, keep, rib_list):
+            pv, pf = cells_prism(keep, 2, 0.5)
+            tg.check_closed(pv, pf, "the %s prism" % tag)
+            tg.write_tri(os.path.join(job_dir, "prism_%s.tri" % tag), pv, pf)
+            jobp = {"outer": "prism_%s.tri" % tag, "ribs": rib_list, "rib_size": 0.25, "plane_tolerance": 0.0,
+                    "outputs": {"nodes": "nodes_%s.bin" % tag, "result": "result_%s.json" % tag, "ribs": "ribs_%s.bin" % tag}}
+            with open(os.path.join(job_dir, "job.json"), "w", encoding="utf-8") as f:
+                json.dump(jobp, f, indent=1)
+            code = rg.main(["rib_gmsh.py", job_dir])
+            with open(os.path.join(job_dir, "result_%s.json" % tag), "r", encoding="utf-8") as f:
+                res = json.load(f)
+            return code, res, pv
+
+        u_cells = {(i, j) for i in range(3) for j in range(3)} - {(1, 1), (1, 2)}
+        code, result9, uv = run_prism("u", u_cells, [{"id": 1, "normal": [0.0, 1.0, 0.0], "offset": 2.0, "height": 0.0},
+                                                      {"id": 2, "normal": [0.0, 0.0, 1.0], "offset": 0.5, "height": 0.0}])
+        ok &= check(code == 0 and result9.get("ok"), "ribs (two pieces): the job succeeded: %s" % result9.get("error", ""))
+        if result9.get("ok"):
+            nodes9 = read_nodes(os.path.join(job_dir, "nodes_u.bin"))
+            rib_faces9, rib_ids9 = read_ribs(os.path.join(job_dir, "ribs_u.bin"))
+            ok &= check(result9["rib_notes"] == [], "ribs (two pieces): no notes (%s)" % "; ".join(result9["rib_notes"]))
+            rib_got = tg.surface_area(nodes9, rib_faces9[rib_ids9 == 1])
+            spar_got = tg.surface_area(nodes9, rib_faces9[rib_ids9 == 2])
+            ok &= check(abs(rib_got - 2.0) < 1e-6, "ribs (two pieces): the rib is BOTH legs' discs, area 2 (got %.6g)" % rib_got)
+            ok &= check(abs(spar_got - 7.0) < 1e-6, "ribs (two pieces): the spar is the U's section, area 7 (got %.6g)" % spar_got)
+            cent = nodes9[rib_faces9[rib_ids9 == 1]].mean(axis=1)
+            left, right = int((cent[:, 0] < 1.0).sum()), int((cent[:, 0] > 2.0).sum())
+            ok &= check(left > 0 and right > 0 and len(cent) == left + right, "ribs (two pieces): rib faces in both legs (%d left, %d right)" % (left, right))
+            # The spar and the rib share the chord nodes in each leg (y = 2,
+            # z = 0.5; each chord 1 long at size 0.25: 5 nodes).
+            spar_nodes = set(np.unique(rib_faces9[rib_ids9 == 2]).tolist())
+            rib_nodes9 = set(np.unique(rib_faces9[rib_ids9 == 1]).tolist())
+            on_chords = [n for n in spar_nodes & rib_nodes9 if abs(nodes9[n][1] - 2.0) < 1e-9 and abs(nodes9[n][2] - 0.5) < 1e-9]
+            in_left = [n for n in on_chords if nodes9[n][0] < 1.0 + 1e-9]
+            in_right = [n for n in on_chords if nodes9[n][0] > 2.0 - 1e-9]
+            ok &= check(len(in_left) >= 5 and len(in_right) >= 5 and len(on_chords) == len(in_left) + len(in_right),
+                        "ribs (two pieces): the spar shares a chord with each leg's disc (%d + %d nodes)" % (len(in_left), len(in_right)))
+            all_rib_nodes = np.unique(rib_faces9)
+            keyed = np.round(nodes9[all_rib_nodes] * 1e9).astype(np.int64)
+            ok &= check(len(np.unique(keyed, axis=0)) == len(all_rib_nodes), "ribs (two pieces): no two rib nodes coincide")
+            ok &= check(len(np.unique(rib_faces9[rib_faces9 >= len(uv)])) == len(nodes9) - len(uv), "ribs (two pieces): every interior node written belongs to a rib face")
+
+        # A section with a real hole: the ring prism and the spar alone.
+        ring_cells = {(i, j) for i in range(3) for j in range(3)} - {(1, 1)}
+        code, result10, rv = run_prism("ring", ring_cells, [{"id": 1, "normal": [0.0, 0.0, 1.0], "offset": 0.5, "height": 0.0}])
+        ok &= check(code == 0 and result10.get("ok") and result10["rib_notes"] == [], "ribs (ring): the job succeeded without notes: %s %s" % (result10.get("error", ""), "; ".join(result10.get("rib_notes", []))))
+        if result10.get("ok"):
+            nodes10 = read_nodes(os.path.join(job_dir, "nodes_ring.bin"))
+            rib_faces10, _ = read_ribs(os.path.join(job_dir, "ribs_ring.bin"))
+            ok &= check(abs(result10["rib_area"] - 8.0) < 1e-6, "ribs (ring): one disc with a hole, area 8 (got %.6g)" % result10["rib_area"])
+            cent = nodes10[rib_faces10].mean(axis=1)
+            in_hole = (np.abs(cent[:, 0] - 1.5) < 0.5 - 1e-9) & (np.abs(cent[:, 1] - 1.5) < 0.5 - 1e-9)
+            ok &= check(not in_hole.any(), "ribs (ring): no rib face in the hole (%d do)" % int(in_hole.sum()))
     finally:
         if keep:
             print("kept %s" % keep)

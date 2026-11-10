@@ -6,11 +6,17 @@ rem it reads the uncooked project/engine content directly, so it is the quick
 rem way to iterate after build_editor.bat. End users should use the packaged
 rem build (package_standalone.bat -> run_aerotelic.bat).
 rem
+rem While a session started from here is open, build_editor.bat cannot link
+rem (this tree's UnrealEditor-AerotelicUE.dll is loaded). To keep testing
+rem through builds, use run_aerotelic_snapshot.bat instead. -LiveCoding=0
+rem keeps Live Coding from starting: its mutex (named after the engine's
+rem UnrealEditor.exe) makes UnrealBuildTool refuse every editor build.
+rem
 rem Optional first argument: a project .yaml to open at startup, e.g.
 rem   run_aerotelic_dev.bat C:\Users\Matt\devel_1\WingDesigner\projects\p38.yaml
 setlocal
 set UE_ROOT=C:\Program Files\Epic Games\UE_5.8
 set PROJECT_ARG=
 if not "%~1"=="" set PROJECT_ARG=-AerotelicProject="%~1"
-start "" "%UE_ROOT%\Engine\Binaries\Win64\UnrealEditor.exe" "%~dp0AerotelicUE.uproject" -game -windowed -ResX=2560 -ResY=1440 %PROJECT_ARG%
+start "" "%UE_ROOT%\Engine\Binaries\Win64\UnrealEditor.exe" "%~dp0AerotelicUE.uproject" -game -windowed -ResX=2560 -ResY=1440 -LiveCoding=0 %PROJECT_ARG%
 endlocal
