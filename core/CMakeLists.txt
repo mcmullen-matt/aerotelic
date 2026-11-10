@@ -142,6 +142,9 @@ target_link_libraries(wing_structure_check PRIVATE aerotelic_core)
 add_executable(wing_mesh_probe tests/wing_mesh_probe.cpp)
 target_link_libraries(wing_mesh_probe PRIVATE aerotelic_core)
 
+add_executable(make_test_internal_geometry tests/make_test_internal_geometry.cpp)
+target_link_libraries(make_test_internal_geometry PRIVATE aerotelic_core)
+
 add_executable(section_cut_check tests/section_cut_check.cpp)
 target_link_libraries(section_cut_check PRIVATE aerotelic_core)
 
