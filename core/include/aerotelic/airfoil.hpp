@@ -74,6 +74,10 @@ public:
 	// it, which is what lets a tetrahedral mesh conform to the thin wedge
 	// at the trailing edge.
 	double MirrorParameter(double t) const;
+	// The curve parameter of the point at chord fraction x on the upper
+	// (or lower) surface, by the same bisection on x; clamped to the
+	// surface's ends. A spar's or a stringer's foot (wing_model.hpp).
+	double ParameterAtX(double x, bool upper) const;
 	// The leading edge's curve parameter (lower surface is t below it).
 	double LeadingEdgeParameter() const { return t_le_; }
 

@@ -6,6 +6,7 @@
 
 #include "aerotelic/body_structure.hpp"
 #include "aerotelic/mesh.hpp"
+#include "aerotelic/wing_model.hpp"
 
 // One layer of a body's GENERATED structure: its skin, or one network's
 // ribs. Every layer is a THIN SHELL (2026-11-08, evening): the skin is
@@ -21,7 +22,7 @@
 // shell.
 struct FAerotelicStructureLayer
 {
-	enum class EKind : uint8 { Skin, Ribs };
+	enum class EKind : uint8 { Skin, Ribs, Spars, Stringers };
 
 	// "Skin", or the network's name (made unique within the body).
 	FString Name;
@@ -127,6 +128,28 @@ public:
 	// outward surface, the cut surface is not a closed manifold, or the rib
 	// mesher is missing or refused. On failure the previous layers are kept.
 	bool Generate(const FInputs& Inputs, FString& OutError);
+
+	// A WING'S structure (2026-11-09): the plan its parameterisation made
+	// on the body's own grid (wing_model.hpp WingBodyStructurePlan) -- rib
+	// rims that are rings of the body mesh, spar webs and stringers as
+	// ready meshes -- turned into layers: Skin, one Ribs layer holding every
+	// rib (meshed as discs by the rib mesher, the spar chords across them),
+	// one layer per spar and per stringer. Everything is in the body's
+	// LOCAL frame, as the plan is; areas are reported in placed units.
+	struct FPlanInputs
+	{
+		FString Label;
+		// The body's mesh in its own frame (the model's triangles, the ones
+		// the plan's vertex ids index).
+		aerotelic::TriMesh Body;
+		aerotelic::WingBodyStructurePlan Plan;
+		// The body's material and skin thickness; an element whose material
+		// has no density takes the body's.
+		aerotelic::BodyStructure Structure;
+		// The model scale, so a layer's area is reported in placed units.
+		double Scale = 1.0;
+	};
+	bool GenerateFromPlan(const FPlanInputs& Inputs, FString& OutError);
 
 	bool IsGenerated() const { return bGenerated; }
 	const std::vector<FAerotelicStructureLayer>& GetLayers() const { return Layers; }

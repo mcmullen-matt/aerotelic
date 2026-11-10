@@ -41,6 +41,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <functional>
 #include <limits>
@@ -148,6 +149,17 @@ struct LoftSource {
 	// how TriangulateLoftChain gives the two rings that meet at a break the
 	// same vertices along their shared stretch. Ignored for periodic_u.
 	std::vector<double> v_extra_start, v_extra_end;
+
+	// Every ring takes ONE along-curve parameter set, refined against all
+	// the stations together (2026-11-09), instead of each ring refining
+	// against its own curve. Rings then match point for point and the
+	// strips are quads, which is what a wing with structure wants: its
+	// rings are parametrised through anchors that drift along the span, so
+	// per-ring refinement would insert a point on one ring and not its
+	// neighbour, and the zigzag between them makes thin triangles. A loft
+	// whose rings shrink to an apex (a fuselage) keeps per-ring refinement
+	// (false), so its small rings are not sampled as densely as its largest.
+	bool uniform_rings = false;
 };
 
 // The first and last rings of a loft: the mesh's vertex indices, in ring
@@ -155,6 +167,25 @@ struct LoftSource {
 struct LoftEndRings {
 	std::vector<int> start, end;
 	std::vector<double> v_start, v_end;
+};
+
+// EVERY ring of a loft (2026-11-09, for the structure a wing builds on its
+// own grid): station i is at u[i], its vertices rings[i] in ring order
+// (ascending v) with their along-curve parameters ring_v[i]. A seeded
+// station (LoftSource::u_seeds) is always one of them, and a seeded
+// parameter (v_seeds) is on every ring, so a rib asked for at a station
+// finds its rim here and a spar asked for at a parameter finds its foot
+// on every ring. An apex ring repeats its one vertex. Indices are into
+// the returned mesh (after a chain's welding).
+struct LoftRings {
+	std::vector<double> u;
+	std::vector<std::vector<int>> rings;
+	std::vector<std::vector<double>> ring_v;
+	// The ring at station u (within 1e-9), or -1.
+	int Find(double u_wanted) const {
+		for (size_t i = 0; i < u.size(); ++i) if (std::fabs(u[i] - u_wanted) <= 1e-9) return static_cast<int>(i);
+		return -1;
+	}
 };
 
 // A break between two consecutive segments of a chain (TriangulateLoftChain):
@@ -283,7 +314,7 @@ struct MeshSpec {
 
 // Triangulates the loft. Throws std::invalid_argument on a malformed
 // source (fewer than two stations, no section points).
-TriMesh TriangulateLoft(const LoftSource& source, const LoftOptions& options, LoftStats* stats = nullptr, LoftEndRings* ends = nullptr);
+TriMesh TriangulateLoft(const LoftSource& source, const LoftOptions& options, LoftStats* stats = nullptr, LoftEndRings* ends = nullptr, LoftRings* rings = nullptr);
 
 // Triangulates a chain of segments (consecutive in u, each its own
 // LoftSource with its own section) joined at breaks, as ONE closed body:
@@ -295,7 +326,10 @@ TriMesh TriangulateLoft(const LoftSource& source, const LoftOptions& options, Lo
 // segments.size() - 1; no segment may be periodic_u. Throws
 // std::runtime_error if a ring lacks the counterpart of a shared point
 // (which the extra-parameter mechanism is meant to make impossible).
-TriMesh TriangulateLoftChain(std::vector<LoftSource> segments, const std::vector<LoftBreak>& breaks, const LoftOptions& options, std::vector<LoftStats>* stats = nullptr);
+// `rings`, when given, receives every segment's rings (LoftRings) with the
+// indices of the assembled body.
+TriMesh TriangulateLoftChain(std::vector<LoftSource> segments, const std::vector<LoftBreak>& breaks, const LoftOptions& options, std::vector<LoftStats>* stats = nullptr,
+	std::vector<LoftRings>* rings = nullptr);
 
 // The ruled strip between two rings sharing their point count (and
 // correspondence), without refinement: quads split along the shorter

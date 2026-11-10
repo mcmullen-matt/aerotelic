@@ -425,6 +425,7 @@ WingModel::WingModel(const WingModelSpec& spec) : name(spec.name) {
 	}
 	reference_images = spec.reference_images;
 	flaps = spec.flaps;
+	structure = spec.structure;
 }
 
 WingModelSpec WingModel::Serialize() const {
@@ -433,6 +434,7 @@ WingModelSpec WingModel::Serialize() const {
 	spec.planform = planform_->Serialize();
 	spec.reference_images = reference_images;
 	spec.flaps = flaps;
+	spec.structure = structure;
 	for (const auto& sec : user_sections_) {
 		WingSectionSpec ss;
 		ss.s = sec.s;
@@ -878,33 +880,39 @@ TriMesh WingModel::BuildMesh(double tolerance, double s_min, double s_max) const
 }
 
 std::vector<NamedMesh> WingModel::BuildMeshes(double tolerance) const {
-	if (flaps.empty()) return {{"Main", BuildMesh(tolerance)}};
-	return BuildFlappedMeshes(tolerance);
+	std::vector<WingBodyStructurePlan> plans;
+	std::vector<NamedMesh> out = BuildBodies(tolerance, plans);
+	last_structure_ = std::move(plans);
+	return out;
 }
 
 // ---------------------------------------------------------------------
 // Flaps
 // ---------------------------------------------------------------------
 
-double WingModel::HingeFraction(const FlapSpec& flap, double eta) const {
+double WingModel::PlanLineFraction(double eta_root, double x_root, double eta_tip, double x_tip, double eta) const {
 	// Plan view (x, y) of a chord fraction at a station.
 	auto plan = [&](double e, double frac) {
 		Mat p = planform_->AirfoilCoordsToXyz(e, Mat::FromRows({{frac, 0.0}}));
 		return std::array<double, 2>{p(0, 0), p(0, 1)};
 	};
-	const auto r = plan(flap.eta_root, flap.hinge_root), t = plan(flap.eta_tip, flap.hinge_tip);
+	const auto r = plan(eta_root, x_root), t = plan(eta_tip, x_tip);
 	const auto a = plan(eta, 0.0), b = plan(eta, 1.0);
-	// The station's chord line a + s (b - a) meets the hinge line r + w (t - r).
+	// The station's chord line a + s (b - a) meets the line r + w (t - r).
 	const double dx1 = b[0] - a[0], dy1 = b[1] - a[1], dx2 = t[0] - r[0], dy2 = t[1] - r[1];
 	const double det = dx2 * dy1 - dx1 * dy2;
 	if (std::fabs(det) <= 1e-12 * std::max(1.0, std::hypot(dx1, dy1) * std::hypot(dx2, dy2))) {
-		// Parallel (a flap of zero span, or a hinge line along the chord):
-		// fall back to interpolating the fractions.
-		double w = flap.eta_tip > flap.eta_root ? (eta - flap.eta_root) / (flap.eta_tip - flap.eta_root) : 0.0;
-		return flap.hinge_root + (flap.hinge_tip - flap.hinge_root) * std::clamp(w, 0.0, 1.0);
+		// Parallel (a zero span, or a line along the chord): fall back to
+		// interpolating the fractions.
+		double w = eta_tip > eta_root ? (eta - eta_root) / (eta_tip - eta_root) : 0.0;
+		return x_root + (x_tip - x_root) * std::clamp(w, 0.0, 1.0);
 	}
 	const double rx = r[0] - a[0], ry = r[1] - a[1];
 	return (dx2 * ry - rx * dy2) / det;
+}
+
+double WingModel::HingeFraction(const FlapSpec& flap, double eta) const {
+	return PlanLineFraction(flap.eta_root, flap.hinge_root, flap.eta_tip, flap.hinge_tip, eta);
 }
 
 std::pair<double, double> WingModel::PocketExtent(const FlapSpec& flap) const {
@@ -933,18 +941,236 @@ void WingModel::ValidateFlaps() const {
 	}
 }
 
-std::vector<NamedMesh> WingModel::BuildFlappedMeshes(double tolerance) const {
+// ---------------------------------------------------------------------
+// Structure
+// ---------------------------------------------------------------------
+
+WingStructureSpec WingStructureSpec::Default() {
+	WingStructureSpec s;
+	WingSparSpec front;
+	front.name = "Front spar";
+	front.x_root = front.x_tip = 0.25;
+	WingSparSpec rear;
+	rear.name = "Rear spar";
+	rear.x_root = rear.x_tip = 0.65;
+	s.spars = {front, rear};
+	return s;
+}
+
+bool WingStructureSpec::IsEmpty() const {
+	return spars.empty() && stringers.empty() && !ribs.at_sections && !ribs.at_flap_ends && ribs.between <= 0 && ribs.extra.empty();
+}
+
+std::vector<double> WingModel::RibStations() const {
+	std::vector<double> out = structure.ribs.extra;
+	if (structure.ribs.at_sections) {
+		for (const WingSection& sec : user_sections_) out.push_back(sec.s);
+	}
+	if (structure.ribs.at_flap_ends) {
+		for (const FlapSpec& f : flaps) {
+			const auto [lo, hi] = PocketExtent(f);
+			out.push_back(lo);
+			out.push_back(hi);
+		}
+	}
+	for (int i = 1; i <= structure.ribs.between; ++i) out.push_back(static_cast<double>(i) / (structure.ribs.between + 1));
+	std::vector<double> kept;
+	for (double s : out) if (s > 1e-6 && s < 1.0 - 1e-6) kept.push_back(s);
+	std::sort(kept.begin(), kept.end());
+	std::vector<double> merged;
+	for (double s : kept) if (merged.empty() || s - merged.back() > 1e-6) merged.push_back(s);
+	return merged;
+}
+
+double WingModel::FractionAlong(double eta_root, double x_root, double eta_tip, double x_tip, double eta) {
+	if (!(eta_tip > eta_root)) return x_root;
+	const double w = std::clamp((eta - eta_root) / (eta_tip - eta_root), 0.0, 1.0);
+	return x_root + (x_tip - x_root) * w;
+}
+
+void WingModel::ValidateStructure() const {
+	auto fraction_ok = [](double x) { return x > 0.0 && x < 1.0; };
+	auto range_ok = [](double a, double b) { return a >= 0.0 && b <= 1.0 && b > a; };
+	for (const WingSparSpec& sp : structure.spars) {
+		if (!(fraction_ok(sp.x_root) && fraction_ok(sp.x_tip))) throw std::invalid_argument("spar '" + sp.name + "': the chord fractions must lie strictly between the leading and trailing edges");
+		if (!range_ok(sp.eta_root, sp.eta_tip)) throw std::invalid_argument("spar '" + sp.name + "': the span extent must run 0 <= root < tip <= 1");
+		if (!(sp.thickness >= 0.0)) throw std::invalid_argument("spar '" + sp.name + "': the thickness must not be negative");
+	}
+	for (const WingStringerSpec& st : structure.stringers) {
+		if (!(fraction_ok(st.x_root) && fraction_ok(st.x_tip))) throw std::invalid_argument("stringer '" + st.name + "': the chord fractions must lie strictly between the leading and trailing edges");
+		if (!range_ok(st.eta_root, st.eta_tip)) throw std::invalid_argument("stringer '" + st.name + "': the span extent must run 0 <= root < tip <= 1");
+		if (!(st.thickness >= 0.0) || !(st.height >= 0.0)) throw std::invalid_argument("stringer '" + st.name + "': the thickness and the height must not be negative");
+	}
+	for (double s : structure.ribs.extra) {
+		if (!(s >= 0.0 && s <= 1.0)) throw std::invalid_argument("rib station " + std::to_string(s) + " lies outside the span (0 to 1)");
+	}
+	if (!(structure.ribs.thickness >= 0.0)) throw std::invalid_argument("the ribs' thickness must not be negative");
+	if (structure.ribs.between < 0 || structure.ribs.between > 400) throw std::invalid_argument("the number of ribs between the caps must be 0 to 400");
+	// Two spars that both cover a station must keep their order there (one
+	// ahead of the other): lines that cross or coincide make one web.
+	for (size_t i = 0; i < structure.spars.size(); ++i) {
+		for (size_t j = i + 1; j < structure.spars.size(); ++j) {
+			const WingSparSpec& a = structure.spars[i];
+			const WingSparSpec& b = structure.spars[j];
+			const double lo = std::max(a.eta_root, b.eta_root), hi = std::min(a.eta_tip, b.eta_tip);
+			if (hi <= lo) continue;
+			int sign = 0;
+			for (int k = 0; k <= 8; ++k) {
+				const double e = lo + (hi - lo) * k / 8.0;
+				const double d = FractionAlong(b.eta_root, b.x_root, b.eta_tip, b.x_tip, e) - FractionAlong(a.eta_root, a.x_root, a.eta_tip, a.x_tip, e);
+				const int s = d > 1e-6 ? 1 : (d < -1e-6 ? -1 : 0);
+				if (s == 0 || (sign != 0 && s != sign)) {
+					throw std::invalid_argument("spars '" + a.name + "' and '" + b.name + "' cross or coincide near eta = " + std::to_string(e) + ": keep one ahead of the other");
+				}
+				sign = s;
+			}
+		}
+	}
+	// A spar or a stringer must end clear of a flap's pocket or run right
+	// through it, and where it runs through it must stay ahead of the lips
+	// (the main element has no skin aft of them there).
+	for (const FlapSpec& f : flaps) {
+		const auto [lo, hi] = PocketExtent(f);
+		auto check_line = [&](const std::string& what, double er, double xr, double et, double xt) {
+			if (et <= lo + 1e-9 || er >= hi - 1e-9) return;
+			if (er > lo + 1e-9 || et < hi - 1e-9) {
+				throw std::invalid_argument(what + " ends inside the pocket of flap '" + f.name + "' (eta " + std::to_string(lo) + " to " + std::to_string(hi) + "): end it outside the pocket or run it through");
+			}
+			for (double e : {lo, 0.5 * (lo + hi), hi}) {
+				std::shared_ptr<Airfoil> af = AirfoilAt(e);
+				const double chord = planform_->ChordAt(e);
+				const FlapCut cut = SolveFlapCut(*af, HingeFraction(f, e), chord > 0.0 ? f.gap / chord : 0.0);
+				const double x_lip = std::min(af->nurbs_curve().Evaluate(cut.t_lower_lip)[0], af->nurbs_curve().Evaluate(cut.t_upper_lip)[0]);
+				const double x = FractionAlong(er, xr, et, xt, e);
+				if (!(x < x_lip - 1e-6)) {
+					char buf[300];
+					std::snprintf(buf, sizeof buf, " runs into the pocket of flap '%s' (chord fraction %.3f at eta %.3f, the lip is at %.3f): move it forward of the flap", f.name.c_str(), x, e, x_lip);
+					throw std::invalid_argument(what + buf);
+				}
+			}
+		};
+		for (const WingSparSpec& sp : structure.spars) check_line("spar '" + sp.name + "'", sp.eta_root, sp.x_root, sp.eta_tip, sp.x_tip);
+		for (const WingStringerSpec& st : structure.stringers) check_line("stringer '" + st.name + "'", st.eta_root, st.x_root, st.eta_tip, st.x_tip);
+	}
+}
+
+namespace {
+
+// A piecewise-linear map between the loft's CANONICAL along-curve
+// parameter and a section loop's own parameter at one station. The
+// anchors -- the loop's corners, every spar's two feet, every stringer's
+// foot -- sit at fixed canonical values on every ring whatever their own
+// parameter does along the span, so each is one vertex line of the mesh;
+// the loft refines between them.
+struct ParamMap {
+	std::vector<double> c, t;
+	double Forward(double v) const { return LinInterp(v, c, t); }
+	double Inverse(double tt) const { return LinInterp(tt, t, c); }
+};
+
+struct Anchor {
+	enum class Kind { Fixed, SparLower, SparUpper, StringerFoot };
+	Kind kind = Kind::Fixed;
+	int index = -1;        // the spar's / stringer's index
+	double fixed = 0.0;    // Kind::Fixed: the loop's own parameter, the same at every station
+};
+
+// A stretch of the main element's span lofted as one segment: a full
+// section, or the section notched by one flap. Its parameterisation's
+// anchors are the elements that run through the whole stretch (the
+// stretches are cut at every element's ends, so an element either covers
+// a stretch or misses it).
+struct Piece {
+	double a = 0.0, b = 1.0;
+	int flap = -1;
+	std::vector<Anchor> anchors;
+	std::vector<double> canon;    // canonical value per anchor, ascending
+	std::map<double, ParamMap> maps;
+	// The chord fraction of the spar's / stringer's line at eta.
+	int FindAnchor(Anchor::Kind kind, int index) const {
+		for (size_t i = 0; i < anchors.size(); ++i) if (anchors[i].kind == kind && anchors[i].index == index) return static_cast<int>(i);
+		return -1;
+	}
+};
+
+double MedianEdge(const TriMesh& m) {
+	std::vector<double> e;
+	e.reserve(m.triangles.size() * 3);
+	for (const auto& t : m.triangles) {
+		e.push_back(Length(m.vertices[t[1]] - m.vertices[t[0]]));
+		e.push_back(Length(m.vertices[t[2]] - m.vertices[t[1]]));
+		e.push_back(Length(m.vertices[t[0]] - m.vertices[t[2]]));
+	}
+	if (e.empty()) return 0.0;
+	std::nth_element(e.begin(), e.begin() + e.size() / 2, e.end());
+	return e[e.size() / 2];
+}
+
+// The ring's index of the point at canonical parameter c, or -1.
+int RingIndexAt(const std::vector<double>& ring_v, double c) {
+	for (size_t i = 0; i < ring_v.size(); ++i) if (std::fabs(ring_v[i] - c) <= 1e-9) return static_cast<int>(i);
+	return -1;
+}
+
+// The strip between two polylines of equal length with `across` points
+// between each pair (the ends included), as triangles: a spar's web, a
+// stringer's blade. The across points are a + (b - a) * (j * step), the
+// same arithmetic the rib mesher uses for a chord's nodes, so the two
+// coincide to the bit.
+TriMesh StripMesh(const std::vector<Vec3>& lower, const std::vector<Vec3>& upper, int across) {
+	TriMesh m;
+	const int ns = static_cast<int>(lower.size());
+	across = std::max(across, 2);
+	const double step = 1.0 / (across - 1);
+	for (int i = 0; i < ns; ++i) {
+		for (int j = 0; j < across; ++j) {
+			const double t = j == across - 1 ? 1.0 : j * step;
+			m.vertices.push_back(lower[i] + (upper[i] - lower[i]) * t);
+		}
+	}
+	auto at = [&](int i, int j) { return i * across + j; };
+	for (int i = 0; i + 1 < ns; ++i) {
+		for (int j = 0; j + 1 < across; ++j) {
+			m.triangles.push_back({at(i, j), at(i + 1, j), at(i + 1, j + 1)});
+			m.triangles.push_back({at(i, j), at(i + 1, j + 1), at(i, j + 1)});
+		}
+	}
+	m.RemoveDegenerateTriangles();
+	return m;
+}
+
+std::string RibName(int k) { return "Rib " + std::to_string(k); }
+
+}  // namespace
+
+std::vector<NamedMesh> WingModel::BuildBodies(double tolerance, std::vector<WingBodyStructurePlan>& plans) const {
 	if (user_sections_.empty()) throw std::invalid_argument("No airfoil sections provided to the wing loft");
 	RequirePositiveChord();
 	ValidateFlaps();
+	ValidateStructure();
+	plans.clear();
 	std::vector<FlapSpec> sorted = flaps;
 	std::sort(sorted.begin(), sorted.end(), [](const FlapSpec& a, const FlapSpec& b) { return a.eta_root < b.eta_root; });
-	const int n = static_cast<int>(sorted.size());
+	const int n_flaps = static_cast<int>(sorted.size());
+	const std::vector<WingSparSpec>& spars = structure.spars;
+	const std::vector<WingStringerSpec>& stringers = structure.stringers;
+	const std::vector<double> rib_stations = RibStations();
 
+	// The loft's own stations, less any within a hundredth of the span of a
+	// rib station: a rib's ring beside a refinement station would make a
+	// strip a few millimetres wide between rings a third of a metre apart
+	// (a 24:1 jump in element size that a shell analysis reads as a stress
+	// spike); the rib station stands in for it, and the loft refines
+	// between the stations again on its own anyway.
 	const std::vector<double> stations = LoftStations(60, tolerance);
+	auto near_rib = [&](double s) {
+		for (double r : rib_stations) if (std::fabs(s - r) > 1e-12 && std::fabs(s - r) < 0.01) return true;
+		return false;
+	};
 	auto seeds_in = [&](double a, double b) {
 		std::vector<double> out = {a, b};
-		for (double s : stations) if (s > a && s < b) out.push_back(s);
+		for (double s : stations) if (s > a && s < b && !near_rib(s)) out.push_back(s);
+		for (double s : rib_stations) if (s > a && s < b) out.push_back(s);
 		return out;
 	};
 
@@ -981,84 +1207,412 @@ std::vector<NamedMesh> WingModel::BuildFlappedMeshes(double tolerance) const {
 		sc.flap_loop = std::make_shared<SectionLoop>(SectionLoop::Flap(*sc.airfoil, sc.cut));
 		return cuts.emplace(key, std::move(sc)).first->second;
 	};
+	// Where each element really runs. Since the loft fills every ring with
+	// points spread between the elements' feet, the feet must stay apart:
+	// where the chord collapses (a pointed tip, the P-38 fin's near-point
+	// root) the elements stop together at the last station where every
+	// foot on a surface is at least eight tolerances from its neighbours
+	// and from the trailing edge. Beyond that the webs would converge into
+	// needles; a rib closes the bay instead.
+	std::vector<double> spar_root(spars.size()), spar_tip(spars.size()), stringer_root(stringers.size()), stringer_tip(stringers.size());
+	std::vector<std::string> clip_notes;
+	for (size_t k = 0; k < spars.size(); ++k) { spar_root[k] = spars[k].eta_root; spar_tip[k] = spars[k].eta_tip; }
+	for (size_t k = 0; k < stringers.size(); ++k) { stringer_root[k] = stringers[k].eta_root; stringer_tip[k] = stringers[k].eta_tip; }
+	auto spar_x = [&](int k, double s) { return FractionAlong(spars[k].eta_root, spars[k].x_root, spars[k].eta_tip, spars[k].x_tip, s); };
+	auto stringer_x = [&](int k, double s) { return FractionAlong(stringers[k].eta_root, stringers[k].x_root, stringers[k].eta_tip, stringers[k].x_tip, s); };
+	{
+		const double apart = 8.0 * std::max(tolerance, 1e-9);
+		auto feet_apart = [&](double s) {
+			const Airfoil& af = *airfoil_at(s);
+			std::vector<std::array<double, 2>> lower = {{1.0, 0.0}}, upper = {{1.0, 0.0}};   // the trailing edge, in airfoil coordinates
+			{
+				std::vector<double> te0 = af.nurbs_curve().Evaluate(0.0), te1 = af.nurbs_curve().Evaluate(1.0);
+				lower[0] = {te0[0], te0[1]};
+				upper[0] = {te1[0], te1[1]};
+			}
+			auto foot = [&](double x, bool up) {
+				std::vector<double> p = af.nurbs_curve().Evaluate(af.ParameterAtX(x, up));
+				(up ? upper : lower).push_back({p[0], p[1]});
+			};
+			for (size_t k = 0; k < spars.size(); ++k) {
+				if (s < spar_root[k] - 1e-9 || s > spar_tip[k] + 1e-9) continue;
+				foot(spar_x(static_cast<int>(k), s), false);
+				foot(spar_x(static_cast<int>(k), s), true);
+			}
+			for (size_t k = 0; k < stringers.size(); ++k) {
+				if (s < stringer_root[k] - 1e-9 || s > stringer_tip[k] + 1e-9) continue;
+				foot(stringer_x(static_cast<int>(k), s), stringers[k].upper);
+			}
+			for (std::vector<std::array<double, 2>>* side : {&lower, &upper}) {
+				if (side->size() < 2) continue;
+				Mat pts(static_cast<int>(side->size()), 2);
+				for (size_t i = 0; i < side->size(); ++i) { pts(static_cast<int>(i), 0) = (*side)[i][0]; pts(static_cast<int>(i), 1) = (*side)[i][1]; }
+				Mat xyz = planform_->AirfoilCoordsToXyz(s, pts);
+				std::vector<std::pair<double, Vec3>> by_x;
+				for (int i = 0; i < xyz.rows(); ++i) by_x.push_back({(*side)[i][0], Vec3{xyz(i, 0), xyz(i, 1), xyz(i, 2)}});
+				std::sort(by_x.begin(), by_x.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+				for (size_t i = 1; i < by_x.size(); ++i) {
+					if (Length(by_x[i].second - by_x[i - 1].second) < apart) return false;
+				}
+			}
+			return true;
+		};
+		if (!spars.empty() || !stringers.empty()) {
+			// The outermost and innermost stations where the feet are apart (the
+			// stations between them are taken to be as well), on a fine grid;
+			// an element's own end is kept where it is itself fine.
+			constexpr int kScan = 1000;
+			double s_out = -1.0, s_in = 2.0;
+			for (int i = kScan; i >= 0; --i) {
+				const double s = static_cast<double>(i) / kScan;
+				if (feet_apart(s)) { s_out = s; break; }
+			}
+			for (int i = 0; i <= kScan; ++i) {
+				const double s = static_cast<double>(i) / kScan;
+				if (feet_apart(s)) { s_in = s; break; }
+			}
+			auto clip = [&](const std::string& what, double& root, double& tip) {
+				if (s_out < 0.0) {
+					clip_notes.push_back(what + " is left out: nowhere along the span are the structure's feet far enough apart for the mesh");
+					tip = root;
+					return;
+				}
+				if (tip > s_out + 1e-12 && !feet_apart(tip)) {
+					clip_notes.push_back(what + " ends at eta " + std::to_string(s_out) + " rather than " + std::to_string(tip) + ": beyond it the feet of the structure come closer than the mesh can hold apart (a rib closes the bay)");
+					tip = s_out;
+				}
+				if (root < s_in - 1e-12 && !feet_apart(root)) {
+					clip_notes.push_back(what + " starts at eta " + std::to_string(s_in) + " rather than " + std::to_string(root) + ": inboard of it the feet of the structure come closer than the mesh can hold apart");
+					root = s_in;
+				}
+				if (!(tip > root + 1e-9)) tip = root;
+			};
+			for (size_t k = 0; k < spars.size(); ++k) clip("spar '" + spars[k].name + "'", spar_root[k], spar_tip[k]);
+			for (size_t k = 0; k < stringers.size(); ++k) clip("stringer '" + stringers[k].name + "'", stringer_root[k], stringer_tip[k]);
+		}
+	}
 
 	LoftOptions base;
 	base.min_v = 24;
 	const LoftOptions opt = mesh.Apply(base, tolerance);
 
-	// The main element: full sections outside the flaps, the notched
-	// section (SectionLoop::MainElement) across each, one closed body.
-	auto full_segment = [&](double a, double b) {
-		LoftSource src;
-		src.u_min = a;
-		src.u_max = b;
-		src.u_seeds = seeds_in(a, b);
-		src.closed_curve = false;
-		src.section = [&](double s, const std::vector<double>& v) { return planform_->AirfoilCoordsToXyz(s, airfoil_at(s)->nurbs_curve().Evaluate(v)); };
-		src.mirror_v = [&](double s, double v) { return airfoil_at(s)->MirrorParameter(v); };
-		return src;
+	// ---- the main element's pieces ----
+	// The span cut at every pocket face and every spar's and stringer's
+	// ends; a piece inside a pocket lofts the notched section.
+	std::vector<double> bounds = {0.0, 1.0};
+	for (const FlapSpec& f : sorted) {
+		const auto [lo, hi] = PocketExtent(f);
+		bounds.push_back(lo);
+		bounds.push_back(hi);
+	}
+	for (size_t k = 0; k < spars.size(); ++k) { if (spar_tip[k] > spar_root[k]) { bounds.push_back(spar_root[k]); bounds.push_back(spar_tip[k]); } }
+	for (size_t k = 0; k < stringers.size(); ++k) { if (stringer_tip[k] > stringer_root[k]) { bounds.push_back(stringer_root[k]); bounds.push_back(stringer_tip[k]); } }
+	std::sort(bounds.begin(), bounds.end());
+	{
+		std::vector<double> merged;
+		for (double b : bounds) if (merged.empty() || b - merged.back() > 1e-9) merged.push_back(b);
+		bounds = merged;
+	}
+	const double eps = 1e-9;
+	std::vector<Piece> pieces;
+	for (size_t i = 0; i + 1 < bounds.size(); ++i) {
+		Piece p;
+		p.a = bounds[i];
+		p.b = bounds[i + 1];
+		if (p.b - p.a <= eps) continue;
+		for (int fi = 0; fi < n_flaps; ++fi) {
+			const auto [lo, hi] = PocketExtent(sorted[fi]);
+			if (lo <= p.a + eps && p.b <= hi + eps) p.flap = fi;
+		}
+		p.anchors.push_back({Anchor::Kind::Fixed, -1, 0.0});
+		p.anchors.push_back({Anchor::Kind::Fixed, -1, 1.0});
+		if (p.flap >= 0) {
+			p.anchors.push_back({Anchor::Kind::Fixed, -1, 0.25});
+			p.anchors.push_back({Anchor::Kind::Fixed, -1, 0.5});
+			p.anchors.push_back({Anchor::Kind::Fixed, -1, 0.75});
+		}
+		for (size_t k = 0; k < spars.size(); ++k) {
+			if (spar_tip[k] > spar_root[k] && spar_root[k] <= p.a + eps && spar_tip[k] >= p.b - eps) {
+				p.anchors.push_back({Anchor::Kind::SparLower, static_cast<int>(k), 0.0});
+				p.anchors.push_back({Anchor::Kind::SparUpper, static_cast<int>(k), 0.0});
+			}
+		}
+		for (size_t k = 0; k < stringers.size(); ++k) {
+			if (stringer_tip[k] > stringer_root[k] && stringer_root[k] <= p.a + eps && stringer_tip[k] >= p.b - eps) {
+				p.anchors.push_back({Anchor::Kind::StringerFoot, static_cast<int>(k), 0.0});
+			}
+		}
+		pieces.push_back(std::move(p));
+	}
+
+	// An anchor's own parameter at a station: on the airfoil curve for a
+	// full piece, on the notched loop for a pocket piece.
+	auto own_params = [&](const Piece& p, double s) {
+		std::vector<double> t(p.anchors.size());
+		const Airfoil& af = *airfoil_at(s);
+		const SectionLoop* loop = p.flap >= 0 ? cut_at(p.flap, s).main_loop.get() : nullptr;
+		for (size_t i = 0; i < p.anchors.size(); ++i) {
+			const Anchor& an = p.anchors[i];
+			double v = 0.0;
+			switch (an.kind) {
+			case Anchor::Kind::Fixed: v = an.fixed; break;
+			case Anchor::Kind::SparLower: v = af.ParameterAtX(spar_x(an.index, s), false); break;
+			case Anchor::Kind::SparUpper: v = af.ParameterAtX(spar_x(an.index, s), true); break;
+			case Anchor::Kind::StringerFoot: v = af.ParameterAtX(stringer_x(an.index, s), stringers[an.index].upper); break;
+			}
+			if (loop && an.kind != Anchor::Kind::Fixed) v = loop->ParameterAtAirfoil(v);
+			if (!std::isfinite(v)) throw std::runtime_error("the structure's foot at eta = " + std::to_string(s) + " is off the section (a spar behind a flap's lip?)");
+			t[i] = v;
+		}
+		return t;
 	};
-	auto notched_segment = [&](int fi, double a, double b) {
-		LoftSource src;
-		src.u_min = a;
-		src.u_max = b;
-		src.u_seeds = seeds_in(a, b);
-		src.closed_curve = true;
-		src.v_seeds = {0.25, 0.5, 0.75};
-		src.section = [&, fi](double s, const std::vector<double>& v) { return planform_->AirfoilCoordsToXyz(s, cut_at(fi, s).main_loop->Points(v)); };
-		src.mirror_v = [&, fi](double s, double v) { return cut_at(fi, s).main_loop->Mirror(v); };
-		return src;
+	// Canonical values: the own parameters at the piece's start, which
+	// orders the anchors; the map at any station pairs the two lists.
+	for (Piece& p : pieces) {
+		std::vector<double> t0 = own_params(p, p.a);
+		std::vector<size_t> order(p.anchors.size());
+		for (size_t i = 0; i < order.size(); ++i) order[i] = i;
+		std::sort(order.begin(), order.end(), [&](size_t x, size_t y) { return t0[x] < t0[y]; });
+		std::vector<Anchor> sorted_anchors;
+		p.canon.clear();
+		for (size_t i : order) {
+			if (!p.canon.empty() && t0[i] - p.canon.back() <= 1e-9) {
+				throw std::invalid_argument("two structural elements meet the skin at the same point at eta = " + std::to_string(p.a) + ": move one of them");
+			}
+			sorted_anchors.push_back(p.anchors[i]);
+			p.canon.push_back(t0[i]);
+		}
+		p.anchors = std::move(sorted_anchors);
+	}
+	auto map_at = [&](Piece& p, double s) -> const ParamMap& {
+		const double key = RoundKey(s);
+		auto it = p.maps.find(key);
+		if (it != p.maps.end()) return it->second;
+		ParamMap m;
+		m.c = p.canon;
+		m.t = own_params(p, s);
+		for (size_t i = 1; i < m.t.size(); ++i) {
+			if (!(m.t[i] > m.t[i - 1])) throw std::runtime_error("the structure's feet change order along the span at eta = " + std::to_string(s) + " (two elements cross on the skin)");
+		}
+		return p.maps.emplace(key, std::move(m)).first->second;
 	};
-	// At a flap's edge station the full ring (parameter t) and the notched
-	// ring share the skin between the lips: t in [t_lower_lip, t_upper_lip]
-	// against v in [0, 0.5].
-	auto break_full_to_notched = [&](int fi, double e) {
-		const StationCut& sc = cut_at(fi, e);
-		std::shared_ptr<SectionLoop> loop = sc.main_loop;
-		LoftBreak br;
-		br.va0 = sc.cut.t_lower_lip; br.va1 = sc.cut.t_upper_lip; br.vb0 = 0.0; br.vb1 = 0.5;
-		br.a_to_b = [loop](double t) { return loop->ParameterAtAirfoil(t); };
-		br.b_to_a = [loop](double v) { return loop->AirfoilParameter(v); };
-		return br;
-	};
-	auto break_notched_to_full = [&](int fi, double e) {
-		const StationCut& sc = cut_at(fi, e);
-		std::shared_ptr<SectionLoop> loop = sc.main_loop;
-		LoftBreak br;
-		br.va0 = 0.0; br.va1 = 0.5; br.vb0 = sc.cut.t_lower_lip; br.vb1 = sc.cut.t_upper_lip;
-		br.a_to_b = [loop](double v) { return loop->AirfoilParameter(v); };
-		br.b_to_a = [loop](double t) { return loop->ParameterAtAirfoil(t); };
-		return br;
-	};
-	// The pocket is the flap's span widened by the side gap at each end (the
-	// flap body itself keeps its own extent), so the flap's end caps stand
-	// that far clear of the pocket faces.
+
+	// ---- the main element's segments ----
 	std::vector<LoftSource> segments;
 	std::vector<LoftBreak> breaks;
-	const double eps = 1e-9;
-	double prev = 0.0;
-	for (int fi = 0; fi < n; ++fi) {
-		const FlapSpec& f = sorted[fi];
-		const auto [lo, hi] = PocketExtent(f);
-		if (lo > prev + eps) {
-			if (!segments.empty()) breaks.push_back(break_notched_to_full(fi - 1, prev));
-			segments.push_back(full_segment(prev, lo));
-			breaks.push_back(break_full_to_notched(fi, lo));
+	for (size_t pi = 0; pi < pieces.size(); ++pi) {
+		Piece& p = pieces[pi];
+		LoftSource src;
+		src.u_min = p.a;
+		src.u_max = p.b;
+		src.u_seeds = seeds_in(p.a, p.b);
+		for (double c : p.canon) if (c > 1e-9 && c < 1.0 - 1e-9) src.v_seeds.push_back(c);
+		src.closed_curve = p.flap >= 0;
+		src.uniform_rings = true;
+		Piece* pp = &p;
+		if (p.flap < 0) {
+			src.section = [&, pp](double s, const std::vector<double>& v) {
+				const ParamMap& m = map_at(*pp, s);
+				std::vector<double> t(v.size());
+				for (size_t i = 0; i < v.size(); ++i) t[i] = m.Forward(v[i]);
+				return planform_->AirfoilCoordsToXyz(s, airfoil_at(s)->nurbs_curve().Evaluate(t));
+			};
+			src.mirror_v = [&, pp](double s, double v) {
+				const ParamMap& m = map_at(*pp, s);
+				return m.Inverse(airfoil_at(s)->MirrorParameter(m.Forward(v)));
+			};
+		} else {
+			const int fi = p.flap;
+			src.section = [&, pp, fi](double s, const std::vector<double>& v) {
+				const ParamMap& m = map_at(*pp, s);
+				std::vector<double> t(v.size());
+				for (size_t i = 0; i < v.size(); ++i) t[i] = m.Forward(v[i]);
+				return planform_->AirfoilCoordsToXyz(s, cut_at(fi, s).main_loop->Points(t));
+			};
+			src.mirror_v = [&, pp, fi](double s, double v) {
+				const ParamMap& m = map_at(*pp, s);
+				return m.Inverse(cut_at(fi, s).main_loop->Mirror(m.Forward(v)));
+			};
 		}
-		segments.push_back(notched_segment(fi, lo, hi));
-		prev = hi;
-	}
-	if (prev < 1.0 - eps) {
-		breaks.push_back(break_notched_to_full(n - 1, prev));
-		segments.push_back(full_segment(prev, 1.0));
+		segments.push_back(std::move(src));
+		if (pi + 1 < pieces.size()) {
+			Piece* pa = &pieces[pi];
+			Piece* pb = &pieces[pi + 1];
+			const double e = p.b;
+			LoftBreak br;
+			if (pa->flap < 0 && pb->flap < 0) {
+				// Full to full: the whole ring is shared.
+				br.va0 = 0.0; br.va1 = 1.0; br.vb0 = 0.0; br.vb1 = 1.0;
+				br.a_to_b = [&, pa, pb, e](double v) { return map_at(*pb, e).Inverse(map_at(*pa, e).Forward(v)); };
+				br.b_to_a = [&, pa, pb, e](double v) { return map_at(*pa, e).Inverse(map_at(*pb, e).Forward(v)); };
+			} else if (pa->flap < 0) {
+				// Full to notched: the skin between the lips, t in
+				// [t_lower_lip, t_upper_lip] against the loop's v in [0, 0.5].
+				const StationCut& sc = cut_at(pb->flap, e);
+				std::shared_ptr<SectionLoop> loop = sc.main_loop;
+				br.va0 = map_at(*pa, e).Inverse(sc.cut.t_lower_lip);
+				br.va1 = map_at(*pa, e).Inverse(sc.cut.t_upper_lip);
+				br.vb0 = map_at(*pb, e).Inverse(0.0);
+				br.vb1 = map_at(*pb, e).Inverse(0.5);
+				br.a_to_b = [&, pa, pb, e, loop](double v) { return map_at(*pb, e).Inverse(loop->ParameterAtAirfoil(map_at(*pa, e).Forward(v))); };
+				br.b_to_a = [&, pa, pb, e, loop](double v) { return map_at(*pa, e).Inverse(loop->AirfoilParameter(map_at(*pb, e).Forward(v))); };
+			} else if (pb->flap < 0) {
+				const StationCut& sc = cut_at(pa->flap, e);
+				std::shared_ptr<SectionLoop> loop = sc.main_loop;
+				br.va0 = map_at(*pa, e).Inverse(0.0);
+				br.va1 = map_at(*pa, e).Inverse(0.5);
+				br.vb0 = map_at(*pb, e).Inverse(sc.cut.t_lower_lip);
+				br.vb1 = map_at(*pb, e).Inverse(sc.cut.t_upper_lip);
+				br.a_to_b = [&, pa, pb, e, loop](double v) { return map_at(*pb, e).Inverse(loop->AirfoilParameter(map_at(*pa, e).Forward(v))); };
+				br.b_to_a = [&, pa, pb, e, loop](double v) { return map_at(*pa, e).Inverse(loop->ParameterAtAirfoil(map_at(*pb, e).Forward(v))); };
+			} else {
+				throw std::invalid_argument("two flap pockets meet at eta = " + std::to_string(e) + " with no plain wing between them");
+			}
+			breaks.push_back(std::move(br));
+		}
 	}
 
 	std::vector<NamedMesh> out;
-	out.push_back({"Main", TriangulateLoftChain(segments, breaks, opt)});
+	std::vector<LoftRings> rings;
+	out.push_back({"Main", TriangulateLoftChain(segments, breaks, opt, nullptr, &rings)});
 
-	// The flaps: the skin aft of the tangency points and the nose arc
-	// (SectionLoop::Flap), capped at both ends.
-	for (int fi = 0; fi < n; ++fi) {
+	// ---- the main element's structure, on its rings ----
+	{
+		const TriMesh& body = out.back().mesh;
+		WingBodyStructurePlan plan;
+		plan.body = "Main";
+		plan.rib_thickness = structure.ribs.thickness;
+		plan.rib_material = structure.ribs.material;
+		plan.rib_size = MedianEdge(body);
+		plan.notes = clip_notes;
+		// The piece a rib station falls in: strictly inside one, or at a
+		// boundary the notched one (its ring bounds the disc ahead of the
+		// pocket; the full ring's aft stretch is the pocket face itself).
+		auto piece_for = [&](double u) {
+			int best = -1;
+			for (size_t pi = 0; pi < pieces.size(); ++pi) {
+				const Piece& p = pieces[pi];
+				if (u < p.a - eps || u > p.b + eps) continue;
+				if (best < 0 || p.flap >= 0) best = static_cast<int>(pi);
+			}
+			return best;
+		};
+		// Each spar's feet along the span: (u, lower, upper) per ring of
+		// every piece it covers, the duplicate at a piece boundary dropped.
+		struct Foot { double u; Vec3 lower, upper; };
+		std::vector<std::vector<Foot>> spar_feet(spars.size());
+		std::vector<std::vector<std::pair<double, Vec3>>> stringer_feet(stringers.size());
+		std::vector<std::vector<std::pair<double, Vec3>>> stringer_in(stringers.size());
+		for (size_t pi = 0; pi < pieces.size(); ++pi) {
+			const Piece& p = pieces[pi];
+			const LoftRings& R = rings[pi];
+			for (size_t ri = 0; ri < R.u.size(); ++ri) {
+				const double u = R.u[ri];
+				const std::vector<int>& ring = R.rings[ri];
+				const std::vector<double>& rv = R.ring_v[ri];
+				for (size_t k = 0; k < spars.size(); ++k) {
+					const int lo = p.FindAnchor(Anchor::Kind::SparLower, static_cast<int>(k));
+					const int up = p.FindAnchor(Anchor::Kind::SparUpper, static_cast<int>(k));
+					if (lo < 0 || up < 0) continue;
+					const int jl = RingIndexAt(rv, p.canon[lo]), ju = RingIndexAt(rv, p.canon[up]);
+					if (jl < 0 || ju < 0) continue;
+					if (!spar_feet[k].empty() && std::fabs(spar_feet[k].back().u - u) <= 1e-9) continue;
+					spar_feet[k].push_back({u, body.vertices[ring[jl]], body.vertices[ring[ju]]});
+				}
+				for (size_t k = 0; k < stringers.size(); ++k) {
+					const int fa = p.FindAnchor(Anchor::Kind::StringerFoot, static_cast<int>(k));
+					if (fa < 0) continue;
+					const int j = RingIndexAt(rv, p.canon[fa]);
+					if (j < 0) continue;
+					if (!stringer_feet[k].empty() && std::fabs(stringer_feet[k].back().first - u) <= 1e-9) continue;
+					// Inward along the section: normal to the skin in the section
+					// plane, towards the section's centroid.
+					const int nr = static_cast<int>(ring.size());
+					const Vec3& pt = body.vertices[ring[j]];
+					const Vec3& prev = body.vertices[ring[(j - 1 + nr) % nr]];
+					const Vec3& next = body.vertices[ring[(j + 1) % nr]];
+					Mat probe = planform_->AirfoilCoordsToXyz(u, Mat::FromRows({{0.0, 0.0}, {1.0, 0.0}, {0.5, 0.1}}));
+					Vec3 p0{probe(0, 0), probe(0, 1), probe(0, 2)}, p1{probe(1, 0), probe(1, 1), probe(1, 2)}, p2{probe(2, 0), probe(2, 1), probe(2, 2)};
+					Vec3 nrm = Cross(p1 - p0, p2 - p0);
+					Vec3 tangent = next - prev;
+					Vec3 inward = Cross(nrm, tangent);
+					const double len = Length(inward);
+					if (len <= 1e-300) continue;
+					inward = inward * (1.0 / len);
+					Vec3 centroid{0, 0, 0};
+					for (int idx : ring) centroid = centroid + body.vertices[idx];
+					centroid = centroid * (1.0 / nr);
+					if (Dot(inward, centroid - pt) < 0.0) inward = inward * -1.0;
+					stringer_feet[k].push_back({u, pt});
+					stringer_in[k].push_back({u, pt + inward * stringers[k].height});
+				}
+			}
+		}
+		// Across each spar's web: enough nodes for the rib size at its
+		// deepest station, the same count on every rib it crosses.
+		std::vector<int> spar_across(spars.size(), 2);
+		for (size_t k = 0; k < spars.size(); ++k) {
+			double deepest = 0.0;
+			for (const Foot& f : spar_feet[k]) deepest = std::max(deepest, Length(f.upper - f.lower));
+			spar_across[k] = plan.rib_size > 0.0 ? std::max(2, static_cast<int>(std::lround(deepest / plan.rib_size)) + 1) : 2;
+		}
+		// The ribs.
+		int rib_no = 0;
+		for (double u : rib_stations) {
+			const int pi = piece_for(u);
+			if (pi < 0) { plan.notes.push_back("rib at eta " + std::to_string(u) + ": no piece of the span holds it"); continue; }
+			const Piece& p = pieces[pi];
+			const LoftRings& R = rings[pi];
+			const int ri = R.Find(u);
+			if (ri < 0) { plan.notes.push_back("rib at eta " + std::to_string(u) + ": the loft has no ring there"); continue; }
+			WingRibPlan rib;
+			rib.eta = u;
+			rib.name = RibName(++rib_no);
+			for (int idx : R.rings[ri]) if (rib.rim.empty() || rib.rim.back() != idx) rib.rim.push_back(idx);
+			while (rib.rim.size() > 1 && rib.rim.back() == rib.rim.front()) rib.rim.pop_back();
+			if (rib.rim.size() < 3) { plan.notes.push_back(rib.name + ": the section at eta " + std::to_string(u) + " has no area"); continue; }
+			for (size_t k = 0; k < spars.size(); ++k) {
+				const int lo = p.FindAnchor(Anchor::Kind::SparLower, static_cast<int>(k));
+				const int up = p.FindAnchor(Anchor::Kind::SparUpper, static_cast<int>(k));
+				if (lo < 0 || up < 0) continue;
+				const int jl = RingIndexAt(R.ring_v[ri], p.canon[lo]), ju = RingIndexAt(R.ring_v[ri], p.canon[up]);
+				if (jl < 0 || ju < 0) continue;
+				rib.chords.push_back({R.rings[ri][jl], R.rings[ri][ju], spar_across[k]});
+			}
+			plan.ribs.push_back(std::move(rib));
+		}
+		// The spar webs and the stringers.
+		for (size_t k = 0; k < spars.size(); ++k) {
+			if (spar_feet[k].size() < 2) { plan.notes.push_back("spar '" + spars[k].name + "': fewer than two stations in its span"); continue; }
+			std::vector<Vec3> lower, upper;
+			for (const Foot& f : spar_feet[k]) { lower.push_back(f.lower); upper.push_back(f.upper); }
+			WingShellPlan sh;
+			sh.name = spars[k].name;
+			sh.thickness = spars[k].thickness;
+			sh.material = spars[k].material;
+			sh.mesh = StripMesh(lower, upper, spar_across[k]);
+			plan.spars.push_back(std::move(sh));
+		}
+		for (size_t k = 0; k < stringers.size(); ++k) {
+			if (stringer_feet[k].size() < 2) { plan.notes.push_back("stringer '" + stringers[k].name + "': fewer than two stations in its span"); continue; }
+			std::vector<Vec3> feet, inner;
+			for (const auto& f : stringer_feet[k]) feet.push_back(f.second);
+			for (const auto& f : stringer_in[k]) inner.push_back(f.second);
+			WingShellPlan sh;
+			sh.name = stringers[k].name;
+			sh.thickness = stringers[k].thickness;
+			sh.material = stringers[k].material;
+			sh.mesh = StripMesh(feet, inner, 2);
+			plan.stringers.push_back(std::move(sh));
+		}
+		plans.push_back(std::move(plan));
+	}
+
+	// ---- the flaps ----
+	// The skin aft of the tangency points and the nose arc
+	// (SectionLoop::Flap), capped at both ends; ribs at the rib stations
+	// inside each.
+	for (int fi = 0; fi < n_flaps; ++fi) {
 		const FlapSpec& f = sorted[fi];
 		LoftSource src;
 		src.u_min = f.eta_root;
@@ -1066,9 +1620,30 @@ std::vector<NamedMesh> WingModel::BuildFlappedMeshes(double tolerance) const {
 		src.u_seeds = seeds_in(f.eta_root, f.eta_tip);
 		src.closed_curve = false;
 		src.v_seeds = {0.35, 0.5, 0.65};
+		src.uniform_rings = true;
 		src.section = [&, fi](double s, const std::vector<double>& v) { return planform_->AirfoilCoordsToXyz(s, cut_at(fi, s).flap_loop->Points(v)); };
 		src.mirror_v = [&, fi](double s, double v) { return cut_at(fi, s).flap_loop->Mirror(v); };
-		out.push_back({f.name, TriangulateLoft(src, opt)});
+		LoftRings fr;
+		out.push_back({f.name, TriangulateLoft(src, opt, nullptr, nullptr, &fr)});
+		WingBodyStructurePlan plan;
+		plan.body = f.name;
+		plan.rib_thickness = structure.ribs.thickness;
+		plan.rib_material = structure.ribs.material;
+		plan.rib_size = MedianEdge(out.back().mesh);
+		int rib_no = 0;
+		for (double u : rib_stations) {
+			if (u <= f.eta_root + eps || u >= f.eta_tip - eps) continue;
+			const int ri = fr.Find(u);
+			if (ri < 0) { plan.notes.push_back("rib at eta " + std::to_string(u) + ": the flap's loft has no ring there"); continue; }
+			WingRibPlan rib;
+			rib.eta = u;
+			rib.name = RibName(++rib_no);
+			for (int idx : fr.rings[ri]) if (rib.rim.empty() || rib.rim.back() != idx) rib.rim.push_back(idx);
+			while (rib.rim.size() > 1 && rib.rim.back() == rib.rim.front()) rib.rim.pop_back();
+			if (rib.rim.size() < 3) continue;
+			plan.ribs.push_back(std::move(rib));
+		}
+		plans.push_back(std::move(plan));
 	}
 	return out;
 }

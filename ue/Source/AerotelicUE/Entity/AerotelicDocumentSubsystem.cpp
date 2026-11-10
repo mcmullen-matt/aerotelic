@@ -297,13 +297,19 @@ void UAerotelicDocumentSubsystem::OnEntityBodyStructureChanged(AAerotelicEntityA
 	}
 	const aerotelic::BodyStructure* S = Entity->GetBodyStructure(Role);
 	const FAerotelicBodyStructure* G = Entity->GetGeneratedStructure(Role);
-	if (S == nullptr || G == nullptr)
+	if (S == nullptr)
 	{
 		return;
 	}
 	if (!S->IsSkin())
 	{
 		Entity->ClearGeneratedStructure(Role);
+		return;
+	}
+	// Never generated: a wing body with a plan builds as soon as it has a
+	// skin; any other waits for Generate.
+	if (G == nullptr && WingPlanFor(Entity, Role) == nullptr)
+	{
 		return;
 	}
 	QueueRebuild({ Entity, Role });
@@ -347,7 +353,9 @@ void UAerotelicDocumentSubsystem::QueueDependentRebuilds(const AAerotelicEntityA
 		// bay that moved).
 		for (const FAerotelicBody& Body : Weak->GetBodies())
 		{
-			if (!Body.Generated.IsValid()) continue;
+			// Generated once already, or -- the entity's own bodies -- wanting a
+			// first generation (a wing whose build just planned one).
+			if (!Body.Generated.IsValid() && !(bSelf && WantsStructure(Weak.Get(), Body))) continue;
 			bool bExcludes = false;
 			for (const std::string& Name : Body.Structure.exclusions)
 			{
@@ -869,6 +877,24 @@ bool UAerotelicDocumentSubsystem::DependsOn(const AAerotelicEntityActor* Entity,
 
 // ------------------------------------------------- generated structures
 
+const aerotelic::WingBodyStructurePlan* UAerotelicDocumentSubsystem::WingPlanFor(const AAerotelicEntityActor* Entity, const FString& Role)
+{
+	if (Entity == nullptr || Entity->GetEntityType() != EntityType::Wing || Entity->GetModel() == nullptr) return nullptr;
+	const aerotelic::WingModel* Wing = Entity->GetModelAs<aerotelic::WingModel>();
+	for (const aerotelic::WingBodyStructurePlan& P : Wing->LastStructurePlans())
+	{
+		if (FString(UTF8_TO_TCHAR(P.body.c_str())) == Role) return P.IsEmpty() ? nullptr : &P;
+	}
+	return nullptr;
+}
+
+bool UAerotelicDocumentSubsystem::WantsStructure(const AAerotelicEntityActor* Entity, const FAerotelicBody& Body)
+{
+	if (!Body.Structure.IsSkin()) return false;
+	if (Body.Structure.HasInterior()) return true;
+	return WingPlanFor(Entity, Body.Name) != nullptr;
+}
+
 bool UAerotelicDocumentSubsystem::GenerateBodyStructure(AAerotelicEntityActor* Entity, const FString& BodyRole, FString& OutError)
 {
 	if (Entity == nullptr)
@@ -899,6 +925,46 @@ bool UAerotelicDocumentSubsystem::GenerateBodyStructure(AAerotelicEntityActor* E
 			? FString::Printf(TEXT("%s is a solid (no skin thickness): there is no interior structure to generate. Set a skin thickness under Structure first."), *Label)
 			: FString::Printf(TEXT("%s has no material: set one, with a skin thickness, under Structure first."), *Label);
 		return false;
+	}
+
+	// A WING's structure comes from its parameterisation (2026-11-09): the
+	// plan the wing's last build made for this body on its own grid (rib
+	// rims that are rings of the body mesh, spar webs, stringers).
+	if (Entity->GetEntityType() == EntityType::Wing)
+	{
+		const aerotelic::WingBodyStructurePlan* Plan = WingPlanFor(Entity, Role);
+		if (Plan == nullptr)
+		{
+			Entity->ClearGeneratedStructure(Role);
+			return true;
+		}
+		const aerotelic::NamedMesh* Found = nullptr;
+		for (const aerotelic::NamedMesh& M : Entity->GetLastMeshes())
+		{
+			if (FString(UTF8_TO_TCHAR(M.name.c_str())) == Role) { Found = &M; break; }
+		}
+		if (Found == nullptr || Found->mesh.IsEmpty())
+		{
+			OutError = FString::Printf(TEXT("%s: no geometry could be built for the body."), *Label);
+			return false;
+		}
+		FAerotelicBodyStructure::FPlanInputs In;
+		In.Label = Label;
+		In.Body = Found->mesh;
+		In.Plan = *Plan;
+		In.Structure = S;
+		{
+			std::array<double, 9> R;
+			aerotelic::Vec3 T;
+			Entity->GetPlacementMatrix(R, T, In.Scale);
+		}
+		TSharedPtr<FAerotelicBodyStructure> G = MakeShared<FAerotelicBodyStructure>();
+		if (!G->GenerateFromPlan(In, OutError))
+		{
+			return false;
+		}
+		Entity->SetGeneratedStructure(Role, G);
+		return true;
 	}
 
 	// The body's placed surface on its OWN grid (GetPlacedMeshes at tolerance
@@ -1023,9 +1089,8 @@ void UAerotelicDocumentSubsystem::GenerateStructuresWithInterior(TArray<FString>
 		TArray<FString> Roles;
 		for (const FAerotelicBody& Body : Weak->GetBodies())
 		{
-			// HasInterior: a skin with plane networks (the only interior
-			// structure since the lattice infill went, 2026-11-08).
-			if (Body.Structure.IsSkin() && Body.Structure.HasInterior()) Roles.Add(Body.Name);
+			// A skin with plane networks, or a wing body with a structure plan.
+			if (WantsStructure(Weak.Get(), Body)) Roles.Add(Body.Name);
 		}
 		for (const FString& Role : Roles)
 		{

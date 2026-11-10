@@ -195,6 +195,98 @@ ReferenceImageMap DecodeReferenceImages(const YAML::Node& model_node, double uni
 // WingModelSpec
 // ===========================================================================
 
+// The wing's internal structure (wing_model.hpp WingStructureSpec), under
+// the wing model's `structure:` key (2026-11-09). Always written, so a
+// saved wing says what it has even when that is nothing; a wing read
+// without the key gets the defaults (two spars, eight ribs), which is
+// what a wing made before the key existed is taken to have.
+YAML::Node EncodeWingStructure(const WingStructureSpec& s) {
+	YAML::Node n;
+	YAML::Node ribs;
+	ribs["at_sections"] = s.ribs.at_sections;
+	ribs["at_flap_ends"] = s.ribs.at_flap_ends;
+	ribs["between"] = s.ribs.between;
+	if (!s.ribs.extra.empty()) {
+		YAML::Node extra(YAML::NodeType::Sequence);
+		for (double e : s.ribs.extra) extra.push_back(e);
+		ribs["extra"] = extra;
+	}
+	ribs["thickness"] = s.ribs.thickness;
+	if (s.ribs.material.HasDensity()) ribs["material"] = EncodeMaterial(s.ribs.material);
+	n["ribs"] = ribs;
+	YAML::Node spars(YAML::NodeType::Sequence);
+	for (const WingSparSpec& sp : s.spars) {
+		YAML::Node m;
+		m["name"] = sp.name;
+		m["x_root"] = sp.x_root;
+		m["x_tip"] = sp.x_tip;
+		m["eta_root"] = sp.eta_root;
+		m["eta_tip"] = sp.eta_tip;
+		m["thickness"] = sp.thickness;
+		if (sp.material.HasDensity()) m["material"] = EncodeMaterial(sp.material);
+		spars.push_back(m);
+	}
+	n["spars"] = spars;
+	YAML::Node stringers(YAML::NodeType::Sequence);
+	for (const WingStringerSpec& st : s.stringers) {
+		YAML::Node m;
+		m["name"] = st.name;
+		m["x_root"] = st.x_root;
+		m["x_tip"] = st.x_tip;
+		m["surface"] = st.upper ? "upper" : "lower";
+		m["eta_root"] = st.eta_root;
+		m["eta_tip"] = st.eta_tip;
+		m["height"] = st.height;
+		m["thickness"] = st.thickness;
+		if (st.material.HasDensity()) m["material"] = EncodeMaterial(st.material);
+		stringers.push_back(m);
+	}
+	n["stringers"] = stringers;
+	return n;
+}
+
+WingStructureSpec DecodeWingStructure(const YAML::Node& node) {
+	if (!node || !node.IsMap()) return WingStructureSpec::Default();
+	WingStructureSpec s;
+	if (const YAML::Node ribs = node["ribs"]) {
+		if (ribs["at_sections"]) s.ribs.at_sections = ribs["at_sections"].as<bool>();
+		if (ribs["at_flap_ends"]) s.ribs.at_flap_ends = ribs["at_flap_ends"].as<bool>();
+		if (ribs["between"]) s.ribs.between = ribs["between"].as<int>();
+		if (ribs["extra"] && ribs["extra"].IsSequence()) for (const auto& e : ribs["extra"]) s.ribs.extra.push_back(e.as<double>());
+		if (ribs["thickness"]) s.ribs.thickness = ribs["thickness"].as<double>();
+		if (ribs["material"]) s.ribs.material = DecodeMaterial(ribs["material"]);
+	}
+	if (node["spars"] && node["spars"].IsSequence()) {
+		for (const auto& m : node["spars"]) {
+			WingSparSpec sp;
+			if (m["name"]) sp.name = m["name"].as<std::string>();
+			if (m["x_root"]) sp.x_root = m["x_root"].as<double>();
+			if (m["x_tip"]) sp.x_tip = m["x_tip"].as<double>();
+			if (m["eta_root"]) sp.eta_root = m["eta_root"].as<double>();
+			if (m["eta_tip"]) sp.eta_tip = m["eta_tip"].as<double>();
+			if (m["thickness"]) sp.thickness = m["thickness"].as<double>();
+			if (m["material"]) sp.material = DecodeMaterial(m["material"]);
+			s.spars.push_back(sp);
+		}
+	}
+	if (node["stringers"] && node["stringers"].IsSequence()) {
+		for (const auto& m : node["stringers"]) {
+			WingStringerSpec st;
+			if (m["name"]) st.name = m["name"].as<std::string>();
+			if (m["x_root"]) st.x_root = m["x_root"].as<double>();
+			if (m["x_tip"]) st.x_tip = m["x_tip"].as<double>();
+			if (m["surface"]) st.upper = m["surface"].as<std::string>() != "lower";
+			if (m["eta_root"]) st.eta_root = m["eta_root"].as<double>();
+			if (m["eta_tip"]) st.eta_tip = m["eta_tip"].as<double>();
+			if (m["height"]) st.height = m["height"].as<double>();
+			if (m["thickness"]) st.thickness = m["thickness"].as<double>();
+			if (m["material"]) st.material = DecodeMaterial(m["material"]);
+			s.stringers.push_back(st);
+		}
+	}
+	return s;
+}
+
 YAML::Node Encode(const WingModelSpec& spec) {
 	YAML::Node n;
 	n["name"] = spec.name;
@@ -228,6 +320,7 @@ YAML::Node Encode(const WingModelSpec& spec) {
 		}
 		n["flaps"] = flaps;
 	}
+	n["structure"] = EncodeWingStructure(spec.structure);
 	return n;
 }
 
@@ -236,6 +329,7 @@ WingModelSpec DecodeWingModelSpec(const YAML::Node& node) {
 	spec.name = node["name"] ? node["name"].as<std::string>() : "Wing";
 	spec.planform = DecodePlanformSpec(node["planform"]);
 	spec.reference_images = DecodeReferenceImages(node, spec.planform.semi_span);
+	spec.structure = DecodeWingStructure(node["structure"]);
 	if (node["flaps"] && node["flaps"].IsSequence()) {
 		for (const auto& fn : node["flaps"]) {
 			FlapSpec f; // every key optional, defaults from FlapSpec

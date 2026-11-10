@@ -100,6 +100,10 @@ public:
 
 	aerotelic::project_yaml::EntityType GetEntityType() const { return EntityType; }
 	aerotelic::ISolidModel* GetModel() const { return Model.get(); }
+	// The model's own meshes from the last RefreshProxy(), unplaced, one
+	// per body by role: the body's own grid (what a wing's structure plan
+	// indexes). Empty for a model without a mesh builder.
+	const std::vector<aerotelic::NamedMesh>& GetLastMeshes() const { return LastMeshes; }
 
 	// Caller must already know GetEntityType() matches T (e.g. Wing ->
 	// WingModel) -- same duck-typed contract the Python entity dict's

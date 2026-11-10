@@ -115,7 +115,10 @@ int main() {
 	try {
 		const double tol = 1e-3;
 		WingModel wing = MakeWing();
-		double v_full = wing.BuildMesh(tol).SignedVolume();
+		// The plain wing on the same discretisation the flapped bodies get
+		// (BuildMeshes: the structure builder's uniform rings), not BuildMesh's
+		// per-ring refinement, so the volumes compare like with like.
+		double v_full = wing.BuildMeshes(tol)[0].mesh.SignedVolume();
 		Check(wing.BuildMeshes(tol).size() == 1, "no flaps: one body");
 
 		// One outboard flap, with and without a side gap.

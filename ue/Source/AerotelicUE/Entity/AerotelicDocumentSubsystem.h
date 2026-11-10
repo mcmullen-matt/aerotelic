@@ -12,7 +12,7 @@
 
 class AAerotelicEntityActor;
 class UWorld;
-namespace aerotelic { class Airfoil; }
+namespace aerotelic { class Airfoil; struct WingBodyStructurePlan; }
 
 // The plane networks a Structure dialog is editing, for the 3D view to
 // draw as translucent rectangles over the body (the preview actor,
@@ -142,6 +142,13 @@ public:
 	// exclusion that names nothing in the scene is skipped with a log line,
 	// as any dependency that cannot be satisfied.
 	bool GenerateBodyStructure(AAerotelicEntityActor* Entity, const FString& BodyRole, FString& OutError);
+	// The structure plan a wing's last build made for one of its bodies
+	// (wing_model.hpp WingBodyStructurePlan), or null: not a wing, or
+	// nothing planned for that body.
+	static const aerotelic::WingBodyStructurePlan* WingPlanFor(const AAerotelicEntityActor* Entity, const FString& Role);
+	// Whether the body has an interior structure to generate: a skin with
+	// plane networks, or a wing body with a plan.
+	static bool WantsStructure(const AAerotelicEntityActor* Entity, const FAerotelicBody& Body);
 	// The Structure dialog's Apply (2026-11-08 night, replacing its Generate
 	// button): gives the body the structure AND, when it is a skin, builds
 	// its layers at once -- generation is under a second, so there is no

@@ -155,6 +155,22 @@ def rib_loops(verts, faces, normal, offset, tol):
     return loops
 
 
+def loop_plane(verts, loop):
+    """The plane of a closed loop of vertex ids: Newell's unit normal (the
+    loop runs counter-clockwise about it) and the offset normal . x of the
+    loop's centroid."""
+    p = verts[np.array(loop)]
+    q = np.roll(p, -1, axis=0)
+    n = np.array([np.sum((p[:, 1] - q[:, 1]) * (p[:, 2] + q[:, 2])),
+                  np.sum((p[:, 2] - q[:, 2]) * (p[:, 0] + q[:, 0])),
+                  np.sum((p[:, 0] - q[:, 0]) * (p[:, 1] + q[:, 1]))])
+    length = np.linalg.norm(n)
+    if length <= 0.0:
+        raise JobError("a rib's rim has no area")
+    n /= length
+    return n, float(np.mean(p @ n))
+
+
 def plane_basis(n):
     n = np.asarray(n, dtype=np.float64)
     n = n / np.linalg.norm(n)
@@ -358,6 +374,8 @@ def rib_chords(verts, discs_by_rib, ribs, tol, size):
     normals = [np.asarray(r["normal"], dtype=np.float64) for r in ribs]
     for i in range(len(ribs)):
         for j in range(i + 1, len(ribs)):
+            if "rim" in ribs[i] or "rim" in ribs[j]:
+                continue   # explicit rims bring their own chords
             if abs(abs(np.dot(normals[i], normals[j])) - 1.0) < 1e-9:
                 continue   # parallel: no crossing
             vi = set(v for disc in discs_by_rib[i] for v in disc_vertices(disc))
@@ -519,7 +537,13 @@ def run_job(job_dir):
                       network's (several ribs share it, and the faces carry
                       it); height > 0 keeps only the band of the disc
                       within that distance of its rims (a frame, a cap),
-                      its inner edge the rims' offset (needs shapely)
+                      its inner edge the rims' offset (needs shapely).
+                      Or [{id, rim: [vertex ids], chords: [[a, b, n], ...],
+                      height}] (2026-11-09, a wing's ribs): the disc's rim
+                      given outright as a closed loop of the surface's
+                      vertices (its plane is read off it), and the chords
+                      across it -- a spar's web -- as two rim vertices and
+                      the node count across, which the web carries too
         rib_size      target edge length inside the ribs (0: the surface's
                       median edge)
         plane_tolerance
@@ -587,12 +611,29 @@ def run_job(job_dir):
     discs_by_rib = []
     holes_used = 0
     for r in ribs:
-        loops = rib_loops(ov, of, r["normal"], float(r["offset"]), plane_tolerance)
-        if not loops:
-            rib_notes.append("rib %d: its plane meets no edge of the surface (was the surface cut by it?)" % int(r["id"]))
-            discs_by_rib.append([])
-            continue
-        discs, orphans = group_discs(ov, loops, r["normal"], plane_tolerance)
+        if "rim" in r:
+            # An explicit rim (a wing's rib on its own ring): one disc, its
+            # plane read off the rim (Newell), wound counter-clockwise
+            # about it.
+            rim = [int(v) for v in r["rim"]]
+            if len(rim) < 3 or max(rim) >= len(ov) or min(rim) < 0:
+                rib_notes.append("rib %d: its rim is not a loop of the surface's vertices" % int(r["id"]))
+                discs_by_rib.append([])
+                continue
+            nrm, off = loop_plane(ov, rim)
+            r["normal"] = nrm.tolist()
+            r["offset"] = float(off)
+            if loop_area(ov, rim, nrm) < 0.0:
+                rim = rim[::-1]
+            loops = [rim]
+            discs, orphans = [[rim]], 0
+        else:
+            loops = rib_loops(ov, of, r["normal"], float(r["offset"]), plane_tolerance)
+            if not loops:
+                rib_notes.append("rib %d: its plane meets no edge of the surface (was the surface cut by it?)" % int(r["id"]))
+                discs_by_rib.append([])
+                continue
+            discs, orphans = group_discs(ov, loops, r["normal"], plane_tolerance)
         if orphans:
             rib_notes.append("rib %d: %d loop(s) of its section bound a hole inside no piece of it; left out" % (int(r["id"]), orphans))
         if not discs:
@@ -619,6 +660,11 @@ def run_job(job_dir):
                         discs.remove(disc)
         discs_by_rib.append(discs)
     chords = rib_chords(allv, discs_by_rib, ribs, plane_tolerance, rib_size) if ribs else {}
+    # Explicit chords (a spar's web across a wing rib): the two rim
+    # vertices and the node count across, the same count the web carries.
+    for i, r in enumerate(ribs):
+        for c in r.get("chords", []) or []:
+            chords.setdefault(i, []).append((int(c[0]), int(c[1]), int(c[2])))
 
     # The bands: a rib of limited height keeps the part of each disc within
     # that distance of its rims; the rims' inward offset is its inner edge,

@@ -25,6 +25,7 @@
 
 #include "aerotelic/airfoil.hpp"
 #include "aerotelic/mat.hpp"
+#include "aerotelic/materials.hpp"
 #include "aerotelic/nurbs.hpp"
 #include "aerotelic/reference_image.hpp"
 #include "aerotelic/solid_model.hpp"
@@ -317,6 +318,102 @@ struct FlapSpec {
 	double side_gap = 0.004;
 };
 
+// ---------------------------------------------------------------------
+// Internal structure (2026-11-09): spars, ribs and stringers defined IN
+// THE WING'S OWN TERMS -- span fractions and chord fractions -- and built
+// with the wing on its own grid. A rib lies in the loft's section plane
+// at its station (normal to the dihedral spine, as the airfoil sections
+// are: the strongest orientation, the owner's choice); a spar is the web
+// between the upper and lower skin along a CHORD-FRACTION line -- the
+// fraction varying linearly with the span fraction between its root and
+// tip values, so a constant fraction follows the planform (the quarter-
+// chord line of an elliptic wing is a curve; on a trapezoid it is the
+// straight line a flap's hinge is) -- and a stringer is a strip standing
+// in from the skin along such a line, on the upper or the lower surface.
+// (A line straight in plan view, as first built on 2026-11-09, collapses
+// on a planform whose root or tip is nearly a point -- the P-38's fin --
+// where every such line is the same line.) Every element is a shell with its own
+// thickness and material (a material without a density means the body's
+// own). The root and tip caps, a flap's end caps and the main element's
+// pocket faces are already faces of the bodies and stand as ribs there
+// (at the skin's thickness); the interior ribs are the discs this adds.
+// ---------------------------------------------------------------------
+
+struct WingSparSpec {
+	std::string name = "Spar";
+	// Chord fraction at the root end and at the tip end of its extent,
+	// varying linearly with the span fraction between them.
+	double x_root = 0.25, x_tip = 0.25;
+	double eta_root = 0.0, eta_tip = 1.0;
+	double thickness = 0.002;   // the web's, project units, not scaled
+	Material material;          // no density: the body's own
+};
+
+struct WingStringerSpec {
+	std::string name = "Stringer";
+	double x_root = 0.5, x_tip = 0.5;
+	bool upper = true;
+	double eta_root = 0.0, eta_tip = 1.0;
+	double height = 0.02;       // in from the skin, project units, not scaled
+	double thickness = 0.001;
+	Material material;
+};
+
+struct WingRibRules {
+	bool at_sections = true;    // a rib at every user section strictly inside the span
+	bool at_flap_ends = true;   // the main element's pocket faces (both ends of every flap)
+	int between = 8;            // evenly spaced over the semi-span, the caps not counted
+	std::vector<double> extra;  // more stations, span fractions
+	double thickness = 0.0015;
+	Material material;
+};
+
+struct WingStructureSpec {
+	WingRibRules ribs;
+	std::vector<WingSparSpec> spars;
+	std::vector<WingStringerSpec> stringers;
+	// What a new wing starts with: a front spar at 0.25 and a rear spar at
+	// 0.65, eight ribs between the caps, no stringers.
+	static WingStructureSpec Default();
+	// Nothing to build: no spars, no stringers, no rib station.
+	bool IsEmpty() const;
+};
+
+// One rib of a body, as the rib mesher (tools/rib_gmsh.py through the
+// application) takes it: the closed loop of BODY-MESH vertex ids round the
+// section at its station, and the chords across it where spars pass (the
+// two feet's vertex ids and the number of nodes across, the same the
+// spar's own web carries there, so the two share their nodes).
+struct WingRibPlan {
+	double eta = 0.0;
+	std::string name;
+	std::vector<int> rim;
+	std::vector<std::array<int, 3>> chords;
+};
+
+// A spar web or a stringer: a ready open mesh in the wing's frame, its
+// feet on the body mesh's own vertices.
+struct WingShellPlan {
+	std::string name;
+	TriMesh mesh;
+	double thickness = 0.0;
+	Material material;
+};
+
+// The structure of one body ("Main", a flap's name) the build planned on
+// that body's mesh.
+struct WingBodyStructurePlan {
+	std::string body;
+	std::vector<WingRibPlan> ribs;
+	double rib_thickness = 0.0;
+	Material rib_material;
+	std::vector<WingShellPlan> spars, stringers;
+	// The body mesh's median edge: the rib discs' target size.
+	double rib_size = 0.0;
+	std::vector<std::string> notes;
+	bool IsEmpty() const { return ribs.empty() && spars.empty() && stringers.empty(); }
+};
+
 // The full round-trip spec Save/Open needs: a PlanformSpec-only
 // constructor (below) leaves sections to be added via AddSection(), which
 // is fine for interactive construction but loses section edits on
@@ -328,6 +425,7 @@ struct WingModelSpec {
 	std::vector<WingSectionSpec> sections;
 	ReferenceImageMap reference_images; // "planform", "dihedral"
 	std::vector<FlapSpec> flaps;
+	WingStructureSpec structure;
 };
 
 class WingModel : public ISolidModel {
@@ -359,6 +457,33 @@ public:
 	// notched main element plus one body per flap; BuildSolid()/ExportStep()
 	// still give the one-piece wing.
 	std::vector<FlapSpec> flaps;
+	// The internal structure (see WingStructureSpec). BuildMeshes() seeds
+	// the loft with its stations and chord lines, so every rib's rim and
+	// every spar's feet are vertex lines of the body meshes, and plans the
+	// elements on them (LastStructurePlans()).
+	WingStructureSpec structure;
+
+	// The structure BuildMeshes() last planned, one entry per body it built
+	// (empty for a body with nothing to build). The discs the plans describe
+	// are meshed by the application (the rib mesher); the spars' and
+	// stringers' meshes are ready.
+	const std::vector<WingBodyStructurePlan>& LastStructurePlans() const { return last_structure_; }
+	// Checks the structure against the planform and the flaps; throws
+	// std::invalid_argument naming the element and the reason: a chord
+	// fraction outside (0, 1), an empty or inverted span range, spars that
+	// cross or coincide, a spar through a flap's pocket.
+	void ValidateStructure() const;
+	// The chord fraction of a line straight in plan view between
+	// (eta_root, x_root) and (eta_tip, x_tip) at station eta (the rule a
+	// flap's hinge and a spar share).
+	double PlanLineFraction(double eta_root, double x_root, double eta_tip, double x_tip, double eta) const;
+	// The rib stations the rules and the flaps give for the main element,
+	// strictly inside (0, 1), sorted, duplicates merged.
+	std::vector<double> RibStations() const;
+	// The chord fraction of a spar's or stringer's line at station eta:
+	// x_root at eta_root, x_tip at eta_tip, linear between, held at the
+	// ends beyond them.
+	static double FractionAlong(double eta_root, double x_root, double eta_tip, double x_tip, double eta);
 
 	// The hinge chord fraction of `flap` at span fraction eta (the straight
 	// plan-view hinge line's crossing of that station's chord line), and the
@@ -450,7 +575,10 @@ private:
 	std::vector<std::pair<double, bool>> RefineStations(std::vector<std::pair<double, bool>> stations, double tol, int budget, double merge_tol,
 		const Mat& probe_pts, std::map<double, Mat>& probe_cache) const;
 
-	std::vector<NamedMesh> BuildFlappedMeshes(double tolerance) const;
+	// The bodies (the main element, notched where the flaps are, and the
+	// flaps) with the structure planned on them.
+	std::vector<NamedMesh> BuildBodies(double tolerance, std::vector<WingBodyStructurePlan>& plans) const;
+	mutable std::vector<WingBodyStructurePlan> last_structure_;
 	Handle(Geom_BSplineCurve) SectionCurve(const WingSection& section) const;
 	TopoDS_Wire SectionWire(const WingSection& section) const;
 };

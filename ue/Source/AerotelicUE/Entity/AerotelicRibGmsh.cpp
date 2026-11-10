@@ -151,6 +151,15 @@ namespace AerotelicRibGmsh
 		for (int32 i = 0; i < Request.Ribs.Num(); ++i)
 		{
 			const FRequest::FRib& R = Request.Ribs[i];
+			if (R.Rim.Num() > 0)
+			{
+				TArray<FString> Rim, Chords;
+				for (int32 V : R.Rim) Rim.Add(FString::FromInt(V));
+				for (const FIntVector& C : R.Chords) Chords.Add(FString::Printf(TEXT("[%d, %d, %d]"), C.X, C.Y, C.Z));
+				RibsJson += FString::Printf(TEXT("%s{\"id\": %d, \"rim\": [%s], \"chords\": [%s], \"height\": %s}"), i ? TEXT(", ") : TEXT(""),
+					R.Id, *FString::Join(Rim, TEXT(", ")), *FString::Join(Chords, TEXT(", ")), *Num(FMath::Max(R.Height, 0.0)));
+				continue;
+			}
 			RibsJson += FString::Printf(TEXT("%s{\"id\": %d, \"normal\": [%s, %s, %s], \"offset\": %s, \"height\": %s}"), i ? TEXT(", ") : TEXT(""),
 				R.Id, *Num(R.Normal.x), *Num(R.Normal.y), *Num(R.Normal.z), *Num(R.Offset), *Num(FMath::Max(R.Height, 0.0)));
 		}

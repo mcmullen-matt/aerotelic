@@ -50,6 +50,10 @@ PlanformSpec DecodePlanformSpec(const YAML::Node& node);
 
 YAML::Node Encode(const WingModelSpec& spec);
 WingModelSpec DecodeWingModelSpec(const YAML::Node& node);
+// The wing's `structure:` key (spars, ribs, stringers); a missing or
+// non-map node decodes to WingStructureSpec::Default().
+YAML::Node EncodeWingStructure(const WingStructureSpec& s);
+WingStructureSpec DecodeWingStructure(const YAML::Node& node);
 
 YAML::Node Encode(const NacelleSpec& spec);
 NacelleSpec DecodeNacelleSpec(const YAML::Node& node);

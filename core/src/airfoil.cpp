@@ -269,6 +269,23 @@ double Airfoil::MirrorParameter(double t) const {
 	return 0.5 * (lo + hi);
 }
 
+double Airfoil::ParameterAtX(double x, bool upper) const {
+	// Lower surface: t in [0, t_le], x falls from the TE to the LE. Upper:
+	// t in [t_le, 1], x rises from the LE to the TE.
+	double lo = upper ? t_le_ : 0.0, hi = upper ? 1.0 : t_le_;
+	double x_lo = curve_->Evaluate(lo)[0], x_hi = curve_->Evaluate(hi)[0];
+	if (x <= std::min(x_lo, x_hi)) return upper ? t_le_ : t_le_;
+	if (x >= std::max(x_lo, x_hi)) return upper ? 1.0 : 0.0;
+	bool increasing = x_hi > x_lo;
+	for (int it = 0; it < 60; ++it) {
+		double mid = 0.5 * (lo + hi);
+		double xm = curve_->Evaluate(mid)[0];
+		if ((xm < x) == increasing) lo = mid; else hi = mid;
+		if (hi - lo < 1e-13) break;
+	}
+	return 0.5 * (lo + hi);
+}
+
 std::pair<Mat, Mat> Airfoil::UniformSampleSurfaces(int n) const {
 	std::vector<double> t = Linspace(0.0, 1.0, n);
 	return {UpperXY(t), LowerXY(t)};

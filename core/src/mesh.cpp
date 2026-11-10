@@ -591,7 +591,7 @@ std::vector<double> GridParameters(double lo, double hi, int intervals, const st
 	return out;
 }
 
-TriMesh TriangulateLoft(const LoftSource& src, const LoftOptions& opt, LoftStats* stats, LoftEndRings* ends) {
+TriMesh TriangulateLoft(const LoftSource& src, const LoftOptions& opt, LoftStats* stats, LoftEndRings* ends, LoftRings* all_rings) {
 	if (!src.section) throw std::invalid_argument("TriangulateLoft: no section function");
 	if (!(src.u_max > src.u_min)) throw std::invalid_argument("TriangulateLoft: empty station range");
 	const double tol = std::max(opt.tolerance, 1e-12);
@@ -716,7 +716,8 @@ TriMesh TriangulateLoft(const LoftSource& src, const LoftOptions& opt, LoftStats
 		auto it = ring_vs_cache.find(u);
 		if (it != ring_vs_cache.end()) return it->second;
 		std::vector<double> stations{u};
-		if (has_mirror_u) {
+		if (src.uniform_rings) stations = us;
+		else if (has_mirror_u) {
 			double m = snap_station(mirror_u(u));
 			if (std::fabs(m - u) > 1e-12) {
 				double key = std::min(u, m);
@@ -1018,6 +1019,11 @@ TriMesh TriangulateLoft(const LoftSource& src, const LoftOptions& opt, LoftStats
 		ends->end = rings[nu - 1];
 		ends->v_end = ring_v[nu - 1];
 	}
+	if (all_rings) {
+		all_rings->u = us;
+		all_rings->rings = rings;
+		all_rings->ring_v = ring_v;
+	}
 	mesh.RemoveDegenerateTriangles();
 	if (opt.orient_outward) mesh.FlipIfInsideOut();
 	return mesh;
@@ -1027,12 +1033,14 @@ TriMesh TriangulateLoft(const LoftSource& src, const LoftOptions& opt, LoftStats
 // Chains
 // ---------------------------------------------------------------------------
 
-TriMesh TriangulateLoftChain(std::vector<LoftSource> segments, const std::vector<LoftBreak>& breaks, const LoftOptions& opt, std::vector<LoftStats>* stats) {
+TriMesh TriangulateLoftChain(std::vector<LoftSource> segments, const std::vector<LoftBreak>& breaks, const LoftOptions& opt, std::vector<LoftStats>* stats,
+	std::vector<LoftRings>* all_rings) {
 	const int n = static_cast<int>(segments.size());
 	if (n == 0) throw std::invalid_argument("TriangulateLoftChain: no segments");
 	if (static_cast<int>(breaks.size()) != n - 1) throw std::invalid_argument("TriangulateLoftChain: breaks.size() must be segments.size() - 1");
 	if (stats) stats->assign(n, LoftStats{});
-	if (n == 1) return TriangulateLoft(segments[0], opt, stats ? &(*stats)[0] : nullptr);
+	if (all_rings) all_rings->assign(n, LoftRings{});
+	if (n == 1) return TriangulateLoft(segments[0], opt, stats ? &(*stats)[0] : nullptr, nullptr, all_rings ? &(*all_rings)[0] : nullptr);
 	for (int i = 0; i < n; ++i) {
 		if (segments[i].periodic_u) throw std::invalid_argument("TriangulateLoftChain: a segment may not be periodic in u");
 		if (i > 0) segments[i].cap_start = false;
@@ -1080,7 +1088,8 @@ TriMesh TriangulateLoftChain(std::vector<LoftSource> segments, const std::vector
 	// Pass 2: the meshes, with the end rings complete.
 	std::vector<TriMesh> meshes(n);
 	std::vector<LoftEndRings> ends(n);
-	for (int i = 0; i < n; ++i) meshes[i] = TriangulateLoft(segments[i], opt_for(i), stats ? &(*stats)[i] : nullptr, &ends[i]);
+	std::vector<LoftRings> seg_rings(n);
+	for (int i = 0; i < n; ++i) meshes[i] = TriangulateLoft(segments[i], opt_for(i), stats ? &(*stats)[i] : nullptr, &ends[i], all_rings ? &seg_rings[i] : nullptr);
 
 	// Assemble: append each segment, its first ring's shared points taking
 	// the previous segment's last-ring vertices, then cap the pocket.
@@ -1103,6 +1112,9 @@ TriMesh TriangulateLoftChain(std::vector<LoftSource> segments, const std::vector
 		}
 		out.vertices.insert(out.vertices.end(), m.vertices.begin(), m.vertices.end());
 		for (const auto& t : m.triangles) out.triangles.push_back({remap[t[0]], remap[t[1]], remap[t[2]]});
+		if (all_rings) {
+			for (std::vector<int>& ring : seg_rings[k + 1].rings) for (int& idx : ring) idx = remap[idx];
+		}
 
 		// The pocket: the end cap of the previous segment (its last ring in
 		// ring order) with the start cap of the next (its first ring
@@ -1138,6 +1150,12 @@ TriMesh TriangulateLoftChain(std::vector<LoftSource> segments, const std::vector
 	}
 	for (auto& t : out.triangles) t = {used[t[0]], used[t[1]], used[t[2]]};
 	out.vertices = std::move(kept);
+	if (all_rings) {
+		for (LoftRings& r : seg_rings) {
+			for (std::vector<int>& ring : r.rings) for (int& idx : ring) idx = used[idx] >= 0 ? used[idx] : idx;
+		}
+		*all_rings = std::move(seg_rings);
+	}
 	out.RemoveDegenerateTriangles();
 	if (opt.orient_outward) out.FlipIfInsideOut();
 	return out;

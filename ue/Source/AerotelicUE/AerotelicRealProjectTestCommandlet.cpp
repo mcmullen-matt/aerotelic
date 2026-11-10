@@ -354,7 +354,9 @@ int32 UAerotelicRealProjectTestCommandlet::Main(const FString& Params)
 						Check(LoadedPeak > 0.0 && UnloadedPeak < 0.02 * LoadedPeak,
 							FString::Printf(TEXT("p38a: the unloaded wing's outer panel reads nothing against the loaded one (%.4g vs %.4g Pa)"), UnloadedPeak, LoadedPeak));
 					}
-					IFileManager::Get().Delete(*Request.VtkPath, false, true, true);
+					// -keepvtk on the command line: the solution is left in the
+					// temp directory for a look at where a peak sits.
+					if (!FParse::Param(FCommandLine::Get(), TEXT("keepvtk"))) IFileManager::Get().Delete(*Request.VtkPath, false, true, true);
 
 					// A SPAR through the airframe (2026-11-08): one plane network
 					// normal to x at the wing's mid-chord, 5 mm 2024-T3, set on the

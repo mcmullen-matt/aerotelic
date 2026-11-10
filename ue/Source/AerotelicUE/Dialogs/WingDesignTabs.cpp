@@ -1,6 +1,7 @@
 #include "WingDesignTabs.h"
 #include "SectionListDialog.h"
 #include "FlapListDialog.h"
+#include "WingStructureWidgets.h"
 #include "Widgets/AerotelicDialogWindow.h"
 #include "Widgets/NumericEntry.h"
 #include "Widgets/CurveEditor.h"
@@ -78,6 +79,7 @@ FWingDesignTabs::FWingDesignTabs(WingModel* InModel, FSimpleDelegate InOnChanged
 	if (!bBlade)
 	{
 		Tabs.Add({ LOCTEXT("ControlSurfaces", "Control Surfaces"), BuildControlSurfacesTab() });
+		Tabs.Add({ LOCTEXT("Structure", "Structure"), BuildStructureTab() });
 		// A blade's help goes into the propeller panel's own Help tab.
 		Tabs.Add({ LOCTEXT("Help", "Help"), MakeHelpTab(GetHelpText()) });
 	}
@@ -124,13 +126,21 @@ FText FWingDesignTabs::GetHelpText() const
 		"The side gap is the spanwise clearance between each end cap of the flap and the pocket face: the flap keeps its extent and the pocket is cut that much wider. "
 		"The main element stays one closed body with a pocket where each flap sits; each flap is its own closed body, named as in its row. Pockets may not overlap or share an end station. "
 		"Deflection is not modelled yet; the wing's STEP export is still the one-piece wing.");
-	return FText::Join(FText::FromString(TEXT("\n\n")), PlanformHelp, Dihedral, Twist, Sections, ControlSurfaces, Axes);
+	const FText Structure = LOCTEXT("HelpStructure",
+		"STRUCTURE\nThe wing's internal structure, defined in the wing's own terms and built with it on its own grid. RIBS lie in the loft's section planes (normal to the dihedral spine, as the airfoil sections are): "
+		"one at every airfoil section, one at each end of every flap's pocket, a given number evenly spaced between the caps, and any extra stations typed in; the root and tip caps, a flap's end caps and the pocket faces are faces of the bodies already and stand as ribs there. "
+		"SPARS are webs between the upper and lower skin along a chord-fraction line: the fraction runs linearly from its root value to its tip value along the span, so a constant fraction follows the planform (straight on a trapezoid, curved on an elliptic wing); where a spar crosses a rib the two share their nodes. "
+		"STRINGERS are strips standing a given height in from the upper or lower skin along such a line. Each element is a shell with its own thickness (a build figure, not scaled with the model) and takes the body's material unless the project file gives it one. "
+		"A spar or stringer must end clear of a flap's pocket or run through it ahead of the lips, and spars may not cross. Where the chord collapses (a pointed tip, a fin's pointed root) the elements stop at the last station where their feet are still a few mesh tolerances apart, and say so in the layer's note; a rib closes the bay there. "
+		"On Apply the rib rims and spar feet become vertex lines of the skin mesh, the ribs are meshed as discs on them, and the layers appear under the body in the Scene tree (Skin, Ribs, each spar, each stringer).");
+	return FText::Join(FText::FromString(TEXT("\n\n")), PlanformHelp, Dihedral, Twist, Sections, ControlSurfaces, Structure, Axes);
 }
 
 void FWingDesignTabs::NotifyChanged()
 {
 	if (OutlineView.IsValid()) OutlineView->RequestRedraw();
 	if (FlapOutlineView.IsValid()) FlapOutlineView->RequestRedraw();
+	if (StructureOutlineView.IsValid()) StructureOutlineView->RequestRedraw();
 	OnChangedDelegate.ExecuteIfBound();
 }
 
@@ -149,6 +159,11 @@ void FWingDesignTabs::SpanChanged()
 	{
 		FlapOutlineView->SetScales(1.0, 1.0 / FMath::Max(Model->planform().SemiSpan(), 1e-9));
 		FlapOutlineView->RequestRedraw();
+	}
+	if (StructureOutlineView.IsValid())
+	{
+		StructureOutlineView->SetScales(1.0, 1.0 / FMath::Max(Model->planform().SemiSpan(), 1e-9));
+		StructureOutlineView->RequestRedraw();
 	}
 }
 
@@ -611,6 +626,114 @@ TSharedRef<SWidget> FWingDesignTabs::BuildFlapOutlineView()
 	}));
 	FlapOutlineView = View;
 	return SNew(SBox).MinDesiredHeight(220) [ View ];
+}
+
+// The plan view for the Structure tab: the planform with every spar's
+// line, every rib station as a chord across the planform, and the
+// stringers' lines, drawn from the model's own rules (RibStations,
+// PlanLineFraction) so the picture is the structure the build makes.
+TSharedRef<SWidget> FWingDesignTabs::BuildStructureOutlineView()
+{
+	WingModel* M = Model;
+	TSharedRef<SCurveEditor> View = SNew(SCurveEditor)
+		.XLabel(LOCTEXT("SpanLabel", "Span fraction (y/L)"))
+		.YLabel(LOCTEXT("ChordLabel", "Chordwise (x/L)"))
+		.Title(LOCTEXT("StructurePlanView", "Plan view: spars, ribs, stringers"))
+		.DefaultYMax(0.5)
+		.XScale(1.0).YScale(1.0 / FMath::Max(M->planform().SemiSpan(), 1e-9)).EqualAspect(true);
+	View->SetSlots({});
+	View->SetOutlineProvider(FOnGetOutlinePaths::CreateLambda([M]()
+	{
+		const FLinearColor kSparColor(0.85f, 0.55f, 0.25f);
+		const FLinearColor kRibColor(0.35f, 0.55f, 0.85f);
+		const FLinearColor kStringerColor(0.45f, 0.75f, 0.45f);
+		TArray<FCurveEditorOutlinePath> Paths;
+		try
+		{
+			const Planform& P = M->planform();
+			auto PlanX = [&P](double Eta, double Frac) { return P.AirfoilCoordsToXyz(Eta, Mat::FromRows({{Frac, 0.0}}))(0, 0); };
+			const int N = 33;
+			FCurveEditorOutlinePath Le, Te;
+			for (int i = 0; i < N; ++i)
+			{
+				const double Eta = static_cast<double>(i) / (N - 1);
+				Le.Points.Add(FVector2D(Eta, PlanX(Eta, 0.0)));
+				Te.Points.Add(FVector2D(Eta, PlanX(Eta, 1.0)));
+			}
+			Le.Color = kLeColor; Le.Label = LOCTEXT("LeadingEdge", "Leading edge"); Le.LineWidth = 1.8f;
+			Te.Color = kTeColor; Te.Label = LOCTEXT("TrailingEdge", "Trailing edge"); Te.LineWidth = 1.8f;
+			Paths.Add(Le);
+			Paths.Add(Te);
+			for (double Eta : { 0.0, 1.0 })
+			{
+				FCurveEditorOutlinePath Chord;
+				Chord.Points = { FVector2D(Eta, PlanX(Eta, 0.0)), FVector2D(Eta, PlanX(Eta, 1.0)) };
+				Chord.Color = kChordColor; Chord.LineWidth = 1.4f;
+				Paths.Add(Chord);
+			}
+			// The flaps' hinge lines, faintly, so a spar can be kept ahead of them.
+			for (const FlapSpec& F : M->flaps)
+			{
+				if (!(F.eta_tip > F.eta_root)) continue;
+				FCurveEditorOutlinePath Hinge;
+				Hinge.Points = { FVector2D(F.eta_root, PlanX(F.eta_root, M->HingeFraction(F, F.eta_root))), FVector2D(F.eta_tip, PlanX(F.eta_tip, M->HingeFraction(F, F.eta_tip))) };
+				Hinge.Color = FLinearColor(0.5f, 0.5f, 0.5f); Hinge.LineWidth = 1.0f;
+				Paths.Add(Hinge);
+			}
+			for (double Eta : M->RibStations())
+			{
+				FCurveEditorOutlinePath Rib;
+				Rib.Points = { FVector2D(Eta, PlanX(Eta, 0.0)), FVector2D(Eta, PlanX(Eta, 1.0)) };
+				Rib.Color = kRibColor; Rib.LineWidth = 1.2f;
+				Paths.Add(Rib);
+			}
+			for (const WingSparSpec& S : M->structure.spars)
+			{
+				FCurveEditorOutlinePath Spar;
+				const int Ns = 17;
+				for (int i = 0; i < Ns; ++i)
+				{
+					const double Eta = S.eta_root + (S.eta_tip - S.eta_root) * i / (Ns - 1);
+					Spar.Points.Add(FVector2D(Eta, PlanX(Eta, WingModel::FractionAlong(S.eta_root, S.x_root, S.eta_tip, S.x_tip, Eta))));
+				}
+				Spar.Color = kSparColor; Spar.LineWidth = 2.2f; Spar.Label = FText::FromString(StdToFString(S.name));
+				Paths.Add(Spar);
+			}
+			for (const WingStringerSpec& S : M->structure.stringers)
+			{
+				FCurveEditorOutlinePath St;
+				const int Ns = 17;
+				for (int i = 0; i < Ns; ++i)
+				{
+					const double Eta = S.eta_root + (S.eta_tip - S.eta_root) * i / (Ns - 1);
+					St.Points.Add(FVector2D(Eta, PlanX(Eta, WingModel::FractionAlong(S.eta_root, S.x_root, S.eta_tip, S.x_tip, Eta))));
+				}
+				St.Color = kStringerColor; St.LineWidth = 1.2f; St.Label = FText::FromString(StdToFString(S.name));
+				Paths.Add(St);
+			}
+		}
+		catch (const std::exception&) {}
+		return Paths;
+	}));
+	StructureOutlineView = View;
+	return SNew(SBox).MinDesiredHeight(220) [ View ];
+}
+
+TSharedRef<SWidget> FWingDesignTabs::BuildStructureTab()
+{
+	return SNew(SVerticalBox)
+		+ SVerticalBox::Slot().AutoHeight() [ BuildStructureOutlineView() ]
+		+ SVerticalBox::Slot().AutoHeight().Padding(0, 8, 0, 6)
+		[
+			MakeInfoLabel(LOCTEXT("StructureInfo",
+				"Ribs in the section planes, spars as webs between the skins along chord-fraction lines, stringers standing in from the skin. "
+				"Chord fractions run 0 = leading edge to 1 = trailing edge; span fractions 0 = root to 1 = tip. Apply builds the structure with the wing on its own grid; the layers appear under the body in the Scene tree."))
+		]
+		+ SVerticalBox::Slot().AutoHeight()
+		[
+			SNew(SWingStructureWidget, Model)
+			.OnChanged(FSimpleDelegate::CreateLambda([this]() { NotifyChanged(); }))
+		];
 }
 
 TSharedRef<SWidget> FWingDesignTabs::BuildControlSurfacesTab()
