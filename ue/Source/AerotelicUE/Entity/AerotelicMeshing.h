@@ -22,7 +22,9 @@ namespace AerotelicMeshing
 	// Applies an actor's placement (rotation then translation; scale is
 	// never used for entities) to every vertex.
 	void PlaceMesh(aerotelic::TriMesh& Mesh, const FTransform& Transform);
-	// Reflects about the world Y = 0 plane (the mirrored half of an entity).
+	// Reflects about the world Y = 0 plane. An entity's mirrored half is
+	// reflected in the entity's own plane (AAerotelicEntityActor::ReflectMesh,
+	// y = 0 by default); this is the fixed-plane form for anything else.
 	void MirrorY(aerotelic::TriMesh& Mesh);
 
 	// The arrays UProceduralMeshComponent::CreateMeshSection takes: every

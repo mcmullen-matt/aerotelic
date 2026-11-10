@@ -1044,7 +1044,7 @@ bool UAerotelicDocumentSubsystem::GenerateBodyStructure(AAerotelicEntityActor* E
 						if (L.Mesh.IsEmpty()) continue;
 						aerotelic::TriMesh Placed = L.Mesh;
 						AerotelicMeshing::PlaceMesh(Placed, OpEntity->GetActorTransform());
-						if (Op.bMirror) AerotelicMeshing::MirrorY(Placed);
+						if (Op.bMirror) OpEntity->ReflectMesh(Placed);
 						// Inside this result body (or on its skin, as a rim is)?
 						// Sampled, by majority.
 						int32 Inside = 0, Total = 0;
@@ -1218,6 +1218,11 @@ bool UAerotelicDocumentSubsystem::CopyEntityToClipboard(const AAerotelicEntityAc
 	Snapshot.name = TCHAR_TO_UTF8(*Entity->EntityName);
 	Snapshot.type = Entity->GetEntityType();
 	Snapshot.mirror = Entity->IsMirrored();
+	{
+		const FAerotelicMirrorPlane& Plane = Entity->GetMirrorPlane();
+		Snapshot.mirror_normal = { Plane.Normal.X, Plane.Normal.Y, Plane.Normal.Z };
+		Snapshot.mirror_offset = Plane.Offset;
+	}
 	Snapshot.placement = Entity->GetPlacement();
 	if (const TOptional<FLinearColor> Color = Entity->GetColorOverride(); Color.IsSet())
 	{
@@ -1290,7 +1295,12 @@ AAerotelicEntityActor* UAerotelicDocumentSubsystem::PasteEntity(FString& OutErro
 	// inventing an offset here would only be a guess at how far.
 	Actor->ApplyPlacement(Clipboard->placement);
 	Actor->RefreshProxy();
-	Actor->SetMirrored(Clipboard->mirror);
+	{
+		FAerotelicMirrorPlane Plane;
+		Plane.Normal = FVector(Clipboard->mirror_normal[0], Clipboard->mirror_normal[1], Clipboard->mirror_normal[2]);
+		Plane.Offset = Clipboard->mirror_offset;
+		Actor->SetMirrorPlane(Plane, Clipboard->mirror);
+	}
 	if (Clipboard->color)
 	{
 		const auto& C = *Clipboard->color;
@@ -1549,9 +1559,14 @@ bool UAerotelicDocumentSubsystem::OpenProjectPath(const FString& InPath, bool bA
 			{
 				Failures.Add(FString::Printf(TEXT("%s: %s"), *Name, *Actor->GetBuildError()));
 			}
-			// Display state saved with the entity: the mirrored half, a
-			// colour override, hidden. Absent means the defaults.
-			Actor->SetMirrored(Entity.mirror);
+			// Display state saved with the entity: the mirrored half (and its
+			// plane), a colour override, hidden. Absent means the defaults.
+			{
+				FAerotelicMirrorPlane Plane;
+				Plane.Normal = FVector(Entity.mirror_normal[0], Entity.mirror_normal[1], Entity.mirror_normal[2]);
+				Plane.Offset = Entity.mirror_offset;
+				Actor->SetMirrorPlane(Plane, Entity.mirror);
+			}
 			if (Entity.color)
 			{
 				const auto& C = *Entity.color;
@@ -1656,6 +1671,11 @@ bool UAerotelicDocumentSubsystem::SaveProjectToPath(const FString& InPath)
 		Pe.name = TCHAR_TO_UTF8(*Entity->EntityName);
 		Pe.type = Entity->GetEntityType();
 		Pe.mirror = Entity->IsMirrored();
+		{
+			const FAerotelicMirrorPlane& Plane = Entity->GetMirrorPlane();
+			Pe.mirror_normal = { Plane.Normal.X, Plane.Normal.Y, Plane.Normal.Z };
+			Pe.mirror_offset = Plane.Offset;
+		}
 		Pe.placement = Entity->GetPlacement();
 		// Written only when set, as the Qt app does: defaults never reach
 		// the file.

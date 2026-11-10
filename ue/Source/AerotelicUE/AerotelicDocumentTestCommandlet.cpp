@@ -1217,6 +1217,43 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 		}
 	}
 
+	// The Mirror operation (2026-11-10): any plane, not only y = 0. The
+	// fuselage mirrored in the plane z = 2 (normal Z, offset 2, scaled with
+	// the model like a placement): the mirrored half's bounds are the
+	// placed bounds reflected, and the plane rides the save below.
+	UE_LOG(LogAerotelicDocumentTest, Display, TEXT("step: mirror plane"));
+	if (Fuselage != nullptr)
+	{
+		FAerotelicMirrorPlane Plane;
+		Plane.Normal = FVector(0.0, 0.0, 1.0);
+		Plane.Offset = 2.0;
+		Fuselage->SetMirrorPlane(Plane, true);
+		Check(Fuselage->IsMirrored() && Fuselage->GetMirrorPlane() == Plane, "mirror plane: the fuselage is mirrored in z = 2");
+		const double ZPlane = 2.0 * Doc->GetModelScale();
+		const FBox Own = Fuselage->GetPlacedBounds(false), Mirror = Fuselage->GetPlacedBounds(true);
+		Check(Own.IsValid && Mirror.IsValid
+			&& FMath::IsNearlyEqual(Mirror.Min.Z, 2.0 * ZPlane - Own.Max.Z, 1e-6) && FMath::IsNearlyEqual(Mirror.Max.Z, 2.0 * ZPlane - Own.Min.Z, 1e-6)
+			&& FMath::IsNearlyEqual(Mirror.Min.Y, Own.Min.Y, 1e-6) && FMath::IsNearlyEqual(Mirror.Min.X, Own.Min.X, 1e-6),
+			FString::Printf(TEXT("mirror plane: the mirrored half's bounds are the placed bounds reflected in z = %.3g (z %.4f..%.4f vs %.4f..%.4f)"), ZPlane, Mirror.Min.Z, Mirror.Max.Z, Own.Min.Z, Own.Max.Z));
+		// The mirrored meshes reflect vertex for vertex.
+		const std::vector<aerotelic::NamedMesh> OwnMeshes = Fuselage->GetPlacedMeshes(false), MirrorMeshes = Fuselage->GetPlacedMeshes(true);
+		double Worst = 0.0;
+		if (OwnMeshes.size() == 1 && MirrorMeshes.size() == 1 && OwnMeshes[0].mesh.vertices.size() == MirrorMeshes[0].mesh.vertices.size())
+		{
+			for (size_t i = 0; i < OwnMeshes[0].mesh.vertices.size(); ++i)
+			{
+				const aerotelic::Vec3& A = OwnMeshes[0].mesh.vertices[i];
+				const aerotelic::Vec3& B = MirrorMeshes[0].mesh.vertices[i];
+				Worst = FMath::Max(Worst, FMath::Abs(B.z - (2.0 * ZPlane - A.z)) + FMath::Abs(B.x - A.x) + FMath::Abs(B.y - A.y));
+			}
+		}
+		else
+		{
+			Worst = 1.0;
+		}
+		Check(Worst < 1e-9 && MirrorMeshes.size() == 1 && MirrorMeshes[0].mesh.SignedVolume() > 0.0, FString::Printf(TEXT("mirror plane: the mirrored mesh is the placed mesh reflected, still outward (worst %.2e)"), Worst));
+	}
+
 	UE_LOG(LogAerotelicDocumentTest, Display, TEXT("step: save"));
 	const FString TmpPath = FPaths::Combine(FPlatformProcess::UserTempDir(), TEXT("aerotelic_document_test.yaml"));
 	Check(Doc->SaveProjectToPath(TmpPath), "save succeeded");
@@ -1264,6 +1301,21 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 	}
 	Check(Doc->SetModelScale(1.0) && Doc->GetModelScale() == 1.0, "scale: back to full size for the rest of the run");
 	Doc->FlushPendingRebuilds();
+	// The mirror plane came back with the fuselage (and is written as
+	// mirror_plane: in the file); then off again for the rest of the run.
+	for (auto& Weak : Doc->GetEntities())
+	{
+		if (!Weak.IsValid() || Weak->GetEntityType() != aerotelic::project_yaml::EntityType::Fuselage) continue;
+		FAerotelicMirrorPlane Plane;
+		Plane.Normal = FVector(0.0, 0.0, 1.0);
+		Plane.Offset = 2.0;
+		Check(Weak->IsMirrored() && Weak->GetMirrorPlane() == Plane, "mirror plane: the reopened fuselage is mirrored in z = 2 still");
+		FString Saved;
+		FFileHelper::LoadFileToString(Saved, *TmpPath);
+		Check(Saved.Contains(TEXT("mirror_plane:")), "mirror plane: the project file carries the plane");
+		Weak->SetMirrorPlane(FAerotelicMirrorPlane(), false);
+		Check(!Weak->IsMirrored() && Weak->GetMirrorPlane().IsDefault(), "mirror plane: back to no mirror in y = 0");
+	}
 
 	// Copy refuses the derived kind, while it is still in the scene: a
 	// boolean result is a solid built FROM other entities, with no

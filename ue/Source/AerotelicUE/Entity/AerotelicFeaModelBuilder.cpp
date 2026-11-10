@@ -48,7 +48,7 @@ namespace AerotelicFeaModelBuilder
 				P.Thickness = L.Thickness;
 				P.Material = L.Material;
 				AerotelicMeshing::PlaceMesh(P.Mesh, Transform);
-				if (bMirror) AerotelicMeshing::MirrorY(P.Mesh);
+				if (bMirror) Entity->ReflectMesh(P.Mesh);
 				Out.Add(MoveTemp(P));
 			}
 			return Out;

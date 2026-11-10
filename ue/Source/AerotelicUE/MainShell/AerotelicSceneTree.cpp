@@ -2,6 +2,7 @@
 #include "Widgets/MessageBox.h"
 #include "AerotelicDesignDock.h"
 #include "AerotelicTransformDialog.h"
+#include "AerotelicMirrorDialog.h"
 #include "AerotelicStructureDialog.h"
 
 #include "Widgets/Layout/SBorder.h"
@@ -578,17 +579,15 @@ TSharedPtr<SWidget> SAerotelicSceneTree::MakeEntityMenu(FItem Item)
 	{
 		Menu.AddMenuSeparator();
 
-		Menu.AddMenuEntry(LOCTEXT("Mirrored", "Mirrored"),
-			LOCTEXT("MirroredTip", "Derive a port-side copy by reflecting about Y = 0. The mirrored half is never edited on its own -- it always follows this entity."),
+		// The Mirror operation (2026-11-10): a dialog beside Transform, for
+		// any body -- the plane (any normal, an offset) and whether the
+		// reflected copy is on; the copy follows this entity, its structure
+		// included. A tick marks an entity that is mirrored now.
+		Menu.AddMenuEntry(LOCTEXT("Mirror", "Mirror..."),
+			LOCTEXT("MirrorTip", "Reflect this entity in a plane of your choice (the aircraft's symmetry plane y = 0 by default) into a derived copy, structure and all. The copy is never edited on its own -- it always follows this entity. Ticked when the copy is on."),
 			FSlateIcon(),
 			FUIAction(
-				FExecuteAction::CreateLambda([this, Entity]()
-				{
-					if (!Entity.IsValid()) return;
-					Entity->SetMirrored(!Entity->IsMirrored());
-					Status(FText::Format(Entity->IsMirrored() ? LOCTEXT("StatusMirrored", "{0} is now mirrored") : LOCTEXT("StatusUnmirrored", "{0} is no longer mirrored"),
-						FText::FromString(Entity->EntityName)));
-				}),
+				FExecuteAction::CreateLambda([Entity]() { if (Entity.IsValid()) OpenAerotelicMirrorDialog(Entity.Get()); }),
 				FCanExecuteAction(),
 				FIsActionChecked::CreateLambda([Entity]() { return Entity.IsValid() && Entity->IsMirrored(); })),
 			NAME_None, EUserInterfaceActionType::ToggleButton);

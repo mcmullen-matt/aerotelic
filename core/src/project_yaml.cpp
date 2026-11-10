@@ -899,6 +899,16 @@ YAML::Node EncodeEntity(const ProjectEntity& e) {
 	n["name"] = e.name;
 	n["type"] = std::string(EntityTypeName(e.type));
 	n["mirror"] = e.mirror;
+	if (e.mirror_normal != std::array<double, 3>{0.0, 1.0, 0.0} || e.mirror_offset != 0.0) {
+		YAML::Node plane;
+		YAML::Node normal;
+		for (double v : e.mirror_normal) normal.push_back(v);
+		normal.SetStyle(YAML::EmitterStyle::Flow);
+		plane["normal"] = normal;
+		plane["offset"] = e.mirror_offset;
+		plane.SetStyle(YAML::EmitterStyle::Flow);
+		n["mirror_plane"] = plane;
+	}
 	n["placement"] = Encode(e.placement);
 	YAML::Node model_node;
 	std::visit([&](const auto& spec) { model_node = Encode(spec); }, e.model);
@@ -928,6 +938,15 @@ ProjectEntity DecodeEntity(const YAML::Node& node, std::vector<std::string>* ign
 	else e.name = "Entity";
 	e.type = ParseEntityType(node["type"].as<std::string>());
 	e.mirror = node["mirror"] ? node["mirror"].as<bool>() : false;
+	if (const YAML::Node& plane = node["mirror_plane"]; plane && plane.IsMap()) {
+		if (plane["normal"] && plane["normal"].IsSequence() && plane["normal"].size() == 3) {
+			for (size_t i = 0; i < 3; ++i) e.mirror_normal[i] = plane["normal"][i].as<double>();
+		}
+		if (plane["offset"]) e.mirror_offset = plane["offset"].as<double>();
+		if (e.mirror_normal[0] == 0.0 && e.mirror_normal[1] == 0.0 && e.mirror_normal[2] == 0.0) {
+			throw std::invalid_argument("Entity '" + e.name + "': the mirror plane's normal is a zero vector.");
+		}
+	}
 	e.placement = DecodePlacement(node["placement"]);
 	const YAML::Node& model_node = node["model"];
 	switch (e.type) {

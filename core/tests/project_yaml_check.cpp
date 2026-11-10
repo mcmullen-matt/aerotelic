@@ -258,6 +258,35 @@ void CheckPlacementRoundTrip() {
 		CheckClose(p.rotation_axis[i], e.placement.rotation_axis[i], 1e-9,
 			"placement round trip: the derived axis agrees with the triple");
 	}
+
+	// The mirror plane (2026-11-10): the default y = 0 writes no key and
+	// reads back as itself; another plane round-trips; a zero normal is
+	// refused.
+	{
+		ProjectEntity m = e;
+		m.mirror = true;
+		ProjectEntity back_default = RoundTripThroughText(m);
+		Check(back_default.mirror && back_default.mirror_normal == std::array<double, 3>{0.0, 1.0, 0.0} && back_default.mirror_offset == 0.0,
+			"mirror plane round trip: the default plane y = 0 comes back");
+		{
+			ProjectFile pf;
+			pf.entities.push_back(m);
+			const std::string path = AEROTELIC_TESTS_DIR "/project_yaml_check_tmp.yaml";
+			SaveProjectYaml(pf, path);
+			std::ifstream in(path);
+			std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+			Check(text.find("mirror_plane") == std::string::npos, "mirror plane round trip: the default plane writes no key");
+		}
+		m.mirror_normal = {0.0, 0.0, 2.0};
+		m.mirror_offset = 1.5;
+		ProjectEntity back_plane = RoundTripThroughText(m);
+		Check(back_plane.mirror_normal == std::array<double, 3>{0.0, 0.0, 2.0} && back_plane.mirror_offset == 1.5,
+			"mirror plane round trip: a plane normal to z at 1.5 (the normal kept as typed)");
+		m.mirror_normal = {0.0, 0.0, 0.0};
+		bool threw = false;
+		try { RoundTripThroughText(m); } catch (const std::invalid_argument&) { threw = true; }
+		Check(threw, "mirror plane round trip: a zero normal is refused");
+	}
 }
 
 // `mass:` on an entity -- asserted or by density -- round-trips, and an

@@ -12,6 +12,28 @@
 
 #include "AerotelicEntityActor.generated.h"
 
+// The plane an entity's mirrored copy is reflected in (the scene tree's
+// Mirror dialog, 2026-11-10): a normal (any direction; kept as typed) and
+// an offset along it from the origin, in project units -- the plane is
+// normal . p = offset, placed with the model scale. The default is the
+// aircraft's symmetry plane y = 0. Saved as `mirror_plane:` when it is
+// not the default.
+USTRUCT()
+struct FAerotelicMirrorPlane
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	FVector Normal = FVector(0.0, 1.0, 0.0);
+
+	UPROPERTY()
+	double Offset = 0.0;
+
+	bool IsDefault() const { return Normal.Equals(FVector(0.0, 1.0, 0.0), 0.0) && Offset == 0.0; }
+	bool operator==(const FAerotelicMirrorPlane& O) const { return Normal.Equals(O.Normal, 0.0) && Offset == O.Offset; }
+	bool operator!=(const FAerotelicMirrorPlane& O) const { return !(*this == O); }
+};
+
 // One solid the entity's parameterisation produces. Most entities make a
 // single "Main" body; a propeller makes a Spinner and one Blade per blade.
 // Name is the role (what the body IS); the scene tree shows the display
@@ -277,12 +299,27 @@ public:
 
 	// ---- mirroring ----
 
-	// A port-side copy reflected about world Y = 0, derived from the placed
-	// shape exactly as WingDesigner's MirrorFeature is: never edited on its
-	// own, it always follows this entity (including its placement, so a
-	// mirrored propeller comes out the opposite hand).
+	// A reflected copy of the placed shape in the entity's MIRROR PLANE,
+	// derived from it exactly as WingDesigner's MirrorFeature is: never
+	// edited on its own, it always follows this entity (including its
+	// placement, so a mirrored propeller comes out the opposite hand). The
+	// plane is the scene tree's Mirror dialog's (2026-11-10): any normal and
+	// an offset along it, in project units; the default is the aircraft's
+	// symmetry plane y = 0, the only plane there was before.
 	void SetMirrored(bool bInMirrored);
 	bool IsMirrored() const { return bMirrored; }
+	const FAerotelicMirrorPlane& GetMirrorPlane() const { return MirrorPlane; }
+	// Sets the plane (and whether the mirror is on): the mirror redraws and
+	// every boolean over it rebuilds.
+	void SetMirrorPlane(const FAerotelicMirrorPlane& Plane, bool bInMirrored);
+	// The plane in WORLD (placed) coordinates: the normal, unit, and a point
+	// on it (the offset scaled with the model).
+	aerotelic::Vec3 MirrorNormal() const;
+	aerotelic::Vec3 MirrorPoint() const;
+	// Reflect placed geometry in the plane.
+	void ReflectMesh(aerotelic::TriMesh& Mesh) const;
+	TopoDS_Shape ReflectShape(const TopoDS_Shape& Placed) const;
+	FVector ReflectPoint(const FVector& P) const;
 	void SetMirrorBodyVisible(int32 Index, bool bVisible);
 	bool IsMirrorBodyVisible(int32 Index) const;
 	FString GetMirrorBodyDisplayName(int32 Index) const;
@@ -451,6 +488,7 @@ private:
 	std::unique_ptr<aerotelic::ISolidModel> Model;
 	bool bSelected = false;
 	bool bMirrored = false;
+	FAerotelicMirrorPlane MirrorPlane;
 	// Whether the surface/mirror meshes hold any triangles (else the box
 	// fallback, or nothing, is on screen).
 	bool bHasTessellation = false;

@@ -116,7 +116,14 @@ using ProjectBooleanBody = ProjectBody;
 struct ProjectEntity {
 	std::string name;
 	EntityType type;
+	// A reflected copy of the placed entity, derived from it (never edited
+	// on its own), in the plane with this normal through normal x offset
+	// (project units, scaled with the model at placement). The default is
+	// the aircraft's symmetry plane y = 0; the plane is written only when
+	// it is not that (`mirror_plane: {normal: [..], offset: ..}`).
 	bool mirror = false;
+	std::array<double, 3> mirror_normal{0.0, 1.0, 0.0};
+	double mirror_offset = 0.0;
 	Placement placement{{0.0, 0.0, 0.0}, {0.0, 0.0, 1.0}, 0.0};
 	EntityModelSpec model;
 	// Display state, written only when it differs from how the entity was

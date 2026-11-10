@@ -315,7 +315,7 @@ TopoDS_Shape AAerotelicEntityActor::GetPlacedShape(bool bMirror) const
 	TopoDS_Shape Placed = aerotelic::Place(Solid, { T.tx, T.ty, T.tz }, { T.ax, T.ay, T.az }, T.angle_deg, T.scale);
 	if (bMirror)
 	{
-		Placed = aerotelic::ApplyMirror(Placed, { 0.0, 0.0, 0.0 }, { 0.0, 1.0, 0.0 });
+		Placed = ReflectShape(Placed);
 	}
 	return Placed;
 }
@@ -677,6 +677,59 @@ void AAerotelicEntityActor::SetMirrored(bool bInMirrored)
 	OnBodiesChanged.Broadcast(this);
 }
 
+void AAerotelicEntityActor::SetMirrorPlane(const FAerotelicMirrorPlane& Plane, bool bInMirrored)
+{
+	const bool bPlaneChanged = MirrorPlane != Plane;
+	if (!Plane.Normal.IsNearlyZero(0.0))
+	{
+		MirrorPlane = Plane;
+	}
+	if (bMirrored != bInMirrored)
+	{
+		SetMirrored(bInMirrored);
+	}
+	else if (bPlaneChanged && bMirrored)
+	{
+		RefreshMirror();
+	}
+	if (bPlaneChanged)
+	{
+		// The mirrored half moved: the booleans over it rebuild (the
+		// document listens).
+		OnGeometryChanged.Broadcast(this);
+	}
+}
+
+aerotelic::Vec3 AAerotelicEntityActor::MirrorNormal() const
+{
+	const FVector N = MirrorPlane.Normal.IsNearlyZero(0.0) ? FVector(0.0, 1.0, 0.0) : MirrorPlane.Normal.GetUnsafeNormal();
+	return aerotelic::Vec3{N.X, N.Y, N.Z};
+}
+
+aerotelic::Vec3 AAerotelicEntityActor::MirrorPoint() const
+{
+	const aerotelic::Vec3 N = MirrorNormal();
+	return N * (MirrorPlane.Offset * GetModelScale());
+}
+
+void AAerotelicEntityActor::ReflectMesh(aerotelic::TriMesh& Mesh) const
+{
+	Mesh.Mirror(MirrorPoint(), MirrorNormal());
+}
+
+TopoDS_Shape AAerotelicEntityActor::ReflectShape(const TopoDS_Shape& Placed) const
+{
+	const aerotelic::Vec3 P = MirrorPoint(), N = MirrorNormal();
+	return aerotelic::ApplyMirror(Placed, { P.x, P.y, P.z }, { N.x, N.y, N.z });
+}
+
+FVector AAerotelicEntityActor::ReflectPoint(const FVector& V) const
+{
+	const aerotelic::Vec3 P = MirrorPoint(), N = MirrorNormal();
+	const double D = (V.X - P.x) * N.x + (V.Y - P.y) * N.y + (V.Z - P.z) * N.z;
+	return FVector(V.X - 2.0 * D * N.x, V.Y - 2.0 * D * N.y, V.Z - 2.0 * D * N.z);
+}
+
 void AAerotelicEntityActor::RefreshMirror()
 {
 	if (MirrorMesh == nullptr || IsRunningCommandlet())
@@ -698,8 +751,8 @@ void AAerotelicEntityActor::RefreshMirror()
 	TArray<FString> Roles;
 	if (!LastMeshes.empty())
 	{
-		// The model's own meshes, placed and reflected about Y = 0 (what
-		// MirrorFeature does to EntityShapeFeature's result): an
+		// The model's own meshes, placed and reflected in the mirror plane
+		// (what MirrorFeature does to EntityShapeFeature's result): an
 		// off-centreline boom lands on the other side, and a rotated
 		// propeller comes out the opposite hand.
 		std::vector<aerotelic::NamedMesh> Mirrored = LastMeshes;
@@ -707,7 +760,7 @@ void AAerotelicEntityActor::RefreshMirror()
 		for (aerotelic::NamedMesh& M : Mirrored)
 		{
 			AerotelicMeshing::PlaceMesh(M.mesh, Transform);
-			AerotelicMeshing::MirrorY(M.mesh);
+			ReflectMesh(M.mesh);
 		}
 		Roles = RefreshMeshFromTriangles(Mirrored, MirrorMesh, MirrorMaterials, MirrorEdgeMesh, MirrorEdgeMaterials);
 	}
@@ -720,7 +773,7 @@ void AAerotelicEntityActor::RefreshMirror()
 			// reflected.
 			const aerotelic::EntityTransform T = GetEntityTransform();
 			Placed = aerotelic::Place(LastSolid.IsNull() ? Model->BuildSolid() : LastSolid, { T.tx, T.ty, T.tz }, { T.ax, T.ay, T.az }, T.angle_deg, T.scale);
-			Placed = aerotelic::ApplyMirror(Placed, { 0.0, 0.0, 0.0 }, { 0.0, 1.0, 0.0 });
+			Placed = ReflectShape(Placed);
 		}
 		catch (const std::exception& e)
 		{
@@ -1259,7 +1312,7 @@ std::vector<aerotelic::NamedMesh> AAerotelicEntityActor::GetPlacedLayerMeshes(co
 		M.name = TCHAR_TO_UTF8(*L.Name);
 		M.mesh = L.Mesh;
 		AerotelicMeshing::PlaceMesh(M.mesh, Transform);
-		if (bMirror) AerotelicMeshing::MirrorY(M.mesh);
+		if (bMirror) ReflectMesh(M.mesh);
 		Out.push_back(std::move(M));
 	}
 	return Out;
@@ -1340,8 +1393,8 @@ void AAerotelicEntityActor::RefreshStructureMirror()
 		MirrorLayerEdgeMaterials.Reset();
 		return;
 	}
-	// The rib discs placed and reflected about Y = 0, as the bodies are,
-	// drawn from both sides like the originals.
+	// The rib discs placed and reflected in the mirror plane, as the bodies
+	// are, drawn from both sides like the originals.
 	const FTransform Transform = GetActorTransform();
 	TArray<TObjectPtr<UMaterialInstanceDynamic>> NewMaterials, NewEdgeMaterials;
 	int32 Section = 0;
@@ -1350,7 +1403,7 @@ void AAerotelicEntityActor::RefreshStructureMirror()
 		if (V.Section == INDEX_NONE) continue;
 		aerotelic::TriMesh Mesh = Bodies[V.BodyIndex].Generated->GetLayers()[V.LayerIndex].Mesh;
 		AerotelicMeshing::PlaceMesh(Mesh, Transform);
-		AerotelicMeshing::MirrorY(Mesh);
+		ReflectMesh(Mesh);
 		TArray<FVector> Vertices;
 		TArray<int32> Triangles;
 		TArray<FVector> Normals;
@@ -1533,7 +1586,7 @@ std::vector<aerotelic::NamedMesh> AAerotelicEntityActor::GetPlacedMeshes(bool bM
 		AerotelicMeshing::PlaceMesh(M.mesh, Transform);
 		if (bMirror)
 		{
-			AerotelicMeshing::MirrorY(M.mesh);
+			ReflectMesh(M.mesh);
 		}
 	}
 	return Meshes;
@@ -1561,7 +1614,7 @@ FBox AAerotelicEntityActor::GetPlacedBounds(bool bMirror) const
 			Corner = Transform.TransformPosition(Corner); // with the model scale
 			if (bMirror)
 			{
-				Corner.Y = -Corner.Y;
+				Corner = ReflectPoint(Corner);
 			}
 			Box += Corner;
 		}
