@@ -131,9 +131,13 @@ public:
 	// (wing_model.hpp WingBodyStructurePlan), or null: not a wing, or
 	// nothing planned for that body.
 	static const aerotelic::WingBodyStructurePlan* WingPlanFor(const AAerotelicEntityActor* Entity, const FString& Role);
-	// Whether the body has an interior structure to generate: a skin with
-	// plane networks, or a wing body with a plan.
+	// Whether the body has an interior structure to generate: a skin on a
+	// wing body with a plan, or on a boolean result whose operands have
+	// generated layers to take over.
 	static bool WantsStructure(const AAerotelicEntityActor* Entity, const FAerotelicBody& Body);
+	// Whether any operand body of the boolean result carries generated
+	// layers with meshes (false for anything but a boolean).
+	static bool OperandsHaveLayers(const AAerotelicEntityActor* Boolean);
 	// The Structure dialog's Apply (2026-11-08 night, replacing its Generate
 	// button): gives the body the structure AND, when it is a skin, builds
 	// its layers at once -- generation is under a second, so there is no

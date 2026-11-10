@@ -358,6 +358,91 @@ int32 UAerotelicRealProjectTestCommandlet::Main(const FString& Params)
 					// temp directory for a look at where a peak sits.
 					if (!FParse::Param(FCommandLine::Get(), TEXT("keepvtk"))) IFileManager::Get().Delete(*Request.VtkPath, false, true, true);
 
+					// The airframe WITH THE WINGS' STRUCTURE (2026-11-10, items 2 and
+					// 5 of the redesign). Every wing-type operand -- Wing, VT, HT --
+					// carries its default two spars and eight ribs, generated once it
+					// had a skin (the mass step above); a fused result's bodies take
+					// the operands' layers that fall inside them, so the airframe's
+					// body holds the wing's, the fin's and the tailplane's spars and
+					// ribs, both halves -- the wing's spars running through the nacelle
+					// as a carry-through. Built through the shared model builder as
+					// the dialog builds it: a region per layer, the layers' nodes
+					// shared with the skin, the same tip load solved, and the tip
+					// moving LESS than for the skin alone.
+					UE_LOG(LogAerotelicRealProjectTest, Display, TEXT("step: p38a with the wings' structure"));
+					{
+						const FString Role = UTF8_TO_TCHAR(Placed[Main].name.c_str());
+						aerotelic::BodyStructure S = Bool->GetBodyStructure(Role) != nullptr ? *Bool->GetBodyStructure(Role) : aerotelic::BodyStructure();
+						S.material = *aerotelic::FindMaterialPreset("Aluminium 2024-T3 sheet");
+						S.skin_thickness = Thickness;
+						Check(Bool->SetBodyStructure(Role, S), FString::Printf(TEXT("p38a structure: the fused body '%s' takes a skin"), *Role));
+						Doc->FlushPendingRebuilds();
+						const FAerotelicBodyStructure* GW = Wing->GetGeneratedStructure(TEXT("Main"));
+						Check(GW != nullptr && GW->IsGenerated() && GW->GetLayers().size() == 4, FString::Printf(TEXT("p38a structure: the wing built its two spars and its ribs (%d layers)"), GW ? (int32)GW->GetLayers().size() : -1));
+						const FAerotelicBodyStructure* GB = Bool->GetGeneratedStructure(Role);
+						int32 Spars = 0, RibLayers = 0;
+						if (GB != nullptr)
+						{
+							for (const FAerotelicStructureLayer& L : GB->GetLayers())
+							{
+								if (L.Kind == FAerotelicStructureLayer::EKind::Spars) ++Spars;
+								if (L.Kind == FAerotelicStructureLayer::EKind::Ribs) ++RibLayers;
+							}
+						}
+						Check(GB != nullptr && GB->IsGenerated() && Spars >= 6 && RibLayers >= 3,
+							FString::Printf(TEXT("p38a structure: the fused body took its operands' layers, both halves (%d spar webs, %d rib layers of %d layers; %s)"), Spars, RibLayers, GB ? (int32)GB->GetLayers().size() : 0, GB ? *FString::Join(GB->GetStats().Warnings, TEXT("; ")) : TEXT("")));
+						bool bNamed = false;
+						if (GB != nullptr) for (const FAerotelicStructureLayer& L : GB->GetLayers()) bNamed = bNamed || L.Name.Contains(TEXT("Wing (mirror) / Front spar"));
+						Check(bNamed, "p38a structure: the layers are named after their operand ('Wing (mirror) / Front spar')");
+
+						AerotelicFeaModelBuilder::FOptions Options;
+						AerotelicFeaModelBuilder::FCache Cache;
+						AerotelicFeaModelBuilder::FBuilt Built;
+						FAerotelicBooleanOperand BoolOp;
+						BoolOp.Entity = Bool;
+						const bool bAppended = AerotelicFeaModelBuilder::AppendBody(BoolOp, Role, TEXT("airframe"), 0, Options, Cache, Built);
+						int32 SkinNodes = 0;
+						for (const AerotelicStructuralFea::FShellFace& F : Built.ShellFaces) SkinNodes = FMath::Max(SkinNodes, FMath::Max3(F.N[0], F.N[1], F.N[2]) + 1);
+						Check(bAppended && Built.RibFaces.Num() > 0 && Built.Regions.Num() == 1 + (GB ? (int32)GB->GetLayers().size() - 1 : 0) && SkinNodes > 0 && (int32)Built.Nodes.size() > SkinNodes,
+							FString::Printf(TEXT("p38a structure: the airframe builds as skin shells with %d structure shells in %d regions on %d nodes, %d of them the skin's (%s)"), Built.RibFaces.Num(), Built.Regions.Num(), (int32)Built.Nodes.size(), SkinNodes, *FString::Join(Built.Problems, TEXT("; "))));
+						if (bAppended && Built.RibFaces.Num() > 0)
+						{
+							AerotelicStructuralFea::FRequest SparRequest;
+							SparRequest.Nodes = &Built.Nodes;
+							SparRequest.ShellFaces = Built.ShellFaces;
+							SparRequest.RibFaces = Built.RibFaces;
+							SparRequest.Regions = Built.Regions;
+							SparRequest.LengthToSI = 1.0;
+							int32 SparTip = 0;
+							for (int32 n = 1; n < static_cast<int32>(Built.Nodes.size()); ++n) if (Built.Nodes[n].y > Built.Nodes[SparTip].y) SparTip = n;
+							AerotelicStructuralFea::FPointForce SparLoad;
+							SparLoad.At = Built.Nodes[SparTip];
+							SparLoad.Force = aerotelic::Vec3{ 0.0, 0.0, -Force };
+							SparRequest.PointForces.Add(SparLoad);
+							SparRequest.Supports.Add(Centre);
+							SparRequest.LinearSolver = TEXT("sparse_lu");
+							SparRequest.VtkPath = FPaths::Combine(FPlatformProcess::UserTempDir(), TEXT("aerotelic_real_project_test_p38a_structure.vtk"));
+							IFileManager::Get().Delete(*SparRequest.VtkPath, false, true, true);
+							AerotelicFeaPreprocess::FModel SparPre;
+							FString SparPreError;
+							const bool bSparPre = AerotelicFeaPreprocess::Build(SparRequest, SparPre, SparPreError);
+							Check(bSparPre && SparPre.RibFaces.Num() == Built.RibFaces.Num() && SparPre.FloatingRegions.Num() == 0,
+								FString::Printf(TEXT("p38a structure: every layer is on the load path, none floats (%d rib faces, %d floating; %s)"), bSparPre ? SparPre.RibFaces.Num() : -1, bSparPre ? SparPre.FloatingRegions.Num() : -1, *SparPreError));
+							AerotelicStructuralFea::FResult RS;
+							FString SparError;
+							const bool bSparSolved = AerotelicStructuralFea::Run(SparRequest, RS, SparError);
+							Check(bSparSolved, FString::Printf(TEXT("p38a structure: the structured airframe solved (%s)"), bSparSolved ? *FString::Printf(TEXT("%d nodes, %d shells (%d structure), %d dof, %.1f s"), RS.Nodes, RS.Shells, RS.RibShells, RS.Dofs, RS.Seconds) : *SparError));
+							if (bSparSolved)
+							{
+								Check(RS.bBalanced && FMath::Abs(RS.Reaction[2] - Force) <= 0.02 * Force, FString::Printf(TEXT("p38a structure: the clamp reacts the tip load (%.4g of %.4g N)"), RS.Reaction[2], Force));
+								Check(RS.RibShells == Built.RibFaces.Num() && RS.Entries.ContainsByPredicate([](const AerotelicStructuralFea::FEntryResult& E) { return E.Kind == TEXT("rib"); }),
+									"p38a structure: the result carries the structure's shells and a rib entry");
+								Check(RS.MaxDisplacement > 0.0 && RS.MaxDisplacement < 0.9 * R.MaxDisplacement,
+									FString::Printf(TEXT("p38a structure: the spars and ribs stiffen the airframe -- the tip moves %.4g m against %.4g m for the skin alone (%.0f%%)"), RS.MaxDisplacement, R.MaxDisplacement, 100.0 * RS.MaxDisplacement / R.MaxDisplacement));
+								IFileManager::Get().Delete(*SparRequest.VtkPath, false, true, true);
+							}
+						}
+					}
 				}
 			}
 		}

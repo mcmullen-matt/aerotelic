@@ -3,6 +3,9 @@
 #include "AerotelicEntityActor.h"
 #include "AerotelicBooleanModel.h"
 #include "AerotelicBodyStructure.h"
+#include "AerotelicMeshing.h"
+
+#include "aerotelic/sdf.hpp"
 
 #include "ReferenceImagePaths.h"
 
@@ -306,11 +309,13 @@ void UAerotelicDocumentSubsystem::OnEntityBodyStructureChanged(AAerotelicEntityA
 		Entity->ClearGeneratedStructure(Role);
 		return;
 	}
-	// Never generated: a wing body with a plan builds as soon as it has a
-	// skin; any other waits for Generate.
-	if (G == nullptr && WingPlanFor(Entity, Role) == nullptr)
+	// Never generated: a body with structure to build (a wing's plan, a
+	// boolean's operand layers) builds as soon as it has a skin; any other
+	// waits for Generate.
+	if (G == nullptr)
 	{
-		return;
+		const int32 Index = Entity->FindBodyIndex(Role);
+		if (!Entity->GetBodies().IsValidIndex(Index) || !WantsStructure(Entity, Entity->GetBodies()[Index])) return;
 	}
 	QueueRebuild({ Entity, Role });
 	LastQueueTime = FPlatformTime::Seconds();
@@ -353,9 +358,10 @@ void UAerotelicDocumentSubsystem::QueueDependentRebuilds(const AAerotelicEntityA
 		// bay that moved).
 		for (const FAerotelicBody& Body : Weak->GetBodies())
 		{
-			// Generated once already, or -- the entity's own bodies -- wanting a
-			// first generation (a wing whose build just planned one).
-			if (!Body.Generated.IsValid() && !(bSelf && WantsStructure(Weak.Get(), Body))) continue;
+			// Generated once already, or wanting a first generation: the
+			// entity's own bodies (a wing whose build just planned one) and the
+			// results over it (a boolean whose operand just grew layers).
+			if (!Body.Generated.IsValid() && !((bSelf || bOver) && WantsStructure(Weak.Get(), Body))) continue;
 			bool bExcludes = false;
 			for (const std::string& Name : Body.Structure.exclusions)
 			{
@@ -878,7 +884,25 @@ const aerotelic::WingBodyStructurePlan* UAerotelicDocumentSubsystem::WingPlanFor
 bool UAerotelicDocumentSubsystem::WantsStructure(const AAerotelicEntityActor* Entity, const FAerotelicBody& Body)
 {
 	if (!Body.Structure.IsSkin()) return false;
-	return WingPlanFor(Entity, Body.Name) != nullptr;
+	if (WingPlanFor(Entity, Body.Name) != nullptr) return true;
+	return OperandsHaveLayers(Entity);
+}
+
+bool UAerotelicDocumentSubsystem::OperandsHaveLayers(const AAerotelicEntityActor* Boolean)
+{
+	if (Boolean == nullptr || Boolean->GetEntityType() != EntityType::Boolean || Boolean->GetModel() == nullptr) return false;
+	const FAerotelicBooleanModel* BM = Boolean->GetModelAs<FAerotelicBooleanModel>();
+	for (const FAerotelicBooleanOperand& Op : BM->Operands)
+	{
+		if (!Op.Entity.IsValid()) continue;
+		for (const FAerotelicBody& B : Op.Entity->GetBodies())
+		{
+			const FAerotelicBodyStructure* G = B.Generated.Get();
+			if (G == nullptr || !G->IsGenerated()) continue;
+			for (const FAerotelicStructureLayer& L : G->GetLayers()) if (!L.Mesh.IsEmpty()) return true;
+		}
+	}
+	return false;
 }
 
 bool UAerotelicDocumentSubsystem::GenerateBodyStructure(AAerotelicEntityActor* Entity, const FString& BodyRole, FString& OutError)
@@ -946,6 +970,107 @@ bool UAerotelicDocumentSubsystem::GenerateBodyStructure(AAerotelicEntityActor* E
 		}
 		TSharedPtr<FAerotelicBodyStructure> G = MakeShared<FAerotelicBodyStructure>();
 		if (!G->GenerateFromPlan(In, OutError))
+		{
+			return false;
+		}
+		Entity->SetGeneratedStructure(Role, G);
+		// The boolean results built over this wing take its layers: their
+		// bodies follow (first generation or not).
+		for (auto& Weak : Entities)
+		{
+			if (!Weak.IsValid() || Weak.Get() == Entity || !DependsOn(Weak.Get(), Entity)) continue;
+			for (const FAerotelicBody& Body : Weak->GetBodies())
+			{
+				if (Body.Generated.IsValid() || WantsStructure(Weak.Get(), Body)) QueueRebuild({ Weak, Body.Name });
+			}
+		}
+		return true;
+	}
+
+	// A BOOLEAN RESULT's structure is its operands' (2026-11-10): every
+	// layer the operands' bodies generated -- a wing's ribs, spars and
+	// stringers, its mirrored half's too -- placed as the operands are, and
+	// given to the result body that holds it (the body most of its vertices
+	// fall inside or on; the fuse removed the skins between the operands,
+	// so a wing's spars run on through the fuselage as a carry-through).
+	// Each keeps its kind, thickness, material and mesh, named
+	// "<operand> / <layer>", brought into the result's own frame.
+	if (Entity->GetEntityType() == EntityType::Boolean)
+	{
+		const FAerotelicBooleanModel* BM = Entity->GetModelAs<FAerotelicBooleanModel>();
+		const aerotelic::NamedMesh* Own = nullptr;
+		for (const aerotelic::NamedMesh& M : Entity->GetLastMeshes())
+		{
+			if (FString(UTF8_TO_TCHAR(M.name.c_str())) == Role) { Own = &M; break; }
+		}
+		if (Own == nullptr || Own->mesh.IsEmpty())
+		{
+			OutError = FString::Printf(TEXT("%s: no geometry could be built for the body."), *Label);
+			return false;
+		}
+		FAerotelicBodyStructure::FLayerInputs In;
+		In.Label = Label;
+		In.Structure = S;
+		In.Body = Own->mesh;
+		std::array<double, 9> R;
+		aerotelic::Vec3 T;
+		Entity->GetPlacementMatrix(R, T, In.Scale);
+		// World -> the result's local frame: x = R^T (x' - T) / scale.
+		auto Unplace = [&R, &T, &In](aerotelic::TriMesh& Mesh)
+		{
+			const double Sc = In.Scale != 0.0 ? 1.0 / In.Scale : 1.0;
+			const std::array<double, 9> Rt{{R[0] * Sc, R[3] * Sc, R[6] * Sc, R[1] * Sc, R[4] * Sc, R[7] * Sc, R[2] * Sc, R[5] * Sc, R[8] * Sc}};
+			const aerotelic::Vec3 Shift{-(Rt[0] * T.x + Rt[1] * T.y + Rt[2] * T.z), -(Rt[3] * T.x + Rt[4] * T.y + Rt[5] * T.z), -(Rt[6] * T.x + Rt[7] * T.y + Rt[8] * T.z)};
+			Mesh.Transform(Rt, Shift);
+		};
+		aerotelic::TriMesh PlacedBody = Own->mesh;
+		AerotelicMeshing::PlaceMesh(PlacedBody, Entity->GetActorTransform());
+		const aerotelic::MeshSdf Sdf(PlacedBody);
+		const double OnSkin = 1e-6 * FMath::Max(PlacedBody.Bounds().Diagonal(), 1e-12);
+		int32 Elsewhere = 0;
+		if (BM != nullptr)
+		{
+			for (const FAerotelicBooleanOperand& Op : BM->Operands)
+			{
+				if (!Op.Entity.IsValid()) continue;
+				const AAerotelicEntityActor* OpEntity = Op.Entity.Get();
+				const FString OpLabel = OpEntity->EntityName + (Op.bMirror ? TEXT(" (mirror)") : TEXT(""));
+				for (const FAerotelicBody& OB : OpEntity->GetBodies())
+				{
+					const FAerotelicBodyStructure* OG = OB.Generated.Get();
+					if (OG == nullptr || !OG->IsGenerated()) continue;
+					for (const FAerotelicStructureLayer& L : OG->GetLayers())
+					{
+						if (L.Mesh.IsEmpty()) continue;
+						aerotelic::TriMesh Placed = L.Mesh;
+						AerotelicMeshing::PlaceMesh(Placed, OpEntity->GetActorTransform());
+						if (Op.bMirror) AerotelicMeshing::MirrorY(Placed);
+						// Inside this result body (or on its skin, as a rim is)?
+						// Sampled, by majority.
+						int32 Inside = 0, Total = 0;
+						for (size_t v = 0; v < Placed.vertices.size(); v += 5)
+						{
+							++Total;
+							if (Sdf.Distance(Placed.vertices[v]) <= OnSkin) ++Inside;
+						}
+						if (Total == 0 || 2 * Inside < Total) { ++Elsewhere; continue; }
+						FAerotelicStructureLayer Copy = L;
+						Copy.Name = FString::Printf(TEXT("%s / %s"), *OpLabel, *L.Name);
+						Unplace(Placed);
+						Copy.Mesh = std::move(Placed);
+						In.Layers.push_back(std::move(Copy));
+					}
+				}
+			}
+		}
+		if (In.Layers.empty())
+		{
+			Entity->ClearGeneratedStructure(Role);
+			return true;
+		}
+		if (Elsewhere > 0) In.Notes.Add(FString::Printf(TEXT("%d operand layer(s) lie in another body of this result"), Elsewhere));
+		TSharedPtr<FAerotelicBodyStructure> G = MakeShared<FAerotelicBodyStructure>();
+		if (!G->GenerateFromLayers(In, OutError))
 		{
 			return false;
 		}

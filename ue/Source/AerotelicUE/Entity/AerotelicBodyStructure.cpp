@@ -65,6 +65,63 @@ const TCHAR* FAerotelicStructureLayer::KindName(EKind Kind)
 	}
 }
 
+bool FAerotelicBodyStructure::GenerateFromLayers(const FLayerInputs& In, FString& OutError)
+{
+	const aerotelic::BodyStructure& S = In.Structure;
+	if (!(S.skin_thickness > 0.0))
+	{
+		OutError = FString::Printf(TEXT("%s is a solid (no skin thickness): there is no interior structure to take over."), *In.Label);
+		return false;
+	}
+	const double T0 = FPlatformTime::Seconds();
+	try
+	{
+		RequireClosedBody(In.Body, In.Label, TEXT("the body"));
+		const double Area = In.Scale * In.Scale;
+		std::vector<FAerotelicStructureLayer> NewLayers;
+		{
+			FAerotelicStructureLayer Skin;
+			Skin.Name = TEXT("Skin");
+			Skin.Kind = FAerotelicStructureLayer::EKind::Skin;
+			Skin.Material = S.material;
+			Skin.Thickness = S.skin_thickness;
+			Skin.Area = In.Body.SurfaceArea() * Area;
+			Skin.Volume = Skin.Area * Skin.Thickness;
+			NewLayers.push_back(std::move(Skin));
+		}
+		double RibsArea = 0.0;
+		for (const FAerotelicStructureLayer& Given : In.Layers)
+		{
+			if (Given.Mesh.IsEmpty()) continue;
+			FAerotelicStructureLayer Layer = Given;
+			Layer.Name = UniqueLayerName(Given.Name, NewLayers);
+			if (!Layer.Material.HasDensity()) Layer.Material = S.material;
+			Layer.Area = Layer.Mesh.SurfaceArea() * Area;
+			Layer.Volume = Layer.Area * Layer.Thickness;
+			RibsArea += Layer.Area;
+			NewLayers.push_back(std::move(Layer));
+		}
+		Layers = std::move(NewLayers);
+		Generated = S;
+		Stats = FStats();
+		for (const FAerotelicStructureLayer& L : Layers) Stats.Triangles += static_cast<int64>(L.Mesh.triangles.size());
+		Stats.SkinArea = Layers[0].Area;
+		Stats.RibsArea = RibsArea;
+		Stats.Warnings = In.Notes;
+		Stats.Seconds = FPlatformTime::Seconds() - T0;
+		bGenerated = true;
+		bStale = false;
+		UE_LOG(LogTemp, Log, TEXT("AerotelicBodyStructure: %s: %d layer(s) taken over from the operands, %lld structure triangles, skin area %.5g, structure area %.5g"),
+			*In.Label, static_cast<int32>(Layers.size()), Stats.Triangles, Stats.SkinArea, Stats.RibsArea);
+		return true;
+	}
+	catch (const std::exception& e)
+	{
+		OutError = UTF8_TO_TCHAR(e.what());
+		return false;
+	}
+}
+
 bool FAerotelicBodyStructure::GenerateFromPlan(const FPlanInputs& In, FString& OutError)
 {
 	const aerotelic::BodyStructure& S = In.Structure;

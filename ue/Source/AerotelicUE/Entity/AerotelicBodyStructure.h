@@ -125,6 +125,22 @@ public:
 	};
 	bool GenerateFromPlan(const FPlanInputs& Inputs, FString& OutError);
 
+	// A BOOLEAN RESULT's structure (2026-11-10): the layers its operands'
+	// bodies generated, already in this body's local frame, taken over as
+	// they are (kind, thickness, material, mesh) under the Skin layer of
+	// the body's own skin. The document picks which operand layers fall
+	// inside which result body; this just lists them.
+	struct FLayerInputs
+	{
+		FString Label;
+		aerotelic::TriMesh Body;
+		aerotelic::BodyStructure Structure;
+		double Scale = 1.0;
+		std::vector<FAerotelicStructureLayer> Layers;
+		TArray<FString> Notes;
+	};
+	bool GenerateFromLayers(const FLayerInputs& Inputs, FString& OutError);
+
 	bool IsGenerated() const { return bGenerated; }
 	const std::vector<FAerotelicStructureLayer>& GetLayers() const { return Layers; }
 	const FAerotelicStructureLayer* FindLayer(const FString& Name) const;
