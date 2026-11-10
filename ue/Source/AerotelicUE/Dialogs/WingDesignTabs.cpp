@@ -12,6 +12,7 @@
 #include "Widgets/Layout/SBox.h"
 #include "Widgets/Layout/SScrollBox.h"
 #include "Widgets/Text/STextBlock.h"
+#include "Widgets/Input/SCheckBox.h"
 #include "Widgets/Input/SComboBox.h"
 #include "Widgets/SBoxPanel.h"
 
@@ -109,6 +110,12 @@ FText FWingDesignTabs::GetHelpText() const
 			"Semi-span and root chord set the size, the sweep angle is measured at the chord fraction given (0 = leading edge, 1 = trailing edge). "
 			"The outline below follows the inputs; the derived metrics are the aspect ratio, taper ratio and wetted area.");
 	}
+	const FText Symmetry = LOCTEXT("HelpSymmetry",
+		"SYMMETRY\nSymmetric builds the wing from tip to tip as one body: every input describes the starboard half (η from 0 at the root to 1 at the tip) and the port half is its reflection in the symmetry plane y = 0. "
+		"A spar or stringer that reaches the root is then one uninterrupted web across the centreline, a centre rib stands in the symmetry plane, and each flap becomes two bodies (the port one named \"<flap> (port)\"). "
+		"Where the dihedral at the root is not zero the root section's plane is tilted and the section straddles y = 0, so the body takes a DERIVED section in the plane -- the orthogonal projection of the root section onto y = 0 -- "
+		"and a ruled root bay from it out to the first station whose section lies wholly on the starboard side; the derived section is the centre rib's rim. "
+		"Off, the half wing alone is built; a separate reflected copy is the scene tree's Mirror.");
 	const FText Dihedral = FText::Format(LOCTEXT("HelpDihedral", "DIHEDRAL\n{0}"), kDihedralInfo);
 	const FText Twist = FText::Format(LOCTEXT("HelpTwist", "TWIST\n{0}"), kTwistInfo);
 	const FText Sections = LOCTEXT("HelpSections",
@@ -133,7 +140,7 @@ FText FWingDesignTabs::GetHelpText() const
 		"STRINGERS are strips standing a given height in from the upper or lower skin along such a line. Each element is a shell with its own thickness (a build figure, not scaled with the model) and takes the body's material unless the project file gives it one. "
 		"A spar or stringer must end clear of a flap's pocket or run through it ahead of the lips, and spars may not cross. Where the chord collapses (a pointed tip, a fin's pointed root) the elements stop at the last station where their feet are still a few mesh tolerances apart, and say so in the layer's note; a rib closes the bay there. "
 		"On Apply the rib rims and spar feet become vertex lines of the skin mesh, the ribs are meshed as discs on them, and the layers appear under the body in the Scene tree (Skin, Ribs, each spar, each stringer).");
-	return FText::Join(FText::FromString(TEXT("\n\n")), PlanformHelp, Dihedral, Twist, Sections, ControlSurfaces, Structure, Axes);
+	return FText::Join(FText::FromString(TEXT("\n\n")), PlanformHelp, Symmetry, Dihedral, Twist, Sections, ControlSurfaces, Structure, Axes);
 }
 
 void FWingDesignTabs::NotifyChanged()
@@ -318,10 +325,33 @@ TSharedRef<SWidget> FWingDesignTabs::BuildStandardPlanformTab(TrapPlanform* Trap
 		[
 			SNew(SVerticalBox)
 			+ SVerticalBox::Slot().AutoHeight() [ MakeGroup(LOCTEXT("TrapGroup", "Trapezoidal Planform"), Inputs) ]
+			+ SVerticalBox::Slot().AutoHeight() [ BuildSymmetryGroup() ]
 			+ SVerticalBox::Slot().AutoHeight().Padding(0, 8)
 			[ BuildOutlineView(LOCTEXT("TrapOutlineTitle", "Trapezoidal planform  ·  outline follows the inputs above")) ]
 			+ SVerticalBox::Slot().AutoHeight() [ BuildDerivedMetrics(LOCTEXT("TaperRatioMetric", "Taper Ratio:")) ]
 		];
+}
+
+TSharedRef<SWidget> FWingDesignTabs::BuildSymmetryGroup()
+{
+	if (bBlade) return SNullWidget::NullWidget;
+	WingModel* M = Model;
+	TSharedRef<SWidget> Row = SNew(SVerticalBox)
+		+ SVerticalBox::Slot().AutoHeight().Padding(0, 2)
+		[
+			SNew(SCheckBox)
+			.ToolTipText(LOCTEXT("SymmetricTip", "Build the wing from tip to tip as ONE body: the inputs describe the starboard half and the port half is its reflection in the symmetry plane y = 0, so a spar that reaches the root is one uninterrupted web across the centreline and a rib stands in the plane. Where the root has dihedral the body takes a derived section in the plane -- the root section projected onto it. Each flap becomes two bodies. Off: the half wing alone (use the scene tree's Mirror for a separate reflected copy)."))
+			.IsChecked_Lambda([M]() { return M->symmetric ? ECheckBoxState::Checked : ECheckBoxState::Unchecked; })
+			.OnCheckStateChanged_Lambda([this, M](ECheckBoxState S)
+			{
+				const bool bOn = S == ECheckBoxState::Checked;
+				if (M->symmetric != bOn) { M->symmetric = bOn; NotifyChanged(); }
+			})
+			[ SNew(STextBlock).Text(LOCTEXT("Symmetric", "Symmetric: both halves as one body, port = starboard reflected in y = 0")) ]
+		]
+		+ SVerticalBox::Slot().AutoHeight().Padding(0, 2)
+		[ MakeInfoLabel(LOCTEXT("SymmetricInfo", "On Apply the wing is lofted tip to tip: spars run uninterrupted through the centreline, a centre rib stands in the symmetry plane, and with dihedral at the root the body takes a derived section there (the root section projected onto y = 0). The Structure tab still describes one half.")) ];
+	return MakeGroup(LOCTEXT("SymmetryGroup", "Symmetry"), Row);
 }
 
 TSharedRef<SWidget> FWingDesignTabs::BuildCrankedPlanformTab(DoubleTrapPlanform* Dtp)
@@ -354,6 +384,7 @@ TSharedRef<SWidget> FWingDesignTabs::BuildCrankedPlanformTab(DoubleTrapPlanform*
 			SNew(SVerticalBox)
 			+ SVerticalBox::Slot().AutoHeight() [ MakeGroup(LOCTEXT("PlanformGroup", "Planform"), PlanformInputs) ]
 			+ SVerticalBox::Slot().AutoHeight() [ MakeGroup(LOCTEXT("SweepGroup", "Sweep"), SweepInputs) ]
+			+ SVerticalBox::Slot().AutoHeight() [ BuildSymmetryGroup() ]
 			+ SVerticalBox::Slot().AutoHeight().Padding(0, 8)
 			[ BuildOutlineView(LOCTEXT("CrankedOutlineTitle", "Cranked planform  ·  outline follows the inputs above  ·  kink chord is derived")) ]
 			+ SVerticalBox::Slot().AutoHeight() [ BuildDerivedMetrics(LOCTEXT("OverallTaper", "Overall Taper:")) ]
@@ -428,6 +459,8 @@ TSharedRef<SWidget> FWingDesignTabs::BuildNurbsPlanformTab(NURBSPlanform* Nurbs)
 		Tab->AddSlot().AutoHeight().Padding(8, 2)
 		[ NumericRow(LOCTEXT("SemiSpan", "Semi-Span:"), [Nurbs]() { return Nurbs->SemiSpan(); }, 1e-9, 1e9, 0.25,
 			[this, Nurbs](double V) { Nurbs->SetSemiSpan(V); SpanChanged(); NotifyChanged(); }) ];
+		Tab->AddSlot().AutoHeight().Padding(8, 2)
+		[ BuildSymmetryGroup() ];
 		Tab->AddSlot().AutoHeight().Padding(8, 2)
 		[ BuildDerivedMetrics(LOCTEXT("TaperRatioMetric", "Taper Ratio:")) ];
 	}

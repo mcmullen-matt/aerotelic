@@ -392,6 +392,8 @@ struct WingStructureSpec {
 // two feet's vertex ids and the number of nodes across, the same the
 // spar's own web carries there, so the two share their nodes).
 struct WingRibPlan {
+	// The station; negative on the port half of a symmetric wing, 0 for
+	// the centre rib in the symmetry plane.
 	double eta = 0.0;
 	std::string name;
 	std::vector<int> rim;
@@ -433,6 +435,8 @@ struct WingModelSpec {
 	ReferenceImageMap reference_images; // "planform", "dihedral"
 	std::vector<FlapSpec> flaps;
 	WingStructureSpec structure;
+	// Both halves as ONE body (see WingModel::symmetric).
+	bool symmetric = false;
 };
 
 class WingModel : public ISolidModel {
@@ -469,6 +473,22 @@ public:
 	// every spar's feet are vertex lines of the body meshes, and plans the
 	// elements on them (LastStructurePlans()).
 	WingStructureSpec structure;
+	// SYMMETRIC (2026-11-10): the wing is built from tip to tip as one body
+	// -- the parameterisation describes the starboard half (eta 0 to 1) and
+	// the port half is its reflection in the plane y = 0 -- so a spar that
+	// reaches the root is ONE uninterrupted web across the centreline, and
+	// a rib stands in the symmetry plane. Where the dihedral at the root is
+	// not zero the root section's plane is tilted and the section straddles
+	// y = 0 (its upper surface leans inboard); the body then takes a DERIVED
+	// section in the symmetry plane -- the orthogonal projection of the root
+	// section onto y = 0 (the owner's specification) -- and a ruled "root
+	// bay" from it to the first station whose section lies wholly on the
+	// starboard side; the derived section is the centre rib's rim. Each flap
+	// becomes two bodies, its own and "<name> (port)". BuildMeshes() does
+	// all this; BuildSolid() fuses the half with its reflection (for the STEP
+	// export), so the OCCT solid keeps the tilted root section inside the
+	// fuse rather than the derived one.
+	bool symmetric = false;
 
 	// The structure BuildMeshes() last planned, one entry per body it built
 	// (empty for a body with nothing to build). The discs the plans describe

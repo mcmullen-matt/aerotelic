@@ -324,6 +324,8 @@ YAML::Node Encode(const WingModelSpec& spec) {
 		n["flaps"] = flaps;
 	}
 	n["structure"] = EncodeWingStructure(spec.structure);
+	// Written only when set, so an older file reads the same.
+	if (spec.symmetric) n["symmetric"] = true;
 	return n;
 }
 
@@ -348,6 +350,7 @@ WingModelSpec DecodeWingModelSpec(const YAML::Node& node) {
 	// After the flaps: a wing without the key gets defaults that keep the
 	// rear spar ahead of its flaps' hinges.
 	spec.structure = (node["structure"] && node["structure"].IsMap()) ? DecodeWingStructure(node["structure"]) : WingStructureSpec::DefaultFor(spec.flaps);
+	spec.symmetric = node["symmetric"] ? node["symmetric"].as<bool>() : false;
 	if (node["sections"]) {
 		for (const auto& sn : node["sections"]) {
 			WingSectionSpec ss;

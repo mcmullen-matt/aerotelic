@@ -232,6 +232,131 @@ int main() {
 			F("flapped wing: the same after a YAML round trip (%g bodies, %g ribs, volume %.9g", again_bodies.size(), again.LastStructurePlans().empty() ? -1.0 : static_cast<double>(again.LastStructurePlans()[0].ribs.size()), v1) + F(" vs %.9g)", v0));
 	}
 
+	// ---- a symmetric wing (2026-11-10): one body tip to tip, the derived
+	// section in y = 0, the centre rib on it, the spars uninterrupted ----
+	{
+		WingModel wing = MakeWing();   // dihedral 0 -> 0.08 over the span: the root plane is tilted 4.6 degrees
+		wing.structure = WingStructureSpec::Default();
+		wing.structure.ribs.between = 4;
+		wing.symmetric = true;
+		const double semi = wing.planform().SemiSpan();
+		// The root section straddles y = 0 (the upper surface leans inboard).
+		{
+			Mat root = wing.planform().AirfoilCoordsToXyz(0.0, wing.AirfoilAt(0.0)->nurbs_curve().Sample(64));
+			double y_min = 1e30, y_max = -1e30;
+			for (int i = 0; i < root.rows(); ++i) { y_min = std::min(y_min, root(i, 1)); y_max = std::max(y_max, root(i, 1)); }
+			Check(y_min < -1e-4 && y_max > 1e-4, F("symmetric: the tilted root section straddles the symmetry plane (y %.4f to %.4f)", y_min, y_max));
+		}
+		std::vector<NamedMesh> bodies = wing.BuildMeshes(3e-4);
+		const std::vector<WingBodyStructurePlan>& plans = wing.LastStructurePlans();
+		Check(bodies.size() == 1 && plans.size() == 1 && plans[0].body == "Main", "symmetric: one body, one plan");
+		const TriMesh& body = bodies[0].mesh;
+		const WingBodyStructurePlan& plan = plans[0];
+		for (const std::string& note : plan.notes) std::printf("  note: %s\n", note.c_str());
+		Check(body.IsClosedManifold() && body.SignedVolume() > 0.0, "symmetric: the body is a closed outward manifold");
+		Check(plan.notes.empty(), "symmetric: no notes");
+		{
+			Box3 b = body.Bounds();
+			Check(std::fabs(b.min.y + b.max.y) < 1e-9 && b.max.y > 0.999 * semi, F("symmetric: the body runs tip to tip (y %.4f to %.4f)", b.min.y, b.max.y));
+			// Every vertex has a reflected twin.
+			int twins = 0;
+			for (const Vec3& p : body.vertices) {
+				const Vec3 q{p.x, -p.y, p.z};
+				for (const Vec3& r : body.vertices) if (DistanceSq(q, r) <= 1e-24) { ++twins; break; }
+			}
+			Check(twins == static_cast<int>(body.vertices.size()), F("symmetric: every vertex has its reflection in the mesh (%g of %g)", twins, body.vertices.size()));
+			// Its volume is twice the half wing's but for the root bay.
+			WingModel half = MakeWing();
+			half.structure = wing.structure;
+			const double v_half = half.BuildMeshes(3e-4)[0].mesh.SignedVolume();
+			Check(std::fabs(body.SignedVolume() - 2.0 * v_half) < 0.01 * 2.0 * v_half, F("symmetric: volume %.6g against twice the half wing's %.6g", body.SignedVolume(), 2.0 * v_half));
+		}
+		// Ribs: the four between on each side, plus the centre rib = 9.
+		Check(plan.ribs.size() == 9, F("symmetric: nine ribs, four a side and the centre rib (%g)", plan.ribs.size()));
+		const WingRibPlan* centre = nullptr;
+		int port = 0;
+		bool planar_ok = true, chords_ok = true;
+		for (const WingRibPlan& rib : plan.ribs) {
+			if (rib.name == "Centre rib") centre = &rib;
+			if (rib.name.find("(port)") != std::string::npos) ++port;
+			planar_ok = planar_ok && PlaneOffsetSpread(body, rib.rim) < 1e-9;
+			chords_ok = chords_ok && rib.chords.size() == 2;
+			for (const auto& ch : rib.chords) chords_ok = chords_ok && std::find(rib.rim.begin(), rib.rim.end(), ch[0]) != rib.rim.end() && std::find(rib.rim.begin(), rib.rim.end(), ch[1]) != rib.rim.end();
+		}
+		Check(port == 4, F("symmetric: four ribs are marked (port) (%g)", port));
+		Check(planar_ok && chords_ok, "symmetric: every rib rim is planar with both spars' chords on it");
+		if (centre) {
+			double y_worst = 0.0;
+			for (int idx : centre->rim) y_worst = std::max(y_worst, std::fabs(body.vertices[idx].y));
+			Check(y_worst == 0.0 && centre->rim.size() >= 24, F("symmetric: the centre rib's rim lies in y = 0 to the bit (%g vertices, worst |y| %.3g)", centre->rim.size(), y_worst));
+			// The derived section is the root section with y dropped: the
+			// same x and z as the tilted root airfoil's points at the rim.
+			// (4000 samples round the section: the sampling itself is under
+			// half a millimetre on this chord.)
+			Mat root = wing.planform().AirfoilCoordsToXyz(0.0, wing.AirfoilAt(0.0)->nurbs_curve().Sample(4000));
+			double off = 0.0;
+			for (int idx : centre->rim) {
+				double best = 1e30;
+				for (int i = 0; i < root.rows(); ++i) best = std::min(best, std::hypot(body.vertices[idx].x - root(i, 0), body.vertices[idx].z - root(i, 2)));
+				off = std::max(off, best);
+			}
+			Check(off < 1e-3, F("symmetric: the derived section is the root section projected (worst distance in x, z %.2e)", off));
+		} else {
+			Check(false, "symmetric: a centre rib is planned");
+		}
+		Check(plan.spars.size() == 2, F("symmetric: two spar webs, each one strip (%g)", plan.spars.size()));
+		for (const WingShellPlan& sp : plan.spars) {
+			double y_min = 1e30, y_max = -1e30;
+			for (const Vec3& p : sp.mesh.vertices) { y_min = std::min(y_min, p.y); y_max = std::max(y_max, p.y); }
+			Check(y_min < -0.99 * semi && y_max > 0.99 * semi, F(sp.name + ": one uninterrupted web tip to tip (y %.3f to %.3f)", y_min, y_max));
+			Check(CountOnBody(body, sp.mesh, 1e-12) >= 4, sp.name + ": its feet are body vertices");
+		}
+		// The port ribs' chord nodes are on the spar web as the starboard ones are.
+		if (centre) {
+			int found = 0, wanted = 0;
+			for (const WingRibPlan& rib : plan.ribs) {
+				if (rib.name.find("(port)") == std::string::npos && rib.name != "Centre rib") continue;
+				const auto& ch = rib.chords[0];
+				const Vec3 a = body.vertices[ch[0]], b = body.vertices[ch[1]];
+				for (int j = 0; j < ch[2]; ++j) {
+					const double t = j == ch[2] - 1 ? 1.0 : j * (1.0 / (ch[2] - 1));
+					const Vec3 want = a + (b - a) * t;
+					++wanted;
+					for (const Vec3& p : plan.spars[0].mesh.vertices) if (DistanceSq(p, want) <= 1e-18) { ++found; break; }
+				}
+			}
+			Check(found == wanted && wanted > 0, F("symmetric: the front spar carries the port and centre ribs' chord nodes (%g of %g)", found, wanted));
+		}
+		// With a flap: the main element plus the flap and its port twin.
+		FlapSpec f;
+		f.name = "Flap 1"; f.eta_root = 0.3; f.eta_tip = 0.7; f.hinge_root = f.hinge_tip = 0.75;
+		wing.flaps.push_back(f);
+		std::vector<NamedMesh> flapped = wing.BuildMeshes(2e-3);
+		const std::vector<WingBodyStructurePlan>& fplans = wing.LastStructurePlans();
+		Check(flapped.size() == 3 && flapped[1].name == "Flap 1" && flapped[2].name == "Flap 1 (port)" && fplans.size() == 3 && fplans[2].body == "Flap 1 (port)", F("symmetric with a flap: Main, Flap 1 and Flap 1 (port) (%g bodies)", flapped.size()));
+		bool closed = true;
+		for (const NamedMesh& m : flapped) closed = closed && m.mesh.IsClosedManifold() && m.mesh.SignedVolume() > 0.0;
+		Check(closed, "symmetric with a flap: every body is a closed outward manifold");
+		if (flapped.size() == 3) {
+			Box3 s = flapped[1].mesh.Bounds(), p = flapped[2].mesh.Bounds();
+			Check(std::fabs(s.min.y + p.max.y) < 1e-9 && std::fabs(s.max.y + p.min.y) < 1e-9 && fplans[2].ribs.size() == fplans[1].ribs.size(), "symmetric with a flap: the port flap is the starboard one's reflection, with the same ribs");
+		}
+		// The flag survives the file.
+		WingModel again(DecodeWingModelSpec(Encode(wing.Serialize())));
+		Check(again.symmetric, "symmetric: the flag survives a YAML round trip");
+		// Without a root dihedral there is no bay: the root ring is the shared ring.
+		PlanformSpec ps;
+		WingModel flat(ps, "Flat");
+		flat.AddSection(Airfoil::Naca4("0012"), 0.0);
+		flat.AddSection(Airfoil::Naca4("0012"), 1.0);
+		flat.structure = WingStructureSpec::Default();
+		flat.symmetric = true;
+		std::vector<NamedMesh> fb = flat.BuildMeshes(1e-3);
+		const WingBodyStructurePlan& fp = flat.LastStructurePlans()[0];
+		for (const std::string& note : fp.notes) std::printf("  note: %s\n", note.c_str());
+		Check(fb.size() == 1 && fb[0].mesh.IsClosedManifold() && fp.ribs.size() == 17 && fp.notes.empty(), F("symmetric, no dihedral: closed body, 17 ribs (%g), no notes", fp.ribs.size()));
+	}
+
 	// ---- refusals ----
 	{
 		WingModel wing = MakeWing();

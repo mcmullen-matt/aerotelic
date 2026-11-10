@@ -61,6 +61,11 @@ private:
 	TSharedRef<SWidget> BuildNurbsPlanformTab(aerotelic::NURBSPlanform* Nurbs);
 	TSharedRef<SWidget> BuildOutlineView(const FText& Title);
 	TSharedRef<SWidget> BuildDerivedMetrics(const FText& TaperLabel);
+	// The Symmetric group under every planform's inputs (2026-11-10): both
+	// halves as one body, the port half the starboard's reflection in y = 0,
+	// with the derived section in the symmetry plane where the root has
+	// dihedral (WingModel::symmetric). Empty for a blade.
+	TSharedRef<SWidget> BuildSymmetryGroup();
 	TSharedRef<SWidget> BuildDihedralTab();
 	TSharedRef<SWidget> BuildTwistTab();
 	TSharedRef<SWidget> BuildSectionsTab();

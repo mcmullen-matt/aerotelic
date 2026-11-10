@@ -16,6 +16,7 @@
 #include "Entity/AerotelicFeaPreprocess.h"
 #include "Entity/AerotelicFeaModelBuilder.h"
 #include "Entity/AerotelicMaterialLibrary.h"
+#include "Widgets/CurveTabControls.h"
 
 #include "aerotelic/materials.hpp"
 #include "aerotelic/mesh_cut.hpp"
@@ -646,6 +647,55 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 			WD->planform().SetSemiSpan(Span);
 			Check(Doc->ApplyEntityModel(Wing, *WingDraft, Error), "apply: restoring the wing applies");
 			Doc->FlushPendingRebuilds();
+
+			// SYMMETRIC (2026-11-10): the draft's Symmetric flag, with a root
+			// dihedral, applies as one body tip to tip -- the derived section
+			// in y = 0, a centre rib on it, each spar one web through the
+			// centreline -- and the structure regenerates on it.
+			UE_LOG(LogAerotelicDocumentTest, Display, TEXT("step: symmetric wing"));
+			{
+				const aerotelic::Mat DihedralPoles = WD->planform().DihedralCurveRef().poles();
+				const double Z0 = DihedralPoles(0, 1), Z1 = DihedralPoles(DihedralPoles.rows() - 1, 1);
+				ResetCurveToLine(WD->planform().DihedralCurveMut(), 0.0, 0.08);   // 4.6 degrees at the root
+				WD->symmetric = true;
+				Check(Doc->ApplyEntityModel(Wing, *WingDraft, Error), FString::Printf(TEXT("symmetric: the draft applies (%s)"), *Error));
+				const aerotelic::WingModel* SW = Wing->GetModelAs<aerotelic::WingModel>();
+				Check(SW != nullptr && SW->symmetric, "symmetric: the wing took the flag");
+				const std::vector<aerotelic::NamedMesh>& Own = Wing->GetLastMeshes();
+				double YMin = 0.0, YMax = 0.0;
+				if (!Own.empty()) { const aerotelic::Box3 B = Own[0].mesh.Bounds(); YMin = B.min.y; YMax = B.max.y; }
+				Check(Own.size() == 1 && Own[0].mesh.IsClosedManifold() && YMin < -0.99 * Span && YMax > 0.99 * Span,
+					FString::Printf(TEXT("symmetric: one closed body from tip to tip (y %.3f to %.3f over a semi-span of %.3f)"), YMin, YMax, Span));
+				const std::vector<aerotelic::WingBodyStructurePlan>& Plans = Wing->GetLastStructurePlans();
+				int32 Centre = 0, Port = 0;
+				if (Plans.size() == 1)
+				{
+					for (const aerotelic::WingRibPlan& R : Plans[0].ribs)
+					{
+						if (R.name == "Centre rib") ++Centre;
+						if (R.name.find("(port)") != std::string::npos) ++Port;
+					}
+				}
+				Check(Plans.size() == 1 && Plans[0].ribs.size() == 17 && Centre == 1 && Port == 8 && Plans[0].spars.size() == 2,
+					FString::Printf(TEXT("symmetric: 17 ribs planned (8 a side and the centre rib) and two spar webs (%d plan(s), %d ribs, %d centre, %d port)"), (int32)Plans.size(), Plans.size() ? (int32)Plans[0].ribs.size() : 0, Centre, Port));
+				Doc->FlushPendingRebuilds();
+				const FAerotelicBodyStructure* G = Wing->GetGeneratedStructure(TEXT("Main"));
+				Check(G != nullptr && G->IsGenerated() && !G->IsStale() && G->GetLayers().size() == 4, "symmetric: the structure generated on the symmetric body (4 layers)");
+				if (G != nullptr && G->GetLayers().size() == 4)
+				{
+					double SparMin = 0.0, SparMax = 0.0, RibMin = 0.0, RibMax = 0.0;
+					for (const aerotelic::Vec3& V : G->GetLayers()[2].Mesh.vertices) { SparMin = FMath::Min(SparMin, V.y); SparMax = FMath::Max(SparMax, V.y); }
+					for (const aerotelic::Vec3& V : G->GetLayers()[1].Mesh.vertices) { RibMin = FMath::Min(RibMin, V.y); RibMax = FMath::Max(RibMax, V.y); }
+					Check(SparMin < -0.99 * Span && SparMax > 0.99 * Span, FString::Printf(TEXT("symmetric: the front spar is one web tip to tip (y %.3f to %.3f)"), SparMin, SparMax));
+					Check(RibMin < -0.5 * Span && RibMax > 0.5 * Span && !G->GetLayers()[1].Mesh.IsEmpty(), FString::Printf(TEXT("symmetric: the ribs are meshed on both halves (y %.3f to %.3f)"), RibMin, RibMax));
+					Check(G->GetStats().Warnings.Num() == 0, FString::Printf(TEXT("symmetric: no warnings (%s)"), *FString::Join(G->GetStats().Warnings, TEXT("; "))));
+				}
+				// Back to the half wing for the rest of the run.
+				ResetCurveToLine(WD->planform().DihedralCurveMut(), Z0, Z1);
+				WD->symmetric = false;
+				Check(Doc->ApplyEntityModel(Wing, *WingDraft, Error), "symmetric: restoring the half wing applies");
+				Doc->FlushPendingRebuilds();
+			}
 		}
 	}
 

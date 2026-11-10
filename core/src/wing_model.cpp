@@ -2,14 +2,20 @@
 
 #include <algorithm>
 #include <array>
+#include <functional>
 #include <map>
 #include <cmath>
 #include <limits>
 #include <stdexcept>
 
+#include <BRepAlgoAPI_Fuse.hxx>
 #include <BRepBuilderAPI_MakeEdge.hxx>
 #include <BRepBuilderAPI_MakeWire.hxx>
+#include <BRepBuilderAPI_Transform.hxx>
 #include <BRepOffsetAPI_ThruSections.hxx>
+#include <gp_Ax2.hxx>
+#include <gp_Dir.hxx>
+#include <gp_Trsf.hxx>
 #include <IFSelect_ReturnStatus.hxx>
 #include <STEPControl_Writer.hxx>
 #include <TColStd_Array1OfInteger.hxx>
@@ -426,6 +432,7 @@ WingModel::WingModel(const WingModelSpec& spec) : name(spec.name) {
 	reference_images = spec.reference_images;
 	flaps = spec.flaps;
 	structure = spec.structure;
+	symmetric = spec.symmetric;
 }
 
 WingModelSpec WingModel::Serialize() const {
@@ -435,6 +442,7 @@ WingModelSpec WingModel::Serialize() const {
 	spec.reference_images = reference_images;
 	spec.flaps = flaps;
 	spec.structure = structure;
+	spec.symmetric = symmetric;
 	for (const auto& sec : user_sections_) {
 		WingSectionSpec ss;
 		ss.s = sec.s;
@@ -829,7 +837,20 @@ TopoDS_Shape WingModel::BuildSolid(int n_span, bool ruled, std::optional<double>
 	}
 	loft.Build();
 	if (!loft.IsDone()) throw std::runtime_error("Lofting failed (ThruSections through " + std::to_string(stations.size()) + " sections)");
-	return loft.Shape();
+	if (!symmetric) return loft.Shape();
+	// Both halves as one solid: the half fused with its reflection in
+	// y = 0. With a root dihedral the two tilted root sections overlap
+	// inside the fuse (the mesh takes the derived section instead, see the
+	// header); without one they share the root face.
+	const TopoDS_Shape half = loft.Shape();
+	gp_Trsf mirror;
+	mirror.SetMirror(gp_Ax2(gp_Pnt(0.0, 0.0, 0.0), gp_Dir(0.0, 1.0, 0.0)));
+	const TopoDS_Shape other = BRepBuilderAPI_Transform(half, mirror, true).Shape();
+	BRepAlgoAPI_Fuse fuse(half, other);
+	fuse.SetFuzzyValue(1e-6);
+	fuse.Build();
+	if (!fuse.IsDone()) throw std::runtime_error("the symmetric wing's two halves could not be fused");
+	return fuse.Shape();
 }
 
 TriMesh WingModel::BuildMesh(double tolerance, double s_min, double s_max) const {
@@ -1097,6 +1118,10 @@ struct Anchor {
 struct Piece {
 	double a = 0.0, b = 1.0;
 	int flap = -1;
+	// A symmetric wing's root bay: the ruled stretch from the derived
+	// section in y = 0 (the root section projected onto the symmetry plane)
+	// to the section at b, blended linearly between them.
+	bool bay = false;
 	std::vector<Anchor> anchors;
 	std::vector<double> canon;    // canonical value per anchor, ascending
 	std::map<double, ParamMap> maps;
@@ -1332,19 +1357,68 @@ std::vector<NamedMesh> WingModel::BuildBodies(double tolerance, std::vector<Wing
 	}
 	for (size_t k = 0; k < spars.size(); ++k) { if (spar_tip[k] > spar_root[k]) { bounds.push_back(spar_root[k]); bounds.push_back(spar_tip[k]); } }
 	for (size_t k = 0; k < stringers.size(); ++k) { if (stringer_tip[k] > stringer_root[k]) { bounds.push_back(stringer_root[k]); bounds.push_back(stringer_tip[k]); } }
+	const double eps = 1e-9;
+	const double semi = planform_->SemiSpan();
+	// A symmetric wing's root bay (see the header): where the root
+	// section straddles y = 0, the stretch from the symmetry plane to the
+	// first station -- a loft station, a rib station or a piece boundary --
+	// beyond which the whole section lies on the starboard side is lofted
+	// as a ruled strip from the DERIVED section (the root section projected
+	// onto y = 0) to that station's section. With no dihedral at the root
+	// the root section lies in y = 0 already and there is no bay.
+	double bay_end = 0.0;
+	std::vector<std::string> sym_notes;
+	if (symmetric) {
+		// The first station on a fine grid whose root airfoil, placed, is
+		// wholly at y >= 0 (the sections near the root are the root's
+		// airfoil to within the blend; the planform's own placement decides).
+		const Mat af0 = airfoil_at(0.0)->nurbs_curve().Sample(64);
+		auto min_y = [&](double s) {
+			Mat p = planform_->AirfoilCoordsToXyz(s, af0);
+			double y = std::numeric_limits<double>::infinity();
+			for (int i = 0; i < p.rows(); ++i) y = std::min(y, p(i, 1));
+			return y;
+		};
+		double s_clear = 0.0;
+		if (min_y(0.0) < -1e-12 * std::max(semi, 1.0)) {
+			constexpr int kScan = 2000;
+			s_clear = 1.0;
+			for (int i = 1; i <= kScan; ++i) {
+				const double s = static_cast<double>(i) / kScan;
+				if (min_y(s) >= std::max(tolerance, 1e-12)) { s_clear = s; break; }
+			}
+		}
+		if (s_clear > 0.0) {
+			// The first piece boundary beyond the root, and the first seeded
+			// station at or beyond the clearance; the bay ends at the nearer.
+			double first_bound = 1.0;
+			for (double b : bounds) if (b > eps && b < first_bound) first_bound = b;
+			bay_end = first_bound;
+			for (double s : seeds_in(0.0, 1.0)) {
+				if (s > eps && s >= s_clear - eps && s < bay_end) bay_end = s;
+			}
+			if (bay_end < s_clear - eps) {
+				sym_notes.push_back("the root bay ends at eta " + std::to_string(bay_end) + ", inboard of eta " + std::to_string(s_clear) + " where the section first clears the symmetry plane: the two halves overlap there");
+			}
+			for (double r : rib_stations) {
+				if (r > eps && r < bay_end - eps) sym_notes.push_back("rib at eta " + std::to_string(r) + " lies inside the root bay (eta 0 to " + std::to_string(bay_end) + ") and is left out");
+			}
+			bounds.push_back(bay_end);
+		}
+	}
 	std::sort(bounds.begin(), bounds.end());
 	{
 		std::vector<double> merged;
 		for (double b : bounds) if (merged.empty() || b - merged.back() > 1e-9) merged.push_back(b);
 		bounds = merged;
 	}
-	const double eps = 1e-9;
 	std::vector<Piece> pieces;
 	for (size_t i = 0; i + 1 < bounds.size(); ++i) {
 		Piece p;
 		p.a = bounds[i];
 		p.b = bounds[i + 1];
 		if (p.b - p.a <= eps) continue;
+		p.bay = bay_end > 0.0 && p.a <= eps;
 		for (int fi = 0; fi < n_flaps; ++fi) {
 			const auto [lo, hi] = PocketExtent(sorted[fi]);
 			if (lo <= p.a + eps && p.b <= hi + eps) p.flap = fi;
@@ -1430,7 +1504,9 @@ std::vector<NamedMesh> WingModel::BuildBodies(double tolerance, std::vector<Wing
 		LoftSource src;
 		src.u_min = p.a;
 		src.u_max = p.b;
-		src.u_seeds = seeds_in(p.a, p.b);
+		// The root bay is one ruled strip: its two end rings only (the loft
+		// adds stations of its own only where the strip is too long).
+		src.u_seeds = p.bay ? std::vector<double>{p.a, p.b} : seeds_in(p.a, p.b);
 		for (double c : p.canon) if (c > 1e-9 && c < 1.0 - 1e-9) src.v_seeds.push_back(c);
 		src.closed_curve = p.flap >= 0;
 		src.uniform_rings = true;
@@ -1458,6 +1534,32 @@ std::vector<NamedMesh> WingModel::BuildBodies(double tolerance, std::vector<Wing
 				const ParamMap& m = map_at(*pp, s);
 				return m.Inverse(cut_at(fi, s).main_loop->Mirror(m.Forward(v)));
 			};
+		}
+		if (p.bay) {
+			// The derived section at s = 0 (the root section with y dropped
+			// to 0) blended linearly into the section at the bay's end: the
+			// strip is ruled exactly, so the loft adds no station between,
+			// and the ends are the two sections to the bit.
+			std::function<Mat(double, const std::vector<double>&)> plain = src.section;
+			const double b = p.b;
+			src.section = [plain, b](double s, const std::vector<double>& v) {
+				Mat a = plain(0.0, v);
+				for (int i = 0; i < a.rows(); ++i) a(i, 1) = 0.0;
+				const double w = b > 0.0 ? std::clamp(s / b, 0.0, 1.0) : 0.0;
+				if (w <= 0.0) return a;
+				Mat e = plain(b, v);
+				if (w >= 1.0) return e;
+				Mat out(a.rows(), 3);
+				for (int i = 0; i < a.rows(); ++i) {
+					for (int j = 0; j < 3; ++j) out(i, j) = (1.0 - w) * a(i, j) + w * e(i, j);
+				}
+				return out;
+			};
+			src.cap_start = false;
+		} else if (symmetric && pi == 0) {
+			// No bay (no dihedral at the root): the root ring lies in y = 0
+			// and is the shared ring itself; no cap there either.
+			src.cap_start = false;
 		}
 		segments.push_back(std::move(src));
 		if (pi + 1 < pieces.size()) {
@@ -1500,6 +1602,13 @@ std::vector<NamedMesh> WingModel::BuildBodies(double tolerance, std::vector<Wing
 	std::vector<NamedMesh> out;
 	std::vector<LoftRings> rings;
 	out.push_back({"Main", TriangulateLoftChain(segments, breaks, opt, nullptr, &rings)});
+	if (symmetric) {
+		// The ring in the symmetry plane is at y = 0 to the bit, so the port
+		// half (the reflection below) shares its vertices exactly.
+		const double eps_y = 1e-9 * std::max(semi, 1.0);
+		for (Vec3& v : out.back().mesh.vertices) if (std::fabs(v.y) <= eps_y) v.y = 0.0;
+	}
+	auto reflected = [](Vec3 v) { v.y = -v.y; return v; };
 
 	// ---- the main element's structure, on its rings ----
 	{
@@ -1510,6 +1619,7 @@ std::vector<NamedMesh> WingModel::BuildBodies(double tolerance, std::vector<Wing
 		plan.rib_material = structure.ribs.material;
 		plan.rib_size = MedianEdge(body);
 		plan.notes = clip_notes;
+		plan.notes.insert(plan.notes.end(), sym_notes.begin(), sym_notes.end());
 		if (!structure_problem.empty()) plan.notes.insert(plan.notes.begin(), structure_problem);
 		// The piece a rib station falls in: strictly inside one, or at a
 		// boundary the notched one (its ring bounds the disc ahead of the
@@ -1582,9 +1692,14 @@ std::vector<NamedMesh> WingModel::BuildBodies(double tolerance, std::vector<Wing
 			for (const Foot& f : spar_feet[k]) deepest = std::max(deepest, Length(f.upper - f.lower));
 			spar_across[k] = plan.rib_size > 0.0 ? std::max(2, static_cast<int>(std::lround(deepest / plan.rib_size)) + 1) : 2;
 		}
-		// The ribs.
+		// The ribs: at the rib stations, and -- symmetric -- one in the
+		// symmetry plane on the derived (or root) ring, the stations inside
+		// the root bay left out (noted above).
+		std::vector<double> main_rib_stations = rib_stations;
+		if (symmetric) main_rib_stations.insert(main_rib_stations.begin(), 0.0);
 		int rib_no = 0;
-		for (double u : rib_stations) {
+		for (double u : main_rib_stations) {
+			if (bay_end > 0.0 && u > eps && u < bay_end - eps) continue;
 			const int pi = piece_for(u);
 			if (pi < 0) { plan.notes.push_back("rib at eta " + std::to_string(u) + ": no piece of the span holds it"); continue; }
 			const Piece& p = pieces[pi];
@@ -1593,7 +1708,7 @@ std::vector<NamedMesh> WingModel::BuildBodies(double tolerance, std::vector<Wing
 			if (ri < 0) { plan.notes.push_back("rib at eta " + std::to_string(u) + ": the loft has no ring there"); continue; }
 			WingRibPlan rib;
 			rib.eta = u;
-			rib.name = RibName(++rib_no);
+			rib.name = symmetric && u <= eps ? std::string("Centre rib") : RibName(++rib_no);
 			for (int idx : R.rings[ri]) if (rib.rim.empty() || rib.rim.back() != idx) rib.rim.push_back(idx);
 			while (rib.rim.size() > 1 && rib.rim.back() == rib.rim.front()) rib.rim.pop_back();
 			if (rib.rim.size() < 3) { plan.notes.push_back(rib.name + ": the section at eta " + std::to_string(u) + " has no area"); continue; }
@@ -1607,29 +1722,78 @@ std::vector<NamedMesh> WingModel::BuildBodies(double tolerance, std::vector<Wing
 			}
 			plan.ribs.push_back(std::move(rib));
 		}
-		// The spar webs and the stringers.
+		// The spar webs and the stringers. On a symmetric wing an element
+		// whose first station is in the symmetry plane is ONE strip from tip
+		// to tip, its port stations the reflections of its starboard ones
+		// (the same lerp arithmetic across, so it still shares the port
+		// ribs' chord nodes); one that starts outboard is two strips, its
+		// own and "<name> (port)".
+		auto web = [&](const std::string& name, double thickness, const Material& material, std::vector<Vec3> a, std::vector<Vec3> b, int across, std::vector<WingShellPlan>& into) {
+			WingShellPlan sh;
+			sh.name = name;
+			sh.thickness = thickness;
+			sh.material = material;
+			if (symmetric && !a.empty() && a.front().y == 0.0 && b.front().y == 0.0) {
+				std::vector<Vec3> fa, fb;
+				for (size_t i = a.size(); i-- > 1;) { fa.push_back(reflected(a[i])); fb.push_back(reflected(b[i])); }
+				fa.insert(fa.end(), a.begin(), a.end());
+				fb.insert(fb.end(), b.begin(), b.end());
+				sh.mesh = StripMesh(fa, fb, across);
+				into.push_back(std::move(sh));
+				return;
+			}
+			sh.mesh = StripMesh(a, b, across);
+			into.push_back(sh);
+			if (symmetric) {
+				sh.name = name + " (port)";
+				sh.mesh.Mirror(Vec3{0.0, 0.0, 0.0}, Vec3{0.0, 1.0, 0.0});
+				into.push_back(std::move(sh));
+			}
+		};
 		for (size_t k = 0; k < spars.size(); ++k) {
 			if (spar_feet[k].size() < 2) { plan.notes.push_back("spar '" + spars[k].name + "': fewer than two stations in its span"); continue; }
 			std::vector<Vec3> lower, upper;
 			for (const Foot& f : spar_feet[k]) { lower.push_back(f.lower); upper.push_back(f.upper); }
-			WingShellPlan sh;
-			sh.name = spars[k].name;
-			sh.thickness = spars[k].thickness;
-			sh.material = spars[k].material;
-			sh.mesh = StripMesh(lower, upper, spar_across[k]);
-			plan.spars.push_back(std::move(sh));
+			web(spars[k].name, spars[k].thickness, spars[k].material, std::move(lower), std::move(upper), spar_across[k], plan.spars);
 		}
 		for (size_t k = 0; k < stringers.size(); ++k) {
 			if (stringer_feet[k].size() < 2) { plan.notes.push_back("stringer '" + stringers[k].name + "': fewer than two stations in its span"); continue; }
 			std::vector<Vec3> feet, inner;
 			for (const auto& f : stringer_feet[k]) feet.push_back(f.second);
 			for (const auto& f : stringer_in[k]) inner.push_back(f.second);
-			WingShellPlan sh;
-			sh.name = stringers[k].name;
-			sh.thickness = stringers[k].thickness;
-			sh.material = stringers[k].material;
-			sh.mesh = StripMesh(feet, inner, 2);
-			plan.stringers.push_back(std::move(sh));
+			web(stringers[k].name, stringers[k].thickness, stringers[k].material, std::move(feet), std::move(inner), 2, plan.stringers);
+		}
+		if (symmetric) {
+			// The port half: the starboard mesh reflected in y = 0, the ring
+			// in the plane shared, the winding reversed to stay outward; the
+			// ribs reflected with it (their rims and chords on the reflected
+			// vertices), the centre rib shared.
+			TriMesh& m = out.back().mesh;
+			const int n0 = static_cast<int>(m.vertices.size());
+			std::vector<int> port(n0);
+			std::vector<Vec3> added;
+			for (int i = 0; i < n0; ++i) {
+				if (m.vertices[i].y == 0.0) { port[i] = i; continue; }
+				port[i] = n0 + static_cast<int>(added.size());
+				added.push_back(reflected(m.vertices[i]));
+			}
+			m.vertices.insert(m.vertices.end(), added.begin(), added.end());
+			const size_t nt = m.triangles.size();
+			for (size_t t = 0; t < nt; ++t) {
+				const std::array<int, 3> tr = m.triangles[t];
+				if (port[tr[0]] == tr[0] && port[tr[1]] == tr[1] && port[tr[2]] == tr[2]) continue;
+				m.triangles.push_back({port[tr[0]], port[tr[2]], port[tr[1]]});
+			}
+			const size_t n_ribs = plan.ribs.size();
+			for (size_t r = 0; r < n_ribs; ++r) {
+				if (plan.ribs[r].eta <= eps) continue;
+				WingRibPlan rib = plan.ribs[r];
+				rib.eta = -rib.eta;
+				rib.name += " (port)";
+				for (int& idx : rib.rim) idx = port[idx];
+				for (auto& ch : rib.chords) { ch[0] = port[ch[0]]; ch[1] = port[ch[1]]; }
+				plan.ribs.push_back(std::move(rib));
+			}
 		}
 		plans.push_back(std::move(plan));
 	}
@@ -1670,7 +1834,17 @@ std::vector<NamedMesh> WingModel::BuildBodies(double tolerance, std::vector<Wing
 			if (rib.rim.size() < 3) continue;
 			plan.ribs.push_back(std::move(rib));
 		}
-		plans.push_back(std::move(plan));
+		plans.push_back(plan);
+		if (symmetric) {
+			// The port flap: a body of its own, the reflection of this one
+			// (the same vertex numbering, so the plan's rims hold).
+			NamedMesh port{f.name + " (port)", out.back().mesh};
+			port.mesh.Mirror(Vec3{0.0, 0.0, 0.0}, Vec3{0.0, 1.0, 0.0});
+			out.push_back(std::move(port));
+			plan.body = f.name + " (port)";
+			for (WingRibPlan& rib : plan.ribs) { rib.eta = -rib.eta; rib.name += " (port)"; }
+			plans.push_back(std::move(plan));
+		}
 	}
 	return out;
 }
