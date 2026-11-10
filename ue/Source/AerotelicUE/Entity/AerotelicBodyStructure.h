@@ -103,20 +103,23 @@ public:
 		TArray<FString> Warnings;
 	};
 
-	// A WING'S structure (2026-11-09): the plan its parameterisation made
-	// on the body's own grid (wing_model.hpp WingBodyStructurePlan) -- rib
-	// rims that are rings of the body mesh, spar webs and stringers as
-	// ready meshes -- turned into layers: Skin, one Ribs layer holding every
-	// rib (meshed as discs by the rib mesher, the spar chords across them),
-	// one layer per spar and per stringer. Everything is in the body's
-	// LOCAL frame, as the plan is; areas are reported in placed units.
+	// A PARAMETERISED body's structure (2026-11-09 wings, 2026-11-10
+	// fuselages and nacelles): the plan its parameterisation made on the
+	// body's own grid (structure_plan.hpp BodyStructurePlan) -- rib or
+	// frame rims that are rings of the body mesh, spar webs and stringers
+	// as ready meshes -- turned into layers: Skin, one layer (Ribs or
+	// Frames, as the plan names it) holding every disc (meshed by the rib
+	// mesher, the spar chords across them, a frame's band and a nacelle
+	// frame's hole respected), one layer per spar and per stringer.
+	// Everything is in the body's LOCAL frame, as the plan is; areas are
+	// reported in placed units.
 	struct FPlanInputs
 	{
 		FString Label;
 		// The body's mesh in its own frame (the model's triangles, the ones
 		// the plan's vertex ids index).
 		aerotelic::TriMesh Body;
-		aerotelic::WingBodyStructurePlan Plan;
+		aerotelic::BodyStructurePlan Plan;
 		// The body's material and skin thickness; an element whose material
 		// has no density takes the body's.
 		aerotelic::BodyStructure Structure;

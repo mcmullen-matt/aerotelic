@@ -54,6 +54,10 @@ WingModelSpec DecodeWingModelSpec(const YAML::Node& node);
 // non-map node decodes to WingStructureSpec::Default().
 YAML::Node EncodeWingStructure(const WingStructureSpec& s);
 WingStructureSpec DecodeWingStructure(const YAML::Node& node);
+// A fuselage's or a nacelle's `structure:` key (frames, stringers); a
+// missing or non-map node decodes to FrameStructureSpec::Default().
+YAML::Node EncodeFrameStructure(const FrameStructureSpec& s);
+FrameStructureSpec DecodeFrameStructure(const YAML::Node& node);
 
 YAML::Node Encode(const NacelleSpec& spec);
 NacelleSpec DecodeNacelleSpec(const YAML::Node& node);

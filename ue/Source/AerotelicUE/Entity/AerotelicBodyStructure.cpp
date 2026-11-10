@@ -148,10 +148,17 @@ bool FAerotelicBodyStructure::GenerateFromPlan(const FPlanInputs& In, FString& O
 			Request.RibSize = In.Plan.rib_size;
 			for (size_t i = 0; i < In.Plan.ribs.size(); ++i)
 			{
-				const aerotelic::WingRibPlan& Rib = In.Plan.ribs[i];
+				const aerotelic::RibPlan& Rib = In.Plan.ribs[i];
 				AerotelicRibGmsh::FRequest::FRib R;
 				R.Id = static_cast<int32>(i) + 1;
+				R.Height = Rib.height;
 				for (int V : Rib.rim) R.Rim.Add(V);
+				for (const std::vector<int>& Hole : Rib.holes)
+				{
+					TArray<int32> H;
+					for (int V : Hole) H.Add(V);
+					R.Holes.Add(MoveTemp(H));
+				}
 				for (const auto& C : Rib.chords) R.Chords.Add(FIntVector(C[0], C[1], C[2]));
 				Request.Ribs.Add(R);
 			}
@@ -183,7 +190,7 @@ bool FAerotelicBodyStructure::GenerateFromPlan(const FPlanInputs& In, FString& O
 		if (!In.Plan.ribs.empty())
 		{
 			FAerotelicStructureLayer Layer;
-			Layer.Name = UniqueLayerName(TEXT("Ribs"), NewLayers);
+			Layer.Name = UniqueLayerName(In.Plan.rib_layer.empty() ? TEXT("Ribs") : UTF8_TO_TCHAR(In.Plan.rib_layer.c_str()), NewLayers);
 			Layer.Kind = FAerotelicStructureLayer::EKind::Ribs;
 			Layer.Material = Resolve(In.Plan.rib_material);
 			Layer.Thickness = In.Plan.rib_thickness;
@@ -213,12 +220,12 @@ bool FAerotelicBodyStructure::GenerateFromPlan(const FPlanInputs& In, FString& O
 			Layer.Volume = Layer.Area * Layer.Thickness;
 			RibsArea += Layer.Area;
 			TArray<FString> Names;
-			for (const aerotelic::WingRibPlan& Rib : In.Plan.ribs) Names.Add(FString::Printf(TEXT("%s at %.3f"), UTF8_TO_TCHAR(Rib.name.c_str()), Rib.eta));
-			Layer.Note = FString::Printf(TEXT("%d rib(s) in the section planes: %s"), static_cast<int32>(In.Plan.ribs.size()), *FString::Join(Names, TEXT(", ")));
+			for (const aerotelic::RibPlan& Rib : In.Plan.ribs) Names.Add(FString::Printf(TEXT("%s at %.3f"), UTF8_TO_TCHAR(Rib.name.c_str()), Rib.eta));
+			Layer.Note = FString::Printf(TEXT("%d in the section planes: %s"), static_cast<int32>(In.Plan.ribs.size()), *FString::Join(Names, TEXT(", ")));
 			if (Layer.Mesh.IsEmpty()) Layer.Note = TEXT("the rib mesher made no disc");
 			NewLayers.push_back(std::move(Layer));
 		}
-		for (const aerotelic::WingShellPlan& Sp : In.Plan.spars)
+		for (const aerotelic::ShellPlan& Sp : In.Plan.spars)
 		{
 			FAerotelicStructureLayer Layer;
 			Layer.Name = UniqueLayerName(UTF8_TO_TCHAR(Sp.name.c_str()), NewLayers);
@@ -232,7 +239,7 @@ bool FAerotelicBodyStructure::GenerateFromPlan(const FPlanInputs& In, FString& O
 			Layer.Note = TEXT("spar web between the upper and lower skin");
 			NewLayers.push_back(std::move(Layer));
 		}
-		for (const aerotelic::WingShellPlan& St : In.Plan.stringers)
+		for (const aerotelic::ShellPlan& St : In.Plan.stringers)
 		{
 			FAerotelicStructureLayer Layer;
 			Layer.Name = UniqueLayerName(UTF8_TO_TCHAR(St.name.c_str()), NewLayers);
@@ -257,7 +264,7 @@ bool FAerotelicBodyStructure::GenerateFromPlan(const FPlanInputs& In, FString& O
 		Stats.Seconds = FPlatformTime::Seconds() - T0;
 		bGenerated = true;
 		bStale = false;
-		UE_LOG(LogTemp, Log, TEXT("AerotelicBodyStructure: %s: %d layer(s) from the wing's plan: %d rib(s), %d spar(s), %d stringer(s), %lld structure triangles, skin area %.5g, structure area %.5g, %.2f s (gmsh %.2f s)"),
+		UE_LOG(LogTemp, Log, TEXT("AerotelicBodyStructure: %s: %d layer(s) from the parameterisation's plan: %d rib(s)/frame(s), %d spar(s), %d stringer(s), %lld structure triangles, skin area %.5g, structure area %.5g, %.2f s (gmsh %.2f s)"),
 			*In.Label, static_cast<int32>(Layers.size()), static_cast<int32>(In.Plan.ribs.size()), static_cast<int32>(In.Plan.spars.size()), static_cast<int32>(In.Plan.stringers.size()),
 			Stats.Triangles, Stats.SkinArea, Stats.RibsArea, Stats.Seconds, Result.Seconds);
 		return true;

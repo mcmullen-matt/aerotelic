@@ -12,7 +12,7 @@
 
 class AAerotelicEntityActor;
 class UWorld;
-namespace aerotelic { class Airfoil; struct WingBodyStructurePlan; }
+namespace aerotelic { class Airfoil; struct BodyStructurePlan; }
 
 // Owns the current project: the entity list, the file path and the current
 // selection, with New/Save/SaveAs/Open mirroring aerotelic/ui/main_window.py's
@@ -127,12 +127,13 @@ public:
 	// exclusion that names nothing in the scene is skipped with a log line,
 	// as any dependency that cannot be satisfied.
 	bool GenerateBodyStructure(AAerotelicEntityActor* Entity, const FString& BodyRole, FString& OutError);
-	// The structure plan a wing's last build made for one of its bodies
-	// (wing_model.hpp WingBodyStructurePlan), or null: not a wing, or
-	// nothing planned for that body.
-	static const aerotelic::WingBodyStructurePlan* WingPlanFor(const AAerotelicEntityActor* Entity, const FString& Role);
+	// The structure plan the entity's last build made for one of its bodies
+	// (structure_plan.hpp BodyStructurePlan: a wing's ribs and spars, a
+	// fuselage's or a nacelle's frames and stringers), or null: a boolean
+	// result, or nothing planned for that body.
+	static const aerotelic::BodyStructurePlan* PlanFor(const AAerotelicEntityActor* Entity, const FString& Role);
 	// Whether the body has an interior structure to generate: a skin on a
-	// wing body with a plan, or on a boolean result whose operands have
+	// body with a plan, or on a boolean result whose operands have
 	// generated layers to take over.
 	static bool WantsStructure(const AAerotelicEntityActor* Entity, const FAerotelicBody& Body);
 	// Whether any operand body of the boolean result carries generated

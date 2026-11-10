@@ -1,6 +1,7 @@
 #include "LoftedNacelleDialog.h"
 #include "Widgets/MessageBox.h"
 #include "EntityDesignContent.h"
+#include "FrameStructureWidgets.h"
 #include "MeshTab.h"
 #include "Widgets/TabStrip.h"
 #include "Widgets/NumericEntry.h"
@@ -712,8 +713,10 @@ void BuildLoftedNacelleDesignContent(AAerotelicEntityActor* Entity, LoftedNacell
 	Tabs.Add({ LOCTEXT("GuideTab", "Guide curves"), GuideTab.ToSharedRef() });
 	Tabs.Add({ LOCTEXT("SkinsTab", "Skins"), SkinsTab });
 	Tabs.Add({ LOCTEXT("ChevronsTab", "Chevrons"), ChevronsTab });
+	Tabs.Add({ LOCTEXT("StructureTab", "Structure"), MakeFrameStructureTab(&Model->structure, OnChanged,
+		LOCTEXT("LoftedNacelleAround", "Around: the guide curves' own parameter round the ring, 0 at their seam; a frame is the annulus between the outer and the inner skin.")) });
 	Tabs.Add({ LOCTEXT("MeshTab", "Mesh"), MakeMeshTab(Model, aerotelic::project_yaml::EntityType::LoftedNacelle, OnChanged) });
-	Tabs.Add({ LOCTEXT("HelpTab", "Help"), MakeHelpTab(FText::Join(FText::FromString(TEXT("\n\n")), kHelp, MeshTabHelpText(aerotelic::project_yaml::EntityType::LoftedNacelle))) });
+	Tabs.Add({ LOCTEXT("HelpTab", "Help"), MakeHelpTab(FText::Join(FText::FromString(TEXT("\n\n")), kHelp, FrameStructureHelpText(), MeshTabHelpText(aerotelic::project_yaml::EntityType::LoftedNacelle))) });
 
 	Out.Title = FText::Format(LOCTEXT("Title", "Lofted Nacelle -- {0}"), FText::FromString(Entity->EntityName));
 	Out.Widget = SNew(SAerotelicTabStrip, Tabs);

@@ -44,6 +44,9 @@ struct LoftedNacelleSpec {
 	int chevron_count = 0;
 	double chevron_depth = 0.25;
 	ReferenceImageMap reference_images; // "centreline", "section", "skins"
+	// The frames and stringers (structure_plan.hpp); a fresh spec carries
+	// the default set.
+	FrameStructureSpec structure;
 };
 
 struct GuideSection {
@@ -65,6 +68,15 @@ public:
 	int chevron_count;
 	double chevron_depth;
 	ReferenceImageMap reference_images;
+	// The internal structure (2026-11-10, structure_plan.hpp): frames in
+	// the section planes at stations along the length -- each the annulus
+	// between the outer and the inner skin there, or a band of the given
+	// height in from both -- and stringers along the outer skin at given
+	// positions round the guide curves. BuildMeshes() seeds the loft with
+	// them and plans the elements on its rings (LastStructurePlans());
+	// nothing is planned with chevrons (no mesh of its own then).
+	FrameStructureSpec structure;
+	const std::vector<BodyStructurePlan>& LastStructurePlans() const override { return last_structure_; }
 
 	const NurbsCurve& centreline_curve() const { return *centreline_curve_; }
 	const NurbsCurve& outer_curve() const { return *outer_curve_; }
@@ -163,6 +175,7 @@ private:
 
 	std::unique_ptr<NurbsCurve> centreline_curve_, outer_curve_, inner_curve_;
 	std::vector<GuideSection> sections_;
+	mutable std::vector<BodyStructurePlan> last_structure_;
 };
 
 } // namespace aerotelic

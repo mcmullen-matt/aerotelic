@@ -118,6 +118,7 @@ FuselageModel::FuselageModel(const FuselageSpec& spec) {
 	length = spec.length;
 	name = spec.name;
 	reference_images = spec.reference_images;
+	structure = spec.structure;
 
 	NurbsSpec zu = spec.z_upper_curve, zl = spec.z_lower_curve, yh = spec.y_half_curve;
 	WithNoseStation(zu, spec.legacy);
@@ -143,6 +144,7 @@ FuselageSpec FuselageModel::Serialize() const {
 	s.rho_upper_curve = rho_upper_curve_->Serialize();
 	s.rho_lower_curve = rho_lower_curve_->Serialize();
 	s.reference_images = reference_images;
+	s.structure = structure;
 	return s;
 }
 
@@ -294,12 +296,60 @@ std::vector<NamedLoft> FuselageModel::BuildLofts() const {
 }
 
 std::vector<NamedMesh> FuselageModel::BuildMeshes(double tolerance) const {
+	last_structure_.clear();
 	LoftSource src = BuildLofts()[0].source;
-	src.u_seeds = StationFracs(30, tolerance);
+	// A fault in the structure must never cost the body its skin: it is
+	// built without frames and longerons, the reason in the plan's notes.
+	std::string problem;
+	FrameStructureSpec spec = structure;
+	try {
+		spec.Validate();
+	} catch (const std::invalid_argument& e) {
+		problem = std::string("the structure was not built: ") + e.what();
+		spec.frames.between = 0;
+		spec.frames.extra.clear();
+		spec.stringers.clear();
+	}
+	// The loft's own stations, less any within a hundredth of the length
+	// of a frame station (a frame's ring beside a refinement station would
+	// make a sliver strip; the frame stands in for it), plus the frames'
+	// stations and the longerons' ends; the longerons' positions round the
+	// section on every ring.
+	const std::vector<double> frames = spec.FrameStations();
+	auto near_frame = [&](double s) {
+		for (double f : frames) if (std::fabs(s - f) > 1e-12 && std::fabs(s - f) < 0.01) return true;
+		return false;
+	};
+	std::vector<double> seeds = {0.0, 1.0};
+	for (double s : StationFracs(30, tolerance)) if (s > 0.0 && s < 1.0 && !near_frame(s)) seeds.push_back(s);
+	for (double f : frames) seeds.push_back(f);
+	for (const FrameStringerSpec& st : spec.stringers) {
+		if (st.x_start > 1e-9 && st.x_start < 1.0 - 1e-9) seeds.push_back(st.x_start);
+		if (st.x_end > 1e-9 && st.x_end < 1.0 - 1e-9) seeds.push_back(st.x_end);
+		src.v_seeds.push_back(st.around);
+	}
+	std::sort(seeds.begin(), seeds.end());
+	src.u_seeds.clear();
+	for (double s : seeds) if (src.u_seeds.empty() || s - src.u_seeds.back() > 1e-9) src.u_seeds.push_back(s);
 	LoftOptions base;
 	base.min_v = 16;
 	base.apex_tolerance = 1e-5;
-	return {{"Main", TriangulateLoft(src, mesh.Apply(base, tolerance))}};
+	LoftRings rings;
+	NamedMesh body{"Main", TriangulateLoft(src, mesh.Apply(base, tolerance), nullptr, nullptr, &rings)};
+	FrameRingSet set;
+	for (double f : frames) {
+		set.stations.push_back(f);
+		set.outer.push_back(rings.Find(f));
+		set.inner.push_back(-1);
+	}
+	for (size_t i = 0; i < rings.u.size(); ++i) set.skin_rings.push_back({rings.u[i], static_cast<int>(i)});
+	std::vector<std::string> notes;
+	if (!problem.empty()) notes.push_back(problem);
+	BodyStructurePlan plan = PlanFrameStructure("Main", body.mesh, rings, spec, set, Vec3{1.0, 0.0, 0.0}, notes);
+	if (!plan.IsEmpty() || !plan.notes.empty()) last_structure_.push_back(std::move(plan));
+	std::vector<NamedMesh> out;
+	out.push_back(std::move(body));
+	return out;
 }
 
 // FuselageModel::ExportStep() is defined in step_export.cpp, deliberately

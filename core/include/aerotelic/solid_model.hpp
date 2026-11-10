@@ -5,6 +5,7 @@
 #include <TopoDS_Shape.hxx>
 
 #include "aerotelic/mesh.hpp"
+#include "aerotelic/structure_plan.hpp"
 
 namespace aerotelic {
 
@@ -51,6 +52,15 @@ public:
 	// where BuildMeshes() is empty, and for models whose bodies are not one
 	// loft each (a propeller's blades are turned and copied).
 	virtual std::vector<NamedLoft> BuildLofts() const { return {}; }
+
+	// The internal structure the last BuildMeshes() planned on its bodies
+	// (structure_plan.hpp): one entry per body with ribs or frames, spars
+	// and stringers to build. Empty for a model with no structure of its
+	// own (a primitive, a boolean result).
+	virtual const std::vector<BodyStructurePlan>& LastStructurePlans() const {
+		static const std::vector<BodyStructurePlan> none;
+		return none;
+	}
 };
 
 } // namespace aerotelic

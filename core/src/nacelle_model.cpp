@@ -113,6 +113,7 @@ NacelleModel::NacelleModel(const NacelleSpec& spec) {
 	length = spec.length;
 	name = spec.name;
 	reference_images = spec.reference_images;
+	structure = spec.structure;
 
 	NurbsSpec upper = spec.upper_curve, lower = spec.lower_curve;
 	PinEnds(upper, lower);
@@ -152,6 +153,7 @@ NacelleSpec NacelleModel::Serialize() const {
 	s.chevron_count = chevron_count;
 	s.chevron_depth = chevron_depth;
 	s.reference_images = reference_images;
+	s.structure = structure;
 	return s;
 }
 
@@ -449,13 +451,59 @@ std::vector<TopoDS_Shape> NacelleModel::ChevronCutters(double depth) const {
 }
 
 std::vector<NamedMesh> NacelleModel::BuildMeshes(double tolerance) const {
+	last_structure_.clear();
 	std::vector<NamedLoft> lofts = BuildLofts();
 	if (lofts.empty()) return {};
+	LoftSource src = lofts[0].source;
+	// A fault in the structure must never cost the body its skin: it is
+	// built without frames and stringers, the reason in the plan's notes.
+	std::string problem;
+	FrameStructureSpec spec = structure;
+	try {
+		spec.Validate();
+	} catch (const std::invalid_argument& e) {
+		problem = std::string("the structure was not built: ") + e.what();
+		spec.frames.between = 0;
+		spec.frames.extra.clear();
+		spec.stringers.clear();
+	}
+	// A frame at x fraction f is the annulus between the outer ring at
+	// u = f and the inner ring at u = 2 - f (its twin across the wall); a
+	// stringer runs the outer skin (u <= 1).
+	const std::vector<double> frames = spec.FrameStations();
+	for (double f : frames) {
+		src.u_seeds.push_back(f);
+		src.u_seeds.push_back(2.0 - f);
+	}
+	for (const FrameStringerSpec& st : spec.stringers) {
+		for (double x : {st.x_start, st.x_end}) {
+			if (x > 1e-9 && x < 1.0 - 1e-9) { src.u_seeds.push_back(x); src.u_seeds.push_back(2.0 - x); }
+		}
+		src.v_seeds.push_back(st.around);
+	}
 	LoftOptions base;
 	base.min_v = 24;
 	base.min_u = 8;
 	base.apex_tolerance = 1e-5;
-	return {{"Main", TriangulateLoft(lofts[0].source, mesh.Apply(base, tolerance))}};
+	LoftRings rings;
+	NamedMesh body{"Main", TriangulateLoft(src, mesh.Apply(base, tolerance), nullptr, nullptr, &rings)};
+	FrameRingSet set;
+	for (double f : frames) {
+		set.stations.push_back(f);
+		set.outer.push_back(rings.Find(f));
+		set.inner.push_back(rings.Find(2.0 - f));
+	}
+	for (size_t i = 0; i < rings.u.size(); ++i) {
+		if (rings.u[i] <= 1.0 + 1e-9) set.skin_rings.push_back({rings.u[i], static_cast<int>(i)});
+	}
+	std::sort(set.skin_rings.begin(), set.skin_rings.end());
+	std::vector<std::string> notes;
+	if (!problem.empty()) notes.push_back(problem);
+	BodyStructurePlan plan = PlanFrameStructure("Main", body.mesh, rings, spec, set, Vec3{1.0, 0.0, 0.0}, notes);
+	if (!plan.IsEmpty() || !plan.notes.empty()) last_structure_.push_back(std::move(plan));
+	std::vector<NamedMesh> out;
+	out.push_back(std::move(body));
+	return out;
 }
 
 std::vector<NamedLoft> NacelleModel::BuildLofts() const {

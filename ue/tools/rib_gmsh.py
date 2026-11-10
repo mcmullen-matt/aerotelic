@@ -625,8 +625,23 @@ def run_job(job_dir):
             r["offset"] = float(off)
             if loop_area(ov, rim, nrm) < 0.0:
                 rim = rim[::-1]
-            loops = [rim]
-            discs, orphans = [[rim]], 0
+            # Explicit holes (2026-11-10, a nacelle frame's inner skin):
+            # loops of the surface's vertices inside the rim, wound
+            # clockwise about the plane as a hole is.
+            disc = [rim]
+            bad_holes = 0
+            for hole in r.get("holes", []) or []:
+                hole = [int(v) for v in hole]
+                if len(hole) < 3 or max(hole) >= len(ov) or min(hole) < 0:
+                    bad_holes += 1
+                    continue
+                if loop_area(ov, hole, nrm) > 0.0:
+                    hole = hole[::-1]
+                disc.append(hole)
+            if bad_holes:
+                rib_notes.append("rib %d: %d hole loop(s) are not loops of the surface's vertices; left out" % (int(r["id"]), bad_holes))
+            loops = list(disc)
+            discs, orphans = [disc], 0
         else:
             loops = rib_loops(ov, of, r["normal"], float(r["offset"]), plane_tolerance)
             if not loops:

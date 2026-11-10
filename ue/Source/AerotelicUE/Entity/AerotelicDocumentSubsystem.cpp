@@ -871,10 +871,10 @@ bool UAerotelicDocumentSubsystem::DependsOn(const AAerotelicEntityActor* Entity,
 
 // ------------------------------------------------- generated structures
 
-const aerotelic::WingBodyStructurePlan* UAerotelicDocumentSubsystem::WingPlanFor(const AAerotelicEntityActor* Entity, const FString& Role)
+const aerotelic::BodyStructurePlan* UAerotelicDocumentSubsystem::PlanFor(const AAerotelicEntityActor* Entity, const FString& Role)
 {
-	if (Entity == nullptr || Entity->GetEntityType() != EntityType::Wing) return nullptr;
-	for (const aerotelic::WingBodyStructurePlan& P : Entity->GetLastStructurePlans())
+	if (Entity == nullptr || Entity->GetEntityType() == EntityType::Boolean) return nullptr;
+	for (const aerotelic::BodyStructurePlan& P : Entity->GetLastStructurePlans())
 	{
 		if (FString(UTF8_TO_TCHAR(P.body.c_str())) == Role) return P.IsEmpty() ? nullptr : &P;
 	}
@@ -884,7 +884,7 @@ const aerotelic::WingBodyStructurePlan* UAerotelicDocumentSubsystem::WingPlanFor
 bool UAerotelicDocumentSubsystem::WantsStructure(const AAerotelicEntityActor* Entity, const FAerotelicBody& Body)
 {
 	if (!Body.Structure.IsSkin()) return false;
-	if (WingPlanFor(Entity, Body.Name) != nullptr) return true;
+	if (PlanFor(Entity, Body.Name) != nullptr) return true;
 	return OperandsHaveLayers(Entity);
 }
 
@@ -937,12 +937,13 @@ bool UAerotelicDocumentSubsystem::GenerateBodyStructure(AAerotelicEntityActor* E
 		return false;
 	}
 
-	// A WING's structure comes from its parameterisation (2026-11-09): the
-	// plan the wing's last build made for this body on its own grid (rib
+	// A PARAMETERISED body's structure comes from its parameterisation
+	// (2026-11-09 wings; 2026-11-10 fuselages and nacelles): the plan the
+	// entity's last build made for this body on its own grid (rib or frame
 	// rims that are rings of the body mesh, spar webs, stringers).
-	if (Entity->GetEntityType() == EntityType::Wing)
+	if (Entity->GetEntityType() != EntityType::Boolean)
 	{
-		const aerotelic::WingBodyStructurePlan* Plan = WingPlanFor(Entity, Role);
+		const aerotelic::BodyStructurePlan* Plan = PlanFor(Entity, Role);
 		if (Plan == nullptr)
 		{
 			Entity->ClearGeneratedStructure(Role);

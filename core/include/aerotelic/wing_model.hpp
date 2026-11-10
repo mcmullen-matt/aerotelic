@@ -386,42 +386,14 @@ struct WingStructureSpec {
 	bool IsEmpty() const;
 };
 
-// One rib of a body, as the rib mesher (tools/rib_gmsh.py through the
-// application) takes it: the closed loop of BODY-MESH vertex ids round the
-// section at its station, and the chords across it where spars pass (the
-// two feet's vertex ids and the number of nodes across, the same the
-// spar's own web carries there, so the two share their nodes).
-struct WingRibPlan {
-	// The station; negative on the port half of a symmetric wing, 0 for
-	// the centre rib in the symmetry plane.
-	double eta = 0.0;
-	std::string name;
-	std::vector<int> rim;
-	std::vector<std::array<int, 3>> chords;
-};
-
-// A spar web or a stringer: a ready open mesh in the wing's frame, its
-// feet on the body mesh's own vertices.
-struct WingShellPlan {
-	std::string name;
-	TriMesh mesh;
-	double thickness = 0.0;
-	Material material;
-};
-
-// The structure of one body ("Main", a flap's name) the build planned on
-// that body's mesh.
-struct WingBodyStructurePlan {
-	std::string body;
-	std::vector<WingRibPlan> ribs;
-	double rib_thickness = 0.0;
-	Material rib_material;
-	std::vector<WingShellPlan> spars, stringers;
-	// The body mesh's median edge: the rib discs' target size.
-	double rib_size = 0.0;
-	std::vector<std::string> notes;
-	bool IsEmpty() const { return ribs.empty() && spars.empty() && stringers.empty(); }
-};
+// The plans a wing's build makes on its bodies' meshes (structure_plan.hpp,
+// shared with the fuselage's and the nacelles' frames): one rib per
+// station as the rib mesher takes it (its rim a ring of the body mesh,
+// the spar chords across it), the spar webs and the stringers as ready
+// meshes with their feet on the body's vertices.
+using WingRibPlan = RibPlan;
+using WingShellPlan = ShellPlan;
+using WingBodyStructurePlan = BodyStructurePlan;
 
 // The full round-trip spec Save/Open needs: a PlanformSpec-only
 // constructor (below) leaves sections to be added via AddSection(), which
@@ -494,7 +466,7 @@ public:
 	// (empty for a body with nothing to build). The discs the plans describe
 	// are meshed by the application (the rib mesher); the spars' and
 	// stringers' meshes are ready.
-	const std::vector<WingBodyStructurePlan>& LastStructurePlans() const { return last_structure_; }
+	const std::vector<BodyStructurePlan>& LastStructurePlans() const override { return last_structure_; }
 	// Checks the structure against the planform and the flaps; throws
 	// std::invalid_argument naming the element and the reason: a chord
 	// fraction outside (0, 1), an empty or inverted span range, spars that

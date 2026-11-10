@@ -18,9 +18,11 @@
 #include "Entity/AerotelicMaterialLibrary.h"
 #include "Widgets/CurveTabControls.h"
 
+#include "aerotelic/fuselage_model.hpp"
 #include "aerotelic/materials.hpp"
 #include "aerotelic/mesh_cut.hpp"
 #include "aerotelic/primitive_model.hpp"
+#include "aerotelic/sdf.hpp"
 #include "aerotelic/wing_model.hpp"
 #include "aerotelic/wing_panels.hpp"
 #include "aerotelic/panel_loads.hpp"
@@ -559,6 +561,59 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 		}
 	}
 
+	// A FUSELAGE's structure (2026-11-10): the default eight frames (bands
+	// 0.1 in from the skin) and four longerons, planned on its own grid
+	// and generated as soon as the body has a skin, like the wing's.
+	UE_LOG(LogAerotelicDocumentTest, Display, TEXT("step: fuselage structure"));
+	if (Fuselage != nullptr)
+	{
+		const aerotelic::FuselageModel* FM = Fuselage->GetModelAs<aerotelic::FuselageModel>();
+		Check(FM != nullptr && FM->structure.frames.between == 8 && FM->structure.stringers.size() == 4, "fuselage structure: a new fuselage carries the default eight frames and four longerons");
+		const std::vector<aerotelic::BodyStructurePlan>& Plans = Fuselage->GetLastStructurePlans();
+		Check(Plans.size() == 1 && Plans[0].rib_layer == "Frames" && Plans[0].ribs.size() == 8 && Plans[0].stringers.size() == 4 && Plans[0].ribs[0].height == 0.1,
+			FString::Printf(TEXT("fuselage structure: the build planned 8 frames and 4 longerons on the Main body (%d plan(s))"), (int32)Plans.size()));
+		aerotelic::BodyStructure FS;
+		FS.material = *aerotelic::FindMaterialPreset("Aluminium 2024-T3 sheet");
+		FS.skin_thickness = 0.0015;
+		Check(Fuselage->SetBodyStructure(TEXT("Main"), FS), "fuselage structure: the fuselage takes a 1.5 mm aluminium skin");
+		Check(Doc->HasPendingRebuilds(), "fuselage structure: the body is queued as soon as it has a skin");
+		Doc->FlushPendingRebuilds();
+		const FAerotelicBodyStructure* GF = Fuselage->GetGeneratedStructure(TEXT("Main"));
+		Check(GF != nullptr && GF->IsGenerated(), "fuselage structure: the Main body's structure generated from the plan");
+		if (GF != nullptr && GF->IsGenerated())
+		{
+			const std::vector<FAerotelicStructureLayer>& L = GF->GetLayers();
+			Check(L.size() == 6 && L[1].Name == TEXT("Frames") && L[1].Kind == FAerotelicStructureLayer::EKind::Ribs && L[2].Name == TEXT("Longeron 1") && L[2].Kind == FAerotelicStructureLayer::EKind::Stringers,
+				FString::Printf(TEXT("fuselage structure: layers Skin, Frames and four longerons (%d)"), (int32)L.size()));
+			if (L.size() == 6)
+			{
+				Check(!L[1].Mesh.IsEmpty() && L[1].Area > 0.0, FString::Printf(TEXT("fuselage structure: the Frames layer holds the eight bands (%d triangles, area %.4g)"), (int32)L[1].Mesh.triangles.size(), L[1].Area));
+				Check(GF->GetStats().Warnings.Num() == 0, FString::Printf(TEXT("fuselage structure: no warnings (%s)"), *FString::Join(GF->GetStats().Warnings, TEXT("; "))));
+				// A band, not a bulkhead: every frame node lies within the height
+				// (plus a mesh cell) of the skin, none at the section's centre.
+				const std::vector<aerotelic::NamedMesh>& Own = Fuselage->GetLastMeshes();
+				if (!Own.empty())
+				{
+					const aerotelic::MeshSdf Sdf(Own[0].mesh);
+					double Deepest = 0.0;
+					for (const aerotelic::Vec3& V : L[1].Mesh.vertices) Deepest = FMath::Max(Deepest, -Sdf.Distance(V));
+					Check(Deepest < 0.1 + 2.0 * Plans[0].rib_size && Deepest > 0.05, FString::Printf(TEXT("fuselage structure: the frames are bands about 0.1 deep (deepest node %.4f in from the skin)"), Deepest));
+				}
+				double XMin = 1e30, XMax = -1e30;
+				for (const aerotelic::Vec3& V : L[2].Mesh.vertices) { XMin = FMath::Min(XMin, V.x); XMax = FMath::Max(XMax, V.x); }
+				Check(XMax - XMin > 0.8 * FM->length, FString::Printf(TEXT("fuselage structure: the first longeron runs the length (x %.3f to %.3f of %.3f)"), XMin, XMax, FM->length));
+			}
+		}
+		// Back to the asserted mass the mass step gave it (the save/reopen
+		// round trip below expects it); without a skin the layers go.
+		aerotelic::MassSpec Asserted;
+		Asserted.mode = aerotelic::MassMode::Asserted;
+		Asserted.mass = 150.0;
+		Fuselage->SetMassSpec(Asserted);
+		Doc->FlushPendingRebuilds();
+		Check(Fuselage->GetMassSpec().mode == aerotelic::MassMode::Asserted, "fuselage structure: back to the asserted mass for the rest of the run");
+	}
+
 	UE_LOG(LogAerotelicDocumentTest, Display, TEXT("step: apply"));
 	if (Primitive != nullptr && Wing != nullptr)
 	{
@@ -666,11 +721,11 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 				if (!Own.empty()) { const aerotelic::Box3 B = Own[0].mesh.Bounds(); YMin = B.min.y; YMax = B.max.y; }
 				Check(Own.size() == 1 && Own[0].mesh.IsClosedManifold() && YMin < -0.99 * Span && YMax > 0.99 * Span,
 					FString::Printf(TEXT("symmetric: one closed body from tip to tip (y %.3f to %.3f over a semi-span of %.3f)"), YMin, YMax, Span));
-				const std::vector<aerotelic::WingBodyStructurePlan>& Plans = Wing->GetLastStructurePlans();
+				const std::vector<aerotelic::BodyStructurePlan>& Plans = Wing->GetLastStructurePlans();
 				int32 Centre = 0, Port = 0;
 				if (Plans.size() == 1)
 				{
-					for (const aerotelic::WingRibPlan& R : Plans[0].ribs)
+					for (const aerotelic::RibPlan& R : Plans[0].ribs)
 					{
 						if (R.name == "Centre rib") ++Centre;
 						if (R.name.find("(port)") != std::string::npos) ++Port;

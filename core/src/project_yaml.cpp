@@ -245,6 +245,67 @@ YAML::Node EncodeWingStructure(const WingStructureSpec& s) {
 	return n;
 }
 
+// The frames and stringers of a body lofted along its length (a fuselage,
+// a nacelle: structure_plan.hpp FrameStructureSpec), under the model's
+// `structure:` key (2026-11-10). Always written; a model read without the
+// key gets the defaults (eight frames, four longerons).
+YAML::Node EncodeFrameStructure(const FrameStructureSpec& s) {
+	YAML::Node n;
+	YAML::Node frames;
+	frames["between"] = s.frames.between;
+	if (!s.frames.extra.empty()) {
+		YAML::Node extra(YAML::NodeType::Sequence);
+		for (double e : s.frames.extra) extra.push_back(e);
+		frames["extra"] = extra;
+	}
+	frames["height"] = s.frames.height;
+	frames["thickness"] = s.frames.thickness;
+	if (s.frames.material.HasDensity()) frames["material"] = EncodeMaterial(s.frames.material);
+	n["frames"] = frames;
+	YAML::Node stringers(YAML::NodeType::Sequence);
+	for (const FrameStringerSpec& st : s.stringers) {
+		YAML::Node m;
+		m["name"] = st.name;
+		m["around"] = st.around;
+		m["x_start"] = st.x_start;
+		m["x_end"] = st.x_end;
+		m["height"] = st.height;
+		m["thickness"] = st.thickness;
+		if (st.material.HasDensity()) m["material"] = EncodeMaterial(st.material);
+		stringers.push_back(m);
+	}
+	n["stringers"] = stringers;
+	return n;
+}
+
+FrameStructureSpec DecodeFrameStructure(const YAML::Node& node) {
+	if (!node || !node.IsMap()) return FrameStructureSpec::Default();
+	FrameStructureSpec s;
+	// The file says what the body has; the fresh spec's default stringers go.
+	s.stringers.clear();
+	if (const YAML::Node frames = node["frames"]) {
+		if (frames["between"]) s.frames.between = frames["between"].as<int>();
+		if (frames["extra"] && frames["extra"].IsSequence()) for (const auto& e : frames["extra"]) s.frames.extra.push_back(e.as<double>());
+		if (frames["height"]) s.frames.height = frames["height"].as<double>();
+		if (frames["thickness"]) s.frames.thickness = frames["thickness"].as<double>();
+		if (frames["material"]) s.frames.material = DecodeMaterial(frames["material"]);
+	}
+	if (node["stringers"] && node["stringers"].IsSequence()) {
+		for (const auto& m : node["stringers"]) {
+			FrameStringerSpec st;
+			if (m["name"]) st.name = m["name"].as<std::string>();
+			if (m["around"]) st.around = m["around"].as<double>();
+			if (m["x_start"]) st.x_start = m["x_start"].as<double>();
+			if (m["x_end"]) st.x_end = m["x_end"].as<double>();
+			if (m["height"]) st.height = m["height"].as<double>();
+			if (m["thickness"]) st.thickness = m["thickness"].as<double>();
+			if (m["material"]) st.material = DecodeMaterial(m["material"]);
+			s.stringers.push_back(st);
+		}
+	}
+	return s;
+}
+
 WingStructureSpec DecodeWingStructure(const YAML::Node& node) {
 	if (!node || !node.IsMap()) return WingStructureSpec::Default();
 	WingStructureSpec s;
@@ -378,6 +439,7 @@ YAML::Node Encode(const NacelleSpec& spec) {
 	n["chevron_count"] = spec.chevron_count;
 	if (spec.chevron_depth) n["chevron_depth"] = *spec.chevron_depth;
 	EncodeReferenceImages(n, spec.reference_images);
+	n["structure"] = EncodeFrameStructure(spec.structure);
 	return n;
 }
 
@@ -392,6 +454,7 @@ NacelleSpec DecodeNacelleSpec(const YAML::Node& node) {
 	spec.chevron_count = node["chevron_count"] ? node["chevron_count"].as<int>() : 0;
 	if (node["chevron_depth"]) spec.chevron_depth = node["chevron_depth"].as<double>();
 	else if (node["chevron_angle"]) spec.chevron_angle = node["chevron_angle"].as<double>();
+	spec.structure = DecodeFrameStructure(node["structure"]);
 	return spec;
 }
 
@@ -417,6 +480,7 @@ YAML::Node Encode(const LoftedNacelleSpec& spec) {
 	n["chevron_count"] = spec.chevron_count;
 	n["chevron_depth"] = spec.chevron_depth;
 	EncodeReferenceImages(n, spec.reference_images);
+	n["structure"] = EncodeFrameStructure(spec.structure);
 	return n;
 }
 
@@ -439,6 +503,7 @@ LoftedNacelleSpec DecodeLoftedNacelleSpec(const YAML::Node& node) {
 	spec.inner_curve = DecodeNurbsSpec(node["inner_curve"]);
 	spec.chevron_count = node["chevron_count"] ? node["chevron_count"].as<int>() : 0;
 	spec.chevron_depth = node["chevron_depth"] ? node["chevron_depth"].as<double>() : 0.25;
+	spec.structure = DecodeFrameStructure(node["structure"]);
 	return spec;
 }
 
@@ -499,6 +564,7 @@ YAML::Node Encode(const FuselageSpec& spec) {
 	// app without asserting a nose link this port doesn't actually track.
 	n["pole_links"] = YAML::Node(YAML::NodeType::Map);
 	EncodeReferenceImages(n, spec.reference_images);
+	n["structure"] = EncodeFrameStructure(spec.structure);
 	return n;
 }
 
@@ -515,6 +581,7 @@ FuselageSpec DecodeFuselageSpec(const YAML::Node& node, bool* out_legacy) {
 	bool legacy = !node["pole_links"];
 	spec.legacy = legacy;
 	if (out_legacy) *out_legacy = legacy;
+	spec.structure = DecodeFrameStructure(node["structure"]);
 	return spec;
 }
 

@@ -45,6 +45,9 @@ struct NacelleSpec {
 	std::optional<double> chevron_depth;
 	std::optional<double> chevron_angle; // legacy, converted on load
 	ReferenceImageMap reference_images; // "side", "front"
+	// The frames and stringers (structure_plan.hpp); a fresh spec carries
+	// the default set.
+	FrameStructureSpec structure;
 };
 
 struct NacelleMetrics {
@@ -60,6 +63,15 @@ public:
 	int chevron_count;
 	double chevron_depth;
 	ReferenceImageMap reference_images;
+	// The internal structure (2026-11-10, structure_plan.hpp): frames in
+	// the section planes at stations along the length -- each the annulus
+	// between the outer and the inner skin there, or a band of the given
+	// height in from both -- and stringers along the outer skin at given
+	// positions round the lip curve. BuildMeshes() seeds the loft with them
+	// and plans the elements on its rings (LastStructurePlans()); nothing
+	// is planned with chevrons (no mesh of its own then).
+	FrameStructureSpec structure;
+	const std::vector<BodyStructurePlan>& LastStructurePlans() const override { return last_structure_; }
 
 	const NurbsCurve& upper_curve() const { return *upper_curve_; }
 	const NurbsCurve& lower_curve() const { return *lower_curve_; }
@@ -113,6 +125,7 @@ private:
 
 	std::unique_ptr<NurbsCurve> upper_curve_, lower_curve_;
 	std::unique_ptr<PeriodicNurbsCurve> front_curve_;
+	mutable std::vector<BodyStructurePlan> last_structure_;
 };
 
 } // namespace aerotelic

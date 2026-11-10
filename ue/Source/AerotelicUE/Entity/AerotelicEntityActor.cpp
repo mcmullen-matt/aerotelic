@@ -867,11 +867,11 @@ void AAerotelicEntityActor::RefreshProxy()
 		LastMeshes = Meshes;
 		LastMeshTolerance = Tolerance;
 		LastSolid.Nullify();
-		LastStructurePlans.clear();
-		if (EntityType == aerotelic::project_yaml::EntityType::Wing)
-		{
-			LastStructurePlans = GetModelAs<aerotelic::WingModel>()->LastStructurePlans();
-		}
+		// The structure the build planned on these bodies (a wing's ribs and
+		// spars, a fuselage's or a nacelle's frames and stringers), copied
+		// here: the model's own copy is overwritten by its next build at
+		// another tolerance (a boolean's), and the plans index THIS grid.
+		LastStructurePlans = Model->LastStructurePlans();
 		for (const aerotelic::NamedMesh& M : Meshes)
 		{
 			LastLocalBounds += AerotelicMeshing::BoundsOf(M.mesh);

@@ -73,11 +73,13 @@ namespace AerotelicRibGmsh
 			double Offset = 0.0;                     // Normal . x = Offset
 			double Height = 0.0;                     // > 0: only within this of the rim
 			// An EXPLICIT rim (2026-11-09, a wing's rib on its own ring): the
-			// closed loop of Outer's vertex ids round the disc, and the chords
-			// across it (two rim vertices and the node count across, a spar's
-			// web). With a rim the plane is read off it; Normal and Offset
-			// are not sent.
+			// closed loop of Outer's vertex ids round the disc, the loops of
+			// its holes (2026-11-10, a nacelle frame's inner skin), and the
+			// chords across it (two rim vertices and the node count across, a
+			// spar's web). With a rim the plane is read off it; Normal and
+			// Offset are not sent. Height applies as for a plane.
 			TArray<int32> Rim;
+			TArray<TArray<int32>> Holes;
 			TArray<FIntVector> Chords;
 		};
 		TArray<FRib> Ribs;

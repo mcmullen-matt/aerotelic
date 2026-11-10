@@ -153,11 +153,17 @@ namespace AerotelicRibGmsh
 			const FRequest::FRib& R = Request.Ribs[i];
 			if (R.Rim.Num() > 0)
 			{
-				TArray<FString> Rim, Chords;
+				TArray<FString> Rim, Chords, Holes;
 				for (int32 V : R.Rim) Rim.Add(FString::FromInt(V));
 				for (const FIntVector& C : R.Chords) Chords.Add(FString::Printf(TEXT("[%d, %d, %d]"), C.X, C.Y, C.Z));
-				RibsJson += FString::Printf(TEXT("%s{\"id\": %d, \"rim\": [%s], \"chords\": [%s], \"height\": %s}"), i ? TEXT(", ") : TEXT(""),
-					R.Id, *FString::Join(Rim, TEXT(", ")), *FString::Join(Chords, TEXT(", ")), *Num(FMath::Max(R.Height, 0.0)));
+				for (const TArray<int32>& H : R.Holes)
+				{
+					TArray<FString> Ids;
+					for (int32 V : H) Ids.Add(FString::FromInt(V));
+					Holes.Add(FString::Printf(TEXT("[%s]"), *FString::Join(Ids, TEXT(", "))));
+				}
+				RibsJson += FString::Printf(TEXT("%s{\"id\": %d, \"rim\": [%s], \"holes\": [%s], \"chords\": [%s], \"height\": %s}"), i ? TEXT(", ") : TEXT(""),
+					R.Id, *FString::Join(Rim, TEXT(", ")), *FString::Join(Holes, TEXT(", ")), *FString::Join(Chords, TEXT(", ")), *Num(FMath::Max(R.Height, 0.0)));
 				continue;
 			}
 			RibsJson += FString::Printf(TEXT("%s{\"id\": %d, \"normal\": [%s, %s, %s], \"offset\": %s, \"height\": %s}"), i ? TEXT(", ") : TEXT(""),

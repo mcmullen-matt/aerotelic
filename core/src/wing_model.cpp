@@ -1132,51 +1132,8 @@ struct Piece {
 	}
 };
 
-double MedianEdge(const TriMesh& m) {
-	std::vector<double> e;
-	e.reserve(m.triangles.size() * 3);
-	for (const auto& t : m.triangles) {
-		e.push_back(Length(m.vertices[t[1]] - m.vertices[t[0]]));
-		e.push_back(Length(m.vertices[t[2]] - m.vertices[t[1]]));
-		e.push_back(Length(m.vertices[t[0]] - m.vertices[t[2]]));
-	}
-	if (e.empty()) return 0.0;
-	std::nth_element(e.begin(), e.begin() + e.size() / 2, e.end());
-	return e[e.size() / 2];
-}
-
-// The ring's index of the point at canonical parameter c, or -1.
-int RingIndexAt(const std::vector<double>& ring_v, double c) {
-	for (size_t i = 0; i < ring_v.size(); ++i) if (std::fabs(ring_v[i] - c) <= 1e-9) return static_cast<int>(i);
-	return -1;
-}
-
-// The strip between two polylines of equal length with `across` points
-// between each pair (the ends included), as triangles: a spar's web, a
-// stringer's blade. The across points are a + (b - a) * (j * step), the
-// same arithmetic the rib mesher uses for a chord's nodes, so the two
-// coincide to the bit.
-TriMesh StripMesh(const std::vector<Vec3>& lower, const std::vector<Vec3>& upper, int across) {
-	TriMesh m;
-	const int ns = static_cast<int>(lower.size());
-	across = std::max(across, 2);
-	const double step = 1.0 / (across - 1);
-	for (int i = 0; i < ns; ++i) {
-		for (int j = 0; j < across; ++j) {
-			const double t = j == across - 1 ? 1.0 : j * step;
-			m.vertices.push_back(lower[i] + (upper[i] - lower[i]) * t);
-		}
-	}
-	auto at = [&](int i, int j) { return i * across + j; };
-	for (int i = 0; i + 1 < ns; ++i) {
-		for (int j = 0; j + 1 < across; ++j) {
-			m.triangles.push_back({at(i, j), at(i + 1, j), at(i + 1, j + 1)});
-			m.triangles.push_back({at(i, j), at(i + 1, j + 1), at(i, j + 1)});
-		}
-	}
-	m.RemoveDegenerateTriangles();
-	return m;
-}
+// MedianEdge, RingIndexAt and StripMesh are structure_plan.hpp's, shared
+// with the fuselage's and the nacelles' frame planner.
 
 std::string RibName(int k) { return "Rib " + std::to_string(k); }
 

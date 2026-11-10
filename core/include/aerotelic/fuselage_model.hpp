@@ -55,6 +55,9 @@ struct FuselageSpec {
 	// loader is what should set this -- see the file header.
 	bool legacy = false;
 	ReferenceImageMap reference_images; // "profile", "width"
+	// The frames and longerons (structure_plan.hpp); a fresh spec carries
+	// the default set.
+	FrameStructureSpec structure;
 };
 
 struct FuselageSection {
@@ -73,6 +76,15 @@ public:
 	std::string name;
 	double length;
 	ReferenceImageMap reference_images;
+	// The internal structure (2026-11-10, structure_plan.hpp): frames in
+	// the section planes at stations along the length, bands of a given
+	// height in from the skin, and longerons running the length at given
+	// positions round the section. BuildMeshes() seeds the loft with the
+	// frame stations and the longerons' positions, so every frame's rim is
+	// a ring of the body mesh and every longeron's feet a vertex line of
+	// it, and plans the elements on them (LastStructurePlans()).
+	FrameStructureSpec structure;
+	const std::vector<BodyStructurePlan>& LastStructurePlans() const override { return last_structure_; }
 
 	const NurbsCurve& z_upper_curve() const { return *z_upper_curve_; }
 	const NurbsCurve& z_lower_curve() const { return *z_lower_curve_; }
@@ -125,6 +137,7 @@ public:
 
 private:
 	std::unique_ptr<NurbsCurve> z_upper_curve_, z_lower_curve_, y_half_curve_, rho_upper_curve_, rho_lower_curve_;
+	mutable std::vector<BodyStructurePlan> last_structure_;
 };
 
 } // namespace aerotelic

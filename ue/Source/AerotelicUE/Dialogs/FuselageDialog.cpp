@@ -1,5 +1,6 @@
 #include "FuselageDialog.h"
 #include "EntityDesignContent.h"
+#include "FrameStructureWidgets.h"
 #include "MeshTab.h"
 #include "Widgets/TabStrip.h"
 #include "Widgets/NumericEntry.h"
@@ -446,8 +447,10 @@ void BuildFuselageDesignContent(AAerotelicEntityActor* Entity, FuselageModel* Mo
 	Tabs.Add({ LOCTEXT("RhoUpper", "ρ upper"), RhoUpperTab });
 	Tabs.Add({ LOCTEXT("RhoLower", "ρ lower"), RhoLowerTab });
 	Tabs.Add({ LOCTEXT("Sections", "Sections"), SectionsTab });
+	Tabs.Add({ LOCTEXT("StructureTab", "Structure"), MakeFrameStructureTab(&Model->structure, OnDraftChanged,
+		LOCTEXT("FuselageAround", "Around: 0 is the top centre, 0.25 the starboard shoulder, 0.5 the bottom centre, 0.75 the port shoulder.")) });
 	Tabs.Add({ LOCTEXT("MeshTab", "Mesh"), MakeMeshTab(Model, aerotelic::project_yaml::EntityType::Fuselage, OnDraftChanged) });
-	Tabs.Add({ LOCTEXT("HelpTab", "Help"), MakeHelpTab(FText::Join(FText::FromString(TEXT("\n\n")), kHelp, MeshTabHelpText(aerotelic::project_yaml::EntityType::Fuselage))) });
+	Tabs.Add({ LOCTEXT("HelpTab", "Help"), MakeHelpTab(FText::Join(FText::FromString(TEXT("\n\n")), kHelp, FrameStructureHelpText(), MeshTabHelpText(aerotelic::project_yaml::EntityType::Fuselage))) });
 
 	Out.Title = FText::Format(LOCTEXT("Title", "Fuselage -- {0}"), FText::FromString(Entity->EntityName));
 	Out.Widget = SNew(SAerotelicTabStrip, Tabs);
