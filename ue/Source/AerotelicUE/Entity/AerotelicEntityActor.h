@@ -104,6 +104,11 @@ public:
 	// per body by role: the body's own grid (what a wing's structure plan
 	// indexes). Empty for a model without a mesh builder.
 	const std::vector<aerotelic::NamedMesh>& GetLastMeshes() const { return LastMeshes; }
+	// The structure plans a wing's model made for THOSE meshes (copied at
+	// RefreshProxy: the model's own cache is overwritten by every later
+	// build at another tolerance -- a boolean's, an analysis's -- whose
+	// plans index a different grid). Empty for anything but a wing.
+	const std::vector<aerotelic::WingBodyStructurePlan>& GetLastStructurePlans() const { return LastStructurePlans; }
 
 	// Caller must already know GetEntityType() matches T (e.g. Wing ->
 	// WingModel) -- same duck-typed contract the Python entity dict's
@@ -465,6 +470,7 @@ private:
 	// LastMeshTolerance; the mirror, export and the structure's generation
 	// reuse them.
 	std::vector<aerotelic::NamedMesh> LastMeshes;
+	std::vector<aerotelic::WingBodyStructurePlan> LastStructurePlans;
 	double LastMeshTolerance = 0.0;
 	FString LastBuildError;
 	// Local bounds of what was last shown, for the next build's tolerance.

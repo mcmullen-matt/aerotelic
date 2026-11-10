@@ -814,6 +814,11 @@ void AAerotelicEntityActor::RefreshProxy()
 		LastMeshes = Meshes;
 		LastMeshTolerance = Tolerance;
 		LastSolid.Nullify();
+		LastStructurePlans.clear();
+		if (EntityType == aerotelic::project_yaml::EntityType::Wing)
+		{
+			LastStructurePlans = GetModelAs<aerotelic::WingModel>()->LastStructurePlans();
+		}
 		for (const aerotelic::NamedMesh& M : Meshes)
 		{
 			LastLocalBounds += AerotelicMeshing::BoundsOf(M.mesh);

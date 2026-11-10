@@ -945,15 +945,29 @@ void WingModel::ValidateFlaps() const {
 // Structure
 // ---------------------------------------------------------------------
 
-WingStructureSpec WingStructureSpec::Default() {
-	WingStructureSpec s;
+std::vector<WingSparSpec> WingStructureSpec::DefaultSpars() {
 	WingSparSpec front;
 	front.name = "Front spar";
 	front.x_root = front.x_tip = 0.25;
 	WingSparSpec rear;
 	rear.name = "Rear spar";
 	rear.x_root = rear.x_tip = 0.65;
-	s.spars = {front, rear};
+	return {front, rear};
+}
+
+WingStructureSpec WingStructureSpec::Default() {
+	return WingStructureSpec();
+}
+
+WingStructureSpec WingStructureSpec::DefaultFor(const std::vector<FlapSpec>& flaps) {
+	WingStructureSpec s;
+	// The rear spar sits at 0.65, or a tenth of the chord ahead of the most
+	// forward flap hinge when that is nearer: a spar must stay ahead of the
+	// pocket's lips (a rudder hinged at 0.66 would otherwise refuse the
+	// default spar).
+	double hinge = 1.0;
+	for (const FlapSpec& f : flaps) hinge = std::min({hinge, f.hinge_root, f.hinge_tip});
+	s.spars[1].x_root = s.spars[1].x_tip = std::clamp(std::min(0.65, hinge - 0.1), 0.3, 0.65);
 	return s;
 }
 
@@ -1147,13 +1161,24 @@ std::vector<NamedMesh> WingModel::BuildBodies(double tolerance, std::vector<Wing
 	if (user_sections_.empty()) throw std::invalid_argument("No airfoil sections provided to the wing loft");
 	RequirePositiveChord();
 	ValidateFlaps();
-	ValidateStructure();
 	plans.clear();
+	// A fault in the structure (a spar through a flap's pocket, spars that
+	// cross) must never cost the wing its skin: the wing is built with its
+	// ribs but without the spars and stringers, and every body's plan
+	// carries the reason, which the application shows against the layers.
+	std::string structure_problem;
+	std::vector<WingSparSpec> spars = structure.spars;
+	std::vector<WingStringerSpec> stringers = structure.stringers;
+	try {
+		ValidateStructure();
+	} catch (const std::invalid_argument& e) {
+		structure_problem = std::string("the structure was not built: ") + e.what();
+		spars.clear();
+		stringers.clear();
+	}
 	std::vector<FlapSpec> sorted = flaps;
 	std::sort(sorted.begin(), sorted.end(), [](const FlapSpec& a, const FlapSpec& b) { return a.eta_root < b.eta_root; });
 	const int n_flaps = static_cast<int>(sorted.size());
-	const std::vector<WingSparSpec>& spars = structure.spars;
-	const std::vector<WingStringerSpec>& stringers = structure.stringers;
 	const std::vector<double> rib_stations = RibStations();
 
 	// The loft's own stations, less any within a hundredth of the span of a
@@ -1485,6 +1510,7 @@ std::vector<NamedMesh> WingModel::BuildBodies(double tolerance, std::vector<Wing
 		plan.rib_material = structure.ribs.material;
 		plan.rib_size = MedianEdge(body);
 		plan.notes = clip_notes;
+		if (!structure_problem.empty()) plan.notes.insert(plan.notes.begin(), structure_problem);
 		// The piece a rib station falls in: strictly inside one, or at a
 		// boundary the notched one (its ring bounds the disc ahead of the
 		// pocket; the full ring's aft stretch is the pocket face itself).
@@ -1630,6 +1656,7 @@ std::vector<NamedMesh> WingModel::BuildBodies(double tolerance, std::vector<Wing
 		plan.rib_thickness = structure.ribs.thickness;
 		plan.rib_material = structure.ribs.material;
 		plan.rib_size = MedianEdge(out.back().mesh);
+		if (!structure_problem.empty()) plan.notes.push_back(structure_problem);
 		int rib_no = 0;
 		for (double u : rib_stations) {
 			if (u <= f.eta_root + eps || u >= f.eta_tip - eps) continue;

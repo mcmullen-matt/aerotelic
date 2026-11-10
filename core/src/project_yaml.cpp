@@ -248,6 +248,9 @@ YAML::Node EncodeWingStructure(const WingStructureSpec& s) {
 WingStructureSpec DecodeWingStructure(const YAML::Node& node) {
 	if (!node || !node.IsMap()) return WingStructureSpec::Default();
 	WingStructureSpec s;
+	// The file says what the wing has; the fresh spec's default spars go.
+	s.spars.clear();
+	s.stringers.clear();
 	if (const YAML::Node ribs = node["ribs"]) {
 		if (ribs["at_sections"]) s.ribs.at_sections = ribs["at_sections"].as<bool>();
 		if (ribs["at_flap_ends"]) s.ribs.at_flap_ends = ribs["at_flap_ends"].as<bool>();
@@ -329,7 +332,6 @@ WingModelSpec DecodeWingModelSpec(const YAML::Node& node) {
 	spec.name = node["name"] ? node["name"].as<std::string>() : "Wing";
 	spec.planform = DecodePlanformSpec(node["planform"]);
 	spec.reference_images = DecodeReferenceImages(node, spec.planform.semi_span);
-	spec.structure = DecodeWingStructure(node["structure"]);
 	if (node["flaps"] && node["flaps"].IsSequence()) {
 		for (const auto& fn : node["flaps"]) {
 			FlapSpec f; // every key optional, defaults from FlapSpec
@@ -343,6 +345,9 @@ WingModelSpec DecodeWingModelSpec(const YAML::Node& node) {
 			spec.flaps.push_back(f);
 		}
 	}
+	// After the flaps: a wing without the key gets defaults that keep the
+	// rear spar ahead of its flaps' hinges.
+	spec.structure = (node["structure"] && node["structure"].IsMap()) ? DecodeWingStructure(node["structure"]) : WingStructureSpec::DefaultFor(spec.flaps);
 	if (node["sections"]) {
 		for (const auto& sn : node["sections"]) {
 			WingSectionSpec ss;

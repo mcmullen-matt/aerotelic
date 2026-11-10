@@ -7,7 +7,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
+#include <set>
 #include <string>
 #include <variant>
 
@@ -111,10 +113,47 @@ void BandReport(const std::string& label, const TriMesh& m, double y0, double ha
 	std::printf("  %s: band y = %.3f +- %.3f: %d triangles, %d thinner than 2 deg, min angle %.3f, min area %.2e\n", label.c_str(), y0, half, n, thin, min_angle, min_area);
 }
 
+// Writes a body and its rib plan as a rib_gmsh.py job (outer.tri in the
+// application's AEROTRI1 format, job.json with explicit rims and chords)
+// into `dir`, to run the mesher by hand on it.
+void WriteJob(const std::string& dir, const TriMesh& body, const WingBodyStructurePlan& plan) {
+	{
+		FILE* f = std::fopen((dir + "/outer.tri").c_str(), "wb");
+		if (!f) { std::printf("cannot write %s/outer.tri\n", dir.c_str()); return; }
+		std::fwrite("AEROTRI1", 1, 8, f);
+		const uint32_t nv = static_cast<uint32_t>(body.vertices.size()), nt = static_cast<uint32_t>(body.triangles.size());
+		std::fwrite(&nv, 4, 1, f);
+		std::fwrite(&nt, 4, 1, f);
+		for (const Vec3& v : body.vertices) { double xyz[3] = {v.x, v.y, v.z}; std::fwrite(xyz, 8, 3, f); }
+		for (const auto& t : body.triangles) { int32_t abc[3] = {t[0], t[1], t[2]}; std::fwrite(abc, 4, 3, f); }
+		std::fclose(f);
+	}
+	FILE* j = std::fopen((dir + "/job.json").c_str(), "w");
+	if (!j) return;
+	std::fprintf(j, "{\n \"outer\": \"outer.tri\",\n \"rib_size\": %.17g,\n \"plane_tolerance\": 0,\n \"ribs\": [", plan.rib_size);
+	for (size_t i = 0; i < plan.ribs.size(); ++i) {
+		const WingRibPlan& r = plan.ribs[i];
+		std::fprintf(j, "%s{\"id\": %zu, \"rim\": [", i ? ", " : "", i + 1);
+		for (size_t k = 0; k < r.rim.size(); ++k) std::fprintf(j, "%s%d", k ? ", " : "", r.rim[k]);
+		std::fprintf(j, "], \"chords\": [");
+		for (size_t k = 0; k < r.chords.size(); ++k) std::fprintf(j, "%s[%d, %d, %d]", k ? ", " : "", r.chords[k][0], r.chords[k][1], r.chords[k][2]);
+		std::fprintf(j, "], \"height\": 0}");
+	}
+	std::fprintf(j, "],\n \"outputs\": {\"nodes\": \"nodes.bin\", \"result\": \"result.json\", \"ribs\": \"ribs.bin\"}\n}\n");
+	std::fclose(j);
+	std::printf("    wrote %s (%zu ribs)\n", dir.c_str(), plan.ribs.size());
+}
+
 int main(int argc, char** argv) {
-	if (argc < 2) { std::printf("usage: wing_mesh_probe <project.yaml> [tolerance] [band_y band_half]\n"); return 2; }
+	if (argc < 2) { std::printf("usage: wing_mesh_probe <project.yaml> [tolerance] [band_y band_half] [--job <entity> <dir>]\n"); return 2; }
 	const double tol = argc > 2 ? std::atof(argv[2]) : 2e-3;
-	const double band_y = argc > 4 ? std::atof(argv[3]) : -1.0, band_half = argc > 4 ? std::atof(argv[4]) : 0.0;
+	double band_y = -1.0, band_half = 0.0;
+	std::string job_entity, job_dir;
+	for (int i = 3; i < argc; ++i) {
+		if (std::string(argv[i]) == "--job" && i + 2 < argc) { job_entity = argv[i + 1]; job_dir = argv[i + 2]; i += 2; }
+		else if (band_y < 0.0) band_y = std::atof(argv[i]);
+		else band_half = std::atof(argv[i]);
+	}
 	ProjectFile pf = LoadProjectYaml(argv[1]);
 	for (const ProjectEntity& e : pf.entities) {
 		if (e.type != EntityType::Wing) continue;
@@ -128,6 +167,15 @@ int main(int argc, char** argv) {
 			for (const WingBodyStructurePlan& p : wing.LastStructurePlans()) {
 				std::printf("    plan %s: %zu ribs, %zu spars, rib size %.4f\n", p.body.c_str(), p.ribs.size(), p.spars.size(), p.rib_size);
 				for (const std::string& n : p.notes) std::printf("    note: %s\n", n.c_str());
+				for (const WingRibPlan& r : p.ribs) {
+					std::set<int> seen;
+					int repeats = 0;
+					for (int idx : r.rim) if (!seen.insert(idx).second) ++repeats;
+					if (repeats) std::printf("    %s at eta %.4f: rim of %zu ids has %d repeated vertex id(s)\n", r.name.c_str(), r.eta, r.rim.size(), repeats);
+				}
+				if (e.name == job_entity && p.body == "Main") {
+					for (const NamedMesh& nm : bodies) if (nm.name == p.body) WriteJob(job_dir, nm.mesh, p);
+				}
 			}
 		}
 		{

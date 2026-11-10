@@ -370,11 +370,18 @@ struct WingRibRules {
 
 struct WingStructureSpec {
 	WingRibRules ribs;
-	std::vector<WingSparSpec> spars;
-	std::vector<WingStringerSpec> stringers;
-	// What a new wing starts with: a front spar at 0.25 and a rear spar at
+	// A fresh spec IS the default structure (a wing made in the application
+	// gets it without being told): a front spar at 0.25 and a rear spar at
 	// 0.65, eight ribs between the caps, no stringers.
+	std::vector<WingSparSpec> spars = DefaultSpars();
+	std::vector<WingStringerSpec> stringers;
+	static std::vector<WingSparSpec> DefaultSpars();
+	// The default structure, as above.
 	static WingStructureSpec Default();
+	// The same, with the rear spar kept a tenth of the chord ahead of the
+	// most forward flap hinge (a wing read from a file without a structure
+	// key, which may have flaps).
+	static WingStructureSpec DefaultFor(const std::vector<FlapSpec>& flaps);
 	// Nothing to build: no spars, no stringers, no rib station.
 	bool IsEmpty() const;
 };

@@ -371,7 +371,7 @@ def rib_chords(verts, discs_by_rib, ribs, tol, size):
     chords are later embedded in the one of its discs whose rims hold both
     endpoints (``chords_of_disc``)."""
     out = {i: [] for i in range(len(ribs))}
-    normals = [np.asarray(r["normal"], dtype=np.float64) for r in ribs]
+    normals = [np.asarray(r.get("normal", [0.0, 0.0, 1.0]), dtype=np.float64) for r in ribs]
     for i in range(len(ribs)):
         for j in range(i + 1, len(ribs)):
             if "rim" in ribs[i] or "rim" in ribs[j]:

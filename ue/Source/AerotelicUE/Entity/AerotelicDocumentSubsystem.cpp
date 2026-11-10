@@ -879,9 +879,8 @@ bool UAerotelicDocumentSubsystem::DependsOn(const AAerotelicEntityActor* Entity,
 
 const aerotelic::WingBodyStructurePlan* UAerotelicDocumentSubsystem::WingPlanFor(const AAerotelicEntityActor* Entity, const FString& Role)
 {
-	if (Entity == nullptr || Entity->GetEntityType() != EntityType::Wing || Entity->GetModel() == nullptr) return nullptr;
-	const aerotelic::WingModel* Wing = Entity->GetModelAs<aerotelic::WingModel>();
-	for (const aerotelic::WingBodyStructurePlan& P : Wing->LastStructurePlans())
+	if (Entity == nullptr || Entity->GetEntityType() != EntityType::Wing) return nullptr;
+	for (const aerotelic::WingBodyStructurePlan& P : Entity->GetLastStructurePlans())
 	{
 		if (FString(UTF8_TO_TCHAR(P.body.c_str())) == Role) return P.IsEmpty() ? nullptr : &P;
 	}

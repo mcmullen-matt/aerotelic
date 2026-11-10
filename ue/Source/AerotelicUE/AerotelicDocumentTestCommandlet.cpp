@@ -634,6 +634,51 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 	// of the entity's model, and nothing in the scene changes until the
 	// draft is applied -- at which point the entity gets a fresh model of
 	// its own and the generated structure of its body follows.
+	// A WING's structure comes from its parameterisation (2026-11-09): the
+	// default two spars and eight ribs, planned on the wing's own grid and
+	// generated as soon as the body has a skin -- no Generate step.
+	UE_LOG(LogAerotelicDocumentTest, Display, TEXT("step: wing structure"));
+	{
+		const aerotelic::WingModel* WM = Wing->GetModelAs<aerotelic::WingModel>();
+		Check(WM->structure.spars.size() == 2 && WM->structure.ribs.between == 8, "wing structure: a new wing carries the default two spars and eight ribs");
+		Check(Wing->GetLastStructurePlans().size() == 1 && Wing->GetLastStructurePlans()[0].ribs.size() == 8 && Wing->GetLastStructurePlans()[0].spars.size() == 2,
+			FString::Printf(TEXT("wing structure: the build planned 8 ribs and 2 spar webs on the Main body (%d plan(s))"), (int32)Wing->GetLastStructurePlans().size()));
+		aerotelic::BodyStructure WS;
+		WS.material = *aerotelic::FindMaterialPreset("Aluminium 2024-T3 sheet");
+		WS.skin_thickness = 0.002;
+		Check(Wing->SetBodyStructure(TEXT("Main"), WS), "wing structure: the wing takes a 2 mm aluminium skin");
+		Check(Doc->HasPendingRebuilds(), "wing structure: a wing body with a plan is queued as soon as it has a skin");
+		Doc->FlushPendingRebuilds();
+		const FAerotelicBodyStructure* GW = Wing->GetGeneratedStructure(TEXT("Main"));
+		Check(GW != nullptr && GW->IsGenerated(), "wing structure: the Main body's structure generated from the plan");
+		if (GW != nullptr && GW->IsGenerated())
+		{
+			const std::vector<FAerotelicStructureLayer>& L = GW->GetLayers();
+			Check(L.size() == 4 && L[0].Kind == FAerotelicStructureLayer::EKind::Skin && L[1].Kind == FAerotelicStructureLayer::EKind::Ribs
+				&& L[2].Kind == FAerotelicStructureLayer::EKind::Spars && L[3].Kind == FAerotelicStructureLayer::EKind::Spars,
+				FString::Printf(TEXT("wing structure: layers Skin, Ribs, Front spar, Rear spar (%d)"), (int32)L.size()));
+			if (L.size() == 4)
+			{
+				Check(!L[1].Mesh.IsEmpty() && L[1].Area > 0.0 && L[1].Name == TEXT("Ribs"), FString::Printf(TEXT("wing structure: the Ribs layer holds the eight discs (%d triangles, area %.4g)"), (int32)L[1].Mesh.triangles.size(), L[1].Area));
+				Check(!L[2].Mesh.IsEmpty() && L[2].Name == TEXT("Front spar") && !L[3].Mesh.IsEmpty() && L[3].Name == TEXT("Rear spar"), "wing structure: both spar webs have triangles");
+				Check(L[1].Material.name == WS.material.name && L[2].Material.name == WS.material.name, "wing structure: elements without a material of their own take the body's");
+				Check(GW->GetStats().Warnings.Num() == 0, FString::Printf(TEXT("wing structure: no warnings (%s)"), *FString::Join(GW->GetStats().Warnings, TEXT("; "))));
+				// The rib discs' rim vertices are the body's own vertices: meshed
+				// on the wing's rings, not cut into it.
+				const std::vector<aerotelic::NamedMesh>& Own = Wing->GetLastMeshes();
+				int32 OnBody = 0;
+				if (!Own.empty())
+				{
+					for (const aerotelic::Vec3& V : L[1].Mesh.vertices)
+					{
+						for (const aerotelic::Vec3& B : Own[0].mesh.vertices) { if (aerotelic::DistanceSq(V, B) < 1e-24) { ++OnBody; break; } }
+					}
+				}
+				Check(OnBody >= 8 * 20, FString::Printf(TEXT("wing structure: the rib rims are the body's own vertices (%d rib vertices on the body)"), OnBody));
+			}
+		}
+	}
+
 	UE_LOG(LogAerotelicDocumentTest, Display, TEXT("step: apply"));
 	if (Primitive != nullptr && Wing != nullptr)
 	{
