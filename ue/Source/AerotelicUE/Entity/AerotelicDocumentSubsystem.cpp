@@ -265,7 +265,7 @@ namespace
 			{
 				Actor->SetBodyVisible(Index, false);
 			}
-			if (Body.structure.IsSet() || Body.structure.HasInterior() || !Body.structure.exclusions.empty())
+			if (Body.structure.IsSet() || Body.structure.skin_thickness > 0.0 || !Body.structure.exclusions.empty())
 			{
 				Actor->SetBodyStructure(Role, Body.structure);
 				bAnyStructure = true;
@@ -566,18 +566,6 @@ void UAerotelicDocumentSubsystem::SetRenderStyle(EAerotelicRenderStyle Style)
 			WeakEntity->ApplyRenderStyle(Style);
 		}
 	}
-}
-
-void UAerotelicDocumentSubsystem::SetStructurePreview(const FAerotelicStructurePreview& Preview)
-{
-	StructurePreview = Preview;
-	OnStructurePreviewChanged.Broadcast();
-}
-
-void UAerotelicDocumentSubsystem::ClearStructurePreview()
-{
-	StructurePreview = FAerotelicStructurePreview();
-	OnStructurePreviewChanged.Broadcast();
 }
 
 int32 UAerotelicDocumentSubsystem::CopyStructuresFromOperand(AAerotelicEntityActor* Boolean)
@@ -890,7 +878,6 @@ const aerotelic::WingBodyStructurePlan* UAerotelicDocumentSubsystem::WingPlanFor
 bool UAerotelicDocumentSubsystem::WantsStructure(const AAerotelicEntityActor* Entity, const FAerotelicBody& Body)
 {
 	if (!Body.Structure.IsSkin()) return false;
-	if (Body.Structure.HasInterior()) return true;
 	return WingPlanFor(Entity, Body.Name) != nullptr;
 }
 
@@ -966,63 +953,11 @@ bool UAerotelicDocumentSubsystem::GenerateBodyStructure(AAerotelicEntityActor* E
 		return true;
 	}
 
-	// The body's placed surface on its OWN grid (GetPlacedMeshes at tolerance
-	// 0: the viewport's triangles, the ones the structural analysis solves
-	// on), so the ribs' rims are that grid's vertices and the discs shown
-	// are the discs analysed.
-	FAerotelicBodyStructure::FInputs In;
-	In.Label = Label;
-	In.Structure = S;
-	Entity->GetPlacementMatrix(In.R, In.T, In.Scale);
-	{
-		const std::vector<aerotelic::NamedMesh> Meshes = Entity->GetPlacedMeshes(false);
-		const aerotelic::NamedMesh* Found = nullptr;
-		for (const aerotelic::NamedMesh& M : Meshes)
-		{
-			if (FString(UTF8_TO_TCHAR(M.name.c_str())) == Role || (Meshes.size() == 1 && Entity->GetBodies().Num() == 1)) { Found = &M; break; }
-		}
-		if (Found == nullptr || Found->mesh.IsEmpty())
-		{
-			OutError = FString::Printf(TEXT("%s: no geometry could be built for the body."), *Label);
-			return false;
-		}
-		In.Body = Found->mesh;
-	}
-	// The reserved volumes, by scene name -- an entity's bodies and, when it
-	// is mirrored, its mirrored half's, on their own grids too -- become
-	// holes in the ribs. A name that is not in the scene is skipped, as any
-	// dependency that cannot be satisfied.
-	for (const std::string& Name : S.exclusions)
-	{
-		const FString Wanted = UTF8_TO_TCHAR(Name.c_str());
-		AAerotelicEntityActor* Reserved = nullptr;
-		for (auto& Weak : Entities)
-		{
-			if (Weak.IsValid() && Weak->EntityName == Wanted) { Reserved = Weak.Get(); break; }
-		}
-		if (Reserved == nullptr || Reserved == Entity)
-		{
-			UE_LOG(LogTemp, Warning, TEXT("AerotelicDocument: %s: the reserved volume '%s' is not in the scene; skipped"), *Label, *Wanted);
-			continue;
-		}
-		for (int32 Half = 0; Half < (Reserved->IsMirrored() ? 2 : 1); ++Half)
-		{
-			for (aerotelic::NamedMesh& M : Reserved->GetPlacedMeshes(Half == 1))
-			{
-				if (M.mesh.IsEmpty()) continue;
-				In.Reserved.push_back(std::move(M.mesh));
-			}
-		}
-	}
-
-	// A fresh generation every time: there is nothing worth carrying over
-	// from the last one (the cut and the rib mesh take under a second).
-	TSharedPtr<FAerotelicBodyStructure> G = MakeShared<FAerotelicBodyStructure>();
-	if (!G->Generate(In, OutError))
-	{
-		return false;
-	}
-	Entity->SetGeneratedStructure(Role, G);
+	// Any other body has no interior structure of its own yet (a fuselage's
+	// or nacelle's frames are to come from their parameterisations as the
+	// wing's do; the plane networks that stood in went on 2026-11-10):
+	// nothing to generate, and whatever layers it had go.
+	Entity->ClearGeneratedStructure(Role);
 	return true;
 }
 

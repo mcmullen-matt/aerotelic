@@ -8,122 +8,18 @@
 
 namespace aerotelic {
 
-const char* PlaneAxisName(PlaneAxis a) {
-	switch (a) {
-		case PlaneAxis::X: return "x";
-		case PlaneAxis::Y: return "y";
-		case PlaneAxis::Z: return "z";
-		case PlaneAxis::Custom: return "custom";
-	}
-	return "y";
-}
-
-PlaneAxis ParsePlaneAxis(const std::string& s) {
-	std::string t;
-	for (char c : s) t.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
-	if (t == "x") return PlaneAxis::X;
-	if (t == "y") return PlaneAxis::Y;
-	if (t == "z") return PlaneAxis::Z;
-	if (t == "custom") return PlaneAxis::Custom;
-	throw std::invalid_argument("unknown plane axis '" + s + "' (x, y, z or custom)");
-}
-
-namespace {
-
-bool SameNetworkGeometry(const PlaneNetwork& a, const PlaneNetwork& b) {
-	const Vec3 na = NetworkNormal(a), nb = NetworkNormal(b);
-	return na.x == nb.x && na.y == nb.y && na.z == nb.z && a.start == b.start && a.spacing == b.spacing
-		&& a.count == b.count && a.thickness == b.thickness && a.height == b.height;
-}
-
-} // namespace
-
 bool SameStructureGeometry(const BodyStructure& a, const BodyStructure& b) {
 	if (a.skin_thickness != b.skin_thickness) return false;
-	if (a.networks.size() != b.networks.size()) return false;
-	for (size_t i = 0; i < a.networks.size(); ++i) {
-		if (!SameNetworkGeometry(a.networks[i], b.networks[i])) return false;
-	}
 	return a.exclusions == b.exclusions;
-}
-
-std::string PlaneNetworkProblem(const PlaneNetwork& n) {
-	if (n.count < 1) return "it has no planes (the count must be at least 1)";
-	if (!(n.thickness > 0.0) || !std::isfinite(n.thickness)) return "its thickness must be greater than zero";
-	if (n.count > 1) {
-		if (!(n.spacing > 0.0) || !std::isfinite(n.spacing)) return "its spacing must be greater than zero when it has more than one plane";
-		if (n.spacing <= n.thickness) return "its planes are thicker than their spacing, so they would overlap";
-	}
-	if (n.height < 0.0 || !std::isfinite(n.height)) return "its height cannot be negative (0 spans the interior)";
-	if (!std::isfinite(n.start)) return "its start is not a number";
-	if (n.axis == PlaneAxis::Custom && !(Length(n.normal) > 0.0)) return "its custom normal is the zero vector";
-	return std::string();
 }
 
 std::string BodyStructureProblem(const BodyStructure& s) {
 	if (s.skin_thickness < 0.0 || !std::isfinite(s.skin_thickness)) return "the skin thickness cannot be negative";
 	if (s.asserted_mass && (!(*s.asserted_mass >= 0.0) || !std::isfinite(*s.asserted_mass))) return "the asserted mass cannot be negative";
-	if (!s.networks.empty() && !(s.skin_thickness > 0.0)) {
-		return "a plane network needs a skin thickness: a solid body has no interior to fill";
-	}
-	for (const PlaneNetwork& n : s.networks) {
-		const std::string why = PlaneNetworkProblem(n);
-		if (!why.empty()) return "network '" + n.name + "': " + why;
-	}
 	return std::string();
 }
 
 // ---- plane geometry -------------------------------------------------------
-
-Vec3 NetworkNormal(const PlaneNetwork& n) {
-	switch (n.axis) {
-		case PlaneAxis::X: return {1.0, 0.0, 0.0};
-		case PlaneAxis::Y: return {0.0, 1.0, 0.0};
-		case PlaneAxis::Z: return {0.0, 0.0, 1.0};
-		case PlaneAxis::Custom: break;
-	}
-	const Vec3 u = Normalized(n.normal);
-	return Length(u) > 0.0 ? u : Vec3{0.0, 1.0, 0.0};
-}
-
-double PlaneOffset(const PlaneNetwork& n, int k) {
-	return n.start + k * n.spacing;
-}
-
-Plane NetworkPlane(const PlaneNetwork& n, int k) {
-	Plane p;
-	p.normal = NetworkNormal(n);
-	p.offset = PlaneOffset(n, k);
-	return p;
-}
-
-Plane PlacedPlane(const Plane& local, const std::array<double, 9>& R, const Vec3& T, double scale) {
-	const Vec3 n = local.normal;
-	Plane out;
-	out.normal = Vec3{R[0] * n.x + R[1] * n.y + R[2] * n.z,
-	                  R[3] * n.x + R[4] * n.y + R[5] * n.z,
-	                  R[6] * n.x + R[7] * n.y + R[8] * n.z};
-	// A rotation keeps the length; renormalise anyway against a scaled R.
-	out.normal = Normalized(out.normal);
-	out.offset = scale * local.offset + Dot(out.normal, T);
-	return out;
-}
-
-Plane MirrorPlaneY(const Plane& p) {
-	Plane out = p;
-	out.normal.y = -out.normal.y;
-	return out;
-}
-
-double PlaneNetworkField(const PlaneNetwork& n, const Vec3& p) {
-	const double s = Dot(NetworkNormal(n), p);
-	int k = 0;
-	if (n.count > 1 && n.spacing > 0.0) {
-		k = static_cast<int>(std::lround((s - n.start) / n.spacing));
-		k = std::max(0, std::min(n.count - 1, k));
-	}
-	return std::fabs(s - PlaneOffset(n, k)) - 0.5 * n.thickness;
-}
 
 void PlaneBasis(const Vec3& n, Vec3* u, Vec3* v) {
 	// Cross with the axis the normal leans on least, so the basis is well
@@ -132,47 +28,6 @@ void PlaneBasis(const Vec3& n, Vec3* u, Vec3* v) {
 	Vec3 a = ax <= ay && ax <= az ? Vec3{1.0, 0.0, 0.0} : (ay <= az ? Vec3{0.0, 1.0, 0.0} : Vec3{0.0, 0.0, 1.0});
 	*u = Normalized(Cross(n, a));
 	*v = Cross(n, *u);   // u x v = u x (n x u) = n (u.u) - u (u.n) = n
-}
-
-TriMesh SlabMesh(const Plane& p, double thickness, const Vec3& centre, double half_extent) {
-	Vec3 u, v;
-	PlaneBasis(p.normal, &u, &v);
-	TriMesh slab = BoxMesh(2.0 * half_extent, 2.0 * half_extent, thickness);
-	// Columns u, v, n: x' = u x + v y + n z, a rotation (det +1), so the
-	// winding stays outward.
-	const std::array<double, 9> R{u.x, v.x, p.normal.x,
-	                              u.y, v.y, p.normal.y,
-	                              u.z, v.z, p.normal.z};
-	const Vec3 on_plane = centre - p.normal * p.Distance(centre);
-	slab.Transform(R, on_plane);
-	return slab;
-}
-
-bool PlaneBoxRectangle(const Plane& p, const Box3& box, std::array<Vec3, 4>* corners) {
-	if (box.IsEmpty()) return false;
-	bool above = false, below = false;
-	Vec3 u, v;
-	PlaneBasis(p.normal, &u, &v);
-	const Vec3 c0 = box.Center() - p.normal * p.Distance(box.Center());
-	double umin = 1e300, umax = -1e300, vmin = 1e300, vmax = -1e300;
-	for (int i = 0; i < 8; ++i) {
-		const Vec3 corner{(i & 1) ? box.max.x : box.min.x, (i & 2) ? box.max.y : box.min.y, (i & 4) ? box.max.z : box.min.z};
-		const double d = p.Distance(corner);
-		above = above || d > 0.0;
-		below = below || d < 0.0;
-		const Vec3 q = corner - p.normal * d - c0;
-		const double qu = Dot(q, u), qv = Dot(q, v);
-		umin = std::min(umin, qu); umax = std::max(umax, qu);
-		vmin = std::min(vmin, qv); vmax = std::max(vmax, qv);
-	}
-	if (!(above && below)) return false;
-	if (corners) {
-		(*corners)[0] = c0 + u * umin + v * vmin;
-		(*corners)[1] = c0 + u * umax + v * vmin;
-		(*corners)[2] = c0 + u * umax + v * vmax;
-		(*corners)[3] = c0 + u * umin + v * vmax;
-	}
-	return true;
 }
 
 double PlaneSection::Area() const {

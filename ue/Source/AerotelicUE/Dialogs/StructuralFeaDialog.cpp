@@ -513,8 +513,8 @@ namespace
 			AerotelicStructuralFea::FRequest& Request = B->Request;
 
 			// Each chosen body through the shared builder (the commandlets
-			// build the same way): its own grid as skin shells and its plane
-			// networks as rib shells, labelled "<entity>[ (mirror)][ / <body>]".
+			// build the same way): its own grid as skin shells and its generated
+			// layers as rib shells, labelled "<entity>[ (mirror)][ / <body>]".
 			// The picker's index of the body is kept for a support resolved
 			// against it alone (FSupport::Body).
 			const AerotelicFeaModelBuilder::FOptions Options = BuilderOptions();
@@ -971,7 +971,7 @@ namespace
 						R.Id, *R.Label, *R.Kind, *Thousands(R.Faces), R.Area, *LengthUnit,
 						R.RibFaces > 0 ? *FString::Printf(TEXT(", %s rib shells of %.4g %s^2"), *Thousands(R.RibFaces), R.RibArea, *LengthUnit) : TEXT(""), R.Mass);
 				}
-				Text += TEXT("\nThe faces are each body's OWN grid: the triangles its Mesh tab defines and the viewport shows, cut along the rib planes where a body has plane networks so the ribs' rims are the skin's nodes.");
+				Text += TEXT("\nThe faces are each body's OWN grid: the triangles its Mesh tab defines and the viewport shows; its generated structure (a wing's ribs, spars, stringers) joins them as shells on the same nodes.");
 				for (const FString& D : B.Dropped) Text += TEXT("\nLEFT OUT: ") + D;
 				if (Captions[TabMesh].IsValid()) Captions[TabMesh]->SetText(FText::FromString(Text));
 			}
@@ -1595,7 +1595,6 @@ namespace
 				if (Job->Ticker.IsValid()) { FTSTicker::GetCoreTicker().RemoveTicker(Job->Ticker); Job->Ticker.Reset(); }
 				Job.Reset();
 			}
-			RibCache.Ribs.Empty();
 			LblProgress.Reset(); ProgressBar.Reset(); BuildButton.Reset(); SolveButton.Reset(); CancelButton.Reset();
 			for (int32 Tab = 0; Tab < kPictures; ++Tab)
 			{
@@ -1650,11 +1649,11 @@ namespace
 		"STRUCTURAL (KRATOS FEA)\n\n"
 		"A linear static finite-element analysis of the chosen solid bodies on KratosMultiphysics' StructuralMechanicsApplication, run as a separate process in the WingDesigner environment. Everything the solver sees is SI (the mesh scaled by the length unit, the materials as they are, loads in newtons and pascals); the dialog converts the results back.\n\n"
 		"BODIES\n"
-		"The picker lists SOLID BODIES, not parameterisations: a wing's main element and its flap, a propeller's spinner and blades, a boolean result's separate shells are each a row. What each body is comes from its Structure in the Scene tree (a boolean result's bodies own theirs): a thin-walled part of SHELLS of its skin thickness and material on its own triangles, nothing inside; and, for each of its plane networks -- ribs, spars, frames -- unloaded rib shells of the network's thickness and material inside it. A body with no skin thickness has nothing to make shells of and is refused on the Set-up tab: give it one under Structure... "
+		"The picker lists SOLID BODIES, not parameterisations: a wing's main element and its flap, a propeller's spinner and blades, a boolean result's separate shells are each a row. What each body is comes from its Structure in the Scene tree (a boolean result's bodies own theirs): a thin-walled part of SHELLS of its skin thickness and material on its own triangles; and, for each layer its parameterisation generated inside it -- a wing's ribs, spars and stringers -- unloaded shells of that layer's thickness and material. A body with no skin thickness has nothing to make shells of and is refused on the Set-up tab: give it one under Structure... "
 		"The model is shells only since 2026-11-08. Until then a body without a skin was filled with solid tetrahedra and a lattice infill became a homogenised core under the skin; both are gone, with the lattice infill itself. "
 		"The bodies are not joined to one another: each must reach a support on its own or through a body it was fused with. A body or part of one with no load path to any support -- a control surface in its gap, a payload bay inside the fuselage -- would make the system singular, so it is LEFT OUT automatically and named on the Mesh and Support tabs.\n\n"
 		"THE GRID\n"
-		"Every body is analysed on ITS OWN GRID: the triangles its Mesh tab defines, at the viewport's tolerance rule, the same ones the viewport shows and mass properties weigh. The shells ARE those triangles, a node per vertex, so the Mesh tab is where the cost of a solve is set and the Mesh tab's count is the shell count. Where a body has plane networks the grid is first cut along every plane (core mesh_cut.hpp), so each plane's section is a closed loop of the grid's own vertices; the rib is then a planar disc meshed by gmsh (tools/rib_gmsh.py) on that rim -- gmsh adds nodes inside the disc only and never moves the rim -- so the rib's edge nodes are the skin's nodes and the two share their degrees of freedom. Where two networks cross, the discs share the chord along which their planes meet.\n\n"
+		"Every body is analysed on ITS OWN GRID: the triangles its Mesh tab defines, at the viewport's tolerance rule, the same ones the viewport shows and mass properties weigh. The shells ARE those triangles, a node per vertex, so the Mesh tab is where the cost of a solve is set and the Mesh tab's count is the shell count. A body's generated structure is built on that same grid: a wing's rib rims and spar feet are vertex lines of its skin mesh, the ribs are meshed by gmsh (tools/rib_gmsh.py) on those rims -- gmsh adds nodes inside the disc only and never moves the rim -- and a spar's web takes the rib's chord nodes, so skin, ribs and spars share their degrees of freedom (nodes are matched by position when the model is assembled).\n\n"
 		"COST\n"
 		"Build Model counts the degrees of freedom the solver will see (the script's own rule: six per node, every node carrying a shell) and says which solver the automatic choice takes: the direct solver (exact, one thread) up to 150,000 DOF -- 25,000 nodes -- the iterative solver (amgcl, every core; the force balance checks it afterwards) beyond. Past that budget Solve asks first. For a solve in about a minute on a desktop keep the DOF in the tens of thousands: a few thousand triangles per body.\n\n"
 		"SET-UP\n"
@@ -1667,7 +1666,7 @@ namespace
 		"On the left: any number of support planes, each axis = value (or the mesh's minimum or maximum along the axis) with a tolerance (0 is a ten-thousandth of the mesh's diagonal, about how planar a lofted section is); every node within the tolerance of any plane is clamped in every degree of freedom (the shells' rotations too) -- add, edit, delete, then Apply. "
 		"A plane may be LIMITED TO A PATCH (2026-11-05): a rectangle of it along its two in-plane axes (the other two axes in order: a plane x = c has its patch in y and z), so a clamp at x = 3 through the fuselage does not also take the wing root that crosses x = 3. Tick the patch on the card and type the rectangle, press Fit to body (the chosen body's extent on the plane, or the whole mesh's), or drag the handles in the picture: a press on a corner moves two sides, on an edge's midpoint one side; the red markers follow as you drag, and the model is re-derived when you let go (the view stays put). Dragging a handle of a whole-plane support turns it into a patch starting from the frame as drawn. On the right a red marker on every fixed node, each plane as a frame (blue for the whole plane, amber for a patch) with its eight handles, and the load path: whatever reaches no support is left out and listed.\n\n"
 		"RESULT\n"
-		"Linear static, small displacement, linear elastic, the linear thin shell triangle (its reactions balance the loads exactly; the corotational triangles are options for small-displacement comparisons). The reactions at the supports must balance what was applied: the Force balance line says by how much they miss, and a miss of more than one percent means the linear solver did not converge -- the solution is then reported as NOT converged and nothing in it is to be trusted (the iterative solver can do this on thin shells; the direct solver cannot, which is why the automatic choice takes it up to 150,000 degrees of freedom). Margin is allowable / peak von Mises - 1 for each region: a body's skin, or one of its networks' ribs. "
+		"Linear static, small displacement, linear elastic, the linear thin shell triangle (its reactions balance the loads exactly; the corotational triangles are options for small-displacement comparisons). The reactions at the supports must balance what was applied: the Force balance line says by how much they miss, and a miss of more than one percent means the linear solver did not converge -- the solution is then reported as NOT converged and nothing in it is to be trusted (the iterative solver can do this on thin shells; the direct solver cannot, which is why the automatic choice takes it up to 150,000 degrees of freedom). Margin is allowable / peak von Mises - 1 for each region: a body's skin, or one of its generated layers. "
 		"The natural frequencies (2026-11-04) are the lowest modes of K phi = omega^2 M phi for the same mesh, materials and clamps with no loads: the stiffness the static solve used and the elements' own mass from the densities and thicknesses of the skin and rib shells. They are in hertz whatever the units; under a model scale they are the replica's. Checked on a 1 x 10 x 1 m thin-walled aluminium box: the degenerate first bending pair within 1.5% of the clamped-free beam's frequency corrected for shear, rotary inertia and the tip cap's mass, then the skin panels' own plate modes -- a thin-walled part goes local long before its second beam mode. The VTK holds the displacement, the stresses and the mode shapes (mode_1, mode_2, ... scaled to a unit largest displacement) for ParaView, in SI. No post-processing view yet.");
 }
 
@@ -1678,7 +1677,7 @@ void ShowAerotelicStructuralFeaDialog(TFunction<void(const FText&)> Status)
 	if (Choices.Num() == 0)
 	{
 		AerotelicMessageBox(EAppMsgType::Ok,
-			LOCTEXT("NoBody", "Nothing to analyse: add a body first. Any body with a structural material and a skin thickness under Structure... in the Scene tree can be analysed, as shells of that thickness with its plane networks as rib shells."),
+			LOCTEXT("NoBody", "Nothing to analyse: add a body first. Any body with a structural material and a skin thickness under Structure... in the Scene tree can be analysed, as shells of that thickness with its generated structure as shells inside."),
 			LOCTEXT("Title", "Structural (Kratos FEA)"));
 		return;
 	}
@@ -1793,7 +1792,7 @@ void ShowAerotelicStructuralFeaDialog(TFunction<void(const FText&)> Status)
 				+ SVerticalBox::Slot().AutoHeight().Padding(0, 4, 0, 0)
 				[
 					MakeInfoLabel(LOCTEXT("BodiesHint",
-						"One row per SOLID BODY: a wing's main element and its flap, a propeller's blades, a boolean result's separate shells. Each is analysed on ITS OWN GRID -- the triangles its Mesh tab defines and the viewport shows. What each is comes from its Structure (a boolean result's bodies own theirs): a thin-walled part of SHELLS of its skin thickness and material, and each of its plane networks (ribs, spars, frames) as unloaded rib shells of the network's thickness and material inside it, their rims on the skin's nodes. A body with no skin thickness cannot be modelled and is said so above: the analysis is shells only. "
+						"One row per SOLID BODY: a wing's main element and its flap, a propeller's blades, a boolean result's separate shells. Each is analysed on ITS OWN GRID -- the triangles its Mesh tab defines and the viewport shows. What each is comes from its Structure (a boolean result's bodies own theirs): a thin-walled part of SHELLS of its skin thickness and material, and each layer its parameterisation generated (a wing's ribs, spars, stringers) as unloaded shells of that layer's thickness and material inside it, on the skin's nodes. A body with no skin thickness cannot be modelled and is said so above: the analysis is shells only. "
 						"The bodies are not joined to one another: each must reach a support on its own, or through a body it was fused with. Whatever has no load path to any support -- a control surface in its gap, a bay inside the fuselage -- is left out automatically and named. A boolean result already contains its operands, so those start unchosen."))
 				])
 		]
@@ -1810,7 +1809,7 @@ void ShowAerotelicStructuralFeaDialog(TFunction<void(const FText&)> Status)
 				+ SVerticalBox::Slot().AutoHeight().Padding(0, 4, 0, 0)
 				[
 					MakeInfoLabel(LOCTEXT("ModelHint",
-						"The model is SHELLS ONLY (since 2026-11-08; the tetrahedral solids and homogenised infill cores are gone). A body's OWN surface triangles (its Mesh tab's, what the viewport shows) become shell elements of its skin thickness and material -- the linear thin triangle, three nodes, six degrees of freedom each; each plane network becomes unloaded rib shells of its own thickness and material inside the body, the skin cut along the planes so the ribs' rims are the skin's nodes and the two share them (where two networks cross, the ribs share the chord too). There is nothing to choose about the model itself: it is the body's structure as set in the Scene tree. "
+						"The model is SHELLS ONLY (since 2026-11-08; the tetrahedral solids and homogenised infill cores are gone). A body's OWN surface triangles (its Mesh tab's, what the viewport shows) become shell elements of its skin thickness and material -- the linear thin triangle, three nodes, six degrees of freedom each; each generated layer (a wing's ribs, spars, stringers) becomes unloaded shells of its own thickness and material inside the body, built on the same grid so their rims are the skin's nodes and the two share them (a spar's web shares its chord nodes with the ribs it crosses). There is nothing to choose about the model itself: it is the body's structure as set in the Scene tree and the parameterisation. "
 						"Build Model reports the degrees of freedom (six per node) and which solver will run: the direct solver is exact but single-threaded and its cost grows faster than the system, so the automatic choice takes it up to 150,000 degrees of freedom (25,000 nodes) and the iterative solver (amgcl, every core) beyond; the force balance is checked after every solve, since the iterative solver can stop short on thin shells and hand back a solution whose reactions do not balance the loads. "
 						"The linear thin triangle is the shell for a linear static analysis: its reactions balance the loads exactly whatever the displacement. The corotational triangles are geometrically nonlinear elements solved in one step: they agree with it for small displacements and report inconsistent reactions and stresses once the model moves far. "
 						"The natural frequencies are the same model's -- the same mesh, materials and clamps, no loads -- solved after the static case as the eigenvalue problem K phi = omega^2 M phi for the lowest modes asked (Spectra's shift-invert eigensolver, a second or two on a few hundred thousand degrees of freedom). The mass is the elements' own, from the densities and skin thicknesses, so a thin-walled part's spectrum shows its skin panels' plate modes soon after the first beam modes."))
@@ -1830,7 +1829,7 @@ void ShowAerotelicStructuralFeaDialog(TFunction<void(const FText&)> Status)
 				+ SVerticalBox::Slot().AutoHeight().Padding(0, 4, 0, 0)
 				[
 					MakeInfoLabel(LOCTEXT("ResultHint",
-						"Linear static, small displacement, linear elastic. The reactions at the supports must balance what was applied -- gravity on the mass, the pressure's resultant (zero over a closed surface), the point forces. Margin is allowable / peak von Mises - 1 for each region: a body's skin, or one of its networks' ribs. "
+						"Linear static, small displacement, linear elastic. The reactions at the supports must balance what was applied -- gravity on the mass, the pressure's resultant (zero over a closed surface), the point forces. Margin is allowable / peak von Mises - 1 for each region: a body's skin, or one of its generated layers. "
 						"The natural frequencies are in hertz whatever the project's units, lowest first, of the structure as clamped (a replica's are the replica's). The VTK holds the displacement, the stresses and each mode shape (mode_1, mode_2, ... as point vectors scaled to a unit largest displacement) for ParaView, in SI."))
 				])
 		]

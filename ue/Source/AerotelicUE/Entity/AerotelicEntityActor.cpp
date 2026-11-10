@@ -867,7 +867,7 @@ void AAerotelicEntityActor::RefreshProxy()
 	for (const FAerotelicBody& Old : Previous)
 	{
 		const bool bStillThere = Bodies.ContainsByPredicate([&Old](const FAerotelicBody& B) { return B.Name == Old.Name; });
-		if (!bStillThere && (Old.Structure.IsSet() || Old.Structure.HasInterior()))
+		if (!bStillThere && (Old.Structure.IsSet() || Old.Structure.skin_thickness > 0.0))
 		{
 			OrphanedStructures.Add(Old.Name, Old.Structure);
 		}

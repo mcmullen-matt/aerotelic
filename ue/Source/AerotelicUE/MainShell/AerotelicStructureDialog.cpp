@@ -8,10 +8,6 @@
 #include "Widgets/Text/STextBlock.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SCheckBox.h"
-#include "Widgets/Input/SComboBox.h"
-#include "Widgets/Input/SEditableTextBox.h"
-#include "Widgets/Views/SListView.h"
-#include "Widgets/Views/STableRow.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Styling/CoreStyle.h"
 
@@ -32,7 +28,6 @@
 
 using aerotelic::BodyStructure;
 using aerotelic::Material;
-using aerotelic::PlaneNetwork;
 
 namespace
 {
@@ -73,62 +68,10 @@ namespace
 		double Volume = 0.0, Area = 0.0;
 		bool bClosed = true;
 
-		// Planes: the networks list and the one being edited.
-		TArray<TSharedPtr<int32>> NetworkItems;
-		TSharedPtr<SListView<TSharedPtr<int32>>> NetworkList;
-		int32 Selected = INDEX_NONE;
-		TArray<TSharedPtr<FString>> AxisOptions = { MakeShared<FString>(TEXT("X (fore/aft)")), MakeShared<FString>(TEXT("Y (left/right)")), MakeShared<FString>(TEXT("Z (up/down)")), MakeShared<FString>(TEXT("Custom")) };
-		TSharedPtr<FString> AxisChoice;
-		TSharedPtr<SComboBox<TSharedPtr<FString>>> AxisCombo;
-		TSharedPtr<SEditableTextBox> NameBox;
-
 		// Mass: the estimate, computed on demand.
 		FText Estimate;
 
-		PlaneNetwork* Net() { return S.networks.size() > static_cast<size_t>(Selected) && Selected >= 0 ? &S.networks[Selected] : nullptr; }
-
-		void RebuildNetworkItems()
-		{
-			NetworkItems.Reset();
-			for (size_t i = 0; i < S.networks.size(); ++i) NetworkItems.Add(MakeShared<int32>(static_cast<int32>(i)));
-			if (Selected >= static_cast<int32>(S.networks.size())) Selected = static_cast<int32>(S.networks.size()) - 1;
-			if (NetworkList.IsValid())
-			{
-				NetworkList->RequestListRefresh();
-				for (const TSharedPtr<int32>& Item : NetworkItems)
-				{
-					if (*Item == Selected) NetworkList->SetSelection(Item, ESelectInfo::Direct);
-				}
-			}
-			SyncNetworkWidgets();
-		}
-
-		void SyncNetworkWidgets()
-		{
-			const PlaneNetwork* N = Net();
-			AxisChoice = AxisOptions[N ? FMath::Clamp(static_cast<int32>(N->axis), 0, 3) : 1];
-			if (AxisCombo.IsValid()) AxisCombo->SetSelectedItem(AxisChoice);
-			if (NameBox.IsValid()) NameBox->SetText(FText::FromString(N ? UTF8_TO_TCHAR(N->name.c_str()) : TEXT("")));
-		}
-
-		// The 3D view's translucent planes follow the draft's networks.
-		void PushPreview()
-		{
-			UAerotelicDocumentSubsystem* Doc = UAerotelicDocumentSubsystem::Get();
-			if (Doc == nullptr || !Entity.IsValid()) return;
-			FAerotelicStructurePreview P;
-			P.Entity = Entity;
-			P.BodyRole = Role;
-			P.Networks = S.networks;
-			P.ActiveIndex = Selected;
-			Doc->SetStructurePreview(P);
-		}
-
-		void Touch()
-		{
-			bDirty = true;
-			PushPreview();
-		}
+		void Touch() { bDirty = true; }
 
 		void ReadFromEntity()
 		{
@@ -141,8 +84,6 @@ namespace
 				S = BodyStructure{};
 			}
 			bDirty = false;
-			RebuildNetworkItems();
-			PushPreview();
 		}
 	};
 
@@ -173,6 +114,18 @@ namespace
 			else
 			{
 				Out += FString::Printf(TEXT("%s: left out -- %s\n"), UTF8_TO_TCHAR(P.label.c_str()), UTF8_TO_TCHAR(P.note.c_str()));
+			}
+		}
+		// The generated layers, as the mass report weighs them.
+		if (const FAerotelicBodyStructure* G = D.Entity->GetGeneratedStructure(D.Role); G != nullptr && G->IsGenerated() && D.S.material.HasDensity() && !D.S.asserted_mass)
+		{
+			for (const FAerotelicStructureLayer& L : G->GetLayers())
+			{
+				if (L.Kind == FAerotelicStructureLayer::EKind::Skin) continue;
+				const aerotelic::Material& M = L.Material.HasDensity() ? L.Material : D.S.material;
+				const double Mass = M.density / D.Units.DensityToSI() * L.Area * L.Thickness;
+				Out += FString::Printf(TEXT("%s: %.5g %s\n"), *L.Name, Mass, UTF8_TO_TCHAR(D.Units.MassName()));
+				Total += Mass;
 			}
 		}
 		Out += FString::Printf(TEXT("Total: %.5g %s"), Total, UTF8_TO_TCHAR(D.Units.MassName()));
@@ -250,7 +203,8 @@ void OpenAerotelicStructureDialog(AAerotelicEntityActor* Entity, const FString& 
 		[
 			MakeInfoLabel(LOCTEXT("SkinHint",
 				"The material this body is made of -- its solid when the skin thickness is zero, its skin otherwise. Materials are defined under Model > Material Properties (the presets and your own); the body takes a copy of the one picked. "
-				"A skin thickness is a build figure in the project's length unit, not scaled with the model: the body's surface is the skin, that thick -- what Analysis > Structural gives its shells, what the mass report weighs as rho t A, and what Apply lists as the Skin layer. Behind a skin the Planes tab puts ribs, spars and frames: the planar shells the planes cut out of the body, bounded by its surface; a solid body has none."))
+				"A skin thickness is a build figure in the project's length unit, not scaled with the model: the body's surface is the skin, that thick -- what Analysis > Structural gives its shells, what the mass report weighs as rho t A, and what the Scene tree lists as the Skin layer. "
+				"Behind a skin the body's PARAMETERISATION puts its structure -- a wing's spars, ribs and stringers from the wing dialog's Structure tab -- built with the body on its own grid as soon as the skin is set, and listed as layers under the body; a solid body has none."))
 		]
 		+ SVerticalBox::Slot().AutoHeight().Padding(0, 12, 0, 0)
 		[
@@ -266,175 +220,6 @@ void OpenAerotelicStructureDialog(AAerotelicEntityActor* Entity, const FString& 
 						return D->S.skin_thickness > 0.0 ? FormatG(D->Area * D->S.skin_thickness, 5) : FormatG(D->Volume, 5);
 					}))
 				])
-		];
-
-	// ---------------------------------------------------------------- Planes
-	auto NetField = [D, Length](double PlaneNetwork::* Member, double Min, double Delta)
-	{
-		return Length([D, Member]() -> double* { PlaneNetwork* N = D->Net(); return N ? &(N->*Member) : nullptr; }, Min, Delta);
-	};
-	auto NormalField = [D](int32 Component)
-	{
-		return SNew(SAerotelicNumericEntry)
-			.Value_Lambda([D, Component]() { const PlaneNetwork* N = D->Net(); return N ? N->normal[Component] : 0.0; })
-			.MinValue(-1e9).MaxValue(1e9).Delta(0.1)
-			.LiveUpdate(true)
-			.OnValueCommitted_Lambda([D, Component](double V, ETextCommit::Type) { if (PlaneNetwork* N = D->Net()) { N->normal[Component] = V; D->Touch(); } });
-	};
-	auto AddNetwork = [D](const PlaneNetwork& Template)
-	{
-		D->S.networks.push_back(Template);
-		D->Selected = static_cast<int32>(D->S.networks.size()) - 1;
-		D->RebuildNetworkItems();
-		D->Touch();
-	};
-
-	TSharedRef<SWidget> PlanesTab =
-		SNew(SHorizontalBox)
-		+ SHorizontalBox::Slot().FillWidth(0.36f).Padding(0, 0, 10, 0)
-		[
-			SNew(SVerticalBox)
-			+ SVerticalBox::Slot().AutoHeight().Padding(0, 4, 0, 2)
-			[ SNew(STextBlock).Text(LOCTEXT("Networks", "Plane networks")).Font(FCoreStyle::GetDefaultFontStyle("Bold", 9)) ]
-			+ SVerticalBox::Slot().FillHeight(1.0f)
-			[
-				SNew(SBorder).BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush")).BorderBackgroundColor(FLinearColor(0.05f, 0.05f, 0.06f)).Padding(2)
-				[
-					SAssignNew(D->NetworkList, SListView<TSharedPtr<int32>>)
-					.ListItemsSource(&D->NetworkItems)
-					.SelectionMode(ESelectionMode::Single)
-					.OnGenerateRow_Lambda([D](TSharedPtr<int32> Item, const TSharedRef<STableViewBase>& Owner)
-					{
-						return SNew(STableRow<TSharedPtr<int32>>, Owner).Padding(FMargin(4, 2))
-							[
-								SNew(STextBlock).Text_Lambda([D, Item]()
-								{
-									if (!Item.IsValid() || *Item < 0 || *Item >= static_cast<int32>(D->S.networks.size())) return FText::GetEmpty();
-									const PlaneNetwork& N = D->S.networks[*Item];
-									return FText::FromString(FString::Printf(TEXT("%s (%d)"), UTF8_TO_TCHAR(N.name.c_str()), N.count));
-								})
-							];
-					})
-					.OnSelectionChanged_Lambda([D](TSharedPtr<int32> Item, ESelectInfo::Type Info)
-					{
-						if (Info == ESelectInfo::Direct) return;
-						D->Selected = Item.IsValid() ? *Item : INDEX_NONE;
-						D->SyncNetworkWidgets();
-						D->PushPreview();
-					})
-				]
-			]
-			+ SVerticalBox::Slot().AutoHeight().Padding(0, 6, 0, 0)
-			[
-				SNew(SHorizontalBox)
-				+ SHorizontalBox::Slot().AutoWidth().Padding(0, 0, 4, 0)
-				[ Button(LOCTEXT("AddRibs", "Add ribs"), LOCTEXT("AddRibsTip", "A network of planes normal to y: ribs across a wing"), [AddNetwork]() { PlaneNetwork N; N.name = "Ribs"; N.axis = aerotelic::PlaneAxis::Y; N.count = 5; AddNetwork(N); }) ]
-				+ SHorizontalBox::Slot().AutoWidth().Padding(0, 0, 4, 0)
-				[ Button(LOCTEXT("AddSpar", "Add spar"), LOCTEXT("AddSparTip", "A single plane normal to x: a spar along a wing"), [AddNetwork]() { PlaneNetwork N; N.name = "Spar"; N.axis = aerotelic::PlaneAxis::X; N.count = 1; N.thickness = 0.003; AddNetwork(N); }) ]
-				+ SHorizontalBox::Slot().AutoWidth()
-				[ Button(LOCTEXT("RemoveNet", "Remove"), LOCTEXT("RemoveNetTip", "Remove the selected network"), [D]()
-				{
-					if (D->Net() == nullptr) return;
-					D->S.networks.erase(D->S.networks.begin() + D->Selected);
-					D->RebuildNetworkItems();
-					D->Touch();
-				}) ]
-			]
-		]
-		+ SHorizontalBox::Slot().FillWidth(0.64f)
-		[
-			SNew(SScrollBox)
-			+ SScrollBox::Slot()
-			[
-				SNew(SBox).IsEnabled_Lambda([D]() { return D->Net() != nullptr; })
-				[
-					SNew(SVerticalBox)
-					+ SVerticalBox::Slot().AutoHeight()
-					[
-						FormRow(LOCTEXT("NetName", "Name:"),
-							SAssignNew(D->NameBox, SEditableTextBox)
-							.Text(FText::FromString(D->Net() ? UTF8_TO_TCHAR(D->Net()->name.c_str()) : TEXT("")))
-							.OnTextCommitted_Lambda([D](const FText& T, ETextCommit::Type)
-							{
-								if (PlaneNetwork* N = D->Net()) { N->name = TCHAR_TO_UTF8(*T.ToString()); D->Touch(); if (D->NetworkList.IsValid()) D->NetworkList->RequestListRefresh(); }
-							}))
-					]
-					+ SVerticalBox::Slot().AutoHeight()
-					[
-						FormRow(LOCTEXT("NetAxis", "Planes normal to:"),
-							SAssignNew(D->AxisCombo, SComboBox<TSharedPtr<FString>>)
-							.OptionsSource(&D->AxisOptions)
-							.InitiallySelectedItem(D->AxisChoice)
-							.OnGenerateWidget_Lambda([](TSharedPtr<FString> S) { return SNew(STextBlock).Text(FText::FromString(*S)); })
-							.OnSelectionChanged_Lambda([D](TSharedPtr<FString> S, ESelectInfo::Type Info)
-							{
-								if (!S.IsValid() || Info == ESelectInfo::Direct) return;
-								D->AxisChoice = S;
-								if (PlaneNetwork* N = D->Net())
-								{
-									N->axis = static_cast<aerotelic::PlaneAxis>(FMath::Clamp(D->AxisOptions.IndexOfByKey(S), 0, 3));
-									if (N->axis == aerotelic::PlaneAxis::Custom && !(aerotelic::Length(N->normal) > 0.0)) N->normal = aerotelic::Vec3{0.0, 1.0, 0.0};
-									D->Touch();
-								}
-							})
-							[ SNew(STextBlock).Text_Lambda([D]() { return FText::FromString(D->AxisChoice.IsValid() ? *D->AxisChoice : FString()); }) ])
-					]
-					+ SVerticalBox::Slot().AutoHeight()
-					[
-						SNew(SBox).Visibility_Lambda([D]() { const PlaneNetwork* N = D->Net(); return N && N->axis == aerotelic::PlaneAxis::Custom ? EVisibility::Visible : EVisibility::Collapsed; })
-						[
-							SNew(SVerticalBox)
-							+ SVerticalBox::Slot().AutoHeight() [ FormRow(LOCTEXT("NormalX", "Normal x:"), NormalField(0)) ]
-							+ SVerticalBox::Slot().AutoHeight() [ FormRow(LOCTEXT("NormalY", "Normal y:"), NormalField(1)) ]
-							+ SVerticalBox::Slot().AutoHeight() [ FormRow(LOCTEXT("NormalZ", "Normal z:"), NormalField(2)) ]
-						]
-					]
-					+ SVerticalBox::Slot().AutoHeight().Padding(0, 6, 0, 0)
-					[ FormRow(WithUnit(LOCTEXT("Start", "First plane at"), Units.LengthName()), SNew(SAerotelicNumericEntry)
-						.Value_Lambda([D]() { const PlaneNetwork* N = D->Net(); return N ? N->start : 0.0; })
-						.MinValue(-1e9).MaxValue(1e9).Delta(0.01)
-						.LiveUpdate(true)
-						.OnValueCommitted_Lambda([D](double V, ETextCommit::Type) { if (PlaneNetwork* N = D->Net()) { N->start = V; D->Touch(); } })) ]
-					+ SVerticalBox::Slot().AutoHeight()
-					[ FormRow(WithUnit(LOCTEXT("Spacing", "Spacing"), Units.LengthName()), NetField(&PlaneNetwork::spacing, 0.0, 0.01)) ]
-					+ SVerticalBox::Slot().AutoHeight()
-					[ FormRow(LOCTEXT("Count", "Number of planes:"), SNew(SAerotelicNumericEntry)
-						.Value_Lambda([D]() { const PlaneNetwork* N = D->Net(); return N ? static_cast<double>(N->count) : 1.0; })
-						.MinValue(1).MaxValue(500).Delta(1)
-						.LiveUpdate(false)
-						.OnValueCommitted_Lambda([D](double V, ETextCommit::Type) { if (PlaneNetwork* N = D->Net()) { N->count = FMath::Clamp(FMath::RoundToInt(V), 1, 500); D->Touch(); if (D->NetworkList.IsValid()) D->NetworkList->RequestListRefresh(); } })) ]
-					+ SVerticalBox::Slot().AutoHeight().Padding(0, 6, 0, 0)
-					[ FormRow(WithUnit(LOCTEXT("Thickness", "Rib thickness"), Units.LengthName()), NetField(&PlaneNetwork::thickness, 0.0, 0.0005)) ]
-					+ SVerticalBox::Slot().AutoHeight()
-					[ FormRow(WithUnit(LOCTEXT("Height", "Height in from the surface, 0 = wall to wall"), Units.LengthName()), NetField(&PlaneNetwork::height, 0.0, 0.001), 300.0f) ]
-					+ SVerticalBox::Slot().AutoHeight().Padding(0, 6, 0, 0)
-					[
-						FormRow(LOCTEXT("NetMaterial", "Rib material:"),
-							SNew(SAerotelicMaterialPicker)
-							.Current_Lambda([D]() { const PlaneNetwork* N = D->Net(); return N ? N->material : Material{}; })
-							.AllowNone(false)
-							.OnPicked_Lambda([D](const Material& M) { if (PlaneNetwork* N = D->Net()) { N->material = M; D->Touch(); } }))
-					]
-					+ SVerticalBox::Slot().AutoHeight().Padding(0, 8, 0, 0)
-					[
-						SNew(STextBlock).AutoWrapText(true)
-						.ColorAndOpacity(FSlateColor(FLinearColor(0.95f, 0.85f, 0.55f)))
-						.Text_Lambda([D]()
-						{
-							const PlaneNetwork* N = D->Net();
-							if (N == nullptr) return FText::GetEmpty();
-							const std::string Why = aerotelic::PlaneNetworkProblem(*N);
-							return Why.empty() ? FText::GetEmpty() : FText::FromString(FString::Printf(TEXT("This network cannot be built: %s."), UTF8_TO_TCHAR(Why.c_str())));
-						})
-					]
-					+ SVerticalBox::Slot().AutoHeight().Padding(0, 8, 0, 0)
-					[
-						MakeInfoLabel(LOCTEXT("PlanesHint",
-							"A network is a set of parallel cutting planes: plane k lies at (first plane) + k x spacing along the normal, in the parameterisation's own frame -- so a wing's ribs are normal to y and stay with the wing when it moves, scales or mirrors. Each plane's intersection with the interior is a rib of the thickness, in the material, spanning wall to wall; a height makes it a band that reaches only that far in from the surface (a stringer, a spar cap). "
-							"Earlier networks win where two cross: a spar runs through, the ribs are notched. The 3D view shows the planes as translucent rectangles while this window is open, the selected network brighter. Positions and spacing are geometry (scaled with the model); thickness and height are build figures (not scaled), like the skin."))
-					]
-				]
-			]
 		];
 
 	// ------------------------------------------------------------------ Mass
@@ -466,7 +251,7 @@ void OpenAerotelicStructureDialog(AAerotelicEntityActor* Entity, const FString& 
 		]
 		+ SVerticalBox::Slot().AutoHeight().Padding(0, 6, 0, 0)
 		[
-			MakeInfoLabel(LOCTEXT("MassHint", "An asserted mass is spread over the body's surface when weighed and has no stiffness; it replaces every computed figure. Otherwise the body weighs by its structure: the skin or solid exactly, the ribs estimated from the planes' sections until the structure is generated."))
+			MakeInfoLabel(LOCTEXT("MassHint", "An asserted mass is spread over the body's surface when weighed and has no stiffness; it replaces every computed figure. Otherwise the body weighs by its structure: the skin or solid exactly, and each generated layer (ribs, spars, stringers) as a shell of its area, thickness and material."))
 		]
 		+ SVerticalBox::Slot().AutoHeight().Padding(0, 12, 0, 0)
 		[
@@ -492,7 +277,7 @@ void OpenAerotelicStructureDialog(AAerotelicEntityActor* Entity, const FString& 
 				if (!Weak.IsValid()) return LOCTEXT("Gone", "The entity is no longer in the scene.");
 				const std::string Why = aerotelic::BodyStructureProblem(D->S);
 				if (!Why.empty()) return FText::FromString(FString::Printf(TEXT("Cannot apply: %s."), UTF8_TO_TCHAR(Why.c_str())));
-				return D->bDirty ? LOCTEXT("Edited", "Edited here only -- press Apply to give the body this structure and build its ribs.") : LOCTEXT("Clean", "As the body is.");
+				return D->bDirty ? LOCTEXT("Edited", "Edited here only -- press Apply to give the body this structure.") : LOCTEXT("Clean", "As the body is.");
 			})
 		]
 		+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 0, 6, 0)
@@ -503,11 +288,7 @@ void OpenAerotelicStructureDialog(AAerotelicEntityActor* Entity, const FString& 
 		]
 		+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 0, 6, 0)
 		[
-			// Apply gives the body the structure and builds it in one step
-			// (2026-11-08 night: the separate Generate button went -- it only
-			// mattered for the first build, and its ribs are inside the skin,
-			// so pressing it seemed to do nothing).
-			SNew(SButton).Text(LOCTEXT("Apply", "Apply")).ToolTipText(LOCTEXT("ApplyTip", "Give the body this structure and build it: the body is cut by the plane networks and the ribs meshed as shells (gmsh, under a second), listed as layers under the body in the Scene tree. Analysis > Mass Properties weighs by it and Analysis > Structural analyses with it. The ribs sit inside the skin: hide the Skin row to see them alone."))
+			SNew(SButton).Text(LOCTEXT("Apply", "Apply")).ToolTipText(LOCTEXT("ApplyTip", "Give the body this material, skin and mass setting. A body with a skin builds its parameterisation's structure (a wing's spars and ribs) at once, listed as layers under it in the Scene tree; hide the Skin row to see them. Analysis > Mass Properties weighs by it and Analysis > Structural analyses with it."))
 			.IsEnabled_Lambda([D, Weak]() { return D->bDirty && Weak.IsValid() && aerotelic::BodyStructureProblem(D->S).empty(); })
 			.OnClicked_Lambda([D]()
 			{
@@ -526,10 +307,9 @@ void OpenAerotelicStructureDialog(AAerotelicEntityActor* Entity, const FString& 
 
 	TArray<FAerotelicTab> Tabs;
 	Tabs.Add({ LOCTEXT("SkinTab", "Skin"), SkinTab });
-	Tabs.Add({ LOCTEXT("PlanesTab", "Planes"), PlanesTab });
 	Tabs.Add({ LOCTEXT("MassTab", "Mass"), MassTab });
 
-	const FVector2D Size(720, 640);
+	const FVector2D Size(640, 520);
 	const FString Title = Entity->GetBodies().Num() > 1
 		? FString::Printf(TEXT("Structure -- %s / %s"), *Entity->EntityName, *Role)
 		: FString::Printf(TEXT("Structure -- %s"), *Entity->EntityName);
@@ -545,10 +325,9 @@ void OpenAerotelicStructureDialog(AAerotelicEntityActor* Entity, const FString& 
 				+ SVerticalBox::Slot().AutoHeight().Padding(0, 10, 0, 0) [ Footer ]
 			]
 		];
-	Window->SetOnWindowClosed(FOnWindowClosed::CreateLambda([D, Key](const TSharedRef<SWindow>&)
+	Window->SetOnWindowClosed(FOnWindowClosed::CreateLambda([Key](const TSharedRef<SWindow>&)
 	{
 		GOpenStructureDialogs.Remove(Key);
-		if (UAerotelicDocumentSubsystem* Doc = UAerotelicDocumentSubsystem::Get()) Doc->ClearStructurePreview();
 	}));
 
 	GOpenStructureDialogs.Add(Key, Window);

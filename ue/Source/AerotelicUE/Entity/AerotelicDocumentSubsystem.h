@@ -14,21 +14,6 @@ class AAerotelicEntityActor;
 class UWorld;
 namespace aerotelic { class Airfoil; struct WingBodyStructurePlan; }
 
-// The plane networks a Structure dialog is editing, for the 3D view to
-// draw as translucent rectangles over the body (the preview actor,
-// Standalone/AerotelicPlanePreviewActor): the networks as the draft holds
-// them (parameterisation-frame planes, placed by the entity) and which one
-// is being edited. Inactive when no dialog shows planes.
-struct FAerotelicStructurePreview
-{
-	TWeakObjectPtr<AAerotelicEntityActor> Entity;
-	FString BodyRole;
-	std::vector<aerotelic::PlaneNetwork> Networks;
-	int32 ActiveIndex = INDEX_NONE;
-
-	bool IsActive() const { return Entity.IsValid() && !Networks.empty(); }
-};
-
 // Owns the current project: the entity list, the file path and the current
 // selection, with New/Save/SaveAs/Open mirroring aerotelic/ui/main_window.py's
 // _new_project/_save_project/_save_project_as/_load_project_path --
@@ -281,15 +266,6 @@ public:
 	DECLARE_MULTICAST_DELEGATE(FOnSectionChanged);
 	FOnSectionChanged OnSectionChanged;
 
-	// The Structure dialog's plane preview (see FAerotelicStructurePreview):
-	// set on every edit of a network, cleared when the dialog closes; the
-	// preview actor follows OnStructurePreviewChanged. Not saved.
-	const FAerotelicStructurePreview& GetStructurePreview() const { return StructurePreview; }
-	void SetStructurePreview(const FAerotelicStructurePreview& Preview);
-	void ClearStructurePreview();
-	DECLARE_MULTICAST_DELEGATE(FOnStructurePreviewChanged);
-	FOnStructurePreviewChanged OnStructurePreviewChanged;
-
 	// A boolean result's bodies own their structure; this gives each of
 	// them the structure of its first operand's first body, the common
 	// starting point (the Scene tree's "Copy Structure From Operand").
@@ -330,7 +306,6 @@ private:
 	FAerotelicShadowStyle ShadowStyle;
 	EAerotelicRenderStyle RenderStyle = EAerotelicRenderStyle::Shaded;
 	FAerotelicSectionPlane SectionPlane;
-	FAerotelicStructurePreview StructurePreview;
 
 	void ApplySectionPlaneToEntities();
 

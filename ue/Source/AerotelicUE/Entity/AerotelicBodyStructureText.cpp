@@ -17,7 +17,7 @@ namespace
 
 FString DescribeAerotelicBodyStructure(const aerotelic::BodyStructure& S, const aerotelic::UnitSystem& Units)
 {
-	if (!S.IsSet() && !S.HasInterior()) return TEXT("not set");
+	if (!S.IsSet() && !(S.skin_thickness > 0.0)) return TEXT("not set");
 	TArray<FString> Parts;
 	if (S.asserted_mass)
 	{
@@ -32,16 +32,6 @@ FString DescribeAerotelicBodyStructure(const aerotelic::BodyStructure& S, const 
 	else if (S.skin_thickness > 0.0)
 	{
 		Parts.Add(FString::Printf(TEXT("skin %s, no material"), *Len(S.skin_thickness, Units)));
-	}
-	for (const aerotelic::PlaneNetwork& N : S.networks)
-	{
-		FString Axis = N.axis == aerotelic::PlaneAxis::Custom
-			? FString::Printf(TEXT("normal (%.2f, %.2f, %.2f)"), N.normal.x, N.normal.y, N.normal.z)
-			: FString::Printf(TEXT("normal %s"), UTF8_TO_TCHAR(aerotelic::PlaneAxisName(N.axis)));
-		FString Line = FString::Printf(TEXT("%s: %d plane%s %s, %s"), UTF8_TO_TCHAR(N.name.c_str()), N.count, N.count == 1 ? TEXT("") : TEXT("s"), *Axis, *Len(N.thickness, Units));
-		if (N.height > 0.0) Line += FString::Printf(TEXT(", %s deep"), *Len(N.height, Units));
-		Line += FString::Printf(TEXT(" (%s)"), *MatName(N.material));
-		Parts.Add(Line);
 	}
 	if (!S.exclusions.empty())
 	{

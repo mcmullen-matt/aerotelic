@@ -2,8 +2,7 @@
 
 #include "AerotelicBodyStructure.h"
 #include "AerotelicEntityActor.h"
-
-#include "aerotelic/mesh_cut.hpp"
+#include "AerotelicMeshing.h"
 
 namespace AerotelicFeaModelBuilder
 {
@@ -23,107 +22,68 @@ namespace AerotelicFeaModelBuilder
 			return FString::Printf(TEXT("%s: no skin thickness -- the analysis models shells only; give the body a skin thickness under Structure... in the Scene tree"), *Label);
 		}
 
-		// The networks of a body as placed planes (mirrored for the mirrored
-		// half), one entry per network that can be built; a problem per
-		// network that cannot.
-		struct FPlacedNetwork
+		// A body's generated layers that carry a mesh (the ribs, spars,
+		// stringers; the Skin layer has none), placed like the body -- the
+		// same transform and mirror GetPlacedLayerMeshes applies, so a layer
+		// vertex that was a body vertex still is, to the bit.
+		struct FPlacedLayer
 		{
-			int32 Index = 0;
-			TArray<aerotelic::Plane> Planes;
+			FString Name;
+			aerotelic::TriMesh Mesh;
+			double Thickness = 0.0;
+			aerotelic::Material Material;
 		};
-		TArray<FPlacedNetwork> PlacedNetworks(const AAerotelicEntityActor* Entity, const aerotelic::BodyStructure& S, bool bMirror, TArray<FString>& Problems, const FString& Label)
+		TArray<FPlacedLayer> PlacedLayers(const AAerotelicEntityActor* Entity, const FString& Role, bool bMirror)
 		{
-			TArray<FPlacedNetwork> Out;
-			std::array<double, 9> R;
-			aerotelic::Vec3 T;
-			double Scale = 1.0;
-			Entity->GetPlacementMatrix(R, T, Scale);
-			for (int32 n = 0; n < static_cast<int32>(S.networks.size()); ++n)
+			TArray<FPlacedLayer> Out;
+			const FAerotelicBodyStructure* G = Entity->GetGeneratedStructure(Role);
+			if (G == nullptr || !G->IsGenerated()) return Out;
+			const FTransform Transform = Entity->GetActorTransform();
+			for (const FAerotelicStructureLayer& L : G->GetLayers())
 			{
-				const aerotelic::PlaneNetwork& Net = S.networks[n];
-				const std::string Problem = aerotelic::PlaneNetworkProblem(Net);
-				if (!Problem.empty())
-				{
-					Problems.Add(FString::Printf(TEXT("%s / %s: %s"), *Label, UTF8_TO_TCHAR(Net.name.c_str()), UTF8_TO_TCHAR(Problem.c_str())));
-					continue;
-				}
-				FPlacedNetwork P;
-				P.Index = n;
-				for (int k = 0; k < Net.count; ++k)
-				{
-					aerotelic::Plane Plane = aerotelic::PlacedPlane(aerotelic::NetworkPlane(Net, k), R, T, Scale);
-					if (bMirror) Plane = aerotelic::MirrorPlaneY(Plane);
-					P.Planes.Add(Plane);
-				}
-				Out.Add(P);
+				if (L.Mesh.IsEmpty() || !(L.Thickness > 0.0)) continue;
+				FPlacedLayer P;
+				P.Name = L.Name;
+				P.Mesh = L.Mesh;
+				P.Thickness = L.Thickness;
+				P.Material = L.Material;
+				AerotelicMeshing::PlaceMesh(P.Mesh, Transform);
+				if (bMirror) AerotelicMeshing::MirrorY(P.Mesh);
+				Out.Add(MoveTemp(P));
 			}
 			return Out;
 		}
 
-		// The ribs of the placed networks as gmsh takes them: rib id = network
-		// index + 1 within the body.
-		TArray<AerotelicRibGmsh::FRequest::FRib> RibsOf(const TArray<FPlacedNetwork>& Networks, const aerotelic::BodyStructure& S)
+		// Nodes by position, quantised: a layer vertex within the step of a
+		// surface vertex (or of an earlier layer's) is that node.
+		struct FNodeKey
 		{
-			TArray<AerotelicRibGmsh::FRequest::FRib> Out;
-			for (const FPlacedNetwork& N : Networks)
-			{
-				for (const aerotelic::Plane& P : N.Planes)
-				{
-					AerotelicRibGmsh::FRequest::FRib R;
-					R.Id = N.Index + 1;
-					R.Normal = P.normal;
-					R.Offset = P.offset;
-					R.Height = S.networks[N.Index].height;
-					Out.Add(R);
-				}
-			}
-			return Out;
-		}
-
-		// gmsh's ribs over a surface, cached by the surface's bytes and the
-		// request's figures.
-		const AerotelicRibGmsh::FResult* RibMeshFor(FCache& Cache, const aerotelic::TriMesh& Surface, const AerotelicRibGmsh::FRequest& Request, const FString& Label,
-			const FOptions& Options, FString& OutError)
+			int64 X = 0, Y = 0, Z = 0;
+			bool operator==(const FNodeKey& O) const { return X == O.X && Y == O.Y && Z == O.Z; }
+		};
+		uint32 GetTypeHash(const FNodeKey& K)
 		{
-			uint32 Crc = FCrc::MemCrc32(Surface.vertices.data(), static_cast<int32>(Surface.vertices.size() * sizeof(Surface.vertices[0])));
-			Crc = FCrc::MemCrc32(Surface.triangles.data(), static_cast<int32>(Surface.triangles.size() * sizeof(Surface.triangles[0])), Crc);
-			FString Key = FString::Printf(TEXT("%s|%u|%d|%d|%.9g|%.9g"), *Label, Crc, static_cast<int32>(Surface.vertices.size()), static_cast<int32>(Surface.triangles.size()),
-				Request.RibSize, Request.PlaneTolerance);
-			for (const AerotelicRibGmsh::FRequest::FRib& R : Request.Ribs)
-			{
-				Key += FString::Printf(TEXT("|%d:%.9g,%.9g,%.9g,%.9g,%.9g"), R.Id, R.Normal.x, R.Normal.y, R.Normal.z, R.Offset, R.Height);
-			}
-			if (const TSharedPtr<AerotelicRibGmsh::FResult>* Found = Cache.Ribs.Find(Key))
-			{
-				return Found->Get();
-			}
-			if (Options.Status)
-			{
-				Options.Status(FString::Printf(TEXT("Building the model: meshing the %d rib plane(s) of %s on its own grid (%s triangles)..."), Request.Ribs.Num(), *Label, *Thousands((int64)Surface.triangles.size())));
-			}
-			TSharedPtr<AerotelicRibGmsh::FResult> R = MakeShared<AerotelicRibGmsh::FResult>();
-			if (!AerotelicRibGmsh::Run(Request, *R, OutError))
-			{
-				return nullptr;
-			}
-			UE_LOG(LogTemp, Log, TEXT("AerotelicFeaModelBuilder: %s (%d triangles) ribs meshed: %d nodes (%d the surface's), %d rib faces of %.6g area; body volume %.6g; %.2f s%s%s"),
-				*Label, static_cast<int32>(Surface.triangles.size()), static_cast<int32>(R->Nodes.size()), R->SurfaceNodes, R->RibFaces.Num(), R->RibArea, R->OuterVolume, R->Seconds,
-				R->Notes.Num() ? TEXT("; ") : TEXT(""), *FString::Join(R->Notes, TEXT("; ")));
-			Cache.Ribs.Add(Key, R);
-			return R.Get();
+			return HashCombine(HashCombine(::GetTypeHash(K.X), ::GetTypeHash(K.Y)), ::GetTypeHash(K.Z));
 		}
-
-		// The surface's vertices are the first nodes of a gmsh result, in
-		// order: checked, since the shell faces index them that way.
-		bool SurfaceNodesFirst(const aerotelic::TriMesh& Surface, const std::vector<aerotelic::Vec3>& Nodes, double Tol)
+		struct FNodeIndex
 		{
-			if (Nodes.size() < Surface.vertices.size()) return false;
-			for (size_t i = 0; i < Surface.vertices.size(); ++i)
+			double Step = 1e-9;
+			TMap<FNodeKey, int32> Index;
+			FNodeKey KeyOf(const aerotelic::Vec3& P) const
 			{
-				if (aerotelic::DistanceSq(Nodes[i], Surface.vertices[i]) > Tol * Tol) return false;
+				return FNodeKey{ static_cast<int64>(FMath::RoundToDouble(P.x / Step)), static_cast<int64>(FMath::RoundToDouble(P.y / Step)), static_cast<int64>(FMath::RoundToDouble(P.z / Step)) };
 			}
-			return true;
-		}
+			void Add(const aerotelic::Vec3& P, int32 Node) { Index.FindOrAdd(KeyOf(P), Node); }
+			int32 FindOrAdd(const aerotelic::Vec3& P, std::vector<aerotelic::Vec3>& Nodes)
+			{
+				const FNodeKey K = KeyOf(P);
+				if (const int32* Found = Index.Find(K)) return *Found;
+				const int32 N = static_cast<int32>(Nodes.size());
+				Nodes.push_back(P);
+				Index.Add(K, N);
+				return N;
+			}
+		};
 	}
 
 	const aerotelic::BodyStructure* StructureOf(const AAerotelicEntityActor* Entity, const FString& Role)
@@ -151,21 +111,22 @@ namespace AerotelicFeaModelBuilder
 		if (!(S.skin_thickness > 0.0)) return NoSkinProblem(Label);
 		const FString Material = UTF8_TO_TCHAR(S.material.name.c_str());
 		const FString Length = UTF8_TO_TCHAR(Units.LengthName());
-		FString Ribs;
-		if (!S.networks.empty())
+		FString Inside = TEXT("nothing inside");
+		const TArray<FPlacedLayer> Layers = PlacedLayers(Op.Entity.Get(), RoleOf(Op.Entity.Get(), Role), Op.bMirror);
+		if (Layers.Num() > 0)
 		{
-			int32 Planes = 0;
 			TArray<FString> Names;
-			for (const aerotelic::PlaneNetwork& N : S.networks) { Planes += N.count; Names.Add(FString::Printf(TEXT("%s (%d x %.4g %s %s)"), UTF8_TO_TCHAR(N.name.c_str()), N.count, N.thickness, *Length, UTF8_TO_TCHAR(N.material.name.c_str()))); }
-			Ribs = FString::Printf(TEXT("; %d rib plane(s) as unloaded shells inside it, their rims on the skin's nodes: %s"), Planes, *FString::Join(Names, TEXT(", ")));
+			for (const FPlacedLayer& L : Layers) Names.Add(FString::Printf(TEXT("%s (%.4g %s %s, %s triangles)"), *L.Name, L.Thickness, *Length, UTF8_TO_TCHAR(L.Material.name.c_str()), *Thousands((int64)L.Mesh.triangles.size())));
+			Inside = FString::Printf(TEXT("%d generated layer(s) as unloaded shells inside it, on the skin's nodes: %s"), Layers.Num(), *FString::Join(Names, TEXT(", ")));
 		}
-		const FString Text = FString::Printf(TEXT("%s: %s -- a thin-walled body: shells %.4g %s thick on its own grid, nothing inside%s"), *Label, *Material, S.skin_thickness, *Length, *Ribs);
+		const FString Text = FString::Printf(TEXT("%s: %s -- a thin-walled body: shells %.4g %s thick on its own grid, %s"), *Label, *Material, S.skin_thickness, *Length, *Inside);
 		if (bOutOk) *bOutOk = true;
 		return Text;
 	}
 
 	bool AppendBody(const FAerotelicBooleanOperand& Op, const FString& Role, const FString& Label, int32 BodyIndex, const FOptions& Options, FCache& Cache, FBuilt& B)
 	{
+		(void)Cache;
 		if (!Op.Entity.IsValid())
 		{
 			B.Problems.Add(Label + TEXT(": no longer in the scene"));
@@ -213,99 +174,21 @@ namespace AerotelicFeaModelBuilder
 			B.Problems.Add(Label + TEXT(": no geometry could be built"));
 			return false;
 		}
-		if (!Found->mesh.IsClosedManifold() || !(Found->mesh.SignedVolume() > 0.0))
+		const aerotelic::TriMesh& Surface = Found->mesh;
+		if (!Surface.IsClosedManifold() || !(Surface.SignedVolume() > 0.0))
 		{
 			B.Problems.Add(Label + TEXT(": not a closed, outward surface"));
 			return false;
 		}
-		const aerotelic::Material& Material = S.material;
-
-		// The networks: the surface cut by every plane, so the ribs' rims are
-		// the skin's nodes.
-		TArray<FPlacedNetwork> Networks;
-		aerotelic::TriMesh Surface = Found->mesh;
-		if (!S.networks.empty())
+		if (Options.Status)
 		{
-			Networks = PlacedNetworks(Entity, S, Op.bMirror, B.Problems, Label);
-			std::vector<aerotelic::Plane> All;
-			for (const FPlacedNetwork& N : Networks) for (const aerotelic::Plane& P : N.Planes) All.push_back(P);
-			if (!All.empty())
-			{
-				const double Diag = Surface.Bounds().Diagonal();
-				aerotelic::MeshCutStats Stats;
-				Surface = aerotelic::CutMeshByPlanes(Surface, All, 1e-7 * Diag, nullptr, &Stats);
-				if (!Surface.IsClosedManifold())
-				{
-					B.Problems.Add(Label + TEXT(": the surface cut by the rib planes is not a closed manifold"));
-					return false;
-				}
-				UE_LOG(LogTemp, Log, TEXT("AerotelicFeaModelBuilder: %s cut by %d rib plane(s): %d triangles split, %d vertices added, %d snapped"),
-					*Label, static_cast<int32>(All.size()), Stats.split_triangles, Stats.new_vertices, Stats.snapped_vertices);
-			}
+			Options.Status(FString::Printf(TEXT("Building the model: %s on its own grid (%s triangles)..."), *Label, *Thousands((int64)Surface.triangles.size())));
 		}
-		const TArray<AerotelicRibGmsh::FRequest::FRib> Ribs = RibsOf(Networks, S);
-		// One region per network with ribs; the rib faces take them by id.
-		TMap<int32, int32> RegionOfRib;
-		auto AddRibRegions = [&]()
-		{
-			for (const FPlacedNetwork& N : Networks)
-			{
-				AerotelicStructuralFea::FRegion R;
-				R.Id = B.NextId++;
-				R.Label = FString::Printf(TEXT("%s / %s"), *Label, UTF8_TO_TCHAR(S.networks[N.Index].name.c_str()));
-				R.Body = BodyIndex;
-				R.Rib = S.networks[N.Index].material;
-				R.RibThickness = S.networks[N.Index].thickness;
-				B.Regions.Add(R);
-				RegionOfRib.Add(N.Index + 1, R.Id);
-			}
-		};
-		auto AddRibFaces = [&](const TArray<AerotelicRibGmsh::FRibFace>& Faces, int32 Offset)
-		{
-			for (const AerotelicRibGmsh::FRibFace& F : Faces)
-			{
-				const int32* Region = RegionOfRib.Find(F.Id);
-				if (Region == nullptr) continue;
-				AerotelicStructuralFea::FShellFace G;
-				G.N[0] = F.N[0] + Offset; G.N[1] = F.N[1] + Offset; G.N[2] = F.N[2] + Offset;
-				G.Region = *Region;
-				B.RibFaces.Add(G);
-			}
-		};
 
-		// A thin-walled body: shells on the (cut) surface; the ribs, when
-		// any, meshed as discs on the surface's nodes.
+		// The skin: shells on the surface's own triangles.
+		const int32 Offset = static_cast<int32>(B.Nodes.size());
+		B.Nodes.insert(B.Nodes.end(), Surface.vertices.begin(), Surface.vertices.end());
 		const int32 Id = B.NextId++;
-		AerotelicStructuralFea::FRegion R;
-		R.Id = Id; R.Label = Label; R.Body = BodyIndex;
-		int32 Offset = static_cast<int32>(B.Nodes.size());
-		if (Ribs.Num() > 0)
-		{
-			AerotelicRibGmsh::FRequest G;
-			G.Outer = &Surface;
-			G.Ribs = Ribs;
-			G.RibSize = Options.RibSize;
-			FString Error;
-			const AerotelicRibGmsh::FResult* TR = RibMeshFor(Cache, Surface, G, Label, Options, Error);
-			if (TR == nullptr)
-			{
-				B.Problems.Add(FString::Printf(TEXT("%s: the ribs could not be meshed: %s"), *Label, *Error));
-				return false;
-			}
-			if (!SurfaceNodesFirst(Surface, TR->Nodes, 1e-9 * FMath::Max(Surface.Bounds().Diagonal(), 1e-12)))
-			{
-				B.Problems.Add(Label + TEXT(": the rib mesh does not carry the surface's nodes first"));
-				return false;
-			}
-			Offset = static_cast<int32>(B.Nodes.size());
-			B.Nodes.insert(B.Nodes.end(), TR->Nodes.begin(), TR->Nodes.end());
-			AddRibRegions();
-			AddRibFaces(TR->RibFaces, Offset);
-		}
-		else
-		{
-			B.Nodes.insert(B.Nodes.end(), Surface.vertices.begin(), Surface.vertices.end());
-		}
 		for (const auto& Tri : Surface.triangles)
 		{
 			AerotelicStructuralFea::FShellFace F;
@@ -313,8 +196,47 @@ namespace AerotelicFeaModelBuilder
 			F.Region = Id;
 			B.ShellFaces.Add(F);
 		}
-		R.Skin = Material; R.SkinThickness = S.skin_thickness;
+		AerotelicStructuralFea::FRegion R;
+		R.Id = Id; R.Label = Label; R.Body = BodyIndex;
+		R.Skin = S.material; R.SkinThickness = S.skin_thickness;
 		B.Regions.Add(R);
+
+		// The generated layers: a region of unloaded shells each, their
+		// nodes matched by position onto the skin's and one another's.
+		const TArray<FPlacedLayer> Layers = PlacedLayers(Entity, ResolvedRole, Op.bMirror);
+		if (Layers.Num() > 0)
+		{
+			FNodeIndex Index;
+			Index.Step = 1e-9 * FMath::Max(Surface.Bounds().Diagonal(), 1e-12);
+			for (size_t i = 0; i < Surface.vertices.size(); ++i) Index.Add(Surface.vertices[i], Offset + static_cast<int32>(i));
+			int32 Shared = 0, Added = 0, Faces = 0;
+			for (const FPlacedLayer& L : Layers)
+			{
+				AerotelicStructuralFea::FRegion LR;
+				LR.Id = B.NextId++;
+				LR.Label = FString::Printf(TEXT("%s / %s"), *Label, *L.Name);
+				LR.Body = BodyIndex;
+				LR.Rib = L.Material.HasDensity() ? L.Material : S.material;
+				LR.RibThickness = L.Thickness;
+				B.Regions.Add(LR);
+				std::vector<int32> Map(L.Mesh.vertices.size(), -1);
+				for (size_t i = 0; i < L.Mesh.vertices.size(); ++i)
+				{
+					const size_t Before = B.Nodes.size();
+					Map[i] = Index.FindOrAdd(L.Mesh.vertices[i], B.Nodes);
+					if (B.Nodes.size() == Before) ++Shared; else ++Added;
+				}
+				for (const auto& Tri : L.Mesh.triangles)
+				{
+					AerotelicStructuralFea::FShellFace F;
+					F.N[0] = Map[Tri[0]]; F.N[1] = Map[Tri[1]]; F.N[2] = Map[Tri[2]];
+					F.Region = LR.Id;
+					B.RibFaces.Add(F);
+					++Faces;
+				}
+			}
+			UE_LOG(LogTemp, Log, TEXT("AerotelicFeaModelBuilder: %s: %d layer(s) joined to the skin: %d faces, %d nodes shared with the skin or earlier layers, %d new"), *Label, Layers.Num(), Faces, Shared, Added);
+		}
 		return true;
 	}
 }

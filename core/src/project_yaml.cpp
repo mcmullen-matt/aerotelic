@@ -628,7 +628,7 @@ EntityType ParseEntityType(const std::string& s) {
 	if (s == "propeller") return EntityType::Propeller;
 	if (s == "primitive") return EntityType::Primitive;
 	if (s == "boolean") return EntityType::Boolean;
-	if (s == "lattice") throw std::invalid_argument("Entity type 'lattice' is no longer supported: lattice entities were removed on 2026-11-08 (the structure is shells only: skins and plane networks)");
+	if (s == "lattice") throw std::invalid_argument("Entity type 'lattice' is no longer supported: lattice entities were removed on 2026-11-08 (the structure is shells only: skins and the parameterisations' ribs, spars and frames)");
 	throw std::invalid_argument("Unknown entity type '" + s + "'");
 }
 
@@ -744,52 +744,10 @@ bool DecodeVec3(const YAML::Node& node, Vec3* out) {
 
 } // namespace
 
-YAML::Node Encode(const PlaneNetwork& net) {
-	// The planes as the dialog states them: the axis (and the normal when
-	// it is the user's own), where the first plane is, the spacing and how
-	// many; then the rib's thickness, its height in from the surface when
-	// it does not span the interior, and its material.
-	YAML::Node n;
-	n["name"] = net.name;
-	n["axis"] = std::string(PlaneAxisName(net.axis));
-	if (net.axis == PlaneAxis::Custom) n["normal"] = EncodeVec3(NetworkNormal(net));
-	n["start"] = net.start;
-	if (net.count > 1) n["spacing"] = net.spacing;
-	n["count"] = net.count;
-	n["thickness"] = net.thickness;
-	if (net.height > 0.0) n["height"] = net.height;
-	n["material"] = EncodeMaterial(net.material);
-	n.SetStyle(YAML::EmitterStyle::Flow);
-	return n;
-}
-
-PlaneNetwork DecodePlaneNetwork(const YAML::Node& node) {
-	PlaneNetwork net;
-	if (!node || !node.IsMap()) throw std::invalid_argument("a plane network is not a mapping");
-	if (node["name"]) net.name = node["name"].as<std::string>();
-	if (node["axis"]) net.axis = ParsePlaneAxis(node["axis"].as<std::string>());
-	Vec3 normal;
-	if (DecodeVec3(node["normal"], &normal)) net.normal = Normalized(normal);
-	if (node["start"]) net.start = node["start"].as<double>();
-	if (node["spacing"]) net.spacing = node["spacing"].as<double>();
-	if (node["count"]) net.count = node["count"].as<int>();
-	if (node["thickness"]) net.thickness = node["thickness"].as<double>();
-	if (node["height"]) net.height = node["height"].as<double>();
-	net.material = DecodeMaterial(node["material"]);
-	const std::string why = PlaneNetworkProblem(net);
-	if (!why.empty()) throw std::invalid_argument("plane network '" + net.name + "': " + why);
-	return net;
-}
-
 void EncodeBodyStructure(const BodyStructure& s, YAML::Node& into) {
 	// A default Material is named "Custom" with no density: nothing to write.
 	if (s.material.HasDensity()) into["material"] = EncodeMaterial(s.material);
 	if (s.skin_thickness > 0.0) into["skin_thickness"] = s.skin_thickness;
-	if (!s.networks.empty()) {
-		YAML::Node nets(YAML::NodeType::Sequence);
-		for (const PlaneNetwork& net : s.networks) nets.push_back(Encode(net));
-		into["networks"] = nets;
-	}
 	if (!s.exclusions.empty()) {
 		YAML::Node ex(YAML::NodeType::Sequence);
 		for (const std::string& name : s.exclusions) ex.push_back(name);
@@ -799,18 +757,18 @@ void EncodeBodyStructure(const BodyStructure& s, YAML::Node& into) {
 	if (s.asserted_mass) into["asserted_mass"] = *s.asserted_mass;
 }
 
-BodyStructure DecodeBodyStructure(const YAML::Node& node, bool* had_infill) {
+BodyStructure DecodeBodyStructure(const YAML::Node& node, bool* had_infill, bool* had_networks) {
 	BodyStructure s;
 	if (had_infill) *had_infill = false;
+	if (had_networks) *had_networks = false;
 	if (!node || !node.IsMap()) return s;
 	if (node["material"]) s.material = DecodeMaterial(node["material"]);
 	if (node["skin_thickness"]) s.skin_thickness = node["skin_thickness"].as<double>();
-	// A lattice infill (removed 2026-11-08): the key is ignored, not an
-	// error, so a file of the time still opens; the caller reports it.
+	// A lattice infill (removed 2026-11-08) and plane networks (removed
+	// 2026-11-10): the keys are ignored, not errors, so a file of their
+	// time still opens; the caller reports them.
 	if (node["infill"] && had_infill) *had_infill = true;
-	if (const YAML::Node nets = node["networks"]) {
-		for (const auto& nn : nets) s.networks.push_back(DecodePlaneNetwork(nn));
-	}
+	if (node["networks"] && had_networks) *had_networks = true;
 	if (const YAML::Node ex = node["exclusions"]) {
 		for (const auto& e : ex) s.exclusions.push_back(e.as<std::string>());
 	}
@@ -829,14 +787,14 @@ YAML::Node Encode(const ProjectBody& b) {
 	return n;
 }
 
-ProjectBody DecodeProjectBody(const YAML::Node& node, bool* had_infill) {
+ProjectBody DecodeProjectBody(const YAML::Node& node, bool* had_infill, bool* had_networks) {
 	ProjectBody b;
 	if (!node || !node.IsMap()) throw std::invalid_argument("a body entry is not a mapping");
 	b.name = node["name"] ? node["name"].as<std::string>() : "";
 	b.color = DecodeColor(node["color"]);
 	b.hidden = node["hidden"] ? node["hidden"].as<bool>() : false;
 	try {
-		b.structure = DecodeBodyStructure(node, had_infill);
+		b.structure = DecodeBodyStructure(node, had_infill, had_networks);
 	} catch (const std::invalid_argument& e) {
 		throw std::invalid_argument("body '" + b.name + "': " + e.what());
 	}
@@ -853,16 +811,19 @@ YAML::Node EncodeBodies(const std::vector<ProjectBody>& bodies) {
 	return out;
 }
 
-// `ignored_infill`, when given, collects "<owner> / <body>" for every body
-// whose entry carried a legacy `infill:` key.
-std::vector<ProjectBody> DecodeBodies(const YAML::Node& node, const std::string& owner, std::vector<std::string>* ignored_infill) {
+// `ignored_infill` / `ignored_networks`, when given, collect "<owner> /
+// <body>" for every body whose entry carried a legacy `infill:` or
+// `networks:` key.
+std::vector<ProjectBody> DecodeBodies(const YAML::Node& node, const std::string& owner, std::vector<std::string>* ignored_infill,
+	std::vector<std::string>* ignored_networks) {
 	std::vector<ProjectBody> out;
 	if (!node) return out;
 	for (const auto& bn : node) {
 		try {
-			bool had_infill = false;
-			out.push_back(DecodeProjectBody(bn, &had_infill));
+			bool had_infill = false, had_networks = false;
+			out.push_back(DecodeProjectBody(bn, &had_infill, &had_networks));
 			if (had_infill && ignored_infill) ignored_infill->push_back(owner + " / " + out.back().name);
+			if (had_networks && ignored_networks) ignored_networks->push_back(owner + " / " + out.back().name);
 		} catch (const std::invalid_argument& e) {
 			throw std::invalid_argument("'" + owner + "': " + e.what());
 		}
@@ -897,7 +858,7 @@ YAML::Node Encode(const ProjectBoolean& b) {
 	return n;
 }
 
-ProjectBoolean DecodeProjectBoolean(const YAML::Node& node, std::vector<std::string>* ignored_infill) {
+ProjectBoolean DecodeProjectBoolean(const YAML::Node& node, std::vector<std::string>* ignored_infill, std::vector<std::string>* ignored_networks) {
 	ProjectBoolean b;
 	if (!node["name"]) throw std::invalid_argument("a boolean operation has no name");
 	b.name = node["name"].as<std::string>();
@@ -920,7 +881,7 @@ ProjectBoolean DecodeProjectBoolean(const YAML::Node& node, std::vector<std::str
 	b.hidden = node["hidden"] ? node["hidden"].as<bool>() : false;
 	b.color = DecodeColor(node["color"]);
 	b.mass = DecodeMassSpec(node["mass"]);
-	b.bodies = DecodeBodies(node["bodies"], b.name, ignored_infill);
+	b.bodies = DecodeBodies(node["bodies"], b.name, ignored_infill, ignored_networks);
 	return b;
 }
 
@@ -953,7 +914,7 @@ YAML::Node EncodeEntity(const ProjectEntity& e) {
 	return n;
 }
 
-ProjectEntity DecodeEntity(const YAML::Node& node, std::vector<std::string>* ignored_infill) {
+ProjectEntity DecodeEntity(const YAML::Node& node, std::vector<std::string>* ignored_infill, std::vector<std::string>* ignored_networks) {
 	ProjectEntity e;
 	// The legacy WingDesigner format (projects/cessna_172.yaml) keys an
 	// entity by `id` with a display `label` and carries a raw `features`
@@ -982,7 +943,7 @@ ProjectEntity DecodeEntity(const YAML::Node& node, std::vector<std::string>* ign
 	e.hidden = node["hidden"] ? node["hidden"].as<bool>() : false;
 	e.mass = DecodeMassSpec(node["mass"]);
 	e.mesh = DecodeMeshSpec(node["mesh"]);
-	e.bodies = DecodeBodies(node["bodies"], e.name, ignored_infill);
+	e.bodies = DecodeBodies(node["bodies"], e.name, ignored_infill, ignored_networks);
 	return e;
 }
 
@@ -1049,7 +1010,7 @@ ProjectFile LoadProjectYaml(const std::string& path) {
 		}
 	}
 	if (root["entities"]) {
-		for (const auto& en : root["entities"]) project.entities.push_back(DecodeEntity(en, &project.ignored_infill));
+		for (const auto& en : root["entities"]) project.entities.push_back(DecodeEntity(en, &project.ignored_infill, &project.ignored_networks));
 	}
 	// Validated as the Python loader does: every operand must name an
 	// entity or a boolean listed before it, and a mirror operand a
@@ -1061,7 +1022,7 @@ ProjectFile LoadProjectYaml(const std::string& path) {
 	}
 	if (root["booleans"]) {
 		for (const auto& bn : root["booleans"]) {
-			ProjectBoolean b = DecodeProjectBoolean(bn, &project.ignored_infill);
+			ProjectBoolean b = DecodeProjectBoolean(bn, &project.ignored_infill, &project.ignored_networks);
 			for (const BooleanOperand& op : b.operands) {
 				if (!seen.count(op.name)) {
 					throw std::invalid_argument("Boolean '" + b.name + "' refers to '" + op.name + "', which does not exist (or is listed after it).");

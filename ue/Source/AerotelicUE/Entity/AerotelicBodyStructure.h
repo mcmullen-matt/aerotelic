@@ -24,11 +24,9 @@ struct FAerotelicStructureLayer
 {
 	enum class EKind : uint8 { Skin, Ribs, Spars, Stringers };
 
-	// "Skin", or the network's name (made unique within the body).
+	// "Skin", "Ribs", or the element's name (made unique within the body).
 	FString Name;
 	EKind Kind = EKind::Skin;
-	// The network this layer is the ribs of (Kind == Ribs), else INDEX_NONE.
-	int32 NetworkIndex = INDEX_NONE;
 	// Ribs: the discs, open, in the body's local frame (the
 	// parameterisation's, at full scale): place it with the entity's
 	// transform for the world geometry, mirror it about Y = 0 for the
@@ -93,24 +91,6 @@ struct FAerotelicStructureLayer
 class FAerotelicBodyStructure
 {
 public:
-	struct FInputs
-	{
-		// "<entity>[ / <body>]" for the log and the notes.
-		FString Label;
-		// The body's placed surface on its OWN grid (GetPlacedMeshes at
-		// tolerance 0), closed and outward.
-		aerotelic::TriMesh Body;
-		aerotelic::BodyStructure Structure;
-		// The placed volumes the ribs leave alone (own grids too): each
-		// closed; one that is not is skipped with a warning.
-		std::vector<aerotelic::TriMesh> Reserved;
-		// The placement the planes are carried by and the results are
-		// brought back through (AAerotelicEntityActor::GetPlacementMatrix).
-		std::array<double, 9> R{{1, 0, 0, 0, 1, 0, 0, 0, 1}};
-		aerotelic::Vec3 T;
-		double Scale = 1.0;
-	};
-
 	// What the last generation produced (placed units).
 	struct FStats
 	{
@@ -122,12 +102,6 @@ public:
 		// The mesher's notes and anything skipped on the way.
 		TArray<FString> Warnings;
 	};
-
-	// Generates the layers. False with the reason when the structure has no
-	// skin (nothing to generate: a solid body), the body is not a closed
-	// outward surface, the cut surface is not a closed manifold, or the rib
-	// mesher is missing or refused. On failure the previous layers are kept.
-	bool Generate(const FInputs& Inputs, FString& OutError);
 
 	// A WING'S structure (2026-11-09): the plan its parameterisation made
 	// on the body's own grid (wing_model.hpp WingBodyStructurePlan) -- rib

@@ -118,10 +118,12 @@ void PrincipalInertia(const InertiaTensor& inertia, std::array<double, 3>& momen
 
 // ---- a body under its structure --------------------------------------------
 
-// One part of a body's weight: its skin, its solid, its asserted total,
-// or one of its rib networks.
+// One part of a body's weight: its skin, its solid, or its asserted total.
+// (Until 2026-11-10 a body's plane networks were estimated here too; the
+// interior structure now comes from the parameterisation as generated
+// layers, which the application weighs exactly.)
 struct StructureMassPart {
-	std::string label;       // "solid", "skin", "asserted", or the network's name
+	std::string label;       // "solid", "skin" or "asserted"
 	MassProperties props;
 	bool included = true;    // false: left out, `note` says why
 	bool estimated = false;  // from the spec's figures, not from generated geometry

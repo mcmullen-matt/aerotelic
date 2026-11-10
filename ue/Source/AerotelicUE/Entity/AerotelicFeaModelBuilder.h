@@ -8,25 +8,28 @@
 #include "aerotelic/vec3.hpp"
 
 #include "AerotelicBooleanModel.h"
-#include "AerotelicRibGmsh.h"
 #include "AerotelicStructuralFea.h"
 
 class AAerotelicEntityActor;
 
-// The structural model of a BODY from its structure (body_structure.hpp),
-// shared by the Structural dialog, the commandlets and the smoke run
-// (2026-11-08) so the three cannot drift apart. The model is SHELLS ONLY
-// -- the application dropped tetrahedral FEA and lattice infill on
-// 2026-11-08 -- so a body is:
+// The structural model of a BODY from its structure (body_structure.hpp)
+// and its generated layers, shared by the Structural dialog, the
+// commandlets and the smoke run (2026-11-08) so the three cannot drift
+// apart. The model is SHELLS ONLY -- the application dropped tetrahedral
+// FEA and lattice infill on 2026-11-08 -- so a body is:
 //
 //   - its SKIN: shells of the skin thickness and material on the body's
 //     own grid (the triangles its Mesh tab defines and the viewport
 //     shows, GetPlacedMeshes at tolerance 0), nothing inside;
-//   - its PLANE NETWORKS: the surface is first cut by every plane (core
-//     mesh_cut.hpp), so the rims of the ribs are the skin's own nodes;
-//     the ribs are then meshed by gmsh as planar discs on those rims
-//     (AerotelicRibGmsh.h), one region per network with its material and
-//     thickness, unloaded.
+//   - its GENERATED LAYERS (2026-11-10; the plane networks meshed here
+//     until then are gone): the ribs, spars and stringers the body's
+//     parameterisation built with it (AerotelicBodyStructure.h), each
+//     layer a region of unloaded shells of its own thickness and material.
+//     They were built on the same grid, so their rims are the skin's own
+//     vertices and a spar's web carries the chord nodes of the ribs it
+//     crosses; the assembly matches nodes by position (to a billionth of
+//     the body's diagonal) and so joins them to the skin and to one
+//     another.
 //
 // A body with NO skin thickness cannot be modelled -- there is nothing to
 // make shells of -- and is refused with a Problem that says to give it one
@@ -34,23 +37,19 @@ class AAerotelicEntityActor;
 // filled with solid tetrahedra; that path is gone.)
 //
 // Every length is the placed (replica) body's, project units; the skin
-// and rib thicknesses and heights are the structure's physical figures.
+// and layer thicknesses are the structure's physical figures.
 namespace AerotelicFeaModelBuilder
 {
 	struct FOptions
 	{
-		// Target edge inside the ribs (0: the surface's median edge).
-		double RibSize = 0.0;
 		// Progress lines ("meshing ...").
 		TFunction<void(const FString&)> Status;
 	};
 
-	// gmsh's rib meshes by the surface's bytes, the rib size and the
-	// planes, so Build Model after a support edit runs gmsh again for
-	// nothing. Owned by the caller (the dialog's state) across builds.
+	// Kept for the callers' sake: nothing is cached since the layers come
+	// ready-built from the bodies (2026-11-10).
 	struct FCache
 	{
-		TMap<FString, TSharedPtr<AerotelicRibGmsh::FResult>> Ribs;
 	};
 
 	// What AppendBody accumulates: one node list over every body, the skin

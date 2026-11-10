@@ -5,22 +5,19 @@
 class AAerotelicEntityActor;
 
 // The Scene tree's "Structure..." on a body: what that ONE solid body is
-// made of and built with (aerotelic::BodyStructure), in three tabs --
+// made of (aerotelic::BodyStructure), in two tabs --
 //   Skin:   the material (picked from the library, Model > Material
 //           Properties) and the skin thickness (0 = a solid body);
-//   Planes: the networks of cutting planes -- ribs, spars, frames -- each a
-//           set of parallel planes normal to x, y, z or a custom axis, from a
-//           start position at a spacing, so many of them, a thickness, a
-//           height in from the surface (0 = wall to wall) and a material;
 //   Mass:   an asserted total that replaces every computed figure, and an
-//           estimate of what the structure weighs;
+//           estimate of what the body weighs, its generated layers included;
 // over the body's own geometry (enclosed volume, surface area). MODELESS,
-// one window per body: while the Planes tab is edited the 3D view shows the
-// SELECTED network's planes as translucent rectangles over the body, live
-// (the other networks are not drawn). Apply writes the structure to the
-// body and builds its layers at once (UAerotelicDocumentSubsystem::
-// ApplyBodyStructure; the separate Generate button went 2026-11-08 night);
-// Revert re-reads the body's. A mirrored half shares the body's structure.
-// (An Infill tab for a lattice filling the interior was removed 2026-11-08
-// with the lattice infill.)
+// one window per body. Apply writes the structure to the body
+// (UAerotelicDocumentSubsystem::ApplyBodyStructure), and a body with a skin
+// then builds its parameterisation's structure -- a wing's spars, ribs and
+// stringers from the wing dialog's Structure tab -- at once; Revert re-reads
+// the body's. A mirrored half shares the body's structure.
+// (A Planes tab of per-body cutting-plane networks lived here from
+// 2026-11-08 to 2026-11-10, with a translucent plane preview in the 3D
+// view; both went when the structure moved into the parameterisations. An
+// Infill tab for a lattice filling the interior went on 2026-11-08.)
 void OpenAerotelicStructureDialog(AAerotelicEntityActor* Entity, const FString& BodyRole);

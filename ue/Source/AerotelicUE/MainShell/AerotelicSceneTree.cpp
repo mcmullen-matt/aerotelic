@@ -250,12 +250,6 @@ TSharedRef<ITableRow> SAerotelicSceneTree::GenerateRow(FItem Item, const TShared
 			const FAerotelicStructureLayer& L = G->GetLayers()[V.LayerIndex];
 			const FString Len = UTF8_TO_TCHAR(Units.LengthName());
 			FString Text = FString::Printf(TEXT("%s: "), FAerotelicStructureLayer::KindName(L.Kind));
-			if (L.Kind == FAerotelicStructureLayer::EKind::Ribs)
-			{
-				const std::vector<aerotelic::PlaneNetwork>& Nets = G->GetStructure().networks;
-				const int32 Planes = L.NetworkIndex >= 0 && L.NetworkIndex < static_cast<int32>(Nets.size()) ? Nets[L.NetworkIndex].count : 0;
-				Text += FString::Printf(TEXT("%d plane%s, "), Planes, Planes == 1 ? TEXT("") : TEXT("s"));
-			}
 			Text += FString::Printf(TEXT("%.4g %s thick, %s, area %.5g %s^2"), L.Thickness, *Len, UTF8_TO_TCHAR(L.Material.name.c_str()), L.Area, *Len);
 			if (!L.Note.IsEmpty()) Text += TEXT("\n") + L.Note;
 			return FText::FromString(Text);
@@ -542,19 +536,20 @@ TSharedPtr<SWidget> SAerotelicSceneTree::MakeEntityMenu(FItem Item)
 			FUIAction(FExecuteAction::CreateLambda([Entity]() { if (Entity.IsValid()) OpenAerotelicTransformDialog(Entity.Get()); })));
 	}
 
-	// The structure -- material, skin, plane networks, asserted mass --
-	// belongs to each BODY (2026-11-08): an entity with one body
-	// offers it here too; one with several has it on each body's row. A
-	// boolean result's bodies own theirs and can start from an operand's.
+	// The structure -- material, skin, exclusions, asserted mass -- belongs
+	// to each BODY (2026-11-08): an entity with one body offers it here
+	// too; one with several has it on each body's row. A boolean result's
+	// bodies own theirs and can start from an operand's. The interior
+	// (ribs, spars, stringers) is the parameterisation's and builds itself.
 	if (Entity->GetBodies().Num() == 1)
 	{
 		const FString Role = Entity->GetBodies()[0].Name;
 		Menu.AddMenuEntry(LOCTEXT("Structure", "Structure..."),
-			LOCTEXT("StructureTip", "What this body is made of and built with: its material and skin thickness, networks of cutting planes (ribs, spars, frames) and their materials, or an asserted mass. Analysis > Mass Properties weighs by it; Analysis > Structural analyses with it."),
+			LOCTEXT("StructureTip", "What this body is made of: its material and skin thickness, the volumes its structure avoids, or an asserted mass. The ribs, spars and stringers inside come from the parameterisation (a wing's Structure tab) and build with it once the body has a skin. Analysis > Mass Properties weighs by it; Analysis > Structural analyses with it."),
 			FSlateIcon(),
 			FUIAction(FExecuteAction::CreateLambda([Entity, Role]() { if (Entity.IsValid()) OpenAerotelicStructureDialog(Entity.Get(), Role); })));
-		Menu.AddMenuEntry(Entity->GetGeneratedStructure(Role) != nullptr ? LOCTEXT("RegenerateStructure", "Regenerate Structure") : LOCTEXT("GenerateStructure", "Generate Structure"),
-			LOCTEXT("GenerateStructureTip", "Cut the body by its plane networks and mesh the ribs as shells (gmsh, under a second): they appear as layers under the body, and its mirrored half's, and follow every later edit of the body. The Skin row then stands for the body's surface: hide it to see the ribs alone."),
+		Menu.AddMenuEntry(LOCTEXT("RegenerateStructure", "Regenerate Structure"),
+			LOCTEXT("GenerateStructureTip", "Rebuild the body's layers from its parameterisation's structure (the ribs meshed on gmsh, under a second): they appear under the body, and its mirrored half's, and follow every later edit of the body. The Skin row stands for the body's surface: hide it to see the structure alone."),
 			FSlateIcon(),
 			FUIAction(FExecuteAction::CreateLambda([this, Entity, Role]() { if (Entity.IsValid()) GenerateStructure(Entity.Get(), Role); })));
 	}
@@ -639,12 +634,12 @@ TSharedPtr<SWidget> SAerotelicSceneTree::MakeBodyMenu(FItem Item)
 		{
 			const FString Role = Entity->GetBodies()[Body].Name;
 			Menu.AddMenuEntry(LOCTEXT("BodyStructure", "Structure..."),
-				LOCTEXT("BodyStructureTip", "What this body is made of and built with: its material and skin thickness, networks of cutting planes (ribs, spars, frames) and their materials, or an asserted mass. Its mirrored half shares it. Analysis > Mass Properties weighs by it; Analysis > Structural analyses with it."),
+				LOCTEXT("BodyStructureTip", "What this body is made of: its material and skin thickness, the volumes its structure avoids, or an asserted mass. Its mirrored half shares it. The ribs, spars and stringers inside come from the parameterisation and build with it once the body has a skin. Analysis > Mass Properties weighs by it; Analysis > Structural analyses with it."),
 				FSlateIcon(),
 				FUIAction(FExecuteAction::CreateLambda([Entity, Role]() { if (Entity.IsValid()) OpenAerotelicStructureDialog(Entity.Get(), Role); })));
 			const bool bGenerated = Entity->GetGeneratedStructure(Role) != nullptr;
-			Menu.AddMenuEntry(bGenerated ? LOCTEXT("RegenerateStructure", "Regenerate Structure") : LOCTEXT("GenerateStructure", "Generate Structure"),
-				LOCTEXT("GenerateBodyStructureTip", "Cut the body by its plane networks and mesh the ribs as shells (gmsh, under a second): they appear as layers under the body, and its mirrored half's, and follow every later edit of the body. The Skin row then stands for the body's surface: hide it to see the ribs alone."),
+			Menu.AddMenuEntry(LOCTEXT("RegenerateStructure", "Regenerate Structure"),
+				LOCTEXT("GenerateBodyStructureTip", "Rebuild the body's layers from its parameterisation's structure (the ribs meshed on gmsh, under a second): they appear under the body, and its mirrored half's, and follow every later edit of the body. The Skin row stands for the body's surface: hide it to see the structure alone."),
 				FSlateIcon(),
 				FUIAction(FExecuteAction::CreateLambda([this, Entity, Role]() { if (Entity.IsValid()) GenerateStructure(Entity.Get(), Role); })));
 			if (bGenerated)

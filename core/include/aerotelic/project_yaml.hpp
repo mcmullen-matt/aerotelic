@@ -109,7 +109,7 @@ struct ProjectBody {
 	bool hidden = false;
 	BodyStructure structure;
 
-	bool IsDefault() const { return !color && !hidden && !structure.IsSet() && !structure.HasInterior() && structure.exclusions.empty(); }
+	bool IsDefault() const { return !color && !hidden && !structure.IsSet() && structure.skin_thickness <= 0.0 && structure.exclusions.empty(); }
 };
 using ProjectBooleanBody = ProjectBody;
 
@@ -158,19 +158,19 @@ struct BooleanOperand {
 // in flow style, so the file stands on its own when a preset changes.
 YAML::Node EncodeMaterial(const Material& m);
 Material DecodeMaterial(const YAML::Node& node);
-YAML::Node Encode(const PlaneNetwork& n);
-PlaneNetwork DecodePlaneNetwork(const YAML::Node& node);
-// The structure's keys -- material, skin_thickness, networks, exclusions,
+// The structure's keys -- material, skin_thickness, exclusions,
 // asserted_mass -- the non-default ones only, written into `into` (a
 // body's own mapping). Decode throws std::invalid_argument when the
-// structure cannot be used (BodyStructureProblem). A legacy `infill:` key
-// (a lattice infill, removed 2026-11-08) is ignored; `had_infill`, when
-// given, is set to true if one was met so the caller can report it
-// (ProjectFile::ignored_infill).
+// structure cannot be used (BodyStructureProblem). Two legacy keys are
+// ignored, not errors, so a file of their time still opens: `infill:` (a
+// lattice infill, removed 2026-11-08) and `networks:` (plane networks,
+// removed 2026-11-10); `had_infill` / `had_networks`, when given, are set
+// to true if one was met so the caller can report it
+// (ProjectFile::ignored_infill / ignored_networks).
 void EncodeBodyStructure(const BodyStructure& s, YAML::Node& into);
-BodyStructure DecodeBodyStructure(const YAML::Node& node, bool* had_infill = nullptr);
+BodyStructure DecodeBodyStructure(const YAML::Node& node, bool* had_infill = nullptr, bool* had_networks = nullptr);
 YAML::Node Encode(const ProjectBody& b);
-ProjectBody DecodeProjectBody(const YAML::Node& node, bool* had_infill = nullptr);
+ProjectBody DecodeProjectBody(const YAML::Node& node, bool* had_infill = nullptr, bool* had_networks = nullptr);
 
 struct ProjectBoolean {
 	std::string name;
@@ -191,9 +191,10 @@ YAML::Node EncodeMassSpec(const MassSpec& m);
 MassSpec DecodeMassSpec(const YAML::Node& node);
 
 YAML::Node Encode(const ProjectBoolean& b);
-// `ignored_infill`, when given, collects "<boolean> / <body>" for every
-// body whose entry carried a legacy `infill:` key (see ProjectFile).
-ProjectBoolean DecodeProjectBoolean(const YAML::Node& node, std::vector<std::string>* ignored_infill = nullptr);
+// `ignored_infill` / `ignored_networks`, when given, collect "<boolean> /
+// <body>" for every body whose entry carried a legacy `infill:` or
+// `networks:` key (see ProjectFile).
+ProjectBoolean DecodeProjectBoolean(const YAML::Node& node, std::vector<std::string>* ignored_infill = nullptr, std::vector<std::string>* ignored_networks = nullptr);
 
 struct ProjectFile {
 	// What every length and mass in the file means (units.hpp). Always
@@ -222,6 +223,10 @@ struct ProjectFile {
 	// structure loads, and the application reports the loss by name. Never
 	// written.
 	std::vector<std::string> ignored_infill;
+	// Likewise the bodies whose entry carried a `networks:` key (plane
+	// networks, a file from 2026-11-08 or 09): dropped on load, reported by
+	// name; the structure is defined in the parameterisation now.
+	std::vector<std::string> ignored_networks;
 };
 
 ProjectFile LoadProjectYaml(const std::string& path);

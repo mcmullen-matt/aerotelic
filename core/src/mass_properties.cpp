@@ -329,69 +329,7 @@ std::vector<StructureMassPart> StructureMassParts(const TriMesh& placed, const B
 		part.note = "skin, rho t A over the surface";
 		out.push_back(part);
 	}
-	for (const PlaneNetwork& n : s.networks) {
-		std::vector<MassProperties> pieces;
-		int planes_hit = 0;
-		const double rho_n = n.material.HasDensity() ? n.material.density / density_to_si : 0.0;
-		for (int k = 0; k < n.count; ++k) {
-			Plane p = PlacedPlane(NetworkPlane(n, k), R, T, scale);
-			if (mirror) p = MirrorPlaneY(p);
-			const PlaneSection sec = SectionByPlane(placed, p);
-			if (sec.loops.empty()) continue;
-			++planes_hit;
-			Vec3 u, v;
-			PlaneBasis(p.normal, &u, &v);
-			const Vec3 origin = p.normal * p.offset;
-			double area_sum = 0.0, length_sum = 0.0;
-			Vec3 area_centroid_sum, length_centroid_sum;
-			for (const auto& loop : sec.loops) {
-				double a;
-				Vec3 c;
-				LoopAreaCentroid(loop, u, v, origin, &a, &c);
-				area_sum += a;
-				area_centroid_sum += c * a;
-				for (size_t i = 0; i < loop.size(); ++i) {
-					const Vec3 a0 = loop[i], a1 = loop[(i + 1) % loop.size()];
-					const double len = Distance(a0, a1);
-					length_sum += len;
-					length_centroid_sum += (a0 + a1) * (0.5 * len);
-				}
-			}
-			double vol;
-			Vec3 centre;
-			if (n.height > 0.0) {
-				// A rib that stops `height` in from the surface: a band along
-				// the section's outline.
-				vol = n.thickness * length_sum * n.height;
-				centre = length_sum > 0.0 ? length_centroid_sum / length_sum : origin;
-			} else {
-				vol = n.thickness * area_sum;
-				centre = std::fabs(area_sum) > 1e-300 ? area_centroid_sum / area_sum : origin;
-			}
-			if (!(vol > 0.0)) continue;
-			MassProperties mp;
-			mp.mass = rho_n * vol;
-			mp.centre = centre;
-			mp.volume = vol;
-			mp.area = std::fabs(area_sum);
-			pieces.push_back(mp);
-		}
-		StructureMassPart part;
-		part.label = n.name;
-		part.estimated = true;
-		if (pieces.empty()) {
-			part.included = false;
-			part.note = "none of its planes crosses the body";
-		} else if (!n.material.HasDensity()) {
-			part.included = false;
-			part.note = "its material has no density";
-		} else {
-			part.props = CombineMassProperties(pieces);
-			part.note = "estimated from the planes' sections (" + std::to_string(planes_hit) + " of " + std::to_string(n.count)
-				+ " planes cross the body); generate the structure for the exact figure";
-		}
-		out.push_back(part);
-	}
+	(void)R; (void)T; (void)scale; (void)mirror;
 	return out;
 }
 

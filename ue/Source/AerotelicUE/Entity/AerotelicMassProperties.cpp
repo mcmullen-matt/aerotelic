@@ -110,8 +110,8 @@ FAerotelicMassReport ComputeAerotelicMassReport(const TArray<FAerotelicBooleanOp
 			Report.Bodies.Add(None);
 			continue;
 		}
-		// The placement, for the networks' planes (parameterisation-frame
-		// geometry placed with the body).
+		// The placement (StructureMassParts takes it; nothing in the estimate
+		// depends on it since the plane networks went).
 		std::array<double, 9> R;
 		Vec3 T;
 		double Scale = 1.0;

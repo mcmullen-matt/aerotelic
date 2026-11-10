@@ -447,186 +447,38 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 		Check(Dup == nullptr && !Error.IsEmpty(), "a duplicate name is refused");
 	}
 
-	// The sphere's STRUCTURE generated (2026-11-08: the structure is an
-	// attribute of the body, not a scene entity of its own; shells only
-	// since the same day -- no infill): its 0.05 skin of the "Custom"
-	// density-2 material set in the mass step, and two ribs normal to x.
-	// Saved under the body's `bodies:` entry and regenerated on load.
+	// A body's STRUCTURE (2026-11-08) is what it is made of: material, skin
+	// thickness, exclusions, asserted mass. The interior geometry comes from
+	// the parameterisation (the wing's since 2026-11-09; the per-body plane
+	// networks that stood in were dropped on 2026-11-10), so a primitive has
+	// none to generate: the request is honoured with nothing, no error.
 	UE_LOG(LogAerotelicDocumentTest, Display, TEXT("step: BodyStructure"));
 	{
 		aerotelic::BodyStructure S = Primitive->GetBodyStructure(0);
 		Check(S.IsSkin() && FMath::IsNearlyEqual(S.skin_thickness, 0.05, 1e-12) && FMath::IsNearlyEqual(S.material.density, 2.0, 1e-12), "structure: the sphere carries the mass step's 0.05 skin of the density-2 material");
-		aerotelic::PlaneNetwork Ribs;
-		Ribs.name = "Ribs";
-		Ribs.axis = aerotelic::PlaneAxis::X;
-		Ribs.start = -0.3;
-		Ribs.spacing = 0.6;
-		Ribs.count = 2;
-		Ribs.thickness = 0.04;
-		Ribs.material.name = "rib ply";
-		Ribs.material.density = 1.0;
-		S.networks.push_back(Ribs);
 		FString Error;
-		// A body without a skin has nothing to generate: refused by name,
-		// and nothing is kept for it.
 		Check(!Doc->GenerateBodyStructure(Wing, TEXT("Main"), Error) && Error.Contains(Wing->EntityName) && Error.Contains(TEXT("material")),
 			FString::Printf(TEXT("structure: a body without a material is refused by name: %s"), *Error));
 		Check(Wing->GetGeneratedStructure(TEXT("Main")) == nullptr, "structure: nothing is generated for the refused body");
-		// Setting a structure with an interior on a body never generated
-		// queues nothing: Generate is explicit the first time.
-		Check(Primitive->SetBodyStructure(TEXT("Main"), S), "structure: the sphere takes the skin and ribs");
-		Check(!Doc->HasPendingRebuilds(), "structure: a body never generated is not queued by a structure edit");
-		Check(Doc->GenerateBodyStructure(Primitive, TEXT("Main"), Error), FString::Printf(TEXT("structure: the sphere's structure generated: %s"), *Error));
-		Check(Doc->GetEntities().Num() == 4, "structure: generating adds no scene item -- the layers belong to the body");
+		Check(Doc->GenerateBodyStructure(Primitive, TEXT("Main"), Error) && Primitive->GetGeneratedStructure(TEXT("Main")) == nullptr, "structure: a primitive has no interior structure of its own -- nothing generated, no error");
+		Check(!Doc->HasPendingRebuilds(), "structure: nothing is queued for it either");
+		Check(Doc->GetEntities().Num() == 4, "structure: generating adds no scene item");
+		// The dialog's Apply sets the structure in one call.
+		aerotelic::BodyStructure Thicker = S;
+		Thicker.skin_thickness = 0.08;
+		Check(Doc->ApplyBodyStructure(Primitive, TEXT("Main"), Thicker, Error) && FMath::IsNearlyEqual(Primitive->GetBodyStructure(0).skin_thickness, 0.08, 1e-12), FString::Printf(TEXT("structure: Apply sets the body's skin: %s"), *Error));
+		Check(!Doc->HasPendingRebuilds(), "structure: Apply leaves nothing queued");
+		Check(Doc->ApplyBodyStructure(Primitive, TEXT("Main"), S, Error) && FMath::IsNearlyEqual(Primitive->GetBodyStructure(0).skin_thickness, 0.05, 1e-12), "structure: ...and back to 0.05");
+		// The mass report weighs the skin as rho t A over the body's mesh at
+		// the report's tolerance.
 		{
-			// The dialog's Apply (2026-11-08 night): the structure is set and
-			// built in one call, and the regeneration the change queues is
-			// taken back out, so nothing is left for the tick. Three planes,
-			// then back to the two the rest of the step expects.
-			aerotelic::BodyStructure Three = S;
-			Three.networks[0].start = -0.4;
-			Three.networks[0].spacing = 0.4;
-			Three.networks[0].count = 3;
-			Check(Doc->ApplyBodyStructure(Primitive, TEXT("Main"), Three, Error), FString::Printf(TEXT("structure: Apply sets and builds in one step: %s"), *Error));
-			Check(!Doc->HasPendingRebuilds(), "structure: Apply leaves no regeneration queued (it did the work)");
-			const FAerotelicBodyStructure* G3 = Primitive->GetGeneratedStructure(TEXT("Main"));
-			const aerotelic::BodyStructure* Own3 = Primitive->GetBodyStructure(TEXT("Main"));
-			Check(Own3 != nullptr && Own3->networks.size() == 1 && Own3->networks[0].count == 3, "structure: Apply gave the body the three-plane network");
-			Check(G3 != nullptr && G3->IsGenerated() && !G3->IsStale() && G3->GetLayers().size() == 2 && G3->GetStructure().networks[0].count == 3,
-				"structure: Apply's layers are the three-plane network's");
-			Check(Doc->ApplyBodyStructure(Primitive, TEXT("Main"), S, Error), FString::Printf(TEXT("structure: Apply back to two planes: %s"), *Error));
-			Check(!Doc->HasPendingRebuilds(), "structure: ... again with nothing queued");
-		}
-		const FAerotelicBodyStructure* G = Primitive->GetGeneratedStructure(TEXT("Main"));
-		Check(G != nullptr && G->IsGenerated() && !G->IsStale(), "structure: the body holds its generated structure");
-		if (G != nullptr && G->IsGenerated())
-		{
-			const std::vector<FAerotelicStructureLayer>& Layers = G->GetLayers();
-			Check(Layers.size() == 2 && Layers[0].Name == TEXT("Skin") && Layers[1].Name == TEXT("Ribs"),
-				FString::Printf(TEXT("structure: two layers, Skin, Ribs (%d)"), (int32)Layers.size()));
-			Check(G->GetStats().Triangles > 0 && FMath::IsNearlyEqual(G->GetStructure().skin_thickness, 0.05, 1e-12), "structure: the layers have triangles and were generated from the 0.05 skin");
-			Check(Primitive->GetLayers().Num() == 2 && Primitive->GetLayers()[0].Kind == FAerotelicStructureLayer::EKind::Skin && Primitive->GetLayers()[1].Kind == FAerotelicStructureLayer::EKind::Ribs,
-				"structure: the actor lists the layers under the body");
-			// The materials: the skin the body's, the ribs their own.
-			Check(Layers.size() == 2 && Layers[0].Material.name == "Custom" && Layers[1].Material.name == "rib ply",
-				"structure: each layer carries its own material");
-			// The layers under the SHELL model (2026-11-08 night: no offset
-			// surfaces). The Skin has no mesh of its own -- the sphere's
-			// surface is the skin -- and its area is the sphere's own grid's,
-			// its volume area x 0.05. The Ribs are two OPEN discs of the sphere
-			// at x = +-0.3, together 2 pi (R^2 - 0.09) in area (a shade under:
-			// the rims are inscribed polygons), their volume area x 0.04.
-			const double Radius = Primitive->GetModelAs<aerotelic::PrimitiveModel>()->radius;
-			double SphereArea = 0.0;
-			for (const aerotelic::NamedMesh& NM : Primitive->GetPlacedMeshes(false)) SphereArea += NM.mesh.SurfaceArea();
-			if (Layers.size() == 2)
-			{
-				const FAerotelicStructureLayer& SkinLayer = Layers[0];
-				const FAerotelicStructureLayer& RibsLayer = Layers[1];
-				Check(SkinLayer.Mesh.IsEmpty() && FMath::Abs(SkinLayer.Area - SphereArea) < 0.02 * SphereArea,
-					FString::Printf(TEXT("structure: the Skin layer has no mesh and the sphere's area (%.4f vs %.4f)"), SkinLayer.Area, SphereArea));
-				Check(FMath::IsNearlyEqual(SkinLayer.Volume, SkinLayer.Area * 0.05, 1e-9 * SkinLayer.Volume) && FMath::IsNearlyEqual(SkinLayer.Thickness, 0.05, 1e-12),
-					"structure: the Skin layer's volume is its area times the 0.05 skin");
-				const double Discs = 2.0 * PI * (Radius * Radius - 0.3 * 0.3);
-				Check(!RibsLayer.Mesh.IsEmpty() && !RibsLayer.Mesh.IsClosedManifold(), "structure: the Ribs layer is an open mesh (discs, not solids)");
-				Check(FMath::Abs(RibsLayer.Area - Discs) < 0.03 * Discs, FString::Printf(TEXT("structure: the ribs are two discs of the sphere at x = +-0.3 (area %.4f vs %.4f)"), RibsLayer.Area, Discs));
-				Check(FMath::IsNearlyEqual(RibsLayer.Volume, RibsLayer.Area * 0.04, 1e-9 * RibsLayer.Volume) && FMath::IsNearlyEqual(RibsLayer.Thickness, 0.04, 1e-12),
-					"structure: the Ribs layer's volume is its area times the 0.04 thickness");
-				Check(FMath::IsNearlyEqual(G->GetStats().SkinArea, SkinLayer.Area, 1e-12) && FMath::IsNearlyEqual(G->GetStats().RibsArea, RibsLayer.Area, 1e-12), "structure: the stats carry the skin's and the ribs' areas");
-			}
-			// Placed layer meshes: the Ribs alone (the Skin has none), every
-			// rib vertex on or inside the sphere -- the discs are bounded by
-			// the body's surface, not by an inner offset.
-			std::vector<aerotelic::NamedMesh> Meshes = Primitive->GetPlacedLayerMeshes(TEXT("Main"), false);
-			Check(Meshes.size() == 1 && Meshes[0].name == "Ribs", FString::Printf(TEXT("structure: the placed layer meshes are the Ribs alone (%d)"), (int32)Meshes.size()));
-			if (Meshes.size() == 1)
-			{
-				double Worst = -1.0;
-				for (const aerotelic::Vec3& V : Meshes[0].mesh.vertices) Worst = FMath::Max(Worst, aerotelic::Length(V) - Radius);
-				Check(Worst < 1e-6, FString::Printf(TEXT("structure: every rib vertex is within the sphere's radius (worst overshoot %.3g)"), Worst));
-				bool bOnPlanes = true;
-				for (const aerotelic::Vec3& V : Meshes[0].mesh.vertices) bOnPlanes = bOnPlanes && (FMath::Abs(FMath::Abs(V.x) - 0.3) < 1e-6);
-				Check(bOnPlanes, "structure: every rib vertex lies on one of the two planes x = +-0.3");
-				// The two-sided render mesh of the discs, called directly: under
-				// a commandlet the actor has no components, so this is the only
-				// place the helper runs headless (it crashed in the live app on
-				// 2026-11-08, appending an array's own elements to it).
-				TArray<FVector> V2, N2;
-				TArray<int32> T2;
-				AerotelicMeshing::ToTwoSidedProceduralMesh(Meshes[0].mesh, V2, T2, N2);
-				const int32 Nv = static_cast<int32>(Meshes[0].mesh.vertices.size());
-				const int32 Nt = static_cast<int32>(Meshes[0].mesh.triangles.size());
-				bool bMirrored = V2.Num() == 2 * Nv && N2.Num() == 2 * Nv && T2.Num() == 6 * Nt;
-				for (int32 i = 0; bMirrored && i < Nv; ++i)
-				{
-					bMirrored = V2[i].Equals(V2[i + Nv], 0.0) && N2[i + Nv].Equals(-N2[i], 1e-9);
-				}
-				for (int32 t = 0; bMirrored && t < Nt; ++t)
-				{
-					// The back triangle is the front one reversed over the copies.
-					bMirrored = T2[3 * (Nt + t)] == T2[3 * t] + Nv && T2[3 * (Nt + t) + 1] == T2[3 * t + 2] + Nv && T2[3 * (Nt + t) + 2] == T2[3 * t + 1] + Nv;
-				}
-				Check(bMirrored, FString::Printf(TEXT("structure: the two-sided render mesh doubles the discs with flipped normals and reversed winding (%d vertices, %d indices)"), V2.Num(), T2.Num()));
-			}
-			// The mass report weighs the generated layers as thin shells, each
-			// by its own material: the skin rho t A over the sphere's mesh at
-			// the report's tolerance, the ribs rho t A over the discs.
-			{
-				FAerotelicBooleanOperand POp;
-				POp.Entity = Primitive;
-				const FAerotelicMassReport LayerReport = ComputeAerotelicMassReport({ POp }, 2e-3, Doc->GetUnits());
-				Check(LayerReport.Bodies.Num() == 2 && LayerReport.Bodies[0].Label.Contains(TEXT("Skin")) && LayerReport.Bodies[1].Label.Contains(TEXT("Ribs")),
-					FString::Printf(TEXT("structure: the mass report has one line per layer (%d)"), LayerReport.Bodies.Num()));
-				if (LayerReport.Bodies.Num() == 2 && Meshes.size() == 1)
-				{
-					double ReportArea = 0.0;
-					for (const aerotelic::NamedMesh& NM : Primitive->GetPlacedMeshes(false, 2e-3)) ReportArea += NM.mesh.SurfaceArea();
-					Check(LayerReport.Bodies[0].bIncluded && FMath::IsNearlyEqual(LayerReport.Bodies[0].Props.mass, 2.0 * 0.05 * ReportArea, 1e-9 * LayerReport.Bodies[0].Props.mass),
-						FString::Printf(TEXT("structure: the Skin line weighs density x 0.05 x the sphere's area (%.5f vs %.5f)"), LayerReport.Bodies[0].Props.mass, 2.0 * 0.05 * ReportArea));
-					const double RibArea = Meshes[0].mesh.SurfaceArea();
-					Check(LayerReport.Bodies[1].bIncluded && FMath::IsNearlyEqual(LayerReport.Bodies[1].Props.mass, 1.0 * 0.04 * RibArea, 1e-9 * LayerReport.Bodies[1].Props.mass),
-						FString::Printf(TEXT("structure: the Ribs line weighs density x 0.04 x the discs' area (%.5f vs %.5f)"), LayerReport.Bodies[1].Props.mass, 1.0 * 0.04 * RibArea));
-					Check(LayerReport.Bodies[0].Note.Contains(TEXT("skin")) && LayerReport.Bodies[0].Note.Contains(TEXT("thick")) && LayerReport.Bodies[1].Note.Contains(TEXT("rib shells")) && LayerReport.Bodies[1].Note.Contains(TEXT("rib ply")),
-						"structure: the lines say skin / rib shells, the thickness and the material");
-				}
-			}
-
-			// A changed skin thickness regenerates the structure: 0.05 becomes
-			// 0.08, the document queues the body as it does after an Apply,
-			// and once flushed the layers are generated from the 0.08 skin
-			// (the Skin layer's volume follows it; the ribs are the same
-			// discs). The same structure set again, or a density edited under
-			// the same skin and planes, queues nothing (the geometry is built
-			// from those alone).
-			{
-				aerotelic::BodyStructure Changed = Primitive->GetBodyStructure(0);
-				Primitive->SetBodyStructure(TEXT("Main"), Changed);
-				Check(!Doc->HasPendingRebuilds(), "skin change: the same structure set again queues nothing");
-				Changed.material.density = 3.0;
-				Primitive->SetBodyStructure(TEXT("Main"), Changed);
-				Check(!Doc->HasPendingRebuilds(), "skin change: a density edited under the same skin queues nothing");
-				Changed.material.density = 2.0;
-				Changed.skin_thickness = 0.08;
-				Primitive->SetBodyStructure(TEXT("Main"), Changed);
-				Check(Doc->HasPendingRebuilds(), "skin change: a new skin thickness queues the sphere's structure");
-				Doc->FlushPendingRebuilds();
-				const FAerotelicBodyStructure* G2 = Primitive->GetGeneratedStructure(TEXT("Main"));
-				Check(!Doc->HasPendingRebuilds() && G2 != nullptr && FMath::IsNearlyEqual(G2->GetStructure().skin_thickness, 0.08, 1e-12) && !G2->IsStale(),
-					FString::Printf(TEXT("skin change: the structure regenerated over the 0.08 skin (skin %.3g)"), G2 != nullptr ? G2->GetStructure().skin_thickness : -1.0));
-				if (G2 != nullptr && G2->GetLayers().size() == 2)
-				{
-					const FAerotelicStructureLayer& Skin2 = G2->GetLayers()[0];
-					Check(FMath::IsNearlyEqual(Skin2.Thickness, 0.08, 1e-12) && FMath::IsNearlyEqual(Skin2.Volume, Skin2.Area * 0.08, 1e-9 * Skin2.Volume),
-						"skin change: the Skin layer's thickness and volume follow the 0.08 skin");
-				}
-				// Back to 0.05 for the steps that follow (the round trip, Apply).
-				Changed.skin_thickness = 0.05;
-				Primitive->SetBodyStructure(TEXT("Main"), Changed);
-				Check(Doc->HasPendingRebuilds(), "skin change: back to 0.05 queues the structure again");
-				Doc->FlushPendingRebuilds();
-				G2 = Primitive->GetGeneratedStructure(TEXT("Main"));
-				Check(G2 != nullptr && FMath::IsNearlyEqual(G2->GetStructure().skin_thickness, 0.05, 1e-12), "skin change: regenerated over the 0.05 skin again");
-			}
+			FAerotelicBooleanOperand POp;
+			POp.Entity = Primitive;
+			const FAerotelicMassReport Report = ComputeAerotelicMassReport({ POp }, 2e-3, Doc->GetUnits());
+			double ReportArea = 0.0;
+			for (const aerotelic::NamedMesh& NM : Primitive->GetPlacedMeshes(false, 2e-3)) ReportArea += NM.mesh.SurfaceArea();
+			Check(Report.Bodies.Num() == 1 && Report.Bodies[0].bIncluded && FMath::IsNearlyEqual(Report.Bodies[0].Props.mass, 2.0 * 0.05 * ReportArea, 1e-9 * FMath::Max(Report.Bodies[0].Props.mass, 1e-12)),
+				FString::Printf(TEXT("structure: the mass report weighs the sphere's skin as density x 0.05 x area (%d line(s), %.5f vs %.5f)"), Report.Bodies.Num(), Report.Bodies.Num() ? Report.Bodies[0].Props.mass : 0.0, 2.0 * 0.05 * ReportArea));
 		}
 	}
 
@@ -675,6 +527,33 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 					}
 				}
 				Check(OnBody >= 8 * 20, FString::Printf(TEXT("wing structure: the rib rims are the body's own vertices (%d rib vertices on the body)"), OnBody));
+			// The analysis model takes the layers as shells on the skin's nodes
+			// (AerotelicFeaModelBuilder, 2026-11-10): a region per layer, the
+			// rims' and feet's nodes shared with the skin, the discs' and webs'
+			// interior nodes added after it.
+			{
+				AerotelicFeaModelBuilder::FOptions Options;
+				AerotelicFeaModelBuilder::FCache Cache;
+				AerotelicFeaModelBuilder::FBuilt Built;
+				FAerotelicBooleanOperand WOp;
+				WOp.Entity = Wing;
+				const bool bAppended = AerotelicFeaModelBuilder::AppendBody(WOp, TEXT("Main"), Wing->EntityName, 0, Options, Cache, Built);
+				const int32 SkinNodes = Own.empty() ? 0 : static_cast<int32>(Own[0].mesh.vertices.size());
+				int32 LayerVertices = 0;
+				for (const FAerotelicStructureLayer& Lay : L) LayerVertices += static_cast<int32>(Lay.Mesh.vertices.size());
+				Check(bAppended && Built.Regions.Num() == 4 && Built.RibFaces.Num() > 0 && Built.Regions[1].HasRibs() && !Built.Regions[1].HasShells(),
+					FString::Printf(TEXT("wing structure (fea): the model is the skin and three layer regions of unloaded shells (%d regions, %d rib faces; %s)"), Built.Regions.Num(), Built.RibFaces.Num(), *FString::Join(Built.Problems, TEXT("; "))));
+				Check(bAppended && static_cast<int32>(Built.Nodes.size()) > SkinNodes && static_cast<int32>(Built.Nodes.size()) < SkinNodes + LayerVertices,
+					FString::Printf(TEXT("wing structure (fea): the layers share nodes with the skin (%d nodes of %d skin + %d layer vertices)"), (int32)Built.Nodes.size(), SkinNodes, LayerVertices));
+				TSet<int32> SkinSet, RibNodes;
+				for (const auto& F : Built.ShellFaces) for (int32 k = 0; k < 3; ++k) SkinSet.Add(F.N[k]);
+				for (const auto& F : Built.RibFaces) for (int32 k = 0; k < 3; ++k) RibNodes.Add(F.N[k]);
+				int32 OnSkin = 0;
+				for (int32 N : RibNodes) if (SkinSet.Contains(N)) ++OnSkin;
+				Check(OnSkin >= 8 * 20 + 2 * 10, FString::Printf(TEXT("wing structure (fea): the rib rims and spar feet are skin nodes (%d shared)"), OnSkin));
+				const FString Line = AerotelicFeaModelBuilder::Describe(WOp, TEXT("Main"), Wing->EntityName, Options, Doc->GetUnits());
+				Check(Line.Contains(TEXT("3 generated layer")) && Line.Contains(TEXT("Front spar")), FString::Printf(TEXT("wing structure (fea): the Set-up line names the layers (%s)"), *Line));
+			}
 			}
 		}
 	}
@@ -711,35 +590,15 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 			Check(FMath::IsNearlyEqual(Primitive->GetModelAs<aerotelic::PrimitiveModel>()->radius, R0 * 1.5, 1e-12),
 				"apply: editing the draft after Apply still leaves the entity alone until the next Apply");
 
-			// The boolean over the sphere and the sphere's generated structure
-			// follow: queued by the Apply, rebuilt by the flush (the ticker's
-			// job in the application). Three items in all -- the sphere,
-			// done, then those two -- so the bar stands at a third. Until the
-			// flush the layers stand as generated and are marked stale.
-			Check(Doc->HasPendingRebuilds(), "apply: the boolean and the structure over the sphere are queued to follow");
-			Check(FMath::IsNearlyEqual(Doc->GetRebuildProgress(), 1.0f / 3.0f, 1e-6f), FString::Printf(TEXT("apply: the progress bar shows one of three rebuilt (%.3f)"), Doc->GetRebuildProgress()));
-			{
-				const FAerotelicBodyStructure* Stale = Primitive->GetGeneratedStructure(TEXT("Main"));
-				Check(Stale != nullptr && Stale->IsStale() && Stale->IsGenerated(), "apply: the layers are kept, marked stale, until the regeneration");
-			}
+			// The boolean over the sphere follows: queued by the Apply, rebuilt
+			// by the flush (the ticker's job in the application). Two items in
+			// all -- the sphere, done, then the boolean -- so the bar stands at
+			// a half. (The sphere has no generated structure of its own since
+			// the plane networks went; the wing's follows its Apply below.)
+			Check(Doc->HasPendingRebuilds(), "apply: the boolean over the sphere is queued to follow");
+			Check(FMath::IsNearlyEqual(Doc->GetRebuildProgress(), 0.5f, 1e-6f), FString::Printf(TEXT("apply: the progress bar shows one of two rebuilt (%.3f)"), Doc->GetRebuildProgress()));
 			Doc->FlushPendingRebuilds();
 			Check(!Doc->HasPendingRebuilds() && Doc->GetRebuildProgress() == 1.0f, "apply: the flush rebuilt what was queued and the bar is full again");
-			{
-				const FAerotelicBodyStructure* G = Primitive->GetGeneratedStructure(TEXT("Main"));
-				Check(G != nullptr && G->IsGenerated() && !G->IsStale() && G->GetStats().Triangles > 0, "apply: the structure is generated again");
-				// The ribs' rims are the new sphere's surface at x = +-0.3: the
-				// discs reach the 1.5 R0 radius (and nothing beyond it).
-				std::vector<aerotelic::NamedMesh> Meshes = Primitive->GetPlacedLayerMeshes(TEXT("Main"), false);
-				double Reach = 0.0;
-				for (const aerotelic::NamedMesh& NM : Meshes)
-					for (const aerotelic::Vec3& V : NM.mesh.vertices) Reach = FMath::Max(Reach, aerotelic::Length(V));
-				Check(Reach > 1.45 * R0 && Reach < 1.5 * R0 + 1e-6, FString::Printf(TEXT("apply: the ribs now reach the larger sphere's surface (reach %.3f of a %.3f radius)"), Reach, 1.5 * R0));
-				if (G != nullptr && G->GetLayers().size() == 2)
-				{
-					const double Discs = 2.0 * PI * (2.25 * R0 * R0 - 0.3 * 0.3);
-					Check(FMath::Abs(G->GetLayers()[1].Area - Discs) < 0.03 * Discs, FString::Printf(TEXT("apply: the ribs' area follows the radius (%.4f vs %.4f)"), G->GetLayers()[1].Area, Discs));
-				}
-			}
 
 			// Back to the unit sphere for the rest of the run.
 			D->radius = R0;
@@ -761,8 +620,32 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 			Check(Doc->ApplyEntityModel(Wing, *WingDraft, Error), FString::Printf(TEXT("apply: the wing's draft applies (%s)"), *Error));
 			Check(FMath::IsNearlyEqual(Wing->GetModelAs<aerotelic::WingModel>()->planform().SemiSpan(), Span * 2.0, 1e-12), "apply: the wing took the draft's span");
 			CheckBuildsSolid(Wing, TEXT("Wing after Apply"));
+			// The wing's generated structure follows: queued by the Apply, its
+			// layers kept and marked stale until the flush regenerates them on
+			// the new span -- the spars then run the doubled semi-span.
+			Check(Doc->HasPendingRebuilds(), "apply: the wing's structure is queued to follow its new span");
+			{
+				const FAerotelicBodyStructure* Stale = Wing->GetGeneratedStructure(TEXT("Main"));
+				Check(Stale != nullptr && Stale->IsStale() && Stale->IsGenerated(), "apply: the wing's layers are kept, marked stale, until the regeneration");
+			}
+			Doc->FlushPendingRebuilds();
+			{
+				const FAerotelicBodyStructure* G = Wing->GetGeneratedStructure(TEXT("Main"));
+				Check(G != nullptr && G->IsGenerated() && !G->IsStale() && G->GetLayers().size() == 4, "apply: the wing's structure is generated again");
+				double YMax = 0.0;
+				if (G != nullptr)
+				{
+					for (const FAerotelicStructureLayer& L : G->GetLayers())
+					{
+						if (L.Kind != FAerotelicStructureLayer::EKind::Spars) continue;
+						for (const aerotelic::Vec3& V : L.Mesh.vertices) YMax = FMath::Max(YMax, V.y);
+					}
+				}
+				Check(YMax > 1.9 * Span, FString::Printf(TEXT("apply: the spars run the doubled span (to y = %.3f of %.3f)"), YMax, 2.0 * Span));
+			}
 			WD->planform().SetSemiSpan(Span);
 			Check(Doc->ApplyEntityModel(Wing, *WingDraft, Error), "apply: restoring the wing applies");
+			Doc->FlushPendingRebuilds();
 		}
 	}
 
@@ -1121,180 +1004,6 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 					IFileManager::Get().Delete(*Request.VtkPath, false, true, true);
 				}
 
-				// (4) The same box with RIBS (2026-11-08): three plane networks'
-				// worth of structure on the body -- a 10 mm aluminium skin and a
-				// network of three ribs normal to y at y = -2.4, 0.05, 2.5 (OFF
-				// the grid rows, so the cut must split triangles), 5 mm thick --
-				// built through the shared model builder as the dialog builds
-				// it: the surface cut along the planes (closed, volume unchanged),
-				// one 4-corner rim loop per plane whose vertices are skin nodes,
-				// the ribs meshed as unloaded shells on those rims, a region per
-				// network. Held to: the mass is the skin's rho t A plus the
-				// ribs' rho t A (three 1 x 1 discs), the clamp carries the loads,
-				// the tip deflects a little LESS than the unribbed box (ribs
-				// stiffen the section against distortion, not against bending),
-				// the result has an entry of kind "rib", and the VTK carries the
-				// rib shells as kind 2 cells.
-				UE_LOG(LogAerotelicDocumentTest, Display, TEXT("step: structural fea (a box beam with ribs)"));
-				{
-					aerotelic::BodyStructure S = Beam->GetBodyStructure(0);
-					Check(S.IsSkin() && FMath::IsNearlyEqual(S.skin_thickness, 0.01, 1e-12), "fea (ribs): the beam carries its 10 mm skin");
-					aerotelic::PlaneNetwork Ribs;
-					Ribs.name = "Ribs";
-					Ribs.axis = aerotelic::PlaneAxis::Y;
-					Ribs.start = -2.4;
-					Ribs.spacing = 2.45;
-					Ribs.count = 3;
-					Ribs.thickness = 0.005;
-					Ribs.material = Al;
-					S.networks.push_back(Ribs);
-					Check(Beam->SetBodyStructure(TEXT("Main"), S), "fea (ribs): the network is set on the beam's body");
-
-					// The cut on its own: the surface stays closed, the volume
-					// stands, the rims are mesh edges, and the planes off the grid
-					// rows split triangles.
-					{
-						const std::vector<aerotelic::NamedMesh> Own = Beam->GetPlacedMeshes(false);
-						std::vector<aerotelic::Plane> Planes;
-						for (int k = 0; k < 3; ++k) Planes.push_back(aerotelic::NetworkPlane(Ribs, k));
-						aerotelic::MeshCutStats Stats;
-						const aerotelic::TriMesh Cut = aerotelic::CutMeshByPlanes(Own[0].mesh, Planes, 1e-9, nullptr, &Stats);
-						Check(Cut.IsClosedManifold() && FMath::IsNearlyEqual(Cut.SignedVolume(), Own[0].mesh.SignedVolume(), 1e-9), "fea (ribs): the surface cut by the three planes is closed with its volume unchanged");
-						Check(Stats.split_triangles > 0 && Stats.new_vertices > 0, FString::Printf(TEXT("fea (ribs): the off-grid planes split triangles (%d split, %d vertices added)"), Stats.split_triangles, Stats.new_vertices));
-						int32 Loops = 0;
-						bool bFourCorners = true;
-						for (const aerotelic::Plane& Pl : Planes)
-						{
-							const auto L = aerotelic::SectionLoopsOnPlane(Cut, Pl, 1e-9);
-							Loops += static_cast<int32>(L.size());
-							for (const auto& Loop : L)
-							{
-								// A 1 x 1 square: area 1, and its vertices all at |x| = 0.5 or |z| = 0.5.
-								bFourCorners = bFourCorners && FMath::IsNearlyEqual(aerotelic::LoopArea(Cut, Loop, Pl), 1.0, 1e-9);
-								for (int V : Loop) bFourCorners = bFourCorners && (FMath::IsNearlyEqual(FMath::Abs(Cut.vertices[V].x), 0.5, 1e-9) || FMath::IsNearlyEqual(FMath::Abs(Cut.vertices[V].z), 0.5, 1e-9));
-							}
-						}
-						Check(Loops == 3 && bFourCorners, FString::Printf(TEXT("fea (ribs): one unit-square rim loop per plane, on the skin (%d loops)"), Loops));
-					}
-
-					// The model through the builder.
-					AerotelicFeaModelBuilder::FOptions Options;
-					AerotelicFeaModelBuilder::FCache Cache;
-					AerotelicFeaModelBuilder::FBuilt Built;
-					FAerotelicBooleanOperand BeamOp;
-					BeamOp.Entity = Beam;
-					bool bOk = false;
-					const FString Line = AerotelicFeaModelBuilder::Describe(BeamOp, TEXT("Main"), Beam->EntityName, Options, Doc->GetUnits(), &bOk);
-					Check(bOk && Line.Contains(TEXT("rib plane")) && Line.Contains(TEXT("Ribs")), FString::Printf(TEXT("fea (ribs): the Set-up line names the ribs (%s)"), *Line));
-					const bool bAppended = AerotelicFeaModelBuilder::AppendBody(BeamOp, TEXT("Main"), Beam->EntityName, 0, Options, Cache, Built);
-					Check(bAppended, FString::Printf(TEXT("fea (ribs): the ribbed beam builds (%s)"), *FString::Join(Built.Problems, TEXT("; "))));
-					if (bAppended)
-					{
-						Check(!Built.Nodes.empty() && Built.ShellFaces.Num() > ExpectedTriangles && Built.RibFaces.Num() > 0 && Built.Regions.Num() == 2,
-							FString::Printf(TEXT("fea (ribs): shells on the cut surface (%d > %d), %d rib shells, two regions (skin and ribs) on %d nodes"), Built.ShellFaces.Num(), ExpectedTriangles, Built.RibFaces.Num(), (int32)Built.Nodes.size()));
-						const AerotelicStructuralFea::FRegion* RibRegion = Built.Regions.FindByPredicate([](const AerotelicStructuralFea::FRegion& X) { return X.HasRibs(); });
-						Check(RibRegion != nullptr && !RibRegion->HasShells() && FMath::IsNearlyEqual(RibRegion->RibThickness, 0.005, 1e-12) && RibRegion->Label.Contains(TEXT("Ribs")),
-							"fea (ribs): the rib region carries the network's thickness and material and nothing else");
-						// Every rib rim node is a skin node: a rib face node with
-						// |x| = 0.5 or |z| = 0.5 appears in some shell face.
-						TSet<int32> SkinNodes;
-						for (const auto& F : Built.ShellFaces) for (int32 k = 0; k < 3; ++k) SkinNodes.Add(F.N[k]);
-						bool bRims = true;
-						int32 RimNodes = 0, InteriorNodes = 0;
-						for (const auto& F : Built.RibFaces)
-						{
-							for (int32 k = 0; k < 3; ++k)
-							{
-								const aerotelic::Vec3& Node = Built.Nodes[F.N[k]];
-								const bool bOnSkin = FMath::IsNearlyEqual(FMath::Abs(Node.x), 0.5, 1e-9) || FMath::IsNearlyEqual(FMath::Abs(Node.z), 0.5, 1e-9);
-								if (bOnSkin) { ++RimNodes; bRims = bRims && SkinNodes.Contains(F.N[k]); }
-								else { ++InteriorNodes; bRims = bRims && !SkinNodes.Contains(F.N[k]); }
-							}
-						}
-						Check(bRims && RimNodes > 0 && InteriorNodes > 0, FString::Printf(TEXT("fea (ribs): every rib rim node is a skin node and no interior rib node is (%d rim, %d interior)"), RimNodes, InteriorNodes));
-						double RibArea = 0.0;
-						for (const auto& F : Built.RibFaces)
-						{
-							const aerotelic::Vec3& A = Built.Nodes[F.N[0]];
-							RibArea += 0.5 * aerotelic::Length(aerotelic::Cross(Built.Nodes[F.N[1]] - A, Built.Nodes[F.N[2]] - A));
-						}
-						Check(FMath::IsNearlyEqual(RibArea, 3.0, 1e-6), FString::Printf(TEXT("fea (ribs): the rib shells tile three unit discs (area %.6g)"), RibArea));
-
-						AerotelicStructuralFea::FRequest RibRequest;
-						RibRequest.Nodes = &Built.Nodes;
-						RibRequest.ShellFaces = Built.ShellFaces;
-						RibRequest.RibFaces = Built.RibFaces;
-						RibRequest.Regions = Built.Regions;
-						RibRequest.LengthToSI = 1.0;
-						RibRequest.LinearSolver = TEXT("sparse_lu");
-						AerotelicStructuralFea::FSupport RibRoot;
-						RibRoot.Axis = TEXT('y');
-						RibRoot.bAtMin = true;
-						RibRequest.Supports.Add(RibRoot);
-						const double Load = 1000.0;
-						for (double Side : { -0.5, 0.5 })
-						{
-							AerotelicStructuralFea::FPointForce F;
-							F.At = aerotelic::Vec3{ Side, 5.0, 0.0 };
-							F.Force = aerotelic::Vec3{ 0.0, 0.0, -0.5 * Load };
-							RibRequest.PointForces.Add(F);
-						}
-						RibRequest.VtkPath = FPaths::Combine(FPlatformProcess::UserTempDir(), TEXT("aerotelic_document_test_fea_ribs.vtk"));
-						IFileManager::Get().Delete(*RibRequest.VtkPath, false, true, true);
-
-						AerotelicFeaPreprocess::FModel RibPre;
-						FString RibPreError;
-						const bool bRibPre = AerotelicFeaPreprocess::Build(RibRequest, RibPre, RibPreError);
-						const double ExpectedMass = Al.density * (0.01 * (4.0 * 10.0 + 2.0) + 0.005 * 3.0);
-						Check(bRibPre && RibPre.RibFaces.Num() == Built.RibFaces.Num() && RibPre.Regions.Num() == 2 && RibPre.Regions[1].Kind == TEXT("rib shells") && RibPre.Regions[1].RibFaces > 0 && FMath::IsNearlyEqual(RibPre.Regions[1].RibArea, 3.0, 1e-6),
-							FString::Printf(TEXT("fea (ribs, pre-processor): the rib region is rib shells of area 3 (%s)"), *RibPreError));
-						Check(bRibPre && FMath::IsNearlyEqual(RibPre.Mass, ExpectedMass, 1e-6 * ExpectedMass), FString::Printf(TEXT("fea (ribs, pre-processor): the mass is the skin's rho t A plus the ribs' (%.6g vs %.6g)"), bRibPre ? RibPre.Mass : 0.0, ExpectedMass));
-						Check(bRibPre && RibPre.FloatingRegions.Num() == 0 && RibPre.ShellNodes == RibPre.Nodes, "fea (ribs, pre-processor): the ribs reach the support through the skin and every node carries a shell");
-
-						AerotelicStructuralFea::FResult RR;
-						const bool bRibSolved = AerotelicStructuralFea::Run(RibRequest, RR, Error);
-						Check(bRibSolved, FString::Printf(TEXT("fea (ribs): the ribbed box beam solved (%s)"), bRibSolved ? *FString::Printf(TEXT("%d nodes, %d shells (%d ribs), %d dof, %.1f s"), RR.Nodes, RR.Shells, RR.RibShells, RR.Dofs, RR.Seconds) : *Error));
-						if (bRibSolved)
-						{
-							const double E = Al.youngs_modulus, G = E / (2.0 * (1.0 + Al.poisson_ratio));
-							const double I = 2.0 * (1.0 * 0.01 * 0.25 + 0.01 * 1.0 / 12.0);
-							const double Delta = Load * 1000.0 / (3.0 * E * I) + Load * 10.0 / (G * 2.0 * 1.0 * 0.01);
-							Check(RR.bBalanced && FMath::Abs(RR.Reaction[2] - Load) <= 0.01 * Load && FMath::Abs(RR.Reaction[0]) <= 0.01 * Load && FMath::Abs(RR.Reaction[1]) <= 0.01 * Load,
-								FString::Printf(TEXT("fea (ribs): the clamp carries the two tip loads, %.4g N (reactions %.4g, %.4g, %.4g)"), Load, RR.Reaction[0], RR.Reaction[1], RR.Reaction[2]));
-							Check(RR.RibShells == Built.RibFaces.Num() && RR.Shells == Built.ShellFaces.Num() + Built.RibFaces.Num(), FString::Printf(TEXT("fea (ribs): a shell per skin face and per rib face (%d + %d = %d)"), Built.ShellFaces.Num(), RR.RibShells, RR.Shells));
-							Check(FMath::IsNearlyEqual(RR.Mass, ExpectedMass, 1e-6 * ExpectedMass), FString::Printf(TEXT("fea (ribs): the solver's mass counts the ribs (%.6g vs %.6g)"), RR.Mass, ExpectedMass));
-							Check(RR.MaxDisplacement / Delta > 0.90 && RR.MaxDisplacement / Delta < 1.01 && RR.MaxDisplacementAt[1] > 4.9,
-								FString::Printf(TEXT("fea (ribs): the ribbed box deflects as the unribbed Timoshenko box or a little less (%.4g of %.4g m, %.1f%%)"), RR.MaxDisplacement, Delta, 100.0 * (RR.MaxDisplacement / Delta - 1.0)));
-							const AerotelicStructuralFea::FEntryResult* RibEntry = RR.Entries.FindByPredicate([](const AerotelicStructuralFea::FEntryResult& X) { return X.Kind == TEXT("rib"); });
-							Check(RibEntry != nullptr && RibEntry->MaxVonMises > 0.0 && FMath::IsNearlyEqual(RibEntry->Mass, Al.density * 0.005 * 3.0, 1e-6 * Al.density * 0.005 * 3.0),
-								FString::Printf(TEXT("fea (ribs): the result has a rib entry carrying the ribs' mass and a stress (%s)"), RibEntry ? *FString::Printf(TEXT("%.4g Pa, %.4g kg"), RibEntry->MaxVonMises, RibEntry->Mass) : TEXT("none")));
-							// The VTK's `kind` cell data: as many 2s (rib shells) as rib
-							// faces (the file has Windows line endings).
-							FString Vtk;
-							int32 KindTwos = -1;
-							if (FFileHelper::LoadFileToString(Vtk, *RibRequest.VtkPath))
-							{
-								Vtk.ReplaceInline(TEXT("\r\n"), TEXT("\n"));
-								const int32 Start = Vtk.Find(TEXT("SCALARS kind int 1"));
-								if (Start != INDEX_NONE)
-								{
-									const int32 Table = Vtk.Find(TEXT("LOOKUP_TABLE default\n"), ESearchCase::CaseSensitive, ESearchDir::FromStart, Start);
-									int32 End = Vtk.Find(TEXT("SCALARS"), ESearchCase::CaseSensitive, ESearchDir::FromStart, Table + 1);
-									if (End == INDEX_NONE) End = Vtk.Len();
-									TArray<FString> Lines;
-									Vtk.Mid(Table + 21, End - Table - 21).ParseIntoArrayLines(Lines);
-									KindTwos = 0;
-									for (const FString& L : Lines) if (L.TrimStartAndEnd() == TEXT("2")) ++KindTwos;
-								}
-							}
-							Check(KindTwos == Built.RibFaces.Num(), FString::Printf(TEXT("fea (ribs): the VTK marks the rib shells as kind 2 (%d of %d)"), KindTwos, Built.RibFaces.Num()));
-							IFileManager::Get().Delete(*RibRequest.VtkPath, false, true, true);
-						}
-					}
-					// Back to the unribbed skin for the steps that follow.
-					S.networks.clear();
-					Beam->SetBodyStructure(TEXT("Main"), S);
-				}
 			}
 			// The scene as the later steps expect it.
 			Doc->RemoveEntity(Beam);
@@ -1401,7 +1110,7 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 		{
 			const FAerotelicMassReport Full = ComputeAerotelicMassReport({ P }, 2e-3, Doc->GetUnits());
 			FullMass = Full.Assembly.mass;
-			for (const FAerotelicMassLine& L : Full.Bodies) if (L.Label.Contains(TEXT("Skin"))) FullSkinMass = L.Props.mass;
+			for (const FAerotelicMassLine& L : Full.Bodies) if (L.bIncluded) { FullSkinMass = L.Props.mass; break; }
 		}
 		Doc->FlushPendingRebuilds();
 
@@ -1436,25 +1145,24 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 			Check(!B.IsVoid() && FMath::IsNearlyEqual(Y1 - Y0, FullBounds.GetSize().Y * 0.25, 2e-3 * FullBounds.GetSize().Y),
 				FString::Printf(TEXT("scale: the placed solid is the replica's (span %.4f vs full %.4f)"), Y1 - Y0, FullBounds.GetSize().Y));
 		}
-		Check(Doc->HasPendingRebuilds(), "scale: the boolean and the sphere's structure are queued to follow");
+		Check(Doc->HasPendingRebuilds(), "scale: the boolean and the wing's structure are queued to follow");
 		Doc->FlushPendingRebuilds();
 		Check(!Doc->HasPendingRebuilds(), "scale: ... and rebuilt");
 		{
-			// The sphere's generated layers were rebuilt over the replica: the
-			// skin is still 0.05 thick (as typed, not scaled) and, as a SHELL
-			// (2026-11-08: density x area x thickness on the body's own
-			// surface, no offset), its mass scales with the area alone -- a
-			// sixteenth of the full-size skin on a quarter-size sphere. As a
-			// ratio of the full-size skin layer's mass, so the project's units
-			// (changed earlier in the run) drop out.
+			// The sphere's skin over the replica: still 0.05 thick (as typed,
+			// not scaled) and, as a SHELL (density x area x thickness on the
+			// body's own surface, no offset), its mass scales with the area
+			// alone -- a sixteenth of the full-size skin on a quarter-size
+			// sphere. As a ratio of the full-size skin's mass, so the project's
+			// units (changed earlier in the run) drop out.
 			const FAerotelicMassReport R = ComputeAerotelicMassReport({ P }, 2e-3, Doc->GetUnits());
 			const aerotelic::MassSpec Spec = Primitive->GetMassSpec();
 			Check(Spec.IsSkin(), "scale: the sphere weighs as a skin (set in the mass step)");
 			const FAerotelicMassLine* SkinLine = nullptr;
-			for (const FAerotelicMassLine& L : R.Bodies) if (L.Label.Contains(TEXT("Skin"))) SkinLine = &L;
+			for (const FAerotelicMassLine& L : R.Bodies) if (L.bIncluded) { SkinLine = &L; break; }
 			const double Ratio = 0.25 * 0.25;
 			Check(SkinLine != nullptr && SkinLine->bIncluded && FullSkinMass > 0.0 && FMath::IsNearlyEqual(SkinLine->Props.mass, Ratio * FullSkinMass, 0.03 * Ratio * FullSkinMass),
-				FString::Printf(TEXT("scale: the regenerated skin shell of the quarter-size sphere weighs a sixteenth of the full-size one, its thickness as typed (%.5g vs %.5g = %.4f of the full-size skin %.5g)"), SkinLine ? SkinLine->Props.mass : -1.0, Ratio * FullSkinMass, Ratio, FullSkinMass));
+				FString::Printf(TEXT("scale: the skin shell of the quarter-size sphere weighs a sixteenth of the full-size one, its thickness as typed (%.5g vs %.5g = %.4f of the full-size skin %.5g)"), SkinLine ? SkinLine->Props.mass : -1.0, Ratio * FullSkinMass, Ratio, FullSkinMass));
 			Check(FullMass > 0.0 && R.Assembly.mass < FullMass / 8.0, "scale: the replica weighs far less than the full-size sphere");
 		}
 	}
@@ -1577,16 +1285,16 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 		}
 	}
 	Check(bFoundWing && bFoundFuselage && bFoundPrimitive && bFoundBoolean, "all three entity types and the boolean survived the round trip");
-	// The sphere's structure came back with it -- the ribs -- and was
-	// regenerated on load, since it has an interior (a skin and networks).
-	if (ReopenedPrimitive != nullptr)
+	// The wing's structure came back with it: its spec (two spars, eight
+	// ribs) in the file, and its layers regenerated on load, since the body
+	// has a skin.
+	for (auto& W : Doc->GetEntities())
 	{
-		const aerotelic::BodyStructure& S = ReopenedPrimitive->GetBodyStructure(0);
-		Check(S.networks.size() == 1 && S.networks[0].name == "Ribs" && S.networks[0].axis == aerotelic::PlaneAxis::X && S.networks[0].count == 2
-			&& FMath::IsNearlyEqual(S.networks[0].start, -0.3, 1e-12) && FMath::IsNearlyEqual(S.networks[0].spacing, 0.6, 1e-12) && FMath::IsNearlyEqual(S.networks[0].thickness, 0.04, 1e-12)
-			&& S.networks[0].material.name == "rib ply", "structure: the plane network round-tripped");
-		const FAerotelicBodyStructure* G = ReopenedPrimitive->GetGeneratedStructure(TEXT("Main"));
-		Check(G != nullptr && G->IsGenerated() && G->GetLayers().size() == 2, "structure: regenerated on load (two layers)");
+		if (!W.IsValid() || W->GetEntityType() != aerotelic::project_yaml::EntityType::Wing) continue;
+		const aerotelic::WingModel* RW = W->GetModelAs<aerotelic::WingModel>();
+		Check(RW->structure.spars.size() == 2 && RW->structure.ribs.between == 8, "structure: the wing's spars and rib rules round-tripped");
+		const FAerotelicBodyStructure* G = W->GetGeneratedStructure(TEXT("Main"));
+		Check(G != nullptr && G->IsGenerated() && G->GetLayers().size() == 4, FString::Printf(TEXT("structure: the wing's layers were regenerated on load (%d)"), G != nullptr ? (int32)G->GetLayers().size() : -1));
 	}
 
 	// Deleting an operand cascades to the result built on it.

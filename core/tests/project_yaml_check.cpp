@@ -313,10 +313,10 @@ void CheckMassSpecRoundTrip() {
 }
 
 // `bodies:` on an entity: each solid body's structure -- material, skin,
-// plane networks, exclusions, asserted mass -- round-trips with
-// only the keys that were set, a body with nothing set is not written, a
-// boolean result's bodies carry theirs too, and a structure that cannot
-// be used is refused with the body named.
+// exclusions, asserted mass -- round-trips with only the keys that were
+// set, a body with nothing set is not written, a boolean result's bodies
+// carry theirs too, a structure that cannot be used is refused with the
+// body named, and a legacy `networks:` key is dropped and reported.
 void CheckBodiesRoundTrip() {
 	ProjectEntity e;
 	e.name = "Wing1";
@@ -340,24 +340,6 @@ void CheckBodiesRoundTrip() {
 	flap.color = std::array<double, 3>{0.2, 0.4, 0.6};
 	flap.structure.material = *FindMaterialPreset("Balsa, medium (160 kg/m^3)");
 	flap.structure.skin_thickness = 0.0015;
-	PlaneNetwork ribs;
-	ribs.name = "Ribs";
-	ribs.axis = PlaneAxis::Y;
-	ribs.start = 0.05;
-	ribs.spacing = 0.1;
-	ribs.count = 9;
-	ribs.thickness = 0.002;
-	ribs.material = *FindMaterialPreset("Birch plywood, aircraft 3-ply (face grain)");
-	PlaneNetwork spar;
-	spar.name = "Spar";
-	spar.axis = PlaneAxis::Custom;
-	spar.normal = Vec3{0.98, 0.2, 0.0};   // not unit: the file carries it normalised
-	spar.start = 0.1;
-	spar.count = 1;
-	spar.thickness = 0.003;
-	spar.height = 0.01;
-	spar.material = *FindMaterialPreset("Spruce (along grain)");
-	flap.structure.networks = {ribs, spar};
 	flap.structure.exclusions = {"Bay"};
 	flap.structure.asserted_mass = 0.2;
 	e.bodies.push_back(flap);
@@ -366,28 +348,13 @@ void CheckBodiesRoundTrip() {
 	Check(back.bodies.size() == 2 && back.bodies[0].name == "Main" && back.bodies[1].name == "Flap 1", "bodies: both bodies come back by name");
 	if (back.bodies.size() != 2) return;
 	const BodyStructure& m = back.bodies[0].structure;
-	Check(m.IsSet() && !m.IsSkin() && !m.HasInterior() && m.material.name == "Aluminium 6061-T6 sheet" && m.material.density == 2713.0, "bodies: a solid body keeps its material");
+	Check(m.IsSet() && !m.IsSkin() && m.material.name == "Aluminium 6061-T6 sheet" && m.material.density == 2713.0, "bodies: a solid body keeps its material");
 	Check(!back.bodies[0].color && !back.bodies[0].hidden, "bodies: no colour or hidden flag was invented");
 	const ProjectBody& f = back.bodies[1];
 	Check(f.color && std::abs((*f.color)[1] - 0.4) < 1e-12, "bodies: the flap's colour");
 	const BodyStructure& s = f.structure;
-	Check(s.IsSkin() && s.HasInterior() && s.material.name == "Balsa, medium (160 kg/m^3)" && s.material.density == 160.0, "bodies: the flap's skin material");
+	Check(s.IsSkin() && s.material.name == "Balsa, medium (160 kg/m^3)" && s.material.density == 160.0, "bodies: the flap's skin material");
 	CheckClose(s.skin_thickness, 0.0015, 1e-15, "bodies: the skin thickness");
-	Check(s.networks.size() == 2, "bodies: two plane networks");
-	if (s.networks.size() == 2) {
-		const PlaneNetwork& r = s.networks[0];
-		Check(r.name == "Ribs" && r.axis == PlaneAxis::Y && r.count == 9 && r.height == 0.0, "bodies: the rib network's axis, count and full height");
-		CheckClose(r.start, 0.05, 1e-15, "bodies: the rib start");
-		CheckClose(r.spacing, 0.1, 1e-15, "bodies: the rib spacing");
-		CheckClose(r.thickness, 0.002, 1e-15, "bodies: the rib thickness");
-		Check(r.material.name == "Birch plywood, aircraft 3-ply (face grain)", "bodies: the rib material");
-		const PlaneNetwork& p = s.networks[1];
-		Check(p.axis == PlaneAxis::Custom && p.count == 1, "bodies: the spar is a single custom-axis plane");
-		CheckClose(Length(p.normal), 1.0, 1e-12, "bodies: the custom normal comes back unit");
-		CheckClose(p.normal.x, 0.98 / std::sqrt(0.98 * 0.98 + 0.2 * 0.2), 1e-12, "bodies: the custom normal's direction");
-		CheckClose(p.height, 0.01, 1e-15, "bodies: a limited height");
-		Check(p.material.name == "Spruce (along grain)", "bodies: the spar material");
-	}
 	Check(s.exclusions.size() == 1 && s.exclusions[0] == "Bay", "bodies: the exclusions by scene name");
 	Check(s.asserted_mass && *s.asserted_mass == 0.2, "bodies: the asserted mass");
 	Check(SameStructureGeometry(s, flap.structure), "bodies: the geometry is the same after the round trip");
@@ -420,23 +387,18 @@ void CheckBodiesRoundTrip() {
 		}
 	}
 
-	// A structure that cannot be used is refused, naming the body.
+	// A structure that cannot be used is refused, naming the body; a legacy
+	// plane network is dropped and flagged, not an error.
 	{
 		bool threw = false;
 		std::string what;
 		try {
-			DecodeProjectBody(YAML::Load("{name: Flap, material: {name: X, density: 100}, networks: [{name: Ribs, axis: y, start: 0, spacing: 0.1, count: 3, thickness: 0.002}]}"));
+			DecodeProjectBody(YAML::Load("{name: Flap, material: {name: X, density: 100}, skin_thickness: -0.001}"));
 		} catch (const std::invalid_argument& ex) { threw = true; what = ex.what(); }
-		Check(threw && what.find("Flap") != std::string::npos && what.find("interior") != std::string::npos, "bodies: a network on a solid body is refused with the body named");
-		threw = false;
-		try {
-			DecodeProjectBody(YAML::Load("{name: Flap, material: {name: X, density: 100}, skin_thickness: 0.001, networks: [{name: Ribs, axis: y, start: 0, spacing: 0.1, count: 0, thickness: 0.002}]}"));
-		} catch (const std::invalid_argument& ex) { threw = true; what = ex.what(); }
-		Check(threw && what.find("Ribs") != std::string::npos, "bodies: a network without planes is refused with the network named");
-		// Lenient reading: an axis alone, no spacing on a single plane.
-		const ProjectBody lone = DecodeProjectBody(YAML::Load("{name: Main, material: {name: X, density: 100}, skin_thickness: 0.001, networks: [{axis: x, start: 0.3, count: 1, thickness: 0.004}]}"));
-		Check(lone.structure.networks.size() == 1 && lone.structure.networks[0].axis == PlaneAxis::X && lone.structure.networks[0].count == 1
-			&& lone.structure.networks[0].thickness == 0.004 && lone.structure.networks[0].name == "Ribs", "bodies: a single plane needs no spacing and takes the default name");
+		Check(threw && what.find("Flap") != std::string::npos && what.find("negative") != std::string::npos, "bodies: a negative skin thickness is refused with the body named");
+		bool had_infill = false, had_networks = false;
+		const ProjectBody old = DecodeProjectBody(YAML::Load("{name: Main, material: {name: X, density: 100}, skin_thickness: 0.001, networks: [{axis: x, start: 0.3, count: 1, thickness: 0.004}]}"), &had_infill, &had_networks);
+		Check(old.structure.IsSkin() && !had_infill && had_networks, "bodies: a legacy networks: key loads the skin and is flagged");
 	}
 }
 
@@ -668,21 +630,22 @@ void CheckUnsupportedLattices() {
 	Check(inf.entities.size() == 1 && inf.entities[0].bodies.size() == 2, "old infill: the entity and both bodies load");
 	if (inf.entities.size() == 1 && inf.entities[0].bodies.size() == 2) {
 		const BodyStructure& s = inf.entities[0].bodies[0].structure;
-		Check(s.IsSkin() && s.HasInterior() && s.material.name == "Balsa", "old infill: the body's skin material survives");
+		Check(s.IsSkin() && s.material.name == "Balsa", "old infill: the body's skin material survives");
 		CheckClose(s.skin_thickness, 0.002, 1e-15, "old infill: the skin thickness survives");
-		Check(s.networks.size() == 1 && s.networks[0].name == "Ribs" && s.networks[0].count == 3, "old infill: the plane network survives");
-		Check(!inf.entities[0].bodies[1].structure.HasInterior(), "old infill: the other body is a plain solid");
+		Check(!inf.entities[0].bodies[1].structure.IsSkin(), "old infill: the other body is a plain solid");
 	}
 	Check(inf.ignored_infill.size() == 1 && inf.ignored_infill[0] == "Wing / Main",
 		"old infill: the body whose infill was dropped is reported as '<entity> / <body>'");
+	Check(inf.ignored_networks.size() == 1 && inf.ignored_networks[0] == "Wing / Main",
+		"old networks: the body whose plane network was dropped is reported as '<entity> / <body>'");
 	Check(inf.unsupported_lattices.empty(), "old infill: an infill: key is not a lattices: entry");
 	SaveProjectYaml(inf, path);
 	{
 		std::ifstream in(path);
 		std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-		Check(text.find("infill") == std::string::npos, "old infill: nothing is written back under infill:");
+		Check(text.find("infill") == std::string::npos && text.find("networks") == std::string::npos, "old infill: nothing is written back under infill: or networks:");
 	}
-	Check(LoadProjectYaml(path).ignored_infill.empty(), "old infill: the re-saved file has none to report");
+	Check(LoadProjectYaml(path).ignored_infill.empty() && LoadProjectYaml(path).ignored_networks.empty(), "old infill: the re-saved file has none to report");
 }
 
 void CheckRealPythonProjectFile() {
