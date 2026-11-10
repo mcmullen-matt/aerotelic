@@ -10,8 +10,11 @@ discs and a 10 x 1 web), the nodes written are the surface's own first
 and in order, the rib rims are the surface's nodes and no interior node
 is, every rib face is indexed within the nodes written, the spar and the
 ribs share their chord nodes, no two rib nodes coincide, and a limited
-height turns the ribs into frames. A failing job (a plane that meets no
-edge of the surface) is reported as a note, not an error.
+height turns the ribs into frames whose inner edge is the rim's exact
+offset (0.3 in: the discs less their 0.4 x 0.4 middles, no node inside
+it); with the spar through them, the chord's crossings of the inner edges
+are nodes of both. A failing job (a plane that meets no edge of the
+surface) is reported as a note, not an error.
 
 Reserved volumes: a 0.5 x 4 x 0.5 box bay inside the body (its grid rows
 on the rib planes, so no cut is needed either) with the rib at y = 0 and
@@ -184,11 +187,48 @@ def main(argv):
         if result3.get("ok"):
             nodes3 = read_nodes(os.path.join(job_dir, "nodes3.bin"))
             rib_faces3, _ = read_ribs(os.path.join(job_dir, "ribs3.bin"))
-            # A 1 x 1 disc less its 0.4 x 0.4 centre, per rib, roughly (the
-            # triangles are kept or dropped whole).
+            # A 1 x 1 disc less its 0.4 x 0.4 centre, per rib, EXACTLY: the
+            # inner edge is the rim's offset, embedded in the mesh.
             frame = 3.0 * (1.0 - 0.4 * 0.4)
-            ok &= check(abs(result3["rib_area"] - frame) < 0.25 * frame, "ribs (height): the frames are the discs less their middles (%.4g vs %.4g)" % (result3["rib_area"], frame))
+            ok &= check(abs(result3["rib_area"] - frame) < 1e-6 * frame, "ribs (height): the frames are the discs less their 0.4 x 0.4 middles, %.4g (got %.8g)" % (frame, result3["rib_area"]))
+            ok &= check(result3["rib_notes"] == [], "ribs (height): no notes (%s)" % "; ".join(result3["rib_notes"]))
+            rn3 = np.unique(rib_faces3)
+            p3 = nodes3[rn3]
+            inside = (np.abs(p3[:, 0]) < 0.2 - 1e-9) & (np.abs(p3[:, 2]) < 0.2 - 1e-9)
+            ok &= check(not inside.any(), "ribs (height): no rib node inside the offset square (%d are)" % int(inside.sum()))
+            on_edge = (np.abs(np.maximum(np.abs(p3[:, 0]), np.abs(p3[:, 2])) - 0.2) < 1e-9)
+            ok &= check(int(on_edge.sum()) >= 3 * 8, "ribs (height): the inner edges' nodes lie on the offset squares (%d nodes at 0.2 in)" % int(on_edge.sum()))
             ok &= check(len(np.unique(rib_faces3[rib_faces3 >= len(verts)])) == len(nodes3) - len(verts), "ribs (height): the dropped middles' nodes are not written (%d interior nodes)" % (len(nodes3) - len(verts)))
+
+        # The frames crossed by the full spar: the spar's chord through each
+        # frame gets the two crossing points (z = +-0.2) as nodes, shared
+        # with the frame, and the frame keeps the chord's outer parts.
+        job3b = dict(job)
+        job3b["ribs"] = [dict(r, height=0.3) for r in ribs[:3]] + [ribs[3]]
+        job3b["outputs"] = {"nodes": "nodes3b.bin", "result": "result3b.json", "ribs": "ribs3b.bin"}
+        with open(os.path.join(job_dir, "job.json"), "w", encoding="utf-8") as f:
+            json.dump(job3b, f, indent=1)
+        code = rg.main(["rib_gmsh.py", job_dir])
+        with open(os.path.join(job_dir, "result3b.json"), "r", encoding="utf-8") as f:
+            result3b = json.load(f)
+        ok &= check(code == 0 and result3b.get("ok") and result3b["rib_notes"] == [], "ribs (frames + spar): the job succeeded without notes: %s %s" % (result3b.get("error", ""), "; ".join(result3b.get("rib_notes", []))))
+        if result3b.get("ok"):
+            nodes3b = read_nodes(os.path.join(job_dir, "nodes3b.bin"))
+            rib_faces3b, rib_ids3b = read_ribs(os.path.join(job_dir, "ribs3b.bin"))
+            frame = 3.0 * (1.0 - 0.4 * 0.4)
+            got_frames = tg.surface_area(nodes3b, rib_faces3b[rib_ids3b == 1])
+            got_spar = tg.surface_area(nodes3b, rib_faces3b[rib_ids3b == 2])
+            ok &= check(abs(got_frames - frame) < 1e-6 * frame and abs(got_spar - 10.0) < 1e-6 * 10.0, "ribs (frames + spar): frames %.6g (exact %.4g), spar %.6g (exact 10)" % (got_frames, frame, got_spar))
+            spar_nodes = set(np.unique(rib_faces3b[rib_ids3b == 2]).tolist())
+            frame_nodes = set(np.unique(rib_faces3b[rib_ids3b == 1]).tolist())
+            shared = [n for n in spar_nodes & frame_nodes if abs(nodes3b[n][0]) < 1e-9 and min(abs(nodes3b[n][1] + 2.5), abs(nodes3b[n][1]), abs(nodes3b[n][1] - 2.5)) < 1e-9]
+            at_cross = [n for n in shared if abs(abs(nodes3b[n][2]) - 0.2) < 1e-9]
+            # Per chord: the ends (surface nodes), z = +-0.25 and the crossings z = +-0.2: 6 shared, 2 of them crossings.
+            ok &= check(len(at_cross) == 6 and len(shared) >= 18, "ribs (frames + spar): the spar and the frames share the chords' nodes, the crossings among them (%d shared, %d at the crossings)" % (len(shared), len(at_cross)))
+            rn = np.unique(rib_faces3b)
+            keyed = np.round(nodes3b[rn] * 1e9).astype(np.int64)
+            ok &= check(len(np.unique(keyed, axis=0)) == len(rn), "ribs (frames + spar): no two rib nodes coincide")
+            ok &= check(len(np.unique(rib_faces3b[rib_faces3b >= len(verts)])) == len(nodes3b) - len(verts), "ribs (frames + spar): every interior node written belongs to a rib face")
 
         # A plane that meets no edge: a note, not an error.
         job4 = dict(job)

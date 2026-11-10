@@ -38,8 +38,18 @@ the chord between the two rim vertices lying on both planes is embedded
 in both discs (the disc of each rib whose rim holds both endpoints) with
 the same transfinite node count, so the two discs carry the same nodes
 along it, and those nodes are merged by position when the discs are
-assembled. A rib of limited ``height`` (a frame, a cap) keeps only the
-triangles within that distance of the rim.
+assembled. A rib of limited ``height`` (a frame, a cap) is the BAND of the
+disc within that distance of its rims: the rims' inward offset by the
+height (shapely's negative buffer of the section polygon, holes included,
+mitre joins) is embedded in the disc as a closed curve before meshing, so
+the triangulation follows it exactly, and the triangles inside it are
+dropped -- the band's inner edge is a smooth offset curve and its area the
+offset's. (Until 2026-11-09 the whole disc was meshed and the triangles
+whose centroid lay within the height of the rim kept: the inner edge was
+the triangulation's own staircase.) Where a chord crosses the inner edge
+the crossing is a vertex of both, and every disc carrying the chord takes
+the same node positions along it (``chord_stations``), so the band and
+the rib it crosses still share their chord nodes exactly.
 
 RESERVED VOLUMES (payload bays the ribs must leave alone) come in as
 closed surfaces (``holes``), already cut by every rib plane like the body.
@@ -252,23 +262,37 @@ def classify_hole_loop(verts, hole_loop, disc_loops, normal, tol):
 # The discs
 # ---------------------------------------------------------------------------
 
-def mesh_rib_disc(name, verts, loops, chords, size):
+def mesh_rib_disc(name, verts, loops, chords, inner, size):
     """Meshes the disc bounded by `loops` (vertex ids into `verts`; the
     first the outer loop, the rest holes) in a scratch model. `chords` are
-    (vertex a, vertex b, node count) lines embedded in the disc. Returns
-    (coords: dict scratch node tag -> xyz, rim: dict scratch node tag ->
-    vertex id, chord_nodes: set of scratch node tags on chords, triangles:
-    (k, 3) scratch node tags). The scratch model is left in place
-    (removing the only model has crashed gmsh)."""
+    (vertex a, vertex b, stations): lines embedded in the disc through the
+    given interior points (xyz, in order from a to b) -- the same points
+    for every disc carrying the chord, so the discs share their nodes
+    along it. `inner` are closed polylines (lists of xyz) embedded in the
+    disc, a band's inner edge (``band_core``); a point they share with a
+    chord (a crossing) is one gmsh point. Every embedded segment, like the
+    rim's, is transfinite with its two ends only. Returns (coords: dict
+    scratch node tag -> xyz, rim: dict scratch node tag -> vertex id,
+    chord_nodes: set of scratch node tags on chords, triangles: (k, 3)
+    scratch node tags). The scratch model is left in place (removing the
+    only model has crashed gmsh)."""
     gmsh.model.add(name)
     gmsh.model.setCurrent(name)
     pt = {}
+    at = {}
+    key_scale = 1.0 / max(1e-6 * size, 1e-300)
 
     def point(v):
         if v not in pt:
             p = verts[v]
             pt[v] = gmsh.model.geo.addPoint(float(p[0]), float(p[1]), float(p[2]), size)
         return pt[v]
+
+    def point_at(p):
+        key = tuple(np.round(np.asarray(p, dtype=np.float64) * key_scale).astype(np.int64))
+        if key not in at:
+            at[key] = gmsh.model.geo.addPoint(float(p[0]), float(p[1]), float(p[2]), size)
+        return at[key]
 
     curve_loops = []
     rim_lines = []
@@ -278,14 +302,24 @@ def mesh_rib_disc(name, verts, loops, chords, size):
         curve_loops.append(gmsh.model.geo.addCurveLoop(lines))
     surf = gmsh.model.geo.addPlaneSurface(curve_loops)
     chord_lines = []
-    for va, vb, n in chords:
-        chord_lines.append((gmsh.model.geo.addLine(point(va), point(vb)), int(n)))
+    for va, vb, stations in chords:
+        tags = [point(va)] + [point_at(s) for s in stations] + [point(vb)]
+        tags = [t for k, t in enumerate(tags) if k == 0 or t != tags[k - 1]]
+        chord_lines.extend(gmsh.model.geo.addLine(tags[k], tags[k + 1]) for k in range(len(tags) - 1))
+    inner_lines = []
+    for ring in inner:
+        tags = [point_at(p) for p in ring]
+        tags = [t for k, t in enumerate(tags) if k == 0 or t != tags[k - 1]]
+        if len(tags) > 1 and tags[-1] == tags[0]:
+            tags.pop()
+        if len(tags) < 3:
+            continue
+        inner_lines.extend(gmsh.model.geo.addLine(tags[k], tags[(k + 1) % len(tags)]) for k in range(len(tags)))
     gmsh.model.geo.synchronize()
-    for line in rim_lines:
+    for line in rim_lines + chord_lines + inner_lines:
         gmsh.model.mesh.setTransfiniteCurve(line, 2)
-    for line, n in chord_lines:
-        gmsh.model.mesh.setTransfiniteCurve(line, max(n, 2))
-        gmsh.model.mesh.embed(1, [line], 2, surf)
+    if chord_lines or inner_lines:
+        gmsh.model.mesh.embed(1, chord_lines + inner_lines, 2, surf)
     gmsh.model.mesh.generate(2)
     # Every node of the scratch model: the disc's interior, its rim lines
     # and their points (a query on the surface alone leaves the points out).
@@ -297,7 +331,7 @@ def mesh_rib_disc(name, verts, loops, chords, size):
         for t in ntags:
             rim[int(t)] = v
     chord_nodes = set()
-    for line, _ in chord_lines:
+    for line in chord_lines:
         ntags, _, _ = gmsh.model.mesh.getNodes(1, line, includeBoundary=True)
         chord_nodes.update(int(t) for t in ntags)
     types, _, conn = gmsh.model.mesh.getElements(2, surf)
@@ -354,6 +388,105 @@ def chords_of_disc(chords, disc):
 
 
 # ---------------------------------------------------------------------------
+# The bands (a rib of limited height)
+# ---------------------------------------------------------------------------
+
+def resample_ring(pts, max_len):
+    """The closed polyline `pts` (xyz) with points added so that no segment
+    is longer than `max_len`."""
+    out = []
+    m = len(pts)
+    for k in range(m):
+        a = np.asarray(pts[k], dtype=np.float64)
+        b = np.asarray(pts[(k + 1) % m], dtype=np.float64)
+        out.append(a)
+        parts = int(np.ceil(float(np.linalg.norm(b - a)) / max_len)) if max_len > 0.0 else 1
+        for s in range(1, parts):
+            out.append(a + (b - a) * (s / parts))
+    return out
+
+
+def band_core(verts, disc, normal, offset, height, size):
+    """The part of a disc farther than `height` from every one of its rims
+    (the body's and the bays'): the section polygon's inward offset, as a
+    shapely polygon (possibly several islands, possibly empty) in the
+    plane's (u, v) coordinates, with its boundary rings lifted back to
+    space as closed polylines resampled to at most 1.5 x `size` a segment.
+    Returns (core, rings, (n, u, v)). The band a rib of limited height
+    keeps is the disc less this core."""
+    try:
+        from shapely.geometry import Polygon
+    except ImportError:
+        raise JobError("a rib of limited height needs the shapely package: pip install shapely in the WingDesigner environment")
+    n, u, v = plane_basis(normal)
+    rings2d = [np.column_stack([verts[np.array(loop)] @ u, verts[np.array(loop)] @ v]) for loop in disc]
+    poly = Polygon(rings2d[0], rings2d[1:])
+    if not poly.is_valid:
+        poly = poly.buffer(0.0)
+    core = poly.buffer(-float(height), join_style="mitre", mitre_limit=2.0)
+    core = core.simplify(1e-4 * size, preserve_topology=True)
+    rings = []
+    for part in (core.geoms if hasattr(core, "geoms") else [core]):
+        if part.is_empty or part.geom_type != "Polygon":
+            continue
+        for ring in [part.exterior] + list(part.interiors):
+            pts2 = np.asarray(ring.coords)[:-1]
+            if len(pts2) < 3:
+                continue
+            rings.append(resample_ring([pts2[k, 0] * u + pts2[k, 1] * v + float(offset) * n for k in range(len(pts2))], 1.5 * size))
+    return core, rings, (n, u, v)
+
+
+def cross_ring_with_chord(ring, a, b, u, v, eps=1e-9):
+    """Where the chord a-b crosses the closed polyline `ring`, both in the
+    plane with basis (u, v): the chord's parameters t in (0, 1), and the
+    ring with a vertex inserted at every crossing (so the two curves,
+    both embedded in the disc, share it)."""
+    a2 = np.array([a @ u, a @ v])
+    d = np.array([b @ u, b @ v]) - a2
+    ts = []
+    inserts = {}
+    m = len(ring)
+    for k in range(m):
+        r3, s3 = np.asarray(ring[k]), np.asarray(ring[(k + 1) % m])
+        r2 = np.array([r3 @ u, r3 @ v])
+        e = np.array([s3 @ u, s3 @ v]) - r2
+        den = d[0] * e[1] - d[1] * e[0]
+        if abs(den) <= eps * max(1.0, float(np.linalg.norm(d) * np.linalg.norm(e))):
+            continue   # parallel
+        w0 = r2 - a2
+        t = (w0[0] * e[1] - w0[1] * e[0]) / den
+        w = (w0[0] * d[1] - w0[1] * d[0]) / den
+        if eps < t < 1.0 - eps and -eps <= w <= 1.0 + eps:
+            ts.append(float(t))
+            if eps < w < 1.0 - eps:
+                inserts.setdefault(k, []).append((float(w), r3 + (s3 - r3) * w))
+    if inserts:
+        out = []
+        for k in range(m):
+            out.append(np.asarray(ring[k]))
+            for w, p in sorted(inserts.get(k, []), key=lambda x: x[0]):
+                out.append(p)
+        ring = out
+    return ts, ring
+
+
+def chord_stations(a, b, n, crossings):
+    """The interior node positions of the chord a-b: `n` nodes evenly
+    spaced over it (the transfinite count, both ends included) merged
+    with the crossing parameters, a crossing replacing an even node within
+    1e-6 of it. The same for every disc carrying the chord."""
+    evens = np.linspace(0.0, 1.0, max(int(n), 2))[1:-1].tolist()
+    ts = []
+    for t in sorted(set(float(c) for c in crossings)):
+        if ts and t - ts[-1] < 1e-6:
+            continue
+        ts.append(t)
+    evens = [e for e in evens if all(abs(e - t) > 1e-6 for t in ts)]
+    return [a + (b - a) * t for t in sorted(evens + ts)]
+
+
+# ---------------------------------------------------------------------------
 # The job
 # ---------------------------------------------------------------------------
 
@@ -384,8 +517,9 @@ def run_job(job_dir):
         ribs          [{id, normal: [x, y, z], offset, height}]: the rib
                       planes normal . x = offset; `id` is the plane
                       network's (several ribs share it, and the faces carry
-                      it); height > 0 keeps only the part of the disc
-                      within that distance of its rim (a frame, a cap)
+                      it); height > 0 keeps only the band of the disc
+                      within that distance of its rims (a frame, a cap),
+                      its inner edge the rims' offset (needs shapely)
         rib_size      target edge length inside the ribs (0: the surface's
                       median edge)
         plane_tolerance
@@ -486,6 +620,38 @@ def run_job(job_dir):
         discs_by_rib.append(discs)
     chords = rib_chords(allv, discs_by_rib, ribs, plane_tolerance, rib_size) if ribs else {}
 
+    # The bands: a rib of limited height keeps the part of each disc within
+    # that distance of its rims; the rims' inward offset is its inner edge,
+    # embedded in the disc so the mesh follows it (band_core).
+    cores = {}        # (rib, disc) -> (core polygon in the plane, (n, u, v))
+    inner = {}        # (rib, disc) -> [closed polylines, xyz]
+    for i, r in enumerate(ribs):
+        if float(r.get("height", 0.0)) <= 0.0:
+            continue
+        for di, disc in enumerate(discs_by_rib[i]):
+            core, rings, frame = band_core(allv, disc, r["normal"], float(r["offset"]), float(r["height"]), rib_size)
+            cores[(i, di)] = (core, frame)
+            inner[(i, di)] = rings
+    # The chords' nodes are the same in every disc carrying a chord: evenly
+    # spaced at the rib size, plus every crossing with a band's inner edge
+    # (which gets a vertex there too, in that disc).
+    crossings = {}    # (va, vb) -> [t]
+    for i in range(len(ribs)):
+        for di, disc in enumerate(discs_by_rib[i]):
+            if (i, di) not in inner:
+                continue
+            _, (_, u, v) = cores[(i, di)]
+            for va, vb, n in chords_of_disc(chords.get(i, []), disc):
+                rings = []
+                for ring in inner[(i, di)]:
+                    ts, ring = cross_ring_with_chord(ring, allv[va], allv[vb], u, v)
+                    crossings.setdefault((va, vb), []).extend(ts)
+                    rings.append(ring)
+                inner[(i, di)] = rings
+
+    def with_stations(chord_list):
+        return [(va, vb, chord_stations(allv[va], allv[vb], n, crossings.get((va, vb), []))) for va, vb, n in chord_list]
+
     # The nodes: the surface's vertices first, in order; the ribs' interior
     # nodes after, a chord node or a bay's rim vertex once however many
     # discs carry it.
@@ -504,17 +670,18 @@ def run_job(job_dir):
         for i, di, disc in jobs:
             r = ribs[i]
             pieces = len(discs_by_rib[i])
-            coords, rim, chord_nodes, tris = mesh_rib_disc("rib_%d_%d" % (i, di), allv, disc, chords_of_disc(chords.get(i, []), disc), rib_size)
+            coords, rim, chord_nodes, tris = mesh_rib_disc("rib_%d_%d" % (i, di), allv, disc, with_stations(chords_of_disc(chords.get(i, []), disc)), inner.get((i, di), []), rib_size)
             if not len(tris):
                 rib_notes.append("rib %d: gmsh meshed no triangle into its disc%s" % (int(r["id"]), (" (piece %d of %d)" % (di + 1, pieces)) if pieces > 1 else ""))
                 continue
             keep = np.ones(len(tris), dtype=bool)
-            if float(r.get("height", 0.0)) > 0.0:
-                # A limited height: only the triangles within it of the rim
-                # (their centroids) are rib faces.
+            if (i, di) in cores and not cores[(i, di)][0].is_empty:
+                # A limited height: the triangles inside the core (their
+                # centroids; the mesh follows the core's edge) are dropped.
+                import shapely
+                core, (_, u, v) = cores[(i, di)]
                 cent = np.array([(coords[int(a)] + coords[int(b)] + coords[int(c)]) / 3.0 for a, b, c in tris])
-                polylines = [allv[np.array(loop)] for loop in disc]
-                keep = distance_to_polylines(cent, polylines) <= float(r["height"])
+                keep = ~shapely.contains_xy(core, cent @ u, cent @ v)
             row_of_scratch = {}
             for st in sorted(coords):
                 if st in rim and int(rim[st]) < len(ov):
