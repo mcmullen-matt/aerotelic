@@ -785,7 +785,7 @@ A wing is paneled by `WingNetworks` -- the sections round as a closed
 surface with the interior potential held at zero and the sources
 prescribed -- with a wake shed along the free stream, which is what
 carries the lift. (The dialog's earlier "mean camber surface" option, a
-doublet sheet loaded by Cp_lower − Cp_upper, was removed 2026-10-28 at
+doublet sheet loaded by Cp_lower âˆ’ Cp_upper, was removed 2026-10-28 at
 Matt's request: the app integrates Cp on the faceted closed geometry,
 and the post-processing has no two-sided path at all. The solver keeps
 its sheet support only for the report's thin-wing validation cases in
@@ -803,10 +803,10 @@ first.
 entity is mirrored or a wing root sits on the plane. On, every network is
 solved with its image (`Options::symmetry_y`): a mirrored entity appears
 once and the image is its other half; a wing root on the plane gets the
-∂μ/∂n = 0 condition there (the root station is laid in the plane exactly,
+âˆ‚Î¼/âˆ‚n = 0 condition there (the root station is laid in the plane exactly,
 `WingPaneling::pin_root_to_plane`: a section is placed normal to the
 dihedral curve, so a dihedral slope at the root tilts the root section
-and its corners would otherwise stick ± thickness · sin(dihedral) through
+and its corners would otherwise stick Â± thickness Â· sin(dihedral) through
 the plane -- 0.017 on the P-38 -- cross their own image and blow the root
 column up); a body that straddles the plane (a fuselage on the
 centreline) is cut at y = 0 and only its y >= 0 half paneled
@@ -819,7 +819,7 @@ other body that are not a wetted surface, so pressures near the junction
 are not to be trusted.
 
 Nothing dimensional is asked for: a potential flow is similar at every
-speed and density, Cp = 1 - (V/V∞)² and C_F = -∮ Cp n dA / S_ref, so the
+speed and density, Cp = 1 - (V/Vâˆž)Â² and C_F = -âˆ® Cp n dA / S_ref, so the
 dialog deals in coefficients only, on a reference area (default: the
 planform area of the chosen wings, both halves; with no wing the first
 body's frontal ellipse) and a reference length for the moments (the first
@@ -876,8 +876,8 @@ unknowns, take a second or two per angle.
 * *Span Loading* -- a stepper picks the view (another the solution): one
   per wing, then with more than one body *All bodies*. For a wing, on
   the left axis, the lift per unit span over the dynamic pressure, l / q
-  = cl·c, a length in the project's units (Matt: the distribution itself,
-  not cl·c / c_ref, "a surrogate scaled by a constant"), against the span
+  = clÂ·c, a length in the project's units (Matt: the distribution itself,
+  not clÂ·c / c_ref, "a surrogate scaled by a constant"), against the span
   fraction. No strips (Matt, 2026-10-28: "finite strip widths fall apart
   where the chord goes to zero"): the wing's own network is cut by a
   plane normal to its placed span axis every 5% of the semi-span
@@ -885,22 +885,22 @@ unknowns, take a second or two per angle.
   (`core/.../panel_loads.hpp`) intersects the plane with the panels --
   one segment per panel crossed, its ends on the panel's two spanwise
   edges, Cp interpolated along the span between the panel's centre and
-  its neighbour's -- and integrates ∮ −Cp (t × axis) dl along the
+  its neighbour's -- and integrates âˆ® âˆ’Cp (t Ã— axis) dl along the
   section's closed outline. That is the force per unit span exactly: for
-  a surface parametrised by the cut and the span, n dA = (t × ∂P/∂y) dl
-  dy, and the components normal to the axis do not depend on ∂P/∂y's
+  a surface parametrised by the cut and the span, n dA = (t Ã— âˆ‚P/âˆ‚y) dl
+  dy, and the components normal to the axis do not depend on âˆ‚P/âˆ‚y's
   sweep and taper. Resolved normal to the stream and to the axis -- lift
   for a wing, side load for a fin -- it is plotted as is; a cut at a
   collapsed tip has zero length and carries nothing. Dashed beside it,
   the elliptic distribution of the same integral (`EllipticLoad`: 4 L /
-  (π b) √(1 − (2s/b)²) over the cuts' extent; the total is the trapezoid
+  (Ï€ b) âˆš(1 âˆ’ (2s/b)Â²) over the cuts' extent; the total is the trapezoid
   rule over the cuts), so the two curves enclose the same total lift,
   which the title gives as L / q and C_L. On the right axis
   (`FAerotelicPlotSeries::bRightAxis`, its own range and ticks, its zero
   on the left axis's zero line), the section lift coefficient cl, the
   same load on the chord the planform defines at that station
   (`Planform::ChordAt(eta)`, queried when the case is built -- not the
-  twisted section's projection, which read 0.3% short at 4° of twist):
+  twisted section's projection, which read 0.3% short at 4Â° of twist):
   how hard each section works, read against the airfoil's stall margin.
   With the symmetry plane on the image half is cut as well; without it a
   mirrored entity's reflected copy is already there. `StripLoads` stays
@@ -1297,7 +1297,7 @@ field as it was committed. Every edit therefore rebuilt the entity, then
 every boolean over it; and the lattice over those was deliberately
 excluded from that chain, because a generation that takes seconds cannot
 run on every keystroke. The visible symptom was the one that prompted
-the change: edit the fuselage's ρ-upper curve, and the boolean over it
+the change: edit the fuselage's Ï-upper curve, and the boolean over it
 follows but the lattice filling that boolean does not.
 
 The paradigm is now **edit a draft, Apply on a button**, in both places.
@@ -2397,7 +2397,7 @@ the matched-row lofts in *Meshing and distance fields*, the mesh
 boolean's seam pass under *Boolean operations*, the shell-element
 measurements (thin against thick, against beam theory) in *Materials and
 the structural analysis*, and the Delaunay refinement references
-(Ruppert 1995, Üngör's off-centres, Shewchuk's 2002 survey) for whoever
+(Ruppert 1995, ÃœngÃ¶r's off-centres, Shewchuk's 2002 survey) for whoever
 next needs a quality bound on a 2-D rib disc -- gmsh's own 2-D algorithms
 do that job today.
 
@@ -2678,9 +2678,9 @@ restricted file parses to its 42 complete rows with their figures, and
 the library YAML writes 0.3 as 0.3.
 
 **The ratio columns (2026-11-07, night).** The Materials table gained
-E/ρ, √E/ρ, G/ρ, √G/ρ and σ/ρ -- Ashby's indices for a tie, a beam, a
+E/Ï, âˆšE/Ï, G/Ï, âˆšG/Ï and Ïƒ/Ï -- Ashby's indices for a tie, a beam, a
 shaft (section fixed; radius free) and specific strength, G the isotropic
-E / (2 (1 + ν)) -- computed from the four figures in the project's units
+E / (2 (1 + Î½)) -- computed from the four figures in the project's units
 (`IndicesOf` in `MaterialLibraryDialog.cpp`), each sortable like the other
 columns (the order is unit-independent); the window grew to 1640 px to
 hold them and the Help tab explains them.
@@ -2816,7 +2816,7 @@ back with every field.
   along the real span rather than |dy|.
 * Conditions on the end columns of a wing under the potential
   (interior-potential-zero) formulation, 2026-10-27, after the P-38 wing
-  showed Cp -30 on its root and tip columns with a smooth μ and a root
+  showed Cp -30 on its root and tip columns with a smooth Î¼ and a root
   strip of three times its neighbour's load. The edge-midpoint and corner
   unknowns of a type-2 network only exist on its boundary, and under the
   potential condition they were collocated 1e-4 of a panel from the edge
@@ -2830,18 +2830,18 @@ back with every field.
   another doublet network takes that edge's own exact condition -- zero
   normal gradient, continuity -- instead (`potential_edge_conditions`),
   since two potential conditions a fraction of a panel apart are nearly
-  the same equation and the narrow root column's μ oscillated at 12 x 16
-  (Cp -800); a free edge keeps the potential condition (μ = 0 is wrong on
-  a thick body, whose μ is the outer potential), and an apex takes it too
+  the same equation and the narrow root column's Î¼ oscillated at 12 x 16
+  (Cp -800); a free edge keeps the potential condition (Î¼ = 0 is wrong on
+  a thick body, whose Î¼ is the outer potential), and an apex takes it too
   even on a wake-shedding edge (a gradient condition where the surface
   pinches to nothing is meaningless; the wake column it heads carries the
   apex's zero jump, as a pointed tip should); (c) where the influence-sum
-  velocity's interior side misses V∞ by more than
-  `interior_velocity_tolerance` (1.0 V∞ -- a thin section's healthy
+  velocity's interior side misses Vâˆž by more than
+  `interior_velocity_tolerance` (1.0 Vâˆž -- a thin section's healthy
   panels miss it by a few tenths) the panel's velocities are taken from
-  the identity V_lower = V∞, V_upper = V∞ + σ n + ∇μ instead, which
+  the identity V_lower = Vâˆž, V_upper = Vâˆž + Ïƒ n + âˆ‡Î¼ instead, which
   catches the tip panels sitting by tiny neighbours where the B.2
-  spline's jumps act as vortex lines (the sum there was 3 to 6 V∞ with μ
+  spline's jumps act as vortex lines (the sum there was 3 to 6 Vâˆž with Î¼
   smooth); the sum stays the default because it is the more accurate
   where sound (the default wing's pressure lift lands 2% from its wake
   lift, against 7% by the identity throughout). With all of that the
@@ -3128,3 +3128,19 @@ Known limits: incompressible only; no blunt trailing edge (every section is
 closed first, by the user's standing choice); a dense Newton solve (a
 Schur-complement elimination of the banded boundary-layer block would make
 it XFOIL-fast if ever needed); the paper's `d_w` wake of one chord.
+
+**Polar tab (2026-11-12, later).** Two charts side by side with every enabled
+method, one vertical axis each at Matt's choice: Cl (solid) and Cm c/4
+(dashed) against the angle of attack from -6 to 16 deg on the left, Cd
+(solid) and Cm c/4 (dashed) against Cl on the right, each series labelled
+with its method and quantity. (`SAerotelicLinePlot` also gained an
+`IndependentRightAxis` option on the way, unused here: its default right axis
+shares the left axis's zero line, right for a load beside its coefficient.) The inviscid methods
+are swept in place through the section layer, so their "Cd" is the
+flat-plate friction estimate plus the pressure residual; the boundary-layer
+method is swept on a worker thread from the Sweep button (23 solves, a few
+seconds), only its converged angles drawn, as markers, and the polar dims as
+[stale] after any edit until swept again. On the 16-pole NACA 2412 refit at
+Re 1e6, 16 of the 23 angles converge; the misses are the post-stall angles
+above about 10 deg, where the viscous Cl bends over while the inviscid
+lines keep climbing.
