@@ -55,6 +55,7 @@ void SAerotelicLinePlot::Construct(const FArguments& InArgs)
 	DesiredSize = InArgs._DesiredSize;
 	bCompact = InArgs._Compact;
 	bInvertY = InArgs._InvertY;
+	bIndependentRight = InArgs._IndependentRightAxis;
 }
 
 void SAerotelicLinePlot::SetSeries(TArray<FAerotelicPlotSeries> InSeries)
@@ -161,7 +162,14 @@ int32 SAerotelicLinePlot::OnPaint(const FPaintArgs& Args, const FGeometry& Geome
 	if (X1 - X0 < 1e-12) { const double D = FMath::Max(FMath::Abs(X0) * 0.1, 0.5); X0 -= D; X1 += D; }
 	const double XStep = NiceStep(X1 - X0, TargetTicks);
 	double R0 = 0.0, R1 = 1.0, RStep = 1.0;
-	if (bRight)
+	if (bRight && bIndependentRight)
+	{
+		NiceRange(Y0, Y1, YStep);
+		R0 = RangeRight.Min.Y;
+		R1 = RangeRight.Max.Y;
+		NiceRange(R0, R1, RStep);
+	}
+	else if (bRight)
 	{
 		// Two axes share their zero: both ranges take the same proportion
 		// below zero -- the larger one either axis's data demands -- so a

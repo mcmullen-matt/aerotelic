@@ -110,8 +110,15 @@ namespace
 		double LastEdit = 0.0;
 		FTSTicker::FDelegateHandle Ticker;
 
+		// Polars: per method, the swept points (fast methods swept in place,
+		// slow ones by a worker on request), with the generation they belong to.
+		struct FPolarPoint { double alpha = 0.0, cl = 0.0, cd = 0.0, cm = 0.0; bool converged = true; };
+		TMap<int32, TArray<FPolarPoint>> PolarData;
+		TMap<int32, uint64> PolarGeneration;
+		TSharedPtr<struct FSweepJob, ESPMode::ThreadSafe> SweepJob;
+
 		TSharedPtr<SCurveEditor> Editor;
-		TSharedPtr<SAerotelicLinePlot> CpPlot, PolarClPlot, PolarCmPlot;
+		TSharedPtr<SAerotelicLinePlot> CpPlot, PolarAlphaPlot, PolarClPlot;
 		TSharedPtr<SVerticalBox> Table;
 		TSharedPtr<STextBlock> CueText, SensText;
 		TFunction<void(const FText&)> Status;
@@ -128,6 +135,21 @@ namespace
 		SectionAeroRequest Request;
 		SectionAeroResult Result;
 	};
+
+	// A slow method's angle-of-attack sweep on a worker thread.
+	struct FSweepJob
+	{
+		std::atomic<bool> bDone{ false };
+		std::atomic<int32> Progress{ 0 };
+		std::atomic<bool> bCancel{ false };
+		int32 MethodIndex = 0;
+		uint64 Generation = 0;
+		SectionAeroRequest Request;
+		TArray<double> Alphas;
+		TArray<FState::FPolarPoint> Points;
+	};
+
+	const double kSweepAlphaMin = -6.0, kSweepAlphaMax = 16.0, kSweepAlphaStep = 1.0;
 
 	int32 NPointsOf(const FState& S) { return kPointChoices[FMath::Clamp(S.PointsIndex, 0, 2)]; }
 
@@ -464,40 +486,142 @@ namespace
 		if (S->CueText.IsValid()) S->CueText->SetText(FText::FromString(Cues.TrimEnd()));
 	}
 
+	// Draws the two polar charts from every method's swept points: Cl and
+	// Cm c/4 against alpha; Cd and Cm c/4 against Cl. A slow method's sweep
+	// of a superseded edit is drawn dimmed.
+	void DrawPolars(const TSharedRef<FState>& S)
+	{
+		if (!S->PolarAlphaPlot.IsValid() || !S->PolarClPlot.IsValid()) return;
+		TArray<FAerotelicPlotSeries> AlphaSeries, ClSeries;
+		const auto& Methods = SectionAeroMethods();
+		for (int32 i = 0; i < static_cast<int32>(Methods.size()) && i < S->MethodOn.Num(); ++i)
+		{
+			if (!S->MethodOn[i]) continue;
+			const TArray<FState::FPolarPoint>* Pts = S->PolarData.Find(i);
+			if (!Pts || Pts->Num() == 0) continue;
+			const bool bViscous = Methods[i]->Viscous();
+			const uint64* G = S->PolarGeneration.Find(i);
+			const bool bStale = G == nullptr || *G != S->Generation;
+			FLinearColor C = kMethodColors[i % UE_ARRAY_COUNT(kMethodColors)];
+			if (bStale) { C = C * 0.5f + FLinearColor(0.25f, 0.25f, 0.25f, 0.0f); C.A = 1.0f; }
+			const FString Name = StdToFString(Methods[i]->Name()) + (bStale ? TEXT(" [stale]") : TEXT(""));
+			FAerotelicPlotSeries ClA, CmA, CdL, CmL;
+			ClA.Label = Name + TEXT(": Cl");
+			CmA.Label = Name + TEXT(": Cm c/4 (right axis)");
+			CdL.Label = Name + (bViscous ? TEXT(": Cd, Squire-Young") : TEXT(": Cd, flat-plate friction estimate"));
+			CmL.Label = Name + TEXT(": Cm c/4 (right axis)");
+			ClA.Color = CmA.Color = CdL.Color = CmL.Color = C;
+			CmA.bRightAxis = CmL.bRightAxis = true;
+			CmA.bDashed = CmL.bDashed = true;
+			ClA.bMarkers = CmA.bMarkers = CdL.bMarkers = CmL.bMarkers = bViscous; // the swept points of the slow method are discrete
+			for (const FState::FPolarPoint& P : *Pts)
+			{
+				ClA.Points.Add(FVector2D(P.alpha, P.cl));
+				CmA.Points.Add(FVector2D(P.alpha, P.cm));
+				CdL.Points.Add(FVector2D(P.cl, P.cd));
+				CmL.Points.Add(FVector2D(P.cl, P.cm));
+			}
+			AlphaSeries.Add(MoveTemp(ClA));
+			AlphaSeries.Add(MoveTemp(CmA));
+			ClSeries.Add(MoveTemp(CdL));
+			ClSeries.Add(MoveTemp(CmL));
+		}
+		S->PolarAlphaPlot->SetMessage(S->Working ? LOCTEXT("PolarNone", "No method enabled") : LOCTEXT("PolarEmpty", "Pick an airfoil"));
+		S->PolarClPlot->SetMessage(S->Working ? LOCTEXT("PolarNone", "No method enabled") : LOCTEXT("PolarEmpty", "Pick an airfoil"));
+		S->PolarAlphaPlot->SetSeries(MoveTemp(AlphaSeries));
+		S->PolarClPlot->SetSeries(MoveTemp(ClSeries));
+	}
+
+	// Sweeps the fast methods in place (with the shared cues, for their
+	// friction-drag estimate) and redraws.
 	void UpdatePolar(const TSharedRef<FState>& S)
 	{
-		if (!S->PolarClPlot.IsValid() || !S->PolarCmPlot.IsValid()) return;
-		TArray<FAerotelicPlotSeries> ClSeries, CmSeries;
+		const auto& Methods = SectionAeroMethods();
 		if (S->Working)
 		{
-			const auto& Methods = SectionAeroMethods();
 			SectionAeroRequest Req = RequestFor(*S);
 			for (int32 i = 0; i < static_cast<int32>(Methods.size()) && i < S->MethodOn.Num(); ++i)
 			{
-				if (!S->MethodOn[i] || !Methods[i]->Fast()) continue; // a sweep of a slow method is for a later request
-				FAerotelicPlotSeries Cl, Cm;
-				Cl.Label = StdToFString(Methods[i]->Name());
-				Cm.Label = Cl.Label;
-				Cl.Color = kMethodColors[i % UE_ARRAY_COUNT(kMethodColors)];
-				Cm.Color = Cl.Color;
-				Cl.bMarkers = Cm.bMarkers = false;
-				for (int32 a = -6; a <= 16; ++a)
+				if (!S->MethodOn[i] || !Methods[i]->Fast()) continue;
+				TArray<FState::FPolarPoint> Pts;
+				for (double a = kSweepAlphaMin; a <= kSweepAlphaMax + 1e-9; a += kSweepAlphaStep)
 				{
 					Req.alpha_deg = a;
 					SectionAeroResult R;
-					try { R = Methods[i]->Solve(Req); } catch (const std::exception&) { continue; }
+					try { R = SolveSection(*Methods[i], Req); } catch (const std::exception&) { continue; }
 					if (!R.ok) continue;
-					Cl.Points.Add(FVector2D(a, R.cl));
-					Cm.Points.Add(FVector2D(a, R.cm_c4));
+					Pts.Add({ a, R.cl, R.cd_friction + R.cd_pressure, R.cm_c4, true });
 				}
-				ClSeries.Add(MoveTemp(Cl));
-				CmSeries.Add(MoveTemp(Cm));
+				S->PolarData.Add(i, MoveTemp(Pts));
+				S->PolarGeneration.Add(i, S->Generation);
 			}
 		}
-		S->PolarClPlot->SetMessage(LOCTEXT("PolarEmpty", "Pick an airfoil"));
-		S->PolarCmPlot->SetMessage(LOCTEXT("PolarEmpty", "Pick an airfoil"));
-		S->PolarClPlot->SetSeries(MoveTemp(ClSeries));
-		S->PolarCmPlot->SetSeries(MoveTemp(CmSeries));
+		else
+		{
+			S->PolarData.Empty();
+			S->PolarGeneration.Empty();
+		}
+		DrawPolars(S);
+	}
+
+	// The slow methods' sweep, on a worker thread, one method after another.
+	void LaunchSweep(const TSharedRef<FState>& S, int32 MethodIndex)
+	{
+		if (!S->Working) return;
+		TSharedPtr<FSweepJob, ESPMode::ThreadSafe> Job = MakeShared<FSweepJob, ESPMode::ThreadSafe>();
+		Job->MethodIndex = MethodIndex;
+		Job->Generation = S->Generation;
+		Job->Request = RequestFor(*S);
+		for (double a = kSweepAlphaMin; a <= kSweepAlphaMax + 1e-9; a += kSweepAlphaStep) Job->Alphas.Add(a);
+		S->SweepJob = Job;
+		const SectionAeroMethod* M = SectionAeroMethods()[MethodIndex];
+		Async(EAsyncExecution::Thread, [Job, M]()
+		{
+			for (double a : Job->Alphas)
+			{
+				if (Job->bCancel) break;
+				SectionAeroRequest Req = Job->Request;
+				Req.alpha_deg = a;
+				try
+				{
+					const SectionAeroResult R = SolveSection(*M, Req);
+					if (R.ok) Job->Points.Add({ a, R.cl, R.cd_total, R.cm_c4, R.converged });
+				}
+				catch (const std::exception&) {}
+				++Job->Progress;
+			}
+			Job->bDone = true;
+		});
+	}
+
+	int32 NextSweepMethod(const FState& S)
+	{
+		const auto& Methods = SectionAeroMethods();
+		for (int32 i = 0; i < static_cast<int32>(Methods.size()) && i < S.MethodOn.Num(); ++i)
+		{
+			if (!S.MethodOn[i] || Methods[i]->Fast()) continue;
+			const uint64* G = S.PolarGeneration.Find(i);
+			if (G == nullptr || *G != S.Generation) return i;
+		}
+		return -1;
+	}
+
+	void CollectSweep(const TSharedRef<FState>& S)
+	{
+		if (!S->SweepJob.IsValid() || !S->SweepJob->bDone) return;
+		TSharedPtr<FSweepJob, ESPMode::ThreadSafe> Job = S->SweepJob;
+		S->SweepJob.Reset();
+		if (Job->bCancel) return;
+		// Keep converged points only; an unconverged iterate is not a polar point.
+		TArray<FState::FPolarPoint> Pts;
+		for (const FState::FPolarPoint& P : Job->Points) if (P.converged) Pts.Add(P);
+		S->PolarData.Add(Job->MethodIndex, MoveTemp(Pts));
+		S->PolarGeneration.Add(Job->MethodIndex, Job->Generation);
+		DrawPolars(S);
+		if (S->Status) S->Status(FText::Format(LOCTEXT("SweepDone", "{0}: polar swept, {1} of {2} angles converged"), FText::FromString(StdToFString(SectionAeroMethods()[Job->MethodIndex]->Name())), FText::AsNumber(S->PolarData[Job->MethodIndex].Num()), FText::AsNumber(Job->Alphas.Num())));
+		// another slow method waiting for this generation?
+		const int32 Next = NextSweepMethod(*S);
+		if (Next >= 0 && Job->Generation == S->Generation) LaunchSweep(S, Next);
 	}
 
 	// Which poles the sensitivity covers: all but the locked trailing-edge
@@ -619,6 +743,8 @@ namespace
 		S->Results.Empty();
 		S->SlowResults.Empty();
 		S->SlowGeneration.Empty();
+		S->PolarData.Empty();
+		S->PolarGeneration.Empty();
 		S->Sens = PoleSensitivity();
 		if (S->Source)
 		{
@@ -711,7 +837,7 @@ namespace
 		"INVISCID CUES (layered on the two inviscid methods)\n"
 		"Reynolds number: yours, on the chord. Transition cue (yellow): on each surface from the stagnation point, the earlier of the station where Re_x = Re (V/U)(s/c) reaches 3.5e6 and the first adverse pressure gradient (the suction peak). Skin-friction drag: the turbulent flat-plate law Cf = 0.0592 Re_s^-0.2 at the local edge speed from the stagnation point on both surfaces, projected on the wind -- 'Cd frict.' (about 0.0094 for a plate at Re 1e6; the pressure Cd beside it is the inviscid residual, not a drag). Separation cue (red): Stratford's criterion for turbulent separation (J. Fluid Mech. 5:1-16, 1959), fully turbulent from stagnation given the transition cue's low fidelity: from the suction peak, Cpbar = 1 - (V/Vmax)^2, x measured from the equivalent flat-plate origin x_EL = integral of (V/Vmax)^3 ds over the favourable run, and separation where Cpbar (x dCpbar/dx)^1/2 (1e-6 Re_x)^-0.1 reaches 0.39 (0.35 where d2p/dx2 < 0). The criterion holds while Cpbar <= 4/7; the grey marker shows where that is exceeded and the cue stops. Because an inviscid distribution recovers to stagnation at a finite-angle trailing edge, the criterion often trips in the last few percent of chord at low incidence: read that as 'no separation ahead of the trailing-edge recovery'. The right-axis overlay 'Stratford S' draws the parameter.\n\n"
 		"POLAR\n"
-		"Cl and Cm c/4 of the fast methods from -6 to 16 degrees, two charts: the inviscid lift slope and zero-lift angle. No stall, of course. The boundary-layer method is not swept.\n\n"
+		"Two charts, every enabled method on both, each series labelled with its method and quantity. The first has Cl (left axis, solid) and Cm c/4 (right axis, dashed) against the angle of attack from -6 to 16 degrees; the second has Cd (left, solid) and Cm c/4 (right, dashed) against Cl. The axes are independent, so an all-negative Cm does not squash Cl. The inviscid methods are swept at once: straight lines, no stall, and their 'Cd' is the flat-plate friction estimate plus the pressure residual, not a measured drag. The boundary-layer method is swept on request with the Sweep button, on a worker thread (23 solves, several seconds); only its converged angles are drawn, as markers, and the polar dims as [stale] when the section or the conditions change until swept again. Its Cd is the Squire-Young total.\n\n"
 		"APPLY\n"
 		"Adds the section as it is in the editor (its reduced representation and any edits) to the session's custom airfoil library under the name given; every wing and blade section picker lists it under Custom, and a project that uses it stores the curve itself. The library airfoil is never changed.");
 }
@@ -1013,21 +1139,47 @@ void ShowAerotelicSectionAeroDialog(TFunction<void(const FText&)> Status, std::s
 		+ SHorizontalBox::Slot().FillWidth(0.48f).Padding(0, 0, 8, 0) [ LeftColumn ]
 		+ SHorizontalBox::Slot().FillWidth(0.52f) [ RightColumn ];
 
-	S->PolarClPlot = SNew(SAerotelicLinePlot)
-		.Title(LOCTEXT("PolarClTitle", "Lift coefficient against angle of attack"))
+	S->PolarAlphaPlot = SNew(SAerotelicLinePlot)
+		.Title(LOCTEXT("PolarAlphaTitle", "Lift and pitching moment against angle of attack"))
 		.XLabel(LOCTEXT("PolarX", "angle of attack (deg)"))
 		.YLabel(LOCTEXT("PolarY", "Cl"))
+		.IndependentRightAxis(true)
 		.DesiredSize(FVector2D(800, 300));
-	S->PolarCmPlot = SNew(SAerotelicLinePlot)
-		.Title(LOCTEXT("PolarCmTitle", "Pitching moment about c/4 against angle of attack"))
-		.XLabel(LOCTEXT("PolarX", "angle of attack (deg)"))
-		.YLabel(LOCTEXT("PolarYCm", "Cm c/4"))
+	S->PolarAlphaPlot->SetAxisLabels(LOCTEXT("PolarX", "angle of attack (deg)"), LOCTEXT("PolarY", "Cl"), LOCTEXT("PolarYR", "Cm c/4"));
+	S->PolarClPlot = SNew(SAerotelicLinePlot)
+		.Title(LOCTEXT("PolarClTitle", "Drag and pitching moment against lift"))
+		.XLabel(LOCTEXT("PolarXCl", "Cl"))
+		.YLabel(LOCTEXT("PolarYCd", "Cd"))
+		.IndependentRightAxis(true)
 		.DesiredSize(FVector2D(800, 300));
+	S->PolarClPlot->SetAxisLabels(LOCTEXT("PolarXCl", "Cl"), LOCTEXT("PolarYCd", "Cd"), LOCTEXT("PolarYR", "Cm c/4"));
 	TSharedRef<SWidget> PolarTab =
 		SNew(SVerticalBox)
-		+ SVerticalBox::Slot().FillHeight(1.0f) [ S->PolarClPlot.ToSharedRef() ]
-		+ SVerticalBox::Slot().FillHeight(1.0f).Padding(0, 6, 0, 0) [ S->PolarCmPlot.ToSharedRef() ]
-		+ SVerticalBox::Slot().AutoHeight().Padding(0, 6, 0, 0) [ MakeInfoLabel(LOCTEXT("PolarInfo", "The fast (inviscid) methods from -6 to 16 degrees at the Reynolds number of the Section tab: straight lines, no stall. The boundary-layer method is not swept here (a second a sweep would be); read it at the Section tab's incidence.")) ];
+		+ SVerticalBox::Slot().FillHeight(1.0f) [ S->PolarAlphaPlot.ToSharedRef() ]
+		+ SVerticalBox::Slot().FillHeight(1.0f).Padding(0, 6, 0, 0) [ S->PolarClPlot.ToSharedRef() ]
+		+ SVerticalBox::Slot().AutoHeight().Padding(0, 6, 0, 0)
+		[
+			SNew(SHorizontalBox)
+			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 0, 8, 0)
+			[
+				SNew(SButton).Text(LOCTEXT("Sweep", "Sweep the boundary-layer method"))
+				.ToolTipText(LOCTEXT("SweepTip", "Solve the viscous method at every degree from -6 to 16 on a worker thread (several seconds) and draw its polar"))
+				.IsEnabled_Lambda([S]() { return S->Working != nullptr && !S->SweepJob.IsValid() && NextSweepMethod(*S) >= 0; })
+				.OnClicked_Lambda([S]() { const int32 Next = NextSweepMethod(*S); if (Next >= 0) LaunchSweep(S, Next); return FReply::Handled(); })
+			]
+			+ SHorizontalBox::Slot().FillWidth(1.0f).VAlign(VAlign_Center)
+			[
+				SNew(STextBlock).AutoWrapText(true).ColorAndOpacity(FSlateColor(FLinearColor(0.6f, 0.6f, 0.6f)))
+				.Text_Lambda([S]()
+				{
+					if (S->SweepJob.IsValid()) return FText::Format(LOCTEXT("Sweeping", "Sweeping {0}: {1} of {2} angles..."), FText::FromString(StdToFString(SectionAeroMethods()[S->SweepJob->MethodIndex]->Name())), FText::AsNumber(S->SweepJob->Progress.load()), FText::AsNumber(S->SweepJob->Alphas.Num()));
+					if (!S->Working) return LOCTEXT("SweepPick", "Pick an airfoil.");
+					if (NextSweepMethod(*S) >= 0) return LOCTEXT("SweepStale", "The boundary-layer polar is missing or belongs to an earlier edit: press Sweep.");
+					return LOCTEXT("SweepCurrent", "Every enabled method's polar is current.");
+				})
+			]
+		]
+		+ SVerticalBox::Slot().AutoHeight().Padding(0, 6, 0, 0) [ MakeInfoLabel(LOCTEXT("PolarInfo", "Every enabled method from -6 to 16 degrees at the Reynolds number of the Section tab: solid against the left axis, dashed against the right. The inviscid methods are swept at once (straight lines, no stall; their Cd is the flat-plate friction estimate plus the pressure residual); the boundary-layer method is swept on request, on a worker thread, its converged angles drawn as markers, and its polar dims as [stale] when the section or the conditions change until swept again.")) ];
 
 	TArray<FAerotelicTab> Tabs;
 	Tabs.Add({ LOCTEXT("SectionTab", "Section"), SectionTab });
@@ -1099,6 +1251,7 @@ void ShowAerotelicSectionAeroDialog(TFunction<void(const FText&)> Status, std::s
 	S->Ticker = FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda([S](float)
 	{
 		CollectSlow(S);
+		CollectSweep(S);
 		const double Now = FPlatformTime::Seconds();
 		if (Now - S->LastEdit < 0.2) return true;
 		if (S->bFitDirty) { S->bFitDirty = false; UpdateFit(S); }
@@ -1118,10 +1271,11 @@ void ShowAerotelicSectionAeroDialog(TFunction<void(const FText&)> Status, std::s
 	{
 		FTSTicker::GetCoreTicker().RemoveTicker(S->Ticker);
 		if (S->Editor.IsValid()) S->Editor->SetSlots({});
+		if (S->SweepJob.IsValid()) S->SweepJob->bCancel = true;
 		S->Editor.Reset();
 		S->CpPlot.Reset();
+		S->PolarAlphaPlot.Reset();
 		S->PolarClPlot.Reset();
-		S->PolarCmPlot.Reset();
 		S->Table.Reset();
 		S->CueText.Reset();
 		S->SensText.Reset();
@@ -1143,6 +1297,7 @@ void ShowAerotelicSectionAeroDialog(TFunction<void(const FText&)> Status, std::s
 	if (FParse::Param(FCommandLine::Get(), TEXT("AerotelicSectionAeroSmoke")))
 	{
 		if (!Initial) SetSource(S, std::shared_ptr<Airfoil>(Airfoil::Naca4("2412", 81)));
+		{ const int32 Next = NextSweepMethod(*S); if (Next >= 0) LaunchSweep(S, Next); } // the viscous polar too
 		TWeakPtr<SWindow> WeakWindow = Window;
 		TWeakPtr<SAerotelicTabStrip> WeakTabs = TabStrip;
 		auto Shot = [WeakWindow](const FString& Name)
@@ -1190,8 +1345,10 @@ void ShowAerotelicSectionAeroDialog(TFunction<void(const FText&)> Status, std::s
 			}
 			Shot(TEXT("section_aero_smoke_section.png"));
 			if (TSharedPtr<SAerotelicTabStrip> T = WeakTabs.Pin()) T->SetActiveTab(1);
-			Later(1.5f, [Shot]()
+			Later(10.0f, [S, Shot]()
 			{
+				for (const TPair<int32, TArray<FState::FPolarPoint>>& P : S->PolarData)
+					UE_LOG(LogTemp, Log, TEXT("SectionAero smoke: polar of method %d: %d points%s"), P.Key, P.Value.Num(), (S->PolarGeneration.FindRef(P.Key) == S->Generation) ? TEXT("") : TEXT(" (stale)"));
 				Shot(TEXT("section_aero_smoke_polar.png"));
 				UE_LOG(LogTemp, Log, TEXT("SectionAero smoke: done, quitting"));
 				FPlatformMisc::RequestExit(false);

@@ -36,7 +36,7 @@ class SAerotelicLinePlot : public SLeafWidget
 {
 public:
 	SLATE_BEGIN_ARGS(SAerotelicLinePlot)
-		: _Title(), _XLabel(), _YLabel(), _DesiredSize(FVector2D(320.0, 220.0)), _Compact(false), _InvertY(false) {}
+		: _Title(), _XLabel(), _YLabel(), _DesiredSize(FVector2D(320.0, 220.0)), _Compact(false), _InvertY(false), _IndependentRightAxis(false) {}
 		SLATE_ARGUMENT(FText, Title)
 		SLATE_ARGUMENT(FText, XLabel)
 		SLATE_ARGUMENT(FText, YLabel)
@@ -46,6 +46,11 @@ public:
 		// y increases DOWNWARD: the aerodynamicist's pressure-coefficient
 		// plot, suction (negative Cp) at the top.
 		SLATE_ARGUMENT(bool, InvertY)
+		// The right axis gets its own nice range, independent of the left
+		// one (the default ties the two zeros to one line, which is right
+		// for a load beside its coefficient but squashes two unrelated
+		// coefficients such as Cl beside an all-negative Cm).
+		SLATE_ARGUMENT(bool, IndependentRightAxis)
 	SLATE_END_ARGS()
 
 	void Construct(const FArguments& InArgs);
@@ -68,4 +73,5 @@ private:
 	FVector2D DesiredSize;
 	bool bCompact = false;
 	bool bInvertY = false;
+	bool bIndependentRight = false;
 };
