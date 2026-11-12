@@ -7,6 +7,7 @@
 #include "Widgets/Layout/SBox.h"
 #include "Widgets/Layout/SScrollBox.h"
 #include "Widgets/Layout/SSeparator.h"
+#include "Widgets/Layout/SWrapBox.h"
 #include "Widgets/Text/STextBlock.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SCheckBox.h"
@@ -877,13 +878,13 @@ void ShowAerotelicSectionAeroDialog(TFunction<void(const FText&)> Status, std::s
 		+ SVerticalBox::Slot().AutoHeight().Padding(0, 6, 0, 0) [ MakeGroup(LOCTEXT("ErrGroup", "Error against the library points"), ErrorGroup) ];
 
 	// ---- right: conditions, the Cp chart, the table ----------------------------
-	TSharedRef<SHorizontalBox> MethodChecks = SNew(SHorizontalBox);
+	TSharedRef<SWrapBox> MethodChecks = SNew(SWrapBox).UseAllottedSize(true).InnerSlotPadding(FVector2D(10, 2));
 	for (int32 i = 0; i < static_cast<int32>(Methods.size()); ++i)
 	{
 		const FString Name = StdToFString(Methods[i]->Name());
 		std::string Why;
 		const bool bAvail = Methods[i]->Available(&Why);
-		MethodChecks->AddSlot().AutoWidth().Padding(0, 0, 10, 0)
+		MethodChecks->AddSlot()
 		[
 			SNew(SCheckBox)
 			.IsEnabled(bAvail)
@@ -923,7 +924,7 @@ void ShowAerotelicSectionAeroDialog(TFunction<void(const FText&)> Status, std::s
 		+ SVerticalBox::Slot().AutoHeight().Padding(0, 4, 0, 0)
 		[
 			SNew(SHorizontalBox)
-			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 0, 4, 0) [ SNew(STextBlock).Text(LOCTEXT("Ncrit", "Boundary layer: n_crit")) ]
+			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 0, 4, 0) [ SNew(STextBlock).Text(LOCTEXT("Ncrit", "BL: n_crit")) ]
 			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 0, 10, 0)
 			[
 				SNew(SBox).WidthOverride(56)
@@ -932,7 +933,7 @@ void ShowAerotelicSectionAeroDialog(TFunction<void(const FText&)> Status, std::s
 					.OnValueCommitted_Lambda([S](double V, ETextCommit::Type) { if (V == S->Ncrit) return; S->Ncrit = V; Solve(S); })
 				]
 			]
-			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 0, 4, 0) [ SNew(STextBlock).Text(LOCTEXT("Xft", "forced transition x/c upper / lower")) ]
+			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 0, 4, 0) [ SNew(STextBlock).Text(LOCTEXT("Xft", "forced tr. x/c up/low")) ]
 			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 0, 4, 0)
 			[
 				SNew(SBox).WidthOverride(56)
@@ -949,7 +950,7 @@ void ShowAerotelicSectionAeroDialog(TFunction<void(const FText&)> Status, std::s
 					.OnValueCommitted_Lambda([S](double V, ETextCommit::Type) { if (V == S->XftLower) return; S->XftLower = V; Solve(S); })
 				]
 			]
-			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 0, 4, 0) [ SNew(STextBlock).Text(LOCTEXT("Hsep", "H_k separation lam / turb")) ]
+			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 0, 4, 0) [ SNew(STextBlock).Text(LOCTEXT("Hsep", "H_k sep. lam/turb")) ]
 			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 0, 4, 0)
 			[
 				SNew(SBox).WidthOverride(56)
@@ -972,10 +973,14 @@ void ShowAerotelicSectionAeroDialog(TFunction<void(const FText&)> Status, std::s
 			SNew(SHorizontalBox)
 			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 0, 8, 0) [ SNew(STextBlock).Text(LOCTEXT("Methods", "Methods:")) ]
 			+ SHorizontalBox::Slot().FillWidth(1.0f).VAlign(VAlign_Center) [ MethodChecks ]
-			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 0, 4, 0) [ SNew(STextBlock).Text(LOCTEXT("Overlay", "right axis:")) ]
+		]
+		+ SVerticalBox::Slot().AutoHeight().Padding(0, 4, 0, 0)
+		[
+			SNew(SHorizontalBox)
+			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 0, 4, 0) [ SNew(STextBlock).Text(LOCTEXT("Overlay", "Right axis of the chart:")) ]
 			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
 			[
-				SNew(SBox).WidthOverride(130)
+				SNew(SBox).WidthOverride(150)
 				[
 					ChoiceCombo({ FText::FromString(kOverlayLabels[0]), FText::FromString(kOverlayLabels[1]), FText::FromString(kOverlayLabels[2]), FText::FromString(kOverlayLabels[3]), FText::FromString(kOverlayLabels[4]), FText::FromString(kOverlayLabels[5]), FText::FromString(kOverlayLabels[6]) },
 						[S]() { return S->OverlayIndex; }, [S](int32 I) { S->OverlayIndex = I; UpdateCpPlot(S); })
@@ -1173,7 +1178,7 @@ void ShowAerotelicSectionAeroDialog(TFunction<void(const FText&)> Status, std::s
 					*StdToFString(R.method), R.ok, R.converged, R.cl, R.cm_c4, R.cd_total, R.cd_friction, R.alpha0_deg,
 					R.upper.transition.found ? R.upper.transition.x : -1.0, R.lower.transition.found ? R.lower.transition.x : -1.0,
 					R.upper.separation.found ? R.upper.separation.x : -1.0, R.lower.separation.found ? R.lower.separation.x : -1.0, R.solve_ms,
-					SlowResultStale(*S, Entry.Value) ? TEXT(" (stale)") : TEXT(""));
+					(!SectionAeroMethods()[Entry.Value]->Fast() && SlowResultStale(*S, Entry.Value)) ? TEXT(" (stale)") : TEXT(""));
 			}
 			if (S->Results.Num() > 0 && S->Results[0].ok)
 			{

@@ -86,7 +86,7 @@ public:
 			const double clp = IntegrateLoads(g, sol.CpAt(alpha + da), alpha + da, Vec2(g.x_min, 0.0)).cl;
 			const double clm = IntegrateLoads(g, sol.CpAt(alpha - da), alpha - da, Vec2(g.x_min, 0.0)).cl;
 			r.cl_alpha = (clp - clm) / (2.0 * da);
-			r.alpha0_deg = (r.cl_alpha != 0.0) ? (request.alpha_deg - r.cl / r.cl_alpha) : std::numeric_limits<double>::quiet_NaN();
+			r.alpha0_deg = (r.cl_alpha != 0.0) ? (request.alpha_deg - (r.cl / r.cl_alpha) * 180.0 / kPi) : std::numeric_limits<double>::quiet_NaN();
 			r.cp_min = *std::min_element(cp.begin(), cp.end());
 			// Trailing-edge angle from the paneling's end tangents.
 			{
