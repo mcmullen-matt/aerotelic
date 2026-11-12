@@ -507,11 +507,10 @@ namespace
 			const FString Name = StdToFString(Methods[i]->Name()) + (bStale ? TEXT(" [stale]") : TEXT(""));
 			FAerotelicPlotSeries ClA, CmA, CdL, CmL;
 			ClA.Label = Name + TEXT(": Cl");
-			CmA.Label = Name + TEXT(": Cm c/4 (right axis)");
+			CmA.Label = Name + TEXT(": Cm c/4");
 			CdL.Label = Name + (bViscous ? TEXT(": Cd, Squire-Young") : TEXT(": Cd, flat-plate friction estimate"));
-			CmL.Label = Name + TEXT(": Cm c/4 (right axis)");
+			CmL.Label = Name + TEXT(": Cm c/4");
 			ClA.Color = CmA.Color = CdL.Color = CmL.Color = C;
-			CmA.bRightAxis = CmL.bRightAxis = true;
 			CmA.bDashed = CmL.bDashed = true;
 			ClA.bMarkers = CmA.bMarkers = CdL.bMarkers = CmL.bMarkers = bViscous; // the swept points of the slow method are discrete
 			for (const FState::FPolarPoint& P : *Pts)
@@ -837,7 +836,7 @@ namespace
 		"INVISCID CUES (layered on the two inviscid methods)\n"
 		"Reynolds number: yours, on the chord. Transition cue (yellow): on each surface from the stagnation point, the earlier of the station where Re_x = Re (V/U)(s/c) reaches 3.5e6 and the first adverse pressure gradient (the suction peak). Skin-friction drag: the turbulent flat-plate law Cf = 0.0592 Re_s^-0.2 at the local edge speed from the stagnation point on both surfaces, projected on the wind -- 'Cd frict.' (about 0.0094 for a plate at Re 1e6; the pressure Cd beside it is the inviscid residual, not a drag). Separation cue (red): Stratford's criterion for turbulent separation (J. Fluid Mech. 5:1-16, 1959), fully turbulent from stagnation given the transition cue's low fidelity: from the suction peak, Cpbar = 1 - (V/Vmax)^2, x measured from the equivalent flat-plate origin x_EL = integral of (V/Vmax)^3 ds over the favourable run, and separation where Cpbar (x dCpbar/dx)^1/2 (1e-6 Re_x)^-0.1 reaches 0.39 (0.35 where d2p/dx2 < 0). The criterion holds while Cpbar <= 4/7; the grey marker shows where that is exceeded and the cue stops. Because an inviscid distribution recovers to stagnation at a finite-angle trailing edge, the criterion often trips in the last few percent of chord at low incidence: read that as 'no separation ahead of the trailing-edge recovery'. The right-axis overlay 'Stratford S' draws the parameter.\n\n"
 		"POLAR\n"
-		"Two charts, every enabled method on both, each series labelled with its method and quantity. The first has Cl (left axis, solid) and Cm c/4 (right axis, dashed) against the angle of attack from -6 to 16 degrees; the second has Cd (left, solid) and Cm c/4 (right, dashed) against Cl. The axes are independent, so an all-negative Cm does not squash Cl. The inviscid methods are swept at once: straight lines, no stall, and their 'Cd' is the flat-plate friction estimate plus the pressure residual, not a measured drag. The boundary-layer method is swept on request with the Sweep button, on a worker thread (23 solves, several seconds); only its converged angles are drawn, as markers, and the polar dims as [stale] when the section or the conditions change until swept again. Its Cd is the Squire-Young total.\n\n"
+		"Two charts side by side, every enabled method on both, each series labelled with its method and quantity, one vertical axis per chart: the left chart has Cl (solid) and Cm c/4 (dashed) against the angle of attack from -6 to 16 degrees; the right chart has Cd (solid) and Cm c/4 (dashed) against Cl. The inviscid methods are swept at once: straight lines, no stall, and their 'Cd' is the flat-plate friction estimate plus the pressure residual, not a measured drag. The boundary-layer method is swept on request with the Sweep button, on a worker thread (23 solves, several seconds); only its converged angles are drawn, as markers, and the polar dims as [stale] when the section or the conditions change until swept again. Its Cd is the Squire-Young total.\n\n"
 		"APPLY\n"
 		"Adds the section as it is in the editor (its reduced representation and any edits) to the session's custom airfoil library under the name given; every wing and blade section picker lists it under Custom, and a project that uses it stores the curve itself. The library airfoil is never changed.");
 }
@@ -1140,23 +1139,23 @@ void ShowAerotelicSectionAeroDialog(TFunction<void(const FText&)> Status, std::s
 		+ SHorizontalBox::Slot().FillWidth(0.52f) [ RightColumn ];
 
 	S->PolarAlphaPlot = SNew(SAerotelicLinePlot)
-		.Title(LOCTEXT("PolarAlphaTitle", "Lift and pitching moment against angle of attack"))
+		.Title(LOCTEXT("PolarAlphaTitle", "Cl and Cm c/4 against angle of attack"))
 		.XLabel(LOCTEXT("PolarX", "angle of attack (deg)"))
-		.YLabel(LOCTEXT("PolarY", "Cl"))
-		.IndependentRightAxis(true)
-		.DesiredSize(FVector2D(800, 300));
-	S->PolarAlphaPlot->SetAxisLabels(LOCTEXT("PolarX", "angle of attack (deg)"), LOCTEXT("PolarY", "Cl"), LOCTEXT("PolarYR", "Cm c/4"));
+		.YLabel(LOCTEXT("PolarY", "Cl (solid), Cm c/4 (dashed)"))
+		.DesiredSize(FVector2D(560, 520));
 	S->PolarClPlot = SNew(SAerotelicLinePlot)
-		.Title(LOCTEXT("PolarClTitle", "Drag and pitching moment against lift"))
+		.Title(LOCTEXT("PolarClTitle", "Cd and Cm c/4 against Cl"))
 		.XLabel(LOCTEXT("PolarXCl", "Cl"))
-		.YLabel(LOCTEXT("PolarYCd", "Cd"))
-		.IndependentRightAxis(true)
-		.DesiredSize(FVector2D(800, 300));
-	S->PolarClPlot->SetAxisLabels(LOCTEXT("PolarXCl", "Cl"), LOCTEXT("PolarYCd", "Cd"), LOCTEXT("PolarYR", "Cm c/4"));
+		.YLabel(LOCTEXT("PolarYCd", "Cd (solid), Cm c/4 (dashed)"))
+		.DesiredSize(FVector2D(560, 520));
 	TSharedRef<SWidget> PolarTab =
 		SNew(SVerticalBox)
-		+ SVerticalBox::Slot().FillHeight(1.0f) [ S->PolarAlphaPlot.ToSharedRef() ]
-		+ SVerticalBox::Slot().FillHeight(1.0f).Padding(0, 6, 0, 0) [ S->PolarClPlot.ToSharedRef() ]
+		+ SVerticalBox::Slot().FillHeight(1.0f)
+		[
+			SNew(SHorizontalBox)
+			+ SHorizontalBox::Slot().FillWidth(0.5f).Padding(0, 0, 4, 0) [ S->PolarAlphaPlot.ToSharedRef() ]
+			+ SHorizontalBox::Slot().FillWidth(0.5f).Padding(4, 0, 0, 0) [ S->PolarClPlot.ToSharedRef() ]
+		]
 		+ SVerticalBox::Slot().AutoHeight().Padding(0, 6, 0, 0)
 		[
 			SNew(SHorizontalBox)
@@ -1179,7 +1178,7 @@ void ShowAerotelicSectionAeroDialog(TFunction<void(const FText&)> Status, std::s
 				})
 			]
 		]
-		+ SVerticalBox::Slot().AutoHeight().Padding(0, 6, 0, 0) [ MakeInfoLabel(LOCTEXT("PolarInfo", "Every enabled method from -6 to 16 degrees at the Reynolds number of the Section tab: solid against the left axis, dashed against the right. The inviscid methods are swept at once (straight lines, no stall; their Cd is the flat-plate friction estimate plus the pressure residual); the boundary-layer method is swept on request, on a worker thread, its converged angles drawn as markers, and its polar dims as [stale] when the section or the conditions change until swept again.")) ];
+		+ SVerticalBox::Slot().AutoHeight().Padding(0, 6, 0, 0) [ MakeInfoLabel(LOCTEXT("PolarInfo", "Every enabled method from -6 to 16 degrees at the Reynolds number of the Section tab, Cl or Cd solid and Cm c/4 dashed on one axis. The inviscid methods are swept at once (straight lines, no stall; their Cd is the flat-plate friction estimate plus the pressure residual); the boundary-layer method is swept on request, on a worker thread, its converged angles drawn as markers, and its polar dims as [stale] when the section or the conditions change until swept again.")) ];
 
 	TArray<FAerotelicTab> Tabs;
 	Tabs.Add({ LOCTEXT("SectionTab", "Section"), SectionTab });
