@@ -14,6 +14,7 @@
 #include "Dialogs/ExportDialogs.h"
 #include "Dialogs/PotentialFlowDialog.h"
 #include "Dialogs/HighOrderPanelDialog.h"
+#include "Dialogs/SectionAeroDialog.h"
 #include "Dialogs/MassPropertiesDialog.h"
 #include "Dialogs/MaterialLibraryDialog.h"
 #include "Dialogs/StructuralFeaDialog.h"
@@ -455,6 +456,7 @@ void SAerotelicMainShell::BindCommands()
 	Commands->MapAction(C.PotentialFlow, FExecuteAction::CreateLambda([this]() { ShowAerotelicPotentialFlowDialog([this](const FText& T) { SetStatus(T); }); }));
 	Commands->MapAction(C.HighOrderPanel, FExecuteAction::CreateLambda([this]() { ShowAerotelicHighOrderPanelDialog([this](const FText& T) { SetStatus(T); }); }));
 	Commands->MapAction(C.DustVpm, FExecuteAction::CreateLambda([this]() { ShowAerotelicDustDialog([this](const FText& T) { SetStatus(T); }); }));
+	Commands->MapAction(C.SectionAero, FExecuteAction::CreateLambda([this]() { ShowAerotelicSectionAeroDialog([this](const FText& T) { SetStatus(T); }); }));
 
 	// View
 	Commands->MapAction(C.ViewIsometric, FExecuteAction::CreateSP(this, &SAerotelicMainShell::OnViewPreset, EAerotelicViewPreset::Isometric));
@@ -801,6 +803,8 @@ void SAerotelicMainShell::FillAnalysisMenu(FMenuBuilder& Menu)
 	Menu.AddMenuEntry(FAerotelicCommands::Get().PotentialFlow);
 	Menu.AddMenuEntry(FAerotelicCommands::Get().HighOrderPanel);
 	Menu.AddMenuEntry(FAerotelicCommands::Get().DustVpm);
+	Menu.AddMenuSeparator();
+	Menu.AddMenuEntry(FAerotelicCommands::Get().SectionAero);
 }
 
 void SAerotelicMainShell::FillViewMenu(FMenuBuilder& Menu)

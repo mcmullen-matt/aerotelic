@@ -211,16 +211,72 @@ std::unique_ptr<Airfoil> Airfoil::Blend(const Airfoil& a, const Airfoil& b, doub
 	return af;
 }
 
+std::unique_ptr<Airfoil> Airfoil::Refit(const Airfoil& source, int degree, int n_poles, ApproximationKnots knots,
+	const std::vector<double>* given_interior_knots, std::string name) {
+	auto af = std::unique_ptr<Airfoil>(new Airfoil());
+	af->name = name.empty() ? source.name + " (" + std::to_string(n_poles) + " poles, p=" + std::to_string(degree) + ")" : std::move(name);
+	af->pts_arr_ = source.fit_points();
+	af->curve_ = std::make_unique<ApproximateCurve>(af->pts_arr_, degree, n_poles, knots, given_interior_knots);
+	af->CurveEdited();
+	return af;
+}
+
+std::unique_ptr<Airfoil> Airfoil::Clone() const {
+	auto af = std::unique_ptr<Airfoil>(new Airfoil());
+	af->name = name;
+	af->pts_arr_ = pts_arr_;
+	af->curve_ = NurbsCurve::Create(curve_->Serialize());
+	af->t_le_ = t_le_;
+	af->BuildTeLine();
+	return af;
+}
+
+void Airfoil::CurveEdited() {
+	const int n_sample = 400;
+	const Mat s = curve_->Sample(n_sample);
+	const int le_idx = ArgMinCol0(s);
+	t_le_ = RefineLeadingEdge(*curve_, static_cast<double>(le_idx) / (n_sample - 1), 1.0 / (n_sample - 1));
+	BuildTeLine();
+}
+
 void Airfoil::BuildTeLine() {
-	int n = pts_arr_.rows();
-	if (VecNorm(VecSub(pts_arr_.row(0), pts_arr_.row(n - 1))) < 1e-6) {
+	// The curve's two ends (its first and last poles, which for every
+	// construction here coincide with the first and last fit points).
+	const std::vector<double> p0 = curve_->Evaluate(0.0), p1 = curve_->Evaluate(1.0);
+	if (VecNorm(VecSub(p0, p1)) < 1e-6) {
 		te_line_ = nullptr;
 		return;
 	}
 	NurbsSpec spec;
 	spec.degree = 1;
-	spec.poles = Mat::FromRows({pts_arr_.row(0), pts_arr_.row(n - 1)});
+	spec.poles = Mat::FromRows({p0, p1});
 	te_line_ = NurbsCurve::Create(spec);
+}
+
+AirfoilFitReport CompareAirfoilFit(const Airfoil& source, const Airfoil& fitted) {
+	AirfoilFitReport r;
+	const Mat& pts = source.fit_points();
+	const NurbsCurve& curve = fitted.nurbs_curve();
+	r.n_points = pts.rows();
+	r.degree = curve.degree();
+	r.n_poles = curve.n_poles();
+	const int le_idx = ArgMinCol0(pts);
+	double sum2 = 0.0;
+	for (int i = 0; i < pts.rows(); ++i) {
+		const auto [t, d] = curve.ClosestParameter(pts.row(i), 800);
+		sum2 += d * d;
+		if (d > r.max_distance) {
+			r.max_distance = d;
+			r.max_at_x = pts(i, 0);
+			r.max_on_upper = i > le_idx;
+		}
+	}
+	r.rms_distance = pts.rows() > 0 ? std::sqrt(sum2 / pts.rows()) : 0.0;
+	r.delta_max_thickness = fitted.MaxThickness().second - source.MaxThickness().second;
+	r.delta_max_camber = fitted.MaxCamber().second - source.MaxCamber().second;
+	r.te_gap_source = VecNorm(VecSub(pts.row(0), pts.row(pts.rows() - 1)));
+	r.te_gap_fitted = VecNorm(VecSub(curve.Evaluate(0.0), curve.Evaluate(1.0)));
+	return r;
 }
 
 NurbsSpec Airfoil::Serialize() const { return curve_->Serialize(); }

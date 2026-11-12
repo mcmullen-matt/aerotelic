@@ -54,11 +54,18 @@ void SAerotelicLinePlot::Construct(const FArguments& InArgs)
 	YLabel = InArgs._YLabel;
 	DesiredSize = InArgs._DesiredSize;
 	bCompact = InArgs._Compact;
+	bInvertY = InArgs._InvertY;
 }
 
 void SAerotelicLinePlot::SetSeries(TArray<FAerotelicPlotSeries> InSeries)
 {
 	Series = MoveTemp(InSeries);
+	Invalidate(EInvalidateWidget::Paint);
+}
+
+void SAerotelicLinePlot::SetInvertY(bool bInvert)
+{
+	bInvertY = bInvert;
 	Invalidate(EInvalidateWidget::Paint);
 }
 
@@ -202,13 +209,16 @@ int32 SAerotelicLinePlot::OnPaint(const FPaintArgs& Args, const FGeometry& Geome
 	const double Top = (Title.IsEmpty() ? 6.0 : LineH + 10.0) + ((YLabel.IsEmpty() && (!bRight || YRightLabel.IsEmpty())) ? 0.0 : LineH + 2.0);
 	const double Bottom = LineH + 6.0 + (XLabel.IsEmpty() ? 0.0 : LineH + 2.0);
 	const double PlotW = FMath::Max(Size.X - Left - Right, 10.0), PlotH = FMath::Max(Size.Y - Top - Bottom, 10.0);
+	// Inverted: the axis's top is its minimum (a Cp plot's suction peak up).
 	auto Map = [&](double X, double Y)
 	{
-		return FVector2f(static_cast<float>(Left + (X - X0) / (X1 - X0) * PlotW), static_cast<float>(Top + (Y1 - Y) / (Y1 - Y0) * PlotH));
+		const double F = bInvertY ? (Y - Y0) / (Y1 - Y0) : (Y1 - Y) / (Y1 - Y0);
+		return FVector2f(static_cast<float>(Left + (X - X0) / (X1 - X0) * PlotW), static_cast<float>(Top + F * PlotH));
 	};
 	auto MapRight = [&](double X, double Y)
 	{
-		return FVector2f(static_cast<float>(Left + (X - X0) / (X1 - X0) * PlotW), static_cast<float>(Top + (R1 - Y) / (R1 - R0) * PlotH));
+		const double F = bInvertY ? (Y - R0) / (R1 - R0) : (R1 - Y) / (R1 - R0);
+		return FVector2f(static_cast<float>(Left + (X - X0) / (X1 - X0) * PlotW), static_cast<float>(Top + F * PlotH));
 	};
 
 	// Grid and tick labels.
@@ -315,7 +325,7 @@ int32 SAerotelicLinePlot::OnPaint(const FPaintArgs& Args, const FGeometry& Geome
 		}
 		if (S.bMarkers)
 		{
-			const float M = bCompact ? 4.0f : 5.0f;
+			const float M = S.MarkerSize > 0.0f ? S.MarkerSize : (bCompact ? 4.0f : 5.0f);
 			for (const FVector2f& P : Pts)
 			{
 				FSlateDrawElement::MakeBox(Out, LayerId + 4, Geometry.ToPaintGeometry(FVector2f(M, M), FSlateLayoutTransform(FVector2f(P.X - M * 0.5f, P.Y - M * 0.5f))), White, ESlateDrawEffect::None, S.Color);

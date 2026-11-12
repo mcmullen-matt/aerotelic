@@ -236,6 +236,44 @@ Mat NurbsCurve::Sample(int n) const {
 	return Evaluate(s);
 }
 
+std::pair<double, double> NurbsCurve::ClosestParameter(const std::vector<double>& point, int n_samples) const {
+	n_samples = std::max(n_samples, 8);
+	const Mat S = Sample(n_samples);
+	auto dist2_row = [&](int i) {
+		double d = 0.0;
+		for (int c = 0; c < S.cols(); ++c) { const double e = S(i, c) - point[c]; d += e * e; }
+		return d;
+	};
+	int best = 0;
+	double bd = dist2_row(0);
+	for (int i = 1; i < n_samples; ++i) {
+		const double d = dist2_row(i);
+		if (d < bd) { bd = d; best = i; }
+	}
+	auto dist2 = [&](double t) {
+		const std::vector<double> p = Evaluate(t);
+		double d = 0.0;
+		for (size_t c = 0; c < p.size(); ++c) { const double e = p[c] - point[c]; d += e * e; }
+		return d;
+	};
+	double lo = std::max(0.0, static_cast<double>(best - 1) / (n_samples - 1));
+	double hi = std::min(1.0, static_cast<double>(best + 1) / (n_samples - 1));
+	const double phi = 0.5 * (std::sqrt(5.0) - 1.0);
+	double c = hi - phi * (hi - lo), d = lo + phi * (hi - lo);
+	double fc = dist2(c), fd = dist2(d);
+	for (int it = 0; it < 100 && hi - lo > 1e-13; ++it) {
+		if (fc < fd) {
+			hi = d; d = c; fd = fc;
+			c = hi - phi * (hi - lo); fc = dist2(c);
+		} else {
+			lo = c; c = d; fc = fd;
+			d = lo + phi * (hi - lo); fd = dist2(d);
+		}
+	}
+	const double t = 0.5 * (lo + hi);
+	return {t, std::sqrt(dist2(t))};
+}
+
 std::vector<double> NurbsCurve::ZAtEta(double eta) const {
 	Mat f = Sample(200);
 	std::vector<double> x(f.rows());
@@ -681,6 +719,149 @@ Mat FitCurve::CollocationBanded(const std::vector<double>& t) const {
 		}
 	}
 	return ab;
+}
+
+// ===========================================================================
+// ApproximateCurve
+// ===========================================================================
+
+ApproximateCurve::ApproximateCurve(const Mat& pts, int degree, int n_poles, ApproximationKnots knots,
+	const std::vector<double>* given_interior_knots, int parameter_corrections) {
+	const int m = pts.rows(), p = degree, n = n_poles;
+	if (p < 1) throw std::invalid_argument("ApproximateCurve: degree must be >= 1");
+	if (n < p + 1) throw std::invalid_argument("ApproximateCurve: need at least degree + 1 = " + std::to_string(p + 1) + " poles");
+	if (n >= m) throw std::invalid_argument("ApproximateCurve: need fewer poles (" + std::to_string(n) + ") than points (" + std::to_string(m) + "); FitCurve interpolates");
+	degree_ = p;
+
+	// Chord-length data parameters, as FitCurve.
+	params_.assign(m, 0.0);
+	for (int i = 1; i < m; ++i) params_[i] = params_[i - 1] + VecNorm(VecSub(pts.row(i), pts.row(i - 1)));
+	if (params_.back() < 1e-14) throw std::invalid_argument("ApproximateCurve: data points are all coincident");
+	for (double& v : params_) v /= params_.back();
+
+	const int n_int = n - p - 1;
+	interior_knots_.assign(n_int, 0.0);
+	switch (knots) {
+	case ApproximationKnots::Averaging: {
+		// P&T eq. 9.69 (their m + 1 = our m points, their n + 1 = our n poles):
+		// d = m / (n - p); u_{p+j} = (1 - a) t_{i-1} + a t_i, i = floor(j d), a = j d - i.
+		const double d = static_cast<double>(m) / (n - p);
+		for (int j = 1; j <= n_int; ++j) {
+			const int i = static_cast<int>(std::floor(j * d));
+			const double a = j * d - i;
+			interior_knots_[j - 1] = (1.0 - a) * params_[i - 1] + a * params_[i];
+		}
+		break;
+	}
+	case ApproximationKnots::Uniform:
+		for (int j = 1; j <= n_int; ++j) interior_knots_[j - 1] = static_cast<double>(j) / (n_int + 1);
+		break;
+	case ApproximationKnots::Given:
+		if (!given_interior_knots || static_cast<int>(given_interior_knots->size()) != n_int) {
+			throw std::invalid_argument("ApproximateCurve: " + std::to_string(n_int) + " interior knots required for " + std::to_string(n) + " poles of degree " + std::to_string(p));
+		}
+		interior_knots_ = *given_interior_knots;
+		std::sort(interior_knots_.begin(), interior_knots_.end());
+		for (double u : interior_knots_) if (!(u > 0.0 && u < 1.0)) throw std::invalid_argument("ApproximateCurve: interior knots must lie strictly inside (0, 1)");
+		CheckMultiplicity(interior_knots_, "ApproximateCurve");
+		break;
+	}
+
+	const std::vector<double> U = BuildKnotVector();
+	const int dim = pts.cols();
+	const int ni = n - 2; // unknown interior poles 1 .. n-2
+	poles_ = Mat(n, dim);
+	poles_.set_row(0, pts.row(0));
+	poles_.set_row(n - 1, pts.row(m - 1));
+	weights_.assign(n, 1.0);
+	if (ni == 0) return;
+
+	auto solve = [&](const std::vector<double>& t) {
+		// Rows k = 1 .. m-2: R_k = Q_k - N_0(t_k) Q_0 - N_{n-1}(t_k) Q_{m-1};
+		// normal equations (N^T N) P = N^T R over the interior basis functions.
+		Mat A(ni, ni, 0.0), B(ni, dim, 0.0);
+		for (int k = 1; k < m - 1; ++k) {
+			auto [span, Nb] = SpansAndBasis(t[k], U, p);
+			std::vector<double> R = pts.row(k);
+			std::vector<std::pair<int, double>> interior; // (pole index - 1, basis value)
+			for (int j = 0; j <= p; ++j) {
+				const int i = span - p + j;
+				if (i == 0) { for (int c = 0; c < dim; ++c) R[c] -= Nb[j] * pts(0, c); }
+				else if (i == n - 1) { for (int c = 0; c < dim; ++c) R[c] -= Nb[j] * pts(m - 1, c); }
+				else interior.push_back({i - 1, Nb[j]});
+			}
+			for (const auto& [ia, va] : interior) {
+				for (const auto& [ib, vb] : interior) A(ia, ib) += va * vb;
+				for (int c = 0; c < dim; ++c) B(ia, c) += va * R[c];
+			}
+		}
+		// Cholesky A = L L^T (A is symmetric positive definite exactly when every
+		// knot span holds a data parameter, Schoenberg-Whitney).
+		Mat L(ni, ni, 0.0);
+		for (int j = 0; j < ni; ++j) {
+			double s = A(j, j);
+			for (int k = 0; k < j; ++k) s -= L(j, k) * L(j, k);
+			if (!(s > 1e-14)) throw std::invalid_argument("ApproximateCurve: a knot span holds no data point (singular normal equations); move the knots or use fewer poles");
+			L(j, j) = std::sqrt(s);
+			for (int i = j + 1; i < ni; ++i) {
+				double t = A(i, j);
+				for (int k = 0; k < j; ++k) t -= L(i, k) * L(j, k);
+				L(i, j) = t / L(j, j);
+			}
+		}
+		for (int c = 0; c < dim; ++c) {
+			std::vector<double> y(ni), x(ni);
+			for (int i = 0; i < ni; ++i) {
+				double s = B(i, c);
+				for (int k = 0; k < i; ++k) s -= L(i, k) * y[k];
+				y[i] = s / L(i, i);
+			}
+			for (int i = ni - 1; i >= 0; --i) {
+				double s = y[i];
+				for (int k = i + 1; k < ni; ++k) s -= L(k, i) * x[k];
+				x[i] = s / L(i, i);
+			}
+			for (int i = 0; i < ni; ++i) poles_(i + 1, c) = x[i];
+		}
+	};
+	solve(params_);
+
+	// Parameter correction: Newton on f(t) = (C(t) - Q) . C'(t) = 0 from each
+	// point's current parameter, accepted only when it brings the curve point
+	// closer; then re-solve. The end points stay at 0 and 1.
+	auto project = [&](const std::vector<double>& Q, double t0) {
+		auto dist = [&](double t) { return VecNorm(VecSub(Evaluate(t), Q)); };
+		double t = t0, best_t = t0, best_d = dist(t0);
+		const double h = 1e-6;
+		for (int it = 0; it < 6; ++it) {
+			const std::vector<double> C = Evaluate(t), D = Derivative(t);
+			const std::vector<double> Dp = Derivative(std::min(1.0, t + h)), Dm = Derivative(std::max(0.0, t - h));
+			double f = 0.0, fp = 0.0;
+			for (int c = 0; c < dim; ++c) {
+				const double e = C[c] - Q[c];
+				const double d2 = (Dp[c] - Dm[c]) / (std::min(1.0, t + h) - std::max(0.0, t - h));
+				f += e * D[c];
+				fp += D[c] * D[c] + e * d2;
+			}
+			if (!(fp > 0.0)) break;
+			const double dt = -f / fp;
+			t = std::clamp(t + dt, 0.0, 1.0);
+			const double d = dist(t);
+			if (d < best_d) { best_d = d; best_t = t; }
+			if (std::abs(dt) < 1e-12) break;
+		}
+		return best_t;
+	};
+	for (int round = 0; round < parameter_corrections; ++round) {
+		std::vector<double> t = params_;
+		for (int k = 1; k < m - 1; ++k) t[k] = project(pts.row(k), params_[k]);
+		// Keep the sequence monotonic (a projection that crossed its
+		// neighbour would make the collocation ill-posed): clamp into the
+		// neighbours' interval.
+		for (int k = 1; k < m - 1; ++k) t[k] = std::clamp(t[k], t[k - 1], params_[k + 1]);
+		params_ = t;
+		solve(params_);
+	}
 }
 
 // ===========================================================================

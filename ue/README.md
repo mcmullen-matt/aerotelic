@@ -41,7 +41,8 @@ The layout follows the Python/Qt version's main window (`aerotelic/ui/main_windo
   keep the engine's own dark style, so a light theme lightens the frame
   around them rather than the whole application.
 * **Menu bar**: File (New, Save, Save As, Open, Export STEP/STL/3D PDF, Quit), Analysis
-  (Potential Flow (Kratos), DUST (Vortex Particle Method)), Edit
+  (Mass Properties, Structural (Kratos FEA), Potential Flow (Kratos), High Order
+  Panel, DUST (Vortex Particle Method), Section Aerodynamics), Edit
   (Preferences), Model (Airfoils, Boolean Operation, Material Properties,
   Units, Scale; it was called Geometry until 2026-11-07), View (Isometric /
   Top / Front / Side, Ground Grid, Navigation Cube, Show Intermediate
@@ -2908,3 +2909,119 @@ back with every field.
   the next link fails with LNK1104 -- kill it first.
 * The packaged build is `Development` configuration (native file dialogs via
   the DesktopPlatform module are not available in `Shipping`).
+
+## Section aerodynamics: conformal map, re-fit, sensitivities (2026-11-11)
+
+**Analysis -> Section Aerodynamics** (and **Analyse section...** in the
+Airfoil library) is the two-dimensional aerodynamics of one airfoil per
+unit span, and the tool for re-representing a library airfoil with fewer
+design variables while watching what that costs. Everything lives in the
+core (`fft.hpp`, `fourier_periodic.hpp`, `periodic_spline.hpp`,
+`conformal_airfoil.hpp`, `section_aero.hpp`, the `ApproximateCurve` in
+`nurbs.hpp`, `Airfoil::Refit` / `CompareAirfoilFit`); the dialog is
+`Dialogs/SectionAeroDialog`.
+
+**The method registry.** `section_aero.hpp` fixes one request (the
+contour, the angle of attack, the Reynolds number, the resolution) and one
+result (surface distributions from the stagnation point, the coefficients,
+the cues, diagnostics) that every analysis method fills; the dialog runs
+every ticked method on the same closed section and overlays their pressure
+distributions on one chart with a row per method in the table, so methods
+are juxtaposed directly. The trailing-edge closure and the viscous cues are
+layered on every method's inviscid result identically (`SolveSection`).
+The first method is the conformal map; the next (a 2-D strip of the Johnson
+panel method, a Kratos 2-D potential flow with a wake, XFOIL if installed)
+are registry entries.
+
+**The conformal map** is Theodorsen's (NACA TR 411; Theodorsen & Garrick
+TR 452) in the form David Ives gave it in *A Modern Look at Conformal
+Mapping, Including Multiply Connected Regions*, AIAA Journal 14(8):1006-1011,
+1976. A Karman-Trefftz pre-map with exponent `n = 2 - tau/pi` (`tau` the
+trailing-edge angle, measured by a least-squares quadratic through the
+vertices within 1.5% of chord of the trailing edge so a cusp reads as a
+cusp) takes the section to a near-circle; its second singular point sits
+inside the nose at half the leading-edge radius. Theodorsen's map to the
+exact circle is the fixed point of Garrick's conjugate-function relation
+`eps = K[psi(phi + eps)]` -- `psi(theta)` a periodic cubic spline through
+the near-circle's vertices, `K` the exterior harmonic conjugate evaluated
+with the FFT each sweep (a 512-point grid converges to 1e-10 in about ten
+sweeps, well under a millisecond). The circle flow at incidence with the
+Kutta condition at the trailing edge's image gives the surface speed
+`q = |w_circle| / (|dz/dzeta'| |dzeta'/dzeta|)`, with
+`|dzeta'/dzeta| = exp(psi - psi0) sqrt((1 + eps')^2 + psi'^2)`. Cl comes
+both from Kutta-Joukowski (exact) and from integrating Cp round the grid
+polygon; the integrated pressure drag is the d'Alembert residual. The
+checks: `conformal_check` reproduces the exact Cp of a Joukowski airfoil
+(cusp) to 3e-5 and of a van de Vooren airfoil (10 deg trailing edge) to
+3e-5 away from the trailing edge; `section_aero_check` gives NACA 0012 a
+lift slope of 6.92/rad and `Cp_min = -0.414` (Abbott & von Doenhoff's
+v/V = 1.196), NACA 2412 `alpha_0 = -2.11 deg` and `Cm_c/4 = -0.059`.
+
+**The FFT is in-house and segregated on purpose.** FFTW was the first
+choice and was withdrawn when its GPL licence turned out to be incompatible
+with the application's distribution; `fft.hpp` is the only interface the
+rest of core sees (FFTW's sign convention, in-place, power-of-two sizes)
+and `src/fft.cpp` is a plain iterative radix-2 transform that an optimised
+library (MKL's FFTW3 wrappers, pocketfft, KissFFT) replaces by swapping
+the three function bodies and nothing else.
+
+**Trailing edge.** Every section is closed before analysis in XFOIL's
+manner: the gap vector between the two trailing-edge points is blended out
+over the aft 30% of chord (half the gap each way, weight
+`((x - 0.7)/0.3)^2`); the gap removed and the trailing-edge angle are
+reported. A finite angle is an inviscid stagnation point (Cp 1 there); a
+cusp keeps a finite speed.
+
+**Viscous cues, Mach 0, Reynolds number the user's.** On each surface from
+the stagnation point: the *transition cue* is the earlier of the station
+where `Re_x = Re (V/U)(s/c)` reaches 3.5e6 and the first adverse pressure
+gradient (the suction peak); the *skin-friction drag* integrates the
+turbulent flat-plate law `Cf = 0.0592 Re_s^-0.2` at the local edge speed
+from the stagnation point, projected on the wind (0.0108 for NACA 0012 at
+Re 1e6 and 0 deg; a plate gives 0.0094); the *separation cue* is
+Stratford's criterion (J. Fluid Mech. 5:1-16, 1959), fully turbulent from
+stagnation given the transition cue's fidelity: from the suction peak,
+`Cpbar = 1 - (V/Vmax)^2`, `x` from the equivalent flat-plate origin
+`x_EL = integral (V/Vmax)^3 ds` over the favourable run, separation where
+`Cpbar (x dCpbar/dx)^1/2 (1e-6 Re_x)^-0.1` reaches 0.39 (0.35 where
+`d2p/dx2 < 0`), valid while `Cpbar <= 4/7` (the grey marker is where that
+ends). Because an inviscid distribution recovers to stagnation at a
+finite-angle trailing edge, the criterion usually trips in the last few
+percent of chord at low incidence -- read that as "no separation ahead of
+the trailing-edge recovery". Stratford's second expression for
+`Cpbar > 4/7` is not implemented.
+
+**Re-fit.** A library airfoil is a B-spline interpolating every one of its
+points (one pole per point, 60-160 poles). `ApproximateCurve` is Piegl &
+Tiller's least-squares approximation with a fixed number of control points
+(9.4.1, A9.7: end points interpolated, normal equations over the interior
+poles, dense Cholesky) followed by three rounds of Hoschek's parameter
+correction (9.4.3), so the residual at the assigned parameters is the
+normal distance. Knots by averaging over the data parameters (every span
+holds data), uniform, or given (the dialog's "Keep current knots").
+`CompareAirfoilFit` reports the largest and RMS normal distance of the
+library points to the new curve (closest points by sampling plus
+golden-section search), where the largest is, the change of maximum
+thickness and camber, and the trailing-edge gap. Measured on NACA 2412
+(161 points): 10 poles 1.1e-2, 20 poles 1.9e-3, 30 poles 5.8e-4, the worst
+point always the leading edge, where the knot density by data count is
+lowest relative to the curvature -- curvature-adapted knot placement is
+the known improvement.
+
+**The dialog.** Left, the section's control-point editor (the shared
+`SCurveEditor`, free-x, equal aspect, the library contour as a grey
+outline, the trailing-edge poles locked by default) over the
+Representation group (degree, pole count, knot placement, Refit) and the
+error read-outs; at each pole an arrow shows the central-difference
+sensitivity of a chosen scalar (Cl, Cm c/4, friction drag, Cp at a probe on
+either surface) to that pole, drawn through the editor's outline provider
+(no editor change), the longest 0.08 c with its magnitude stated. Right,
+the conditions (angle, Reynolds, points, methods), the Cp chart
+(`SAerotelicLinePlot` with the new `InvertY`; upper solid, lower dashed;
+yellow transition, red separation and grey range-end markers; Stratford's
+S optionally on the right axis), the coefficient table and the cue notes.
+A Polar tab sweeps -6..16 deg. Every edit re-solves at once (sub-ms); the
+fit report, the sensitivities and the polar run on a ticker once the poles
+have been still for 0.2 s. Apply clones the edited section into the
+session's custom airfoil library under the given name, where every section
+picker lists it; the library airfoil is never changed.

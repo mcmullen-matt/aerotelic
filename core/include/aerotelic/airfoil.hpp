@@ -45,11 +45,28 @@ public:
 	// a fit. An empty name becomes "a.name -> b.name".
 	static std::unique_ptr<Airfoil> Blend(const Airfoil& a, const Airfoil& b, double w, std::string name = "");
 
+	// Re-represents `source` with a chosen degree and pole count: a
+	// least-squares ApproximateCurve through the source's fit points (the
+	// raw contour it was built from), so the design-variable count drops
+	// from one pole per point to `n_poles`. The result keeps the source's
+	// fit points, so AirfoilFitReport can measure what the re-fit lost.
+	static std::unique_ptr<Airfoil> Refit(const Airfoil& source, int degree, int n_poles,
+		ApproximationKnots knots = ApproximationKnots::Averaging,
+		const std::vector<double>* given_interior_knots = nullptr, std::string name = "");
+
+	// An independent copy: same curve, fit points, leading-edge parameter.
+	std::unique_ptr<Airfoil> Clone() const;
+
 	std::string name;
 
 	NurbsSpec Serialize() const;
 
 	const NurbsCurve& nurbs_curve() const { return *curve_; }
+	// For the control-point editor, which edits poles and knots in place;
+	// call CurveEdited() afterwards so the leading-edge parameter and the
+	// trailing-edge line follow the new shape.
+	NurbsCurve& mutable_curve() { return *curve_; }
+	void CurveEdited();
 	// nullptr when the trailing edge is already closed (pts[0] == pts[-1]).
 	const NurbsCurve* te_line() const { return te_line_.get(); }
 	// The raw points the curve was fitted through (airfoil.py's _pts_arr;
@@ -104,5 +121,26 @@ private:
 	double t_le_ = 0.0;
 	std::unique_ptr<NurbsCurve> te_line_;
 };
+
+// How far a (re-fitted or hand-edited) airfoil's curve strays from the
+// source points it represents, and what that does to the section's
+// thickness and camber. Distances in chord units (the sections are
+// normalised to unit chord).
+struct AirfoilFitReport {
+	int n_points = 0;        // source points compared
+	int degree = 0, n_poles = 0;
+	double max_distance = 0.0;   // largest normal distance point -> curve
+	double rms_distance = 0.0;
+	double max_at_x = 0.0;       // x/c of the worst point
+	bool max_on_upper = false;
+	double delta_max_thickness = 0.0; // fitted minus source
+	double delta_max_camber = 0.0;
+	double te_gap_source = 0.0, te_gap_fitted = 0.0;
+};
+
+// Compares `fitted`'s curve with `source`'s fit points (and the two
+// sections' thickness and camber). `fitted` is usually Airfoil::Refit's
+// result or the same object after pole edits.
+AirfoilFitReport CompareAirfoilFit(const Airfoil& source, const Airfoil& fitted);
 
 } // namespace aerotelic

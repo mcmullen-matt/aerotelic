@@ -84,6 +84,13 @@ public:
 	// (m, n_poles): column i is N_{i,p}(s), or the rational blend if `rational`.
 	Mat BasisMatrix(const std::vector<double>& s, bool rational = false) const;
 
+	// The parameter of the point on the curve nearest to `point`: the nearest
+	// of `n_samples` uniform samples, refined by golden-section search on the
+	// distance over the two adjacent sample intervals (no second derivative
+	// needed, unlike Newton on the projection equation). Returns the
+	// parameter and the distance.
+	std::pair<double, double> ClosestParameter(const std::vector<double>& point, int n_samples = 400) const;
+
 	// Public entry point for the protected ResetKnots() hook (reset_knots()
 	// in Python) -- it's protected because it's also an internal hook a
 	// subclass's own constructor/SetDegree() calls, but the curve-editor
@@ -233,6 +240,41 @@ public:
 	void MakeClampedKnots(const std::vector<double>& t);
 	// A[i,j] = N_j(t_i) in LAPACK/scipy banded storage: ab[ku+i-j, j] = A[i,j].
 	Mat CollocationBanded(const std::vector<double>& t) const;
+
+private:
+	std::vector<double> params_;
+};
+
+// Where ApproximateCurve puts its interior knots.
+enum class ApproximationKnots {
+	Averaging, // over the data parameters, Piegl & Tiller eq. 9.69 (every span holds data)
+	Uniform,   // equally spaced in [0, 1]
+	Given,     // the caller's interior knots (n_poles - degree - 1 of them)
+};
+
+// A clamped B-spline (unit weights) approximating given points in the
+// least-squares sense with a chosen degree and pole count -- Piegl & Tiller
+// 9.4.1, "global approximation with a fixed number of control points"
+// (algorithm A9.7): the two end points are interpolated exactly, the other
+// poles solve the normal equations (N^T N) P = N^T R with chord-length data
+// parameters, followed by `parameter_corrections` rounds of Hoschek's
+// parameter correction (P&T 9.4.3): each data point's parameter is moved to
+// the foot of its perpendicular on the current curve and the poles are
+// re-solved with the same knots, which turns the initial tangential
+// residuals into a smaller normal error. The point of this class is to
+// RE-represent a curve with fewer design variables than FitCurve's
+// one-pole-per-point interpolation; see Airfoil::Refit and
+// AirfoilFitReport for the error it introduces.
+class ApproximateCurve : public ClampedNurbsCurve {
+public:
+	// Requires degree + 1 <= n_poles < pts.rows(). Throws std::invalid_argument
+	// on a bad count, or when a knot span holds no data parameter (the normal
+	// matrix is then singular).
+	ApproximateCurve(const Mat& pts, int degree, int n_poles, ApproximationKnots knots = ApproximationKnots::Averaging,
+		const std::vector<double>* given_interior_knots = nullptr, int parameter_corrections = 3);
+
+	// Parameter assigned to each data point (chord length, then corrected).
+	std::vector<double> data_parameters() const { return params_; }
 
 private:
 	std::vector<double> params_;

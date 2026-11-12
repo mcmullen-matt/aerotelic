@@ -1,6 +1,7 @@
 #include "AirfoilLibraryDialog.h"
 #include "Widgets/MessageBox.h"
 #include "AirfoilBrowser.h"
+#include "SectionAeroDialog.h"
 
 #include "Framework/Application/SlateApplication.h"
 #include "Widgets/SWindow.h"
@@ -63,11 +64,26 @@ void OpenAerotelicAirfoilLibrary()
 						return FReply::Handled();
 					})
 				]
-				+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 8)
+				+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 4)
 				[
 					SNew(SButton).HAlign(HAlign_Center)
 					.Text(LOCTEXT("LoadDat", "Load .dat..."))
 					.OnClicked_Lambda([Browser]() { if (TSharedPtr<SAerotelicAirfoilBrowser> B = Browser.Pin()) B->LoadDatFiles(); return FReply::Handled(); })
+				]
+				+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 8)
+				[
+					SNew(SButton).HAlign(HAlign_Center)
+					.Text(LOCTEXT("Analyse", "Analyse section..."))
+					.ToolTipText(LOCTEXT("AnalyseTip", "Open the selected airfoil in Section Aerodynamics: re-represent it with fewer poles, drag them with the aerodynamic sensitivities shown, and see its pressure distribution and coefficients"))
+					.IsEnabled_Lambda([Browser]() { TSharedPtr<SAerotelicAirfoilBrowser> B = Browser.Pin(); return B.IsValid() && B->GetSelectedAirfoil() != nullptr; })
+					.OnClicked_Lambda([Browser]()
+					{
+						if (TSharedPtr<SAerotelicAirfoilBrowser> B = Browser.Pin())
+						{
+							if (std::shared_ptr<aerotelic::Airfoil> A = B->GetSelectedAirfoil()) ShowAerotelicSectionAeroDialog([](const FText&) {}, A);
+						}
+						return FReply::Handled();
+					})
 				]
 				+ SVerticalBox::Slot().AutoHeight()
 				[

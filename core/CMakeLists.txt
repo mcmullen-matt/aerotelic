@@ -64,6 +64,14 @@ add_library(aerotelic_core STATIC
 	src/body_structure.cpp
 	src/structure_plan.cpp
 	src/mesh_cut.cpp
+	# Section aerodynamics: the in-house FFT (replaceable, see fft.hpp), the
+	# spectral helpers and periodic spline it feeds, Theodorsen's map, and
+	# the method registry with the shared viscous cues.
+	src/fft.cpp
+	src/fourier_periodic.cpp
+	src/periodic_spline.cpp
+	src/conformal_airfoil.cpp
+	src/section_aero.cpp
 	# Shewchuk's exact geometric predicates (public domain), compiled as C
 	# with strict IEEE rounding: the adaptive arithmetic is defeated by
 	# fast-math style reassociation.
@@ -217,4 +225,16 @@ target_link_libraries(body_structure_check PRIVATE aerotelic_core)
 
 add_executable(mesh_cut_check tests/mesh_cut_check.cpp)
 target_link_libraries(mesh_cut_check PRIVATE aerotelic_core)
+
+add_executable(fft_check tests/fft_check.cpp)
+target_link_libraries(fft_check PRIVATE aerotelic_core)
+
+add_executable(conformal_check tests/conformal_check.cpp)
+target_link_libraries(conformal_check PRIVATE aerotelic_core)
+
+add_executable(nurbs_approx_check tests/nurbs_approx_check.cpp)
+target_link_libraries(nurbs_approx_check PRIVATE aerotelic_core)
+
+add_executable(section_aero_check tests/section_aero_check.cpp)
+target_link_libraries(section_aero_check PRIVATE aerotelic_core)
 

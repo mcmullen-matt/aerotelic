@@ -15,6 +15,7 @@
 #include "Licensing/AerotelicActivationDialog.h"
 #include "Dialogs/HighOrderPanelDialog.h"
 #include "Dialogs/StructuralFeaDialog.h"
+#include "Dialogs/SectionAeroDialog.h"
 #include "Misc/App.h"
 #include "Misc/CommandLine.h"
 #include "Misc/Parse.h"
@@ -112,6 +113,18 @@ void AAerotelicPlayerController::ShowStartupWelcome()
 	{
 		TWeakPtr<SAerotelicMainShell> WeakShell = Shell;
 		ShowAerotelicStructuralFeaDialog([WeakShell](const FText& T)
+		{
+			if (TSharedPtr<SAerotelicMainShell> P = WeakShell.Pin()) P->SetStatus(T);
+		});
+		return;
+	}
+	// -AerotelicSectionAeroSmoke: the same for Analysis -> Section
+	// Aerodynamics on a NACA 2412: the dialog solves, screenshots its
+	// Section and Polar tabs and quits.
+	if (FParse::Param(FCommandLine::Get(), TEXT("AerotelicSectionAeroSmoke")))
+	{
+		TWeakPtr<SAerotelicMainShell> WeakShell = Shell;
+		ShowAerotelicSectionAeroDialog([WeakShell](const FText& T)
 		{
 			if (TSharedPtr<SAerotelicMainShell> P = WeakShell.Pin()) P->SetStatus(T);
 		});

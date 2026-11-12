@@ -40,6 +40,7 @@ public:
 	TSharedPtr<FUICommandInfo> PotentialFlow;
 	TSharedPtr<FUICommandInfo> HighOrderPanel;
 	TSharedPtr<FUICommandInfo> DustVpm;
+	TSharedPtr<FUICommandInfo> SectionAero;
 
 	// View
 	TSharedPtr<FUICommandInfo> ViewIsometric;
