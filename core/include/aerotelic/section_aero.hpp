@@ -30,8 +30,15 @@ struct SectionAeroRequest {
 	double alpha_deg = 0.0;
 	double reynolds = 1.0e6;
 	int n_points = 512;             // method resolution (power of two for the conformal map)
+	int panel_nodes = 200;          // airfoil nodes of the panel methods (cosine resampling of the contour)
 	double te_blend_start = 0.7;    // x/c from which the trailing-edge gap is blended out
-	double transition_re_x = 3.5e6; // Re_x at which a laminar run is taken to transition
+	double transition_re_x = 3.5e6; // Re_x at which a laminar run is taken to transition (inviscid methods' cue)
+	// Boundary-layer method (mfoil):
+	double ncrit = 9.0;             // e^N critical amplification factor
+	double xft_upper = 1.0;         // forced transition x/c per surface (1 = natural only)
+	double xft_lower = 1.0;
+	double h_sep_lam = 3.83;        // laminar separation cue: H_k where the laminar c_f closure vanishes
+	double h_sep_turb = 2.8;        // turbulent incipient detachment cue (Kline 2.7 / Castillo-George 2.76)
 };
 
 // The request for an Airfoil: its curve sampled with cosine spacing,
@@ -52,11 +59,20 @@ struct SectionSurface {
 	std::vector<double> cp;         // 1 - q^2
 	std::vector<double> stratford;  // Stratford's parameter S(x) (0 ahead of the suction peak)
 	int peak_index = 0;             // suction peak (max q)
-	SurfaceCue transition;          // the earlier of Re_x >= transition_re_x and the first adverse gradient
-	SurfaceCue separation;          // Stratford (1959), fully turbulent from stagnation
+	// Cues. Inviscid methods: transition = the earlier of Re_x >= transition_re_x
+	// and the first adverse gradient; separation = Stratford (1959), fully
+	// turbulent from stagnation. The boundary-layer method: transition = the
+	// e^N location (or forced), separation = the shape-factor thresholds,
+	// detachment = where the solved turbulent c_f falls to zero.
+	SurfaceCue transition;
+	SurfaceCue separation;
+	SurfaceCue detachment;
 	double stratford_range_end_x = -1.0; // x/c where Cpbar first exceeded 4/7 (criterion no longer valid), -1 if never
-	double cd_friction = 0.0;       // this surface's share of the turbulent flat-plate skin-friction drag
+	double cd_friction = 0.0;       // this surface's share of the skin-friction drag
 	double cf_integral_x_equiv = 0.0; // Stratford's equivalent flat-plate length x_EL / c at the peak
+	// Boundary-layer distributions (the boundary-layer method only; empty otherwise).
+	std::vector<double> theta, delta_star, hk, cf, amp; // amp: n~ (laminar) or sqrt(c_tau) (turbulent)
+	std::vector<char> turb;
 };
 
 struct SectionAeroResult {
@@ -66,8 +82,13 @@ struct SectionAeroResult {
 	std::vector<std::string> warnings;
 
 	double alpha_deg = 0.0, reynolds = 0.0;
-	// Integrated from the pressure distribution over the closed contour.
+	bool converged = true;          // false when an iterative method stopped at its limit
+	// Integrated from the pressure distribution over the closed contour. For
+	// inviscid methods cd_pressure is the d'Alembert residual; for the
+	// boundary-layer method it is the pressure drag cd - cd_friction, with
+	// cd_total the Squire-Young total.
 	double cl = 0.0, cd_pressure = 0.0, cm_le = 0.0, cm_c4 = 0.0;
+	double cd_total = 0.0;
 	// Method-specific exact values where the method has them (else NaN).
 	double cl_exact = 0.0;          // e.g. Kutta-Joukowski from the circulation
 	double alpha0_deg = 0.0;        // zero-lift angle
@@ -97,14 +118,24 @@ public:
 	// False with a reason when the method needs something absent (an
 	// external program, a Python environment, ...).
 	virtual bool Available(std::string* why = nullptr) const { (void)why; return true; }
+	// Sub-millisecond: safe to run on every pole drag, in sweeps and in
+	// finite-difference sensitivities. Slow methods run on request.
+	virtual bool Fast() const { return true; }
+	// Solves the boundary layer itself (its cues are its own; the shared
+	// inviscid cues are not layered on it).
+	virtual bool Viscous() const { return false; }
 	// The inviscid solve; the shared post-processing (cues, friction drag)
 	// is added by SolveSection.
 	virtual SectionAeroResult Solve(const SectionAeroRequest& request) const = 0;
 };
 
 // All registered methods, in display order. The first is the conformal map
-// (Theodorsen / Ives).
+// (Theodorsen / Ives), then the vortex-panel methods (section_aero_panel.cpp).
 const std::vector<const SectionAeroMethod*>& SectionAeroMethods();
+
+// The registry's constructors for the methods that live in their own files.
+std::unique_ptr<SectionAeroMethod> MakeVortexPanelInviscidMethod();
+std::unique_ptr<SectionAeroMethod> MakeVortexPanelIblMethod();
 const SectionAeroMethod* FindSectionAeroMethod(const std::string& name);
 
 // Runs the method and layers the shared post-processing on its result.

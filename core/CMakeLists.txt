@@ -72,6 +72,9 @@ add_library(aerotelic_core STATIC
 	src/periodic_spline.cpp
 	src/conformal_airfoil.cpp
 	src/section_aero.cpp
+	src/vortex_panel.cpp
+	src/ibl_airfoil.cpp
+	src/section_aero_panel.cpp
 	# Shewchuk's exact geometric predicates (public domain), compiled as C
 	# with strict IEEE rounding: the adaptive arithmetic is defeated by
 	# fast-math style reassociation.
@@ -237,4 +240,10 @@ target_link_libraries(nurbs_approx_check PRIVATE aerotelic_core)
 
 add_executable(section_aero_check tests/section_aero_check.cpp)
 target_link_libraries(section_aero_check PRIVATE aerotelic_core)
+
+add_executable(vortex_panel_check tests/vortex_panel_check.cpp)
+target_link_libraries(vortex_panel_check PRIVATE aerotelic_core)
+
+add_executable(ibl_check tests/ibl_check.cpp)
+target_link_libraries(ibl_check PRIVATE aerotelic_core)
 

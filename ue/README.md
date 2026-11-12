@@ -3025,3 +3025,106 @@ fit report, the sensitivities and the polar run on a ticker once the poles
 have been still for 0.2 s. Apply clones the edited section into the
 session's custom airfoil library under the given name, where every section
 picker lists it; the library airfoil is never changed.
+
+## Section aerodynamics: vortex panel method and integral boundary layer (2026-11-12)
+
+Two more registry entries beside the conformal map, both in the core:
+`vortex_panel.hpp` and `ibl_airfoil.hpp` with `ibl_closures.hpp` and
+`dual.hpp`; the dialog gained what they need.
+
+**Vortex panel (inviscid).** The streamfunction panel method of XFOIL as
+documented in Fidkowski's mfoil paper (sections II-III, appendix A): N-1
+airfoil panels each with a linear vortex sheet and a constant source sheet,
+Nw-1 wake panels with source sheets linear over each half, flow tangency
+as a constant streamfunction at the airfoil nodes, the Kutta condition
+`gamma_1 + gamma_N = 0`, and for the (always) sharp trailing edge the
+N-th row replaced by the extrapolation of the lower-minus-upper difference
+`d_0 = 2 d_1 - d_2` (XFOIL's row `[1 -2 1 -1 2 -1]`; the paper's typeset
+equation has that row's left-hand side with the opposite sign). The
+solution is kept as the 0 and 90 degree reference vectors and the LU of
+the augmented system. The wake is the inviscid streamline from the
+trailing edge by predictor-corrector with geometric spacing. The influence
+coefficients are derived in `vortex_panel.cpp` from the point kernels and
+checked against 64-point Gauss quadrature in `vortex_panel_check`
+(1e-16); the constant-source branch cut is placed along the outward normal
+through each panel's midpoint so no node sees a cut, and at a panel's own
+end points the angles take the exterior limits (pi, pi) / (0, 0), as
+mfoil's `panel_info` does -- `atan2(0, 0) = 0` there was a real bug that
+corrupted the transpiration coupling until found. On 200 cosine-spaced
+nodes the method matches the exact conformal map on the same contour to
+3-7e-3 in Cp and 4e-4 in Cl (NACA 0012 at 0 and 6 deg, 2412 at 2, 4415 at
+4).
+
+**Vortex panel + boundary layer (mfoil).** XFOIL's viscous analysis in
+mfoil's form, sections IV-V and VII of the paper, incompressible: four
+states per node on the airfoil and the wake (theta, delta*, n~ or
+sqrt(c_tau), u_e); the momentum, shape-parameter, amplification and
+shear-lag residuals as log finite differences with Hk-dependent upwinding
+(eqs. 9-13); the stagnation point extrapolated from a surface's first two
+nodes (IV.C); the wake started from the two trailing-edge states (IV.D);
+transition by the e^N method inside its panel, the location from the
+amplification residual and its derivatives through the implicit-function
+theorem (IV.E), or forced at a chord fraction (the forced station moves
+with its interval's end coordinates); the displacement effect as
+transpiration sources, `u_e = u_e,inv + D (u_e delta*)` with the dense D
+built from the panel influences (eqs. 23-27); initialisation by
+direct/inverse marching on the inviscid edge velocity (V.A); then one
+Newton system of 4(N+Nw) unknowns with mfoil's update limits, the
+stagnation point moved and the transition interval re-marched after each
+update, solved densely. Squire-Young total drag from the last wake node,
+skin friction integrated from the stagnation point, pressure drag their
+difference. The closures (appendix B) were taken not from the paper's
+extracted text, which loses fraction bars, but from NFoil, the MIT-licensed
+Numba port of mfoil that is numerically identical to it (the Michigan site
+refuses automated downloads); the shear-lag constant is
+`K_lag / (G_B (1 + U_s))`.
+
+**Jacobians by automatic differentiation.** The closures and residuals are
+templates over the number type (`ibl_closures.hpp`); evaluated with
+`Dual<12>` (`dual.hpp`, forward mode) they give the exact Jacobian blocks,
+which `IblJacobianCheck` confirms against central differences to 1e-6
+for a general incidence, for the stagnation point on a node, and for a
+forced transition. This replaces the hand-chained derivative code that
+makes up most of XFOIL's and mfoil's boundary-layer source.
+
+**Two robustness measures that the paper does not mention.** (1) A node
+whose edge velocity is within 1% of its neighbour's is the stagnation
+point itself: the point is pinned to it with zero sensitivity to that
+velocity, and the first node then takes the extrapolated stagnation state
+(mfoil's `i0 = 1` path); without this a symmetric section at zero
+incidence flips the stagnation panel every iteration. (2) The boundary-
+layer method resamples the section with LOW trailing-edge clustering
+(`ResampleContour(n, te_cluster = 0.2)`): with the full cosine clustering
+the tiny trailing-edge panels make the source strength dm/ds there
+ill-conditioned and only 2 of 7 node counts converged; at 0.2 every case in
+the sweep converges in 8-29 iterations (mfoil's own paneling has a low
+trailing-edge resolution factor for the same reason).
+
+**Numbers (Mach 0, Re 1e6, 200 nodes).** NACA 2412 at 2 deg: cl 0.439,
+cm c/4 -0.046, cd 0.00572, cd_f 0.00408, transition at 0.528c upper and
+0.954c lower, 12 Newton iterations, 0.21 s; the paper's Table 1 at Mach 0.4
+reads 0.489 / -0.050 / 0.00617 / 0.00421 / 0.491 / 0.949, the differences
+being the compressibility it includes. NACA 0012 at 0 deg: cd 0.00531,
+transition at 0.688c, 8 iterations, 75 ms. NACA 4415 at Re 5e5, 8 deg: cl
+1.25, cd 0.0123, 36 iterations. Forced transition at 10% chord raises the
+2412's drag to 0.0083. Checks in `ibl_check` (which also has a `probe`
+mode sweeping node counts and incidences).
+
+**Cues from this method** replace the shared inviscid ones on its rows:
+transition = the e^N (or forced) location; separation = the first station
+where H_k reaches the laminar threshold (3.83, where the laminar c_f
+closure vanishes) or after transition the turbulent threshold (2.8,
+incipient detachment: Kline 2.7, Castillo-George 2.76 +/- 0.23), both
+fields of the dialog; detachment (magenta) = where the solved turbulent c_f
+falls to zero (the closure puts it near H_k 3.5). The surfaces carry
+theta, delta*, H_k, c_f and the amplification / sqrt(c_tau), selectable
+on the chart's right axis. The method is flagged slow (`Fast() = false`):
+the dialog runs it on a worker thread once the poles have been still for
+0.2 s, dims its row and curves as "(recomputing)" meanwhile, and keeps it
+out of the sensitivities and the polar sweep; results of a superseded edit
+are discarded by a generation counter. The result also carries
+`converged`; an unconverged last iterate is shown in orange and said so.
+Known limits: incompressible only; no blunt trailing edge (every section is
+closed first, by the user's standing choice); a dense Newton solve (a
+Schur-complement elimination of the banded boundary-layer block would make
+it XFOIL-fast if ever needed); the paper's `d_w` wake of one chord.

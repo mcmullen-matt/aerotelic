@@ -16,6 +16,7 @@
 #include "Framework/Application/SlateApplication.h"
 #include "Styling/CoreStyle.h"
 #include "Containers/Ticker.h"
+#include "Async/Async.h"
 #include "ImageUtils.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
@@ -34,6 +35,7 @@
 #include "aerotelic/airfoil.hpp"
 #include "aerotelic/section_aero.hpp"
 
+#include <atomic>
 #include <cmath>
 
 #define LOCTEXT_NAMESPACE "SectionAeroDialog"
@@ -88,8 +90,17 @@ namespace
 		double ProbeX = 0.3;
 		PoleSensitivity Sens;
 
-		bool bShowStratford = false;
-		TArray<SectionAeroResult> Results;
+		// Boundary-layer method conditions.
+		double Ncrit = 9.0;
+		double XftUpper = 1.0, XftLower = 1.0; // forced transition x/c (1 = natural)
+		double HSepLam = 3.83, HSepTurb = 2.8;
+
+		int32 OverlayIndex = 0; // right-axis overlay: none, Stratford S, H_k, c_f, delta*/c, theta/c, amplification
+		TArray<SectionAeroResult> Results;            // the fast methods, solved in place
+		TMap<int32, SectionAeroResult> SlowResults;   // the slow methods, by method index, solved on a worker
+		TMap<int32, uint64> SlowGeneration;           // which edit generation each slow result belongs to
+		uint64 Generation = 0;                        // bumped by every solve request
+		TSharedPtr<struct FSlowJob, ESPMode::ThreadSafe> SlowJob;
 		FString ApplyName;
 
 		// Deferred work (the fit report and the sensitivities are too slow
@@ -105,7 +116,46 @@ namespace
 		TFunction<void(const FText&)> Status;
 	};
 
+	// A slow method's solve on a worker thread: the request is copied in, the
+	// result read out on the game thread once bDone; a stale generation is
+	// discarded.
+	struct FSlowJob
+	{
+		std::atomic<bool> bDone{ false };
+		int32 MethodIndex = 0;
+		uint64 Generation = 0;
+		SectionAeroRequest Request;
+		SectionAeroResult Result;
+	};
+
 	int32 NPointsOf(const FState& S) { return kPointChoices[FMath::Clamp(S.PointsIndex, 0, 2)]; }
+
+	// Every result to show, in method order: the fast ones of this generation
+	// and the slow ones as last computed (flagged stale while a newer edit is
+	// pending). Second of the pair: the method index.
+	TArray<TPair<const SectionAeroResult*, int32>> CombinedResults(const FState& S)
+	{
+		TArray<TPair<const SectionAeroResult*, int32>> Out;
+		const auto& Methods = SectionAeroMethods();
+		for (int32 i = 0; i < static_cast<int32>(Methods.size()); ++i)
+		{
+			if (!S.MethodOn.IsValidIndex(i) || !S.MethodOn[i]) continue;
+			if (Methods[i]->Fast())
+			{
+				for (const SectionAeroResult& R : S.Results) if (R.method == Methods[i]->Name()) { Out.Add(TPair<const SectionAeroResult*, int32>(&R, i)); break; }
+			}
+			else if (const SectionAeroResult* R = S.SlowResults.Find(i)) Out.Add(TPair<const SectionAeroResult*, int32>(R, i));
+		}
+		return Out;
+	}
+
+	bool SlowResultStale(const FState& S, int32 MethodIndex)
+	{
+		const uint64* G = S.SlowGeneration.Find(MethodIndex);
+		return G == nullptr || *G != S.Generation;
+	}
+
+	const TCHAR* kOverlayLabels[] = { TEXT("none"), TEXT("Stratford S"), TEXT("H_k"), TEXT("c_f"), TEXT("delta*/c"), TEXT("theta/c"), TEXT("n~ / sqrt(c_tau)") };
 
 	FText Num(double V, int32 Decimals)
 	{
@@ -147,6 +197,11 @@ namespace
 		Req.alpha_deg = S.AlphaDeg;
 		Req.reynolds = S.Reynolds;
 		Req.n_points = NPointsOf(S);
+		Req.ncrit = S.Ncrit;
+		Req.xft_upper = S.XftUpper;
+		Req.xft_lower = S.XftLower;
+		Req.h_sep_lam = S.HSepLam;
+		Req.h_sep_turb = S.HSepTurb;
 		return Req;
 	}
 
@@ -157,12 +212,13 @@ namespace
 	void Solve(const TSharedRef<FState>& S)
 	{
 		S->Results.Empty();
-		if (!S->Working) { UpdateCpPlot(S); RebuildTable(S); return; }
+		++S->Generation; // the slow methods re-run for this state once the edits settle
+		if (!S->Working) { S->SlowResults.Empty(); UpdateCpPlot(S); RebuildTable(S); return; }
 		const SectionAeroRequest Req = RequestFor(*S);
 		const auto& Methods = SectionAeroMethods();
 		for (int32 i = 0; i < static_cast<int32>(Methods.size()) && i < S->MethodOn.Num(); ++i)
 		{
-			if (!S->MethodOn[i]) continue;
+			if (!S->MethodOn[i] || !Methods[i]->Fast()) continue;
 			SectionAeroResult R;
 			try
 			{
@@ -180,6 +236,7 @@ namespace
 		RebuildTable(S);
 		S->bSensDirty = S->bShowSensitivity;
 		S->bPolarDirty = true;
+		S->LastEdit = FPlatformTime::Seconds();
 		if (S->Status && S->Results.Num() > 0 && S->Results[0].ok)
 		{
 			const SectionAeroResult& R = S->Results[0];
@@ -188,17 +245,72 @@ namespace
 		}
 	}
 
+	// The next enabled slow method without a result of this generation, or -1.
+	int32 NextSlowMethod(const FState& S)
+	{
+		const auto& Methods = SectionAeroMethods();
+		for (int32 i = 0; i < static_cast<int32>(Methods.size()) && i < S.MethodOn.Num(); ++i)
+		{
+			if (!S.MethodOn[i] || Methods[i]->Fast()) continue;
+			if (SlowResultStale(S, i)) return i;
+		}
+		return -1;
+	}
+
+	// Starts a slow method on a worker thread (one at a time).
+	void LaunchSlow(const TSharedRef<FState>& S, int32 MethodIndex)
+	{
+		if (!S->Working) return;
+		TSharedPtr<FSlowJob, ESPMode::ThreadSafe> Job = MakeShared<FSlowJob, ESPMode::ThreadSafe>();
+		Job->MethodIndex = MethodIndex;
+		Job->Generation = S->Generation;
+		Job->Request = RequestFor(*S);
+		S->SlowJob = Job;
+		const SectionAeroMethod* M = SectionAeroMethods()[MethodIndex];
+		Async(EAsyncExecution::Thread, [Job, M]()
+		{
+			try { Job->Result = SolveSection(*M, Job->Request); }
+			catch (const std::exception& E) { Job->Result.method = M->Name(); Job->Result.ok = false; Job->Result.error = E.what(); }
+			Job->bDone = true;
+		});
+	}
+
+	// Collects a finished slow job on the game thread.
+	void CollectSlow(const TSharedRef<FState>& S)
+	{
+		if (!S->SlowJob.IsValid() || !S->SlowJob->bDone) return;
+		TSharedPtr<FSlowJob, ESPMode::ThreadSafe> Job = S->SlowJob;
+		S->SlowJob.Reset();
+		if (Job->Generation != S->Generation) return; // stale: the ticker relaunches
+		S->SlowResults.Add(Job->MethodIndex, Job->Result);
+		S->SlowGeneration.Add(Job->MethodIndex, Job->Generation);
+		UpdateCpPlot(S);
+		RebuildTable(S);
+		if (S->Status && Job->Result.ok)
+		{
+			const SectionAeroResult& R = Job->Result;
+			S->Status(FText::Format(LOCTEXT("StatusSlow", "{0}: Cl {1}, Cd {2} (friction {3}), Cm c/4 {4}, transition {5} / {6}{7} ({8} s)"),
+				FText::FromString(StdToFString(R.method)), Num(R.cl, 4), Num(R.cd_total, 5), Num(R.cd_friction, 5), Num(R.cm_c4, 4),
+				R.upper.transition.found ? Num(R.upper.transition.x, 3) : DashText(), R.lower.transition.found ? Num(R.lower.transition.x, 3) : DashText(),
+				R.converged ? FText::GetEmpty() : LOCTEXT("NotConv", ", NOT CONVERGED"), Num(R.solve_ms / 1000.0, 2)));
+		}
+	}
+
 	void UpdateCpPlot(const TSharedRef<FState>& S)
 	{
 		if (!S->CpPlot.IsValid()) return;
 		TArray<FAerotelicPlotSeries> Series;
-		bool bAnyCue = false;
+		bool bAnyCue = false, bAnyViscousCue = false, bOverlayLabelled = false;
 		FString Message;
-		for (int32 i = 0; i < S->Results.Num(); ++i)
+		for (const TPair<const SectionAeroResult*, int32>& Entry : CombinedResults(*S))
 		{
-			const SectionAeroResult& R = S->Results[i];
+			const SectionAeroResult& R = *Entry.Key;
+			const int32 i = Entry.Value;
+			const bool bViscous = SectionAeroMethods()[i]->Viscous();
 			if (!R.ok) { Message += StdToFString(R.method) + TEXT(": ") + StdToFString(R.error) + TEXT("\n"); continue; }
-			const FLinearColor C = kMethodColors[i % UE_ARRAY_COUNT(kMethodColors)];
+			FLinearColor C = kMethodColors[i % UE_ARRAY_COUNT(kMethodColors)];
+			if (!SectionAeroMethods()[i]->Fast() && SlowResultStale(*S, i)) C = C * 0.5f + FLinearColor(0.25f, 0.25f, 0.25f, 0.0f); // stale: dimmed
+			C.A = 1.0f;
 			auto Surface = [&](const SectionSurface& Sf, bool bUpper)
 			{
 				FAerotelicPlotSeries P;
@@ -212,43 +324,66 @@ namespace
 			};
 			Surface(R.upper, true);
 			Surface(R.lower, false);
-			FAerotelicPlotSeries Tr, Sep, End;
+			FAerotelicPlotSeries Tr, Sep, End, Det;
 			Tr.Color = kTransition; Tr.bLine = false; Tr.MarkerSize = 7.0f;
 			Sep.Color = kSeparation; Sep.bLine = false; Sep.MarkerSize = 9.0f;
 			End.Color = kRangeEnd; End.bLine = false; End.MarkerSize = 5.0f;
+			Det.Color = FLinearColor(FColor::FromHex(TEXT("#d040d0"))); Det.bLine = false; Det.MarkerSize = 6.0f;
 			for (const SectionSurface* Sf : { &R.upper, &R.lower })
 			{
 				if (Sf->transition.found) Tr.Points.Add(FVector2D(Sf->transition.x, 1.0 - std::pow(InterpolateQ(*Sf, Sf->transition.s), 2)));
 				if (Sf->separation.found) Sep.Points.Add(FVector2D(Sf->separation.x, 1.0 - std::pow(InterpolateQ(*Sf, Sf->separation.s), 2)));
+				if (Sf->detachment.found) Det.Points.Add(FVector2D(Sf->detachment.x, 1.0 - std::pow(InterpolateQ(*Sf, Sf->detachment.s), 2)));
 				if (Sf->stratford_range_end_x >= 0.0)
 				{
 					// the Cp at that x along this surface
 					for (size_t k = 0; k < Sf->x.size(); ++k) if (Sf->x[k] == Sf->stratford_range_end_x) { End.Points.Add(FVector2D(Sf->x[k], Sf->cp[k])); break; }
 				}
 			}
-			if (!bAnyCue) { Tr.Label = TEXT("transition cue"); Sep.Label = TEXT("separation (Stratford)"); End.Label = TEXT("Cpbar > 4/7: criterion ends"); bAnyCue = true; }
+			if (!bViscous && !bAnyCue) { Tr.Label = TEXT("transition cue (Re_x / adverse)"); Sep.Label = TEXT("separation (Stratford)"); End.Label = TEXT("Cpbar > 4/7: criterion ends"); bAnyCue = true; }
+			if (bViscous && !bAnyViscousCue) { Tr.Label = TEXT("transition (e^N / forced)"); Sep.Label = TEXT("separation (H_k threshold)"); Det.Label = TEXT("detachment (c_f = 0)"); bAnyViscousCue = true; }
 			if (Tr.Points.Num()) Series.Add(MoveTemp(Tr));
 			if (Sep.Points.Num()) Series.Add(MoveTemp(Sep));
 			if (End.Points.Num()) Series.Add(MoveTemp(End));
-			if (S->bShowStratford)
+			if (Det.Points.Num()) Series.Add(MoveTemp(Det));
+			if (S->OverlayIndex > 0)
 			{
 				for (const SectionSurface* Sf : { &R.upper, &R.lower })
 				{
-					FAerotelicPlotSeries St;
-					St.Label = (Sf == &R.upper) ? TEXT("Stratford S (right axis)") : FString();
-					St.Color = C * 0.6f + FLinearColor(0.3f, 0.3f, 0.3f, 0.0f);
-					St.Color.A = 1.0f;
-					St.bMarkers = false;
-					St.bRightAxis = true;
-					St.bDashed = (Sf == &R.lower);
-					St.LineWidth = 1.0f;
-					for (size_t k = 0; k < Sf->x.size(); ++k) if (Sf->stratford[k] > 0.0) St.Points.Add(FVector2D(Sf->x[k], Sf->stratford[k]));
-					if (St.Points.Num()) Series.Add(MoveTemp(St));
+					const std::vector<double>* Q = nullptr;
+					switch (S->OverlayIndex)
+					{
+					case 1: Q = &Sf->stratford; break;
+					case 2: Q = &Sf->hk; break;
+					case 3: Q = &Sf->cf; break;
+					case 4: Q = &Sf->delta_star; break;
+					case 5: Q = &Sf->theta; break;
+					case 6: Q = &Sf->amp; break;
+					default: break;
+					}
+					if (!Q || Q->size() != Sf->x.size()) continue;
+					FAerotelicPlotSeries Ov;
+					Ov.Label = bOverlayLabelled ? FString() : FString(kOverlayLabels[S->OverlayIndex]) + TEXT(" (right axis)");
+					bOverlayLabelled = true;
+					Ov.Color = C * 0.6f + FLinearColor(0.3f, 0.3f, 0.3f, 0.0f);
+					Ov.Color.A = 1.0f;
+					Ov.bMarkers = false;
+					Ov.bRightAxis = true;
+					Ov.bDashed = (Sf == &R.lower);
+					Ov.LineWidth = 1.0f;
+					for (size_t k = 0; k < Sf->x.size(); ++k)
+					{
+						const double v = (*Q)[k];
+						if (S->OverlayIndex == 1 && !(v > 0.0)) continue; // Stratford only where defined
+						if (k == 0 && S->OverlayIndex >= 2) continue;    // the stagnation point's layer is the first node's
+						if (FMath::IsFinite(v)) Ov.Points.Add(FVector2D(Sf->x[k], v));
+					}
+					if (Ov.Points.Num()) Series.Add(MoveTemp(Ov));
 				}
 			}
 		}
 		S->CpPlot->SetMessage(FText::FromString(Message.IsEmpty() ? (S->Working ? TEXT("No method enabled") : TEXT("Pick an airfoil")) : Message));
-		S->CpPlot->SetAxisLabels(LOCTEXT("CpX", "x/c"), LOCTEXT("CpY", "Cp (suction up)"), S->bShowStratford ? LOCTEXT("CpYR", "Stratford S") : FText::GetEmpty());
+		S->CpPlot->SetAxisLabels(LOCTEXT("CpX", "x/c"), LOCTEXT("CpY", "Cp (suction up)"), S->OverlayIndex > 0 ? FText::FromString(kOverlayLabels[S->OverlayIndex]) : FText::GetEmpty());
 		S->CpPlot->SetSeries(MoveTemp(Series));
 	}
 
@@ -278,36 +413,53 @@ namespace
 			S->Table->AddSlot().AutoHeight() [ H ];
 		};
 		Row({ Cell(LOCTEXT("HMethod", "Method"), WM, true), Cell(LOCTEXT("HCl", "Cl"), W, true), Cell(LOCTEXT("HClEx", "Cl exact"), W, true),
-			Cell(LOCTEXT("HCdp", "Cd press."), W, true), Cell(LOCTEXT("HCdf", "Cd frict."), W, true), Cell(LOCTEXT("HCm", "Cm c/4"), W, true),
+			Cell(LOCTEXT("HCd", "Cd total"), W, true), Cell(LOCTEXT("HCdp", "Cd press."), W, true), Cell(LOCTEXT("HCdf", "Cd frict."), W, true), Cell(LOCTEXT("HCm", "Cm c/4"), W, true),
 			Cell(LOCTEXT("HA0", "alpha0"), W, true), Cell(LOCTEXT("HCla", "Cl_alpha"), W, true), Cell(LOCTEXT("HCpmin", "Cp min"), W, true),
 			Cell(LOCTEXT("HTrU", "tr. up"), W, true), Cell(LOCTEXT("HTrL", "tr. low"), W, true), Cell(LOCTEXT("HSepU", "sep. up"), W, true), Cell(LOCTEXT("HSepL", "sep. low"), W, true),
-			Cell(LOCTEXT("HMs", "ms"), W, true) });
+			Cell(LOCTEXT("HDetU", "det. up"), W, true), Cell(LOCTEXT("HDetL", "det. low"), W, true), Cell(LOCTEXT("HMs", "ms"), W, true) });
 		S->Table->AddSlot().AutoHeight().Padding(0, 1) [ SNew(SSeparator) ];
 		FString Cues;
-		for (int32 i = 0; i < S->Results.Num(); ++i)
+		const auto& Methods = SectionAeroMethods();
+		for (const TPair<const SectionAeroResult*, int32>& Entry : CombinedResults(*S))
 		{
-			const SectionAeroResult& R = S->Results[i];
-			const FLinearColor C = kMethodColors[i % UE_ARRAY_COUNT(kMethodColors)];
+			const SectionAeroResult& R = *Entry.Key;
+			const int32 i = Entry.Value;
+			const bool bViscous = Methods[i]->Viscous();
+			const bool bStale = !Methods[i]->Fast() && SlowResultStale(*S, i);
+			FLinearColor C = kMethodColors[i % UE_ARRAY_COUNT(kMethodColors)];
+			if (bStale) { C = C * 0.5f + FLinearColor(0.25f, 0.25f, 0.25f, 0.0f); C.A = 1.0f; }
+			FString Label = StdToFString(R.method);
+			if (bStale) Label += TEXT(" (recomputing)");
+			else if (!R.converged) Label += TEXT(" (NOT CONVERGED)");
 			if (!R.ok)
 			{
-				Row({ Cell(FText::FromString(StdToFString(R.method)), WM, false, C), Cell(FText::FromString(StdToFString(R.error)), W * 13.0f, false, FLinearColor(1.0f, 0.5f, 0.5f)) });
+				Row({ Cell(FText::FromString(Label), WM, false, C), Cell(FText::FromString(StdToFString(R.error)), W * 13.0f, false, FLinearColor(1.0f, 0.5f, 0.5f)) });
 				continue;
 			}
 			auto Cue = [](const SurfaceCue& Q) { return Q.found ? FormatF(Q.x, 3) : DashText(); };
-			Row({ Cell(FText::FromString(StdToFString(R.method)), WM, false, C), Cell(Num(R.cl, 4), W), Cell(Num(R.cl_exact, 4), W),
-				Cell(Num(R.cd_pressure, 5), W), Cell(Num(R.cd_friction, 5), W), Cell(Num(R.cm_c4, 4), W),
+			Row({ Cell(FText::FromString(Label), WM, false, R.converged ? C : FLinearColor(1.0f, 0.6f, 0.3f)), Cell(Num(R.cl, 4), W), Cell(Num(R.cl_exact, 4), W),
+				Cell(bViscous ? Num(R.cd_total, 5) : DashText(), W), Cell(Num(R.cd_pressure, 5), W), Cell(Num(R.cd_friction, 5), W), Cell(Num(R.cm_c4, 4), W),
 				Cell(Num(R.alpha0_deg, 2), W), Cell(Num(R.cl_alpha, 3), W), Cell(Num(R.cp_min, 3), W),
 				Cell(Cue(R.upper.transition), W), Cell(Cue(R.lower.transition), W), Cell(Cue(R.upper.separation), W), Cell(Cue(R.lower.separation), W),
-				Cell(Num(R.solve_ms, 2), W) });
-			Cues += FString::Printf(TEXT("%s -- upper: transition %s; separation %s. Lower: transition %s; separation %s. TE gap closed %.4f c, TE angle %.1f deg, %d sweeps, residual %.1e, margin %.2f.\n"),
-				*StdToFString(R.method),
-				*(R.upper.transition.found ? FString::Printf(TEXT("x/c %.3f (%s)"), R.upper.transition.x, *StdToFString(R.upper.transition.note)) : StdToFString(R.upper.transition.note)),
-				*(R.upper.separation.found ? FString::Printf(TEXT("x/c %.3f (%s)"), R.upper.separation.x, *StdToFString(R.upper.separation.note)) : StdToFString(R.upper.separation.note)),
-				*(R.lower.transition.found ? FString::Printf(TEXT("x/c %.3f (%s)"), R.lower.transition.x, *StdToFString(R.lower.transition.note)) : StdToFString(R.lower.transition.note)),
-				*(R.lower.separation.found ? FString::Printf(TEXT("x/c %.3f (%s)"), R.lower.separation.x, *StdToFString(R.lower.separation.note)) : StdToFString(R.lower.separation.note)),
-				R.te_gap_closed, R.te_angle_deg, R.iterations, R.residual, R.convergence_margin);
+				Cell(bViscous ? Cue(R.upper.detachment) : DashText(), W), Cell(bViscous ? Cue(R.lower.detachment) : DashText(), W),
+				Cell(Num(R.solve_ms, 1), W) });
+			auto CueText = [](const SurfaceCue& Q) { return Q.found ? FString::Printf(TEXT("x/c %.3f (%s)"), Q.x, *StdToFString(Q.note)) : StdToFString(Q.note); };
+			if (bViscous)
+			{
+				Cues += FString::Printf(TEXT("%s -- upper: transition %s; separation %s; detachment %s. Lower: transition %s; separation %s; detachment %s. %s%d Newton iterations, |R| %.1e; TE gap closed %.4f c, TE angle %.1f deg.\n"),
+					*StdToFString(R.method), *CueText(R.upper.transition), *CueText(R.upper.separation), *CueText(R.upper.detachment),
+					*CueText(R.lower.transition), *CueText(R.lower.separation), *CueText(R.lower.detachment),
+					R.converged ? TEXT("converged in ") : TEXT("NOT CONVERGED after "), R.iterations, R.residual, R.te_gap_closed, R.te_angle_deg);
+			}
+			else
+			{
+				Cues += FString::Printf(TEXT("%s -- upper: transition %s; separation %s. Lower: transition %s; separation %s. TE gap closed %.4f c, TE angle %.1f deg, %d sweeps, residual %.1e, margin %.2f.\n"),
+					*StdToFString(R.method), *CueText(R.upper.transition), *CueText(R.upper.separation), *CueText(R.lower.transition), *CueText(R.lower.separation),
+					R.te_gap_closed, R.te_angle_deg, R.iterations, R.residual, R.convergence_margin);
+			}
 			for (const std::string& Wn : R.warnings) Cues += TEXT("   warning: ") + StdToFString(Wn) + TEXT("\n");
 		}
+		if (S->SlowJob.IsValid()) Cues += TEXT("Boundary-layer solve running...\n");
 		if (S->CueText.IsValid()) S->CueText->SetText(FText::FromString(Cues.TrimEnd()));
 	}
 
@@ -321,7 +473,7 @@ namespace
 			SectionAeroRequest Req = RequestFor(*S);
 			for (int32 i = 0; i < static_cast<int32>(Methods.size()) && i < S->MethodOn.Num(); ++i)
 			{
-				if (!S->MethodOn[i]) continue;
+				if (!S->MethodOn[i] || !Methods[i]->Fast()) continue; // a sweep of a slow method is for a later request
 				FAerotelicPlotSeries Cl, Cm;
 				Cl.Label = StdToFString(Methods[i]->Name());
 				Cm.Label = Cl.Label;
@@ -393,7 +545,7 @@ namespace
 		if (!S->bShowSensitivity || !S->Working) { if (S->Editor.IsValid()) S->Editor->RequestRedraw(); return; }
 		const auto& Methods = SectionAeroMethods();
 		const SectionAeroMethod* M = nullptr;
-		for (int32 i = 0; i < static_cast<int32>(Methods.size()) && i < S->MethodOn.Num(); ++i) if (S->MethodOn[i]) { M = Methods[i]; break; }
+		for (int32 i = 0; i < static_cast<int32>(Methods.size()) && i < S->MethodOn.Num(); ++i) if (S->MethodOn[i] && Methods[i]->Fast()) { M = Methods[i]; break; }
 		if (M)
 		{
 			const SectionAeroScalar Scalar = kScalars[FMath::Clamp(S->ScalarIndex, 0, static_cast<int32>(UE_ARRAY_COUNT(kScalars)) - 1)];
@@ -464,6 +616,8 @@ namespace
 		S->Source = std::move(A);
 		S->Working.reset();
 		S->Results.Empty();
+		S->SlowResults.Empty();
+		S->SlowGeneration.Empty();
 		S->Sens = PoleSensitivity();
 		if (S->Source)
 		{
@@ -546,13 +700,17 @@ namespace
 		"SENSITIVITY\n"
 		"At each movable pole an arrow shows the gradient of the chosen scalar -- Cl, Cm about c/4, the friction drag, or Cp at a probe station on the upper or lower surface -- with respect to that pole's position, by central differences of the first enabled method (two solves per pole per axis). The largest gradient's arrow is 0.08 c long and its magnitude is stated; the others' lengths follow the SQUARE ROOT of their magnitudes, so the mid-chord poles (an order of magnitude below those by the trailing edge) stay visible. The table under the arrows gives every pole's gradient per unit chord: moving a pole 0.01 c along its arrow changes the scalar by about a hundredth of the number shown. Locked trailing-edge poles are listed but not drawn.\n\n"
 		"THE METHODS\n"
-		"Each enabled method is run on the same closed contour and its pressure distribution is drawn on the chart (upper surface solid, lower dashed, Cp negative upward) with its coefficients in the table, so methods can be compared directly. The first method is Theodorsen's exact conformal map (NACA TR 411 and, with Garrick, TR 452), computed as David Ives recommends in 'A Modern Look at Conformal Mapping, Including Multiply Connected Regions', AIAA Journal 14(8):1006-1011, 1976: a Karman-Trefftz transformation with exponent 2 - tau/pi (tau the trailing-edge angle) opens the trailing edge into a near-circle, then Theodorsen's map to the exact circle is found by iterating Garrick's conjugate-function relation between the near-circle's log-radius and its angle correction, each sweep an FFT. The circle flow at incidence with the Kutta condition at the trailing edge's image gives the surface speed; Cp = 1 - (V/U)^2. Cl is both integrated from Cp and taken exactly from the circulation (Kutta-Joukowski; 'Cl exact'); the integrated pressure drag is a discretisation residual (d'Alembert) and should be near zero. The map's diagnostics -- sweeps, residual, the convergence margin max |d eps/d phi| (must stay below 1) -- are listed under the table.\n\n"
+		"Each enabled method is run on the same closed contour and its pressure distribution is drawn on the chart (upper surface solid, lower dashed, Cp negative upward) with its coefficients in the table, so methods can be compared directly. Three are built in. (1) Theodorsen's conformal map, exact and sub-millisecond: it drives the live editing, the sensitivities and the polar. (2) The vortex panel method of XFOIL as documented by Fidkowski's mfoil, inviscid: a linear vortex sheet and constant source sheet per panel, flow tangency as a constant streamfunction at the nodes, the Kutta condition, the sharp trailing edge by extrapolation; on 200 cosine-spaced nodes it agrees with the map to a few thousandths in Cp, and it is the potential-flow half of the third method. (3) The vortex panel coupled to Drela's integral boundary layer, i.e. XFOIL's viscous analysis in mfoil's form (Fidkowski, 'A Coupled Inviscid-Viscous Airfoil Analysis Solver, Revisited'): four states per node on the airfoil and a one-chord wake (momentum thickness, displacement thickness, amplification factor or sqrt(c_tau), edge velocity), the integral momentum, shape-parameter, e^N amplification and shear-lag equations with XFOIL's closures, the displacement effect fed back to the potential flow as transpiration sources, and the whole solved as one Newton system with mfoil's update limiting; the Jacobian is exact, by automatic differentiation. It is incompressible, takes a few tenths of a second, and therefore runs on a worker thread once the poles have been still: its row reads '(recomputing)' until then. Its drag is the Squire-Young total from the end of the wake, split into the integrated skin friction and the rest as pressure drag; 'Cd press.' for the inviscid methods is instead the d'Alembert residual. A row marked NOT CONVERGED is the last Newton iterate and should be distrusted; the solver retries from zero incidence in steps before giving up.\n\n"
+		"THE CONFORMAL MAP\n"
+		"Theodorsen's exact conformal map (NACA TR 411 and, with Garrick, TR 452), computed as David Ives recommends in 'A Modern Look at Conformal Mapping, Including Multiply Connected Regions', AIAA Journal 14(8):1006-1011, 1976: a Karman-Trefftz transformation with exponent 2 - tau/pi (tau the trailing-edge angle) opens the trailing edge into a near-circle, then Theodorsen's map to the exact circle is found by iterating Garrick's conjugate-function relation between the near-circle's log-radius and its angle correction, each sweep an FFT. The circle flow at incidence with the Kutta condition at the trailing edge's image gives the surface speed; Cp = 1 - (V/U)^2. Cl is both integrated from Cp and taken exactly from the circulation (Kutta-Joukowski; 'Cl exact'); the integrated pressure drag is a discretisation residual (d'Alembert) and should be near zero. The map's diagnostics -- sweeps, residual, the convergence margin max |d eps/d phi| (must stay below 1) -- are listed under the table.\n\n"
 		"TRAILING EDGE\n"
 		"Every section is closed before analysis in XFOIL's manner: an open gap is blended out over the aft 30% of chord, the upper surface moving down and the lower up by half the gap times ((x - 0.7)/0.3)^2. The gap removed and the resulting trailing-edge angle are reported. A finite trailing-edge angle is an inviscid stagnation point (Cp = 1 there); a cusp has a finite speed.\n\n"
-		"VISCOUS CUES (shared by every method)\n"
-		"Reynolds number: yours, on the chord. Transition cue (yellow): on each surface from the stagnation point, the earlier of the station where Re_x = Re (V/U)(s/c) reaches 3.5e6 and the first adverse pressure gradient (the suction peak). Skin-friction drag: the turbulent flat-plate law Cf = 0.0592 Re_s^-0.2 at the local edge speed from the stagnation point on both surfaces, projected on the wind -- 'Cd frict.' (about 0.0094 for a plate at Re 1e6; the pressure Cd beside it is the inviscid residual, not a drag). Separation cue (red): Stratford's criterion for turbulent separation (J. Fluid Mech. 5:1-16, 1959), fully turbulent from stagnation given the transition cue's low fidelity: from the suction peak, Cpbar = 1 - (V/Vmax)^2, x measured from the equivalent flat-plate origin x_EL = integral of (V/Vmax)^3 ds over the favourable run, and separation where Cpbar (x dCpbar/dx)^1/2 (1e-6 Re_x)^-0.1 reaches 0.39 (0.35 where d2p/dx2 < 0). The criterion holds while Cpbar <= 4/7; the grey marker shows where that is exceeded and the cue stops. Because an inviscid distribution recovers to stagnation at a finite-angle trailing edge, the criterion often trips in the last few percent of chord at low incidence: read that as 'no separation ahead of the trailing-edge recovery'. 'Show Stratford S' draws the parameter on the right axis.\n\n"
+		"BOUNDARY-LAYER CUES (the third method's own)\n"
+		"Transition (yellow) is where the amplification factor of the most amplified Tollmien-Schlichting wave, integrated from the stagnation point, reaches n_crit (9 by default; lower it for a noisy stream, raise it for a quiet one), located inside its panel by the transition residual of mfoil's section IV.E, or the forced location when 'forced transition x/c' is below 1 on that surface; a layer still laminar at the trailing edge transitions at the start of the wake and shows no marker. Separation (red) is the shape-factor criterion: the first station where the kinematic shape factor H_k = delta*/theta reaches the laminar threshold (3.83 by default, where XFOIL's laminar skin-friction closure falls to zero, i.e. the Falkner-Skan separation profile) or, after transition, the turbulent threshold (2.8 by default, incipient detachment: Kline's 2.7, Castillo and George's 2.76 +/- 0.23); both are fields. Detachment (magenta) is the stricter marker where the solved turbulent skin friction itself falls to zero, which the closure puts near H_k 3.5. The right-axis overlay draws H_k, c_f (on the free-stream dynamic pressure), delta*/c, theta/c or the amplification / sqrt(c_tau) along both surfaces.\n\n"
+		"INVISCID CUES (layered on the two inviscid methods)\n"
+		"Reynolds number: yours, on the chord. Transition cue (yellow): on each surface from the stagnation point, the earlier of the station where Re_x = Re (V/U)(s/c) reaches 3.5e6 and the first adverse pressure gradient (the suction peak). Skin-friction drag: the turbulent flat-plate law Cf = 0.0592 Re_s^-0.2 at the local edge speed from the stagnation point on both surfaces, projected on the wind -- 'Cd frict.' (about 0.0094 for a plate at Re 1e6; the pressure Cd beside it is the inviscid residual, not a drag). Separation cue (red): Stratford's criterion for turbulent separation (J. Fluid Mech. 5:1-16, 1959), fully turbulent from stagnation given the transition cue's low fidelity: from the suction peak, Cpbar = 1 - (V/Vmax)^2, x measured from the equivalent flat-plate origin x_EL = integral of (V/Vmax)^3 ds over the favourable run, and separation where Cpbar (x dCpbar/dx)^1/2 (1e-6 Re_x)^-0.1 reaches 0.39 (0.35 where d2p/dx2 < 0). The criterion holds while Cpbar <= 4/7; the grey marker shows where that is exceeded and the cue stops. Because an inviscid distribution recovers to stagnation at a finite-angle trailing edge, the criterion often trips in the last few percent of chord at low incidence: read that as 'no separation ahead of the trailing-edge recovery'. The right-axis overlay 'Stratford S' draws the parameter.\n\n"
 		"POLAR\n"
-		"Cl and Cm c/4 of each method from -6 to 16 degrees, two charts: the inviscid lift slope and zero-lift angle. No stall, of course.\n\n"
+		"Cl and Cm c/4 of the fast methods from -6 to 16 degrees, two charts: the inviscid lift slope and zero-lift angle. No stall, of course. The boundary-layer method is not swept.\n\n"
 		"APPLY\n"
 		"Adds the section as it is in the editor (its reduced representation and any edits) to the session's custom airfoil library under the name given; every wing and blade section picker lists it under Custom, and a project that uses it stores the curve itself. The library airfoil is never changed.");
 }
@@ -765,14 +923,63 @@ void ShowAerotelicSectionAeroDialog(TFunction<void(const FText&)> Status, std::s
 		+ SVerticalBox::Slot().AutoHeight().Padding(0, 4, 0, 0)
 		[
 			SNew(SHorizontalBox)
-			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 0, 8, 0) [ SNew(STextBlock).Text(LOCTEXT("Methods", "Methods:")) ]
-			+ SHorizontalBox::Slot().FillWidth(1.0f).VAlign(VAlign_Center) [ MethodChecks ]
+			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 0, 4, 0) [ SNew(STextBlock).Text(LOCTEXT("Ncrit", "Boundary layer: n_crit")) ]
+			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 0, 10, 0)
+			[
+				SNew(SBox).WidthOverride(56)
+				[
+					SNew(SAerotelicNumericEntry).Value_Lambda([S]() { return S->Ncrit; }).MinValue(0.1).MaxValue(20.0).Delta(0.5).LiveUpdate(false)
+					.OnValueCommitted_Lambda([S](double V, ETextCommit::Type) { if (V == S->Ncrit) return; S->Ncrit = V; Solve(S); })
+				]
+			]
+			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 0, 4, 0) [ SNew(STextBlock).Text(LOCTEXT("Xft", "forced transition x/c upper / lower")) ]
+			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 0, 4, 0)
+			[
+				SNew(SBox).WidthOverride(56)
+				[
+					SNew(SAerotelicNumericEntry).Value_Lambda([S]() { return S->XftUpper; }).MinValue(0.01).MaxValue(1.0).Delta(0.05).LiveUpdate(false)
+					.OnValueCommitted_Lambda([S](double V, ETextCommit::Type) { if (V == S->XftUpper) return; S->XftUpper = V; Solve(S); })
+				]
+			]
+			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 0, 10, 0)
+			[
+				SNew(SBox).WidthOverride(56)
+				[
+					SNew(SAerotelicNumericEntry).Value_Lambda([S]() { return S->XftLower; }).MinValue(0.01).MaxValue(1.0).Delta(0.05).LiveUpdate(false)
+					.OnValueCommitted_Lambda([S](double V, ETextCommit::Type) { if (V == S->XftLower) return; S->XftLower = V; Solve(S); })
+				]
+			]
+			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 0, 4, 0) [ SNew(STextBlock).Text(LOCTEXT("Hsep", "H_k separation lam / turb")) ]
+			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 0, 4, 0)
+			[
+				SNew(SBox).WidthOverride(56)
+				[
+					SNew(SAerotelicNumericEntry).Value_Lambda([S]() { return S->HSepLam; }).MinValue(1.5).MaxValue(10.0).Delta(0.1).LiveUpdate(false)
+					.OnValueCommitted_Lambda([S](double V, ETextCommit::Type) { if (V == S->HSepLam) return; S->HSepLam = V; Solve(S); })
+				]
+			]
 			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
 			[
-				SNew(SCheckBox)
-				.IsChecked_Lambda([S]() { return S->bShowStratford ? ECheckBoxState::Checked : ECheckBoxState::Unchecked; })
-				.OnCheckStateChanged_Lambda([S](ECheckBoxState St) { S->bShowStratford = St == ECheckBoxState::Checked; UpdateCpPlot(S); })
-				[ SNew(STextBlock).Text(LOCTEXT("ShowS", "Show Stratford S")) ]
+				SNew(SBox).WidthOverride(56)
+				[
+					SNew(SAerotelicNumericEntry).Value_Lambda([S]() { return S->HSepTurb; }).MinValue(1.5).MaxValue(10.0).Delta(0.1).LiveUpdate(false)
+					.OnValueCommitted_Lambda([S](double V, ETextCommit::Type) { if (V == S->HSepTurb) return; S->HSepTurb = V; Solve(S); })
+				]
+			]
+		]
+		+ SVerticalBox::Slot().AutoHeight().Padding(0, 4, 0, 0)
+		[
+			SNew(SHorizontalBox)
+			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 0, 8, 0) [ SNew(STextBlock).Text(LOCTEXT("Methods", "Methods:")) ]
+			+ SHorizontalBox::Slot().FillWidth(1.0f).VAlign(VAlign_Center) [ MethodChecks ]
+			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 0, 4, 0) [ SNew(STextBlock).Text(LOCTEXT("Overlay", "right axis:")) ]
+			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
+			[
+				SNew(SBox).WidthOverride(130)
+				[
+					ChoiceCombo({ FText::FromString(kOverlayLabels[0]), FText::FromString(kOverlayLabels[1]), FText::FromString(kOverlayLabels[2]), FText::FromString(kOverlayLabels[3]), FText::FromString(kOverlayLabels[4]), FText::FromString(kOverlayLabels[5]), FText::FromString(kOverlayLabels[6]) },
+						[S]() { return S->OverlayIndex; }, [S](int32 I) { S->OverlayIndex = I; UpdateCpPlot(S); })
+				]
 			]
 		];
 
@@ -815,7 +1022,7 @@ void ShowAerotelicSectionAeroDialog(TFunction<void(const FText&)> Status, std::s
 		SNew(SVerticalBox)
 		+ SVerticalBox::Slot().FillHeight(1.0f) [ S->PolarClPlot.ToSharedRef() ]
 		+ SVerticalBox::Slot().FillHeight(1.0f).Padding(0, 6, 0, 0) [ S->PolarCmPlot.ToSharedRef() ]
-		+ SVerticalBox::Slot().AutoHeight().Padding(0, 6, 0, 0) [ MakeInfoLabel(LOCTEXT("PolarInfo", "Each enabled method from -6 to 16 degrees at the Reynolds number of the Section tab: inviscid, so straight lines (no stall).")) ];
+		+ SVerticalBox::Slot().AutoHeight().Padding(0, 6, 0, 0) [ MakeInfoLabel(LOCTEXT("PolarInfo", "The fast (inviscid) methods from -6 to 16 degrees at the Reynolds number of the Section tab: straight lines, no stall. The boundary-layer method is not swept here (a second a sweep would be); read it at the Section tab's incidence.")) ];
 
 	TArray<FAerotelicTab> Tabs;
 	Tabs.Add({ LOCTEXT("SectionTab", "Section"), SectionTab });
@@ -886,11 +1093,17 @@ void ShowAerotelicSectionAeroDialog(TFunction<void(const FText&)> Status, std::s
 	// (two solves per pole per axis) and the polar sweep.
 	S->Ticker = FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda([S](float)
 	{
+		CollectSlow(S);
 		const double Now = FPlatformTime::Seconds();
 		if (Now - S->LastEdit < 0.2) return true;
 		if (S->bFitDirty) { S->bFitDirty = false; UpdateFit(S); }
 		else if (S->bSensDirty) { S->bSensDirty = false; UpdateSensitivity(S); }
 		else if (S->bPolarDirty) { S->bPolarDirty = false; UpdatePolar(S); }
+		if (!S->SlowJob.IsValid())
+		{
+			const int32 Next = NextSlowMethod(*S);
+			if (Next >= 0) { LaunchSlow(S, Next); RebuildTable(S); }
+		}
 		return true;
 	}), 0.1f);
 	// On close: stop the ticker and drop the state's widget pointers -- the
@@ -953,11 +1166,18 @@ void ShowAerotelicSectionAeroDialog(TFunction<void(const FText&)> Status, std::s
 		FParse::Value(FCommandLine::Get(), TEXT("AerotelicSectionAeroSmokeDelay="), FirstDelay);
 		Later(FirstDelay, [S, Shot, Later, WeakTabs]()
 		{
+			for (const TPair<const SectionAeroResult*, int32>& Entry : CombinedResults(*S))
+			{
+				const SectionAeroResult& R = *Entry.Key;
+				UE_LOG(LogTemp, Log, TEXT("SectionAero smoke: %s ok %d converged %d cl %.4f cm_c4 %.4f cd_total %.5f cd_f %.5f alpha0 %.3f tr %.3f/%.3f sep %.3f/%.3f %.0f ms%s"),
+					*StdToFString(R.method), R.ok, R.converged, R.cl, R.cm_c4, R.cd_total, R.cd_friction, R.alpha0_deg,
+					R.upper.transition.found ? R.upper.transition.x : -1.0, R.lower.transition.found ? R.lower.transition.x : -1.0,
+					R.upper.separation.found ? R.upper.separation.x : -1.0, R.lower.separation.found ? R.lower.separation.x : -1.0, R.solve_ms,
+					SlowResultStale(*S, Entry.Value) ? TEXT(" (stale)") : TEXT(""));
+			}
 			if (S->Results.Num() > 0 && S->Results[0].ok)
 			{
-				const SectionAeroResult& R = S->Results[0];
-				UE_LOG(LogTemp, Log, TEXT("SectionAero smoke: %s cl %.4f cm_c4 %.4f cd_f %.5f alpha0 %.3f; fit max %.2e; sensitivity ok %d (%d poles)"),
-					*StdToFString(R.method), R.cl, R.cm_c4, R.cd_friction, R.alpha0_deg, S->Fit.max_distance, S->Sens.ok ? 1 : 0, static_cast<int32>(S->Sens.d_dx.size()));
+				UE_LOG(LogTemp, Log, TEXT("SectionAero smoke: fit max %.2e; sensitivity ok %d (%d poles)"), S->Fit.max_distance, S->Sens.ok ? 1 : 0, static_cast<int32>(S->Sens.d_dx.size()));
 			}
 			else
 			{

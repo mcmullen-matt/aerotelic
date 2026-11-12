@@ -169,6 +169,8 @@ const std::vector<std::unique_ptr<SectionAeroMethod>>& Registry() {
 	static std::vector<std::unique_ptr<SectionAeroMethod>> methods = [] {
 		std::vector<std::unique_ptr<SectionAeroMethod>> v;
 		v.push_back(std::make_unique<ConformalMappingMethod>());
+		v.push_back(MakeVortexPanelInviscidMethod());
+		v.push_back(MakeVortexPanelIblMethod());
 		return v;
 	}();
 	return methods;
@@ -351,7 +353,7 @@ void AddBoundaryLayerCues(SectionSurface& sf, double reynolds, double alpha_deg,
 
 SectionAeroResult SolveSection(const SectionAeroMethod& method, const SectionAeroRequest& request) {
 	SectionAeroResult r = method.Solve(request);
-	if (!r.ok) return r;
+	if (!r.ok || method.Viscous()) return r; // a boundary-layer method carries its own cues
 	AddBoundaryLayerCues(r.upper, request.reynolds, request.alpha_deg, request.transition_re_x);
 	AddBoundaryLayerCues(r.lower, request.reynolds, request.alpha_deg, request.transition_re_x);
 	r.cd_friction = r.upper.cd_friction + r.lower.cd_friction;
