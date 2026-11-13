@@ -126,9 +126,15 @@ namespace AerotelicMaterialLibrary
 		return Found != nullptr && aerotelic::SameMaterial(*Found, M) ? Found : nullptr;
 	}
 
+	bool IsShadowed(const aerotelic::Material& M)
+	{
+		return aerotelic::FindMaterialPreset(M.name) != nullptr;
+	}
+
 	bool SetCustom(const TArray<aerotelic::Material>& Materials, FString& OutError)
 	{
 		EnsureLoaded();
+		const TArray<aerotelic::Material>& Before = State().Custom;
 		for (int32 i = 0; i < Materials.Num(); ++i)
 		{
 			const aerotelic::Material& M = Materials[i];
@@ -138,7 +144,13 @@ namespace AerotelicMaterialLibrary
 				OutError = FString::Printf(TEXT("'%s': %s"), UTF8_TO_TCHAR(M.name.c_str()), UTF8_TO_TCHAR(Problem.c_str()));
 				return false;
 			}
-			if (aerotelic::FindMaterialPreset(M.name) != nullptr)
+			// A NEW name may not be a preset's. A row the library already
+			// holds under a preset's name (2026-11-12: the ASM 17-4PH row the
+			// split of 2026-11-07 left in a user's file under the name its
+			// handbook replacement took) is tolerated -- shadowed, flagged in
+			// the dialog, but not a reason to refuse every later save.
+			const bool bAlreadyThere = Before.ContainsByPredicate([&M](const aerotelic::Material& B) { return B.name == M.name; });
+			if (IsShadowed(M) && !bAlreadyThere)
 			{
 				OutError = FString::Printf(TEXT("'%s' is the name of a preset; give yours another name"), UTF8_TO_TCHAR(M.name.c_str()));
 				return false;

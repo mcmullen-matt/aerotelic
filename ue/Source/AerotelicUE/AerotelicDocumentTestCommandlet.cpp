@@ -295,6 +295,23 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 		aerotelic::Material Clash = Mine;
 		Clash.name = "Aluminium 2024-T3 sheet";
 		Check(!AerotelicMaterialLibrary::SetCustom({ Clash }, Error) && !Error.IsEmpty(), "library: a preset's name is refused");
+		// ...for a NEW row. A row the file already holds under a preset's
+		// name (2026-11-12) is shadowed and flagged, not a reason to refuse
+		// every later save.
+		{
+			const FString ShadowPath = FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("materials_shadow_test.yaml"));
+			FFileHelper::SaveStringToFile(UTF8_TO_TCHAR(aerotelic::WriteMaterialsYaml({ Clash }).c_str()), *ShadowPath, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM);
+			AerotelicMaterialLibrary::SetFilePathOverride(ShadowPath);
+			Check(AerotelicMaterialLibrary::Custom().Num() == 1 && AerotelicMaterialLibrary::IsShadowed(AerotelicMaterialLibrary::Custom()[0]), "library: a file's row under a preset's name loads, shadowed");
+			Check(AerotelicMaterialLibrary::SetCustom({ Clash, Mine }, Error), FString::Printf(TEXT("library: a save that keeps the shadowed row and adds another is accepted (%s)"), *Error));
+			aerotelic::Material Renamed = Clash;
+			Renamed.name = "Aluminium 2024-T3 sheet (ASM typical)";
+			Check(AerotelicMaterialLibrary::SetCustom({ Renamed, Mine }, Error) && !AerotelicMaterialLibrary::IsShadowed(Renamed), "library: renaming the shadowed row frees it");
+			IFileManager::Get().Delete(*ShadowPath);
+			IFileManager::Get().Delete(*LibPath);
+			AerotelicMaterialLibrary::SetFilePathOverride(LibPath);
+			Check(AerotelicMaterialLibrary::SetCustom({ Mine }, Error), "library: back to the one material");
+		}
 		Check(!AerotelicMaterialLibrary::SetCustom({ Mine, Mine }, Error), "library: a repeated name is refused");
 		aerotelic::Material Bad = Mine;
 		Bad.youngs_modulus = 0.0;

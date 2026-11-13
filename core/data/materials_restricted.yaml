@@ -57,7 +57,7 @@ materials:
     poisson_ratio: 0.29
     allowable_stress: 435000000
     source: ASM Handbook vol. 1, normalised at 870 C, typical; allowable = tensile yield
-  - name: Steel 17-4PH H900
+  - name: Steel 17-4PH H900 (ASM typical)
     category: Metal
     density: 7800
     youngs_modulus: 196000000000

@@ -300,6 +300,13 @@ void CheckModeNames() {
 			restricted_sourced = restricted_sourced && !m.category.empty() && !m.source.empty() && m.IsStructural() && MaterialProblem(m).empty();
 		}
 		Check(restricted.size() == 42 && restricted_sourced, "the restricted-source file carries its 42 materials, each complete with a category and a source");
+		// No restricted row may share a preset's name: a user's library made
+		// from the file would be shadowed and (until 2026-11-12) unsaveable
+		// -- the ASM 17-4PH row was, under its handbook replacement's name.
+		bool no_shadow = true;
+		for (const Material& m : restricted) no_shadow = no_shadow && FindMaterialPreset(m.name) == nullptr;
+		Check(no_shadow, "no restricted-source row shares a preset's name");
+		Check(FindMaterialPreset("Steel 17-4PH H900") != nullptr && FindMaterialPreset("Steel 17-4PH H900 (ASM typical)") == nullptr, "the handbook 17-4PH H900 is the preset; the ASM row is renamed");
 		Check(resin != nullptr && resin->youngs_modulus == 2.8e9 && resin->allowable_stress == 65.0e6, "the standard SLA resin carries Formlabs' post-cured figures");
 		Check(pla != nullptr && pla->density == 1240.0 && pla->youngs_modulus == 2.3e9, "the FDM PLA carries Prusament's as-printed figures");
 		Check(tough != nullptr && tough->density == 1150.0 && tough->youngs_modulus == 0.9e9 && tough->allowable_stress == 30.0e6,

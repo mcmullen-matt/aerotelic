@@ -30,9 +30,14 @@ namespace AerotelicMaterialLibrary
 
 	// Replaces the user's materials and writes the file. False, with the
 	// reason, when a material is incomplete (aerotelic::MaterialProblem), a
-	// name is blank, repeated or a preset's, or the file cannot be written
-	// -- and then nothing changes.
+	// name is blank, repeated or -- for a row the library did not already
+	// hold -- a preset's, or the file cannot be written -- and then nothing
+	// changes. A row already held under a preset's name (a file from before
+	// the preset existed) is kept and flagged, not refused.
 	bool SetCustom(const TArray<aerotelic::Material>& Materials, FString& OutError);
+	// True when a preset carries the same name as this material of the
+	// user's, so lookups by name find the preset: the dialog says so.
+	bool IsShadowed(const aerotelic::Material& M);
 
 	// Where the user's materials are kept.
 	FString FilePath();

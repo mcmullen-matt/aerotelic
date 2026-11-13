@@ -456,7 +456,8 @@ namespace
 		"\n"
 		"Metals: MIL-HDBK-5J design values, room temperature, for at least ten aluminium, steel, magnesium and titanium alloys each. The allowable is the handbook's MINIMUM tensile yield -- A-basis (99% of material exceeds it, 95% confidence) where the handbook gives one, else S-basis (the procurement specification's minimum) -- longitudinal, for the product form, condition and thickness range the Source column names: a design minimum rather than a typical figure, 5-15% below the typical yield of the same alloy. "
 		"Magnesium casting rows are the handbook's 'any area' minimums, which are well below separately cast test-bar figures. Where the handbook gives no Poisson's ratio (some titanium alloys) a literature value is used and the Source column says so. "
-		"(The seven metal rows the application used to ship -- 2024-T3, 7075-T6, 6061-T6, Ti-6Al-4V, 4130, 17-4PH H900, AZ31B -- were the ASM Handbook's TYPICAL values with the typical yield as allowable; they are in the restricted file and in the library of a user who held them, and have handbook rows of the same alloys here.)\n"
+		"(The seven metal rows the application used to ship -- 2024-T3, 7075-T6, 6061-T6, Ti-6Al-4V, 4130, 17-4PH H900, AZ31B -- were the ASM Handbook's TYPICAL values with the typical yield as allowable; they are in the restricted file and in the library of a user who held them, and have handbook rows of the same alloys here. "
+		"The ASM 17-4PH row was moved out under the very name its handbook replacement took, 'Steel 17-4PH H900', which shadowed it and, until 2026-11-12, blocked every save of such a library; it is now 'Steel 17-4PH H900 (ASM typical)', and a row of yours that shares a preset's name is flagged on the Custom tab for renaming rather than refused.)\n"
 		"Laminates (the two isotropic 'quasi-isotropic' rows): representative in-plane figures for a carbon/epoxy and an E-glass/epoxy laminate, not any one supplier's; the allowable is a representative laminate strength.\n"
 		"\n"
 		"COMPOSITE LAMINAE AND LAMINATES (2026-11-12)\n"
@@ -740,10 +741,18 @@ void ShowAerotelicMaterialLibraryDialog(TFunction<void(const FText&)> Status)
 					.SelectionMode(ESelectionMode::Single)
 					.OnGenerateRow_Lambda([](FRowPtr Row, const TSharedRef<STableViewBase>& Owner)
 					{
+						// A row of yours under a preset's name is SHADOWED: the
+						// picker and every lookup by name find the preset first.
+						// Rename it (Update with a new name) to reach it again.
+						const bool bShadowed = AerotelicMaterialLibrary::IsShadowed(Row->M);
 						return SNew(STableRow<FRowPtr>, Owner).Padding(FMargin(4, 2))
 							[
-								SNew(STextBlock).Text(FText::FromString(Str(Row->M.name)))
-								.ToolTipText(FText::FromString(Str(Row->M.source)))
+								SNew(STextBlock)
+								.Text(bShadowed ? FText::Format(LOCTEXT("Shadowed", "{0}  -- same name as a preset: rename it"), FText::FromString(Str(Row->M.name))) : FText::FromString(Str(Row->M.name)))
+								.ColorAndOpacity(bShadowed ? FSlateColor(FLinearColor(1.0f, 0.6f, 0.4f)) : FSlateColor::UseForeground())
+								.ToolTipText(bShadowed
+									? FText::Format(LOCTEXT("ShadowedTip", "A preset is also named '{0}', so lookups by name find the preset and not this row. Select it, type another name and press Update selected.\n\n{1}"), FText::FromString(Str(Row->M.name)), FText::FromString(Str(Row->M.source)))
+									: FText::FromString(Str(Row->M.source)))
 							];
 					})
 					.OnSelectionChanged_Lambda([State](FRowPtr Row, ESelectInfo::Type Info)
