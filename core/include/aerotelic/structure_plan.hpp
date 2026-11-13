@@ -64,8 +64,25 @@ struct BodyStructurePlan {
 	// The body mesh's median edge: the rib discs' target size.
 	double rib_size = 0.0;
 	std::vector<std::string> notes;
+	// The loft's own parameters at every vertex of the body mesh
+	// (2026-11-12): u along the loft (a wing's span, a fuselage's length),
+	// v round the section. The structural analysis takes a laminate's
+	// REFERENCE DIRECTION in each triangle from the gradient of u -- the
+	// along-the-loft direction, a laminator's rosette -- and the drape's
+	// seed from them (laminate.hpp, drape.hpp, structural_fea.py). Empty
+	// for a body that is no loft (a primitive, a boolean result); NaN at a
+	// vertex no ring reached (a cap's interior point). A plan may carry
+	// these and no structure at all; IsEmpty() does not count them.
+	std::vector<double> vertex_u, vertex_v;
 	bool IsEmpty() const { return ribs.empty() && spars.empty() && stringers.empty(); }
+	bool HasParameters() const { return !vertex_u.empty(); }
 };
+
+// Fills plan.vertex_u / vertex_v for a body of `vertex_count` vertices
+// from its loft's rings (the first ring that names a vertex wins; the
+// rest stay NaN). The chain form takes every segment's rings.
+void AssignLoftParameters(BodyStructurePlan& plan, size_t vertex_count, const LoftRings& rings);
+void AssignLoftParameters(BodyStructurePlan& plan, size_t vertex_count, const std::vector<LoftRings>& rings);
 
 // ---------------------------------------------------------------------
 // Frames and stringers of a body lofted along its length (a fuselage, a

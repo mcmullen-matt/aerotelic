@@ -29,6 +29,16 @@ Cases with closed forms, each run through the real job (the same
     stiffen the section a little (the tip moves less, not more), the mass
     is the skin's plus the ribs' rho t A, the reactions still balance, and
     per_material reports the ribs by kind.
+  * COMPOSITE LAMINATES (2026-11-12) on a cantilever plate of eight plies
+    of an AS4-class tape: with the fibres along the plate (the material
+    axes from the ``axes`` file) the tip deflection is the E1 beam's, with
+    the axes turned 90 degrees the E2 beam's (fourteen times more), with
+    no axes file the region's longest extent stands in (E1 again); a drape
+    file turning every ply 90 degrees gives the E2 answer too, and a woven
+    ply sheared 60 degrees doubles its mass (1 / cos 60); Tsai-Wu reserve
+    factors are reported with the margin, the VTK carries them, and an
+    unsymmetric [0_4/90_4] strip under tension bends towards its stiff
+    outer plies (the first row of the stack is on the +normal side).
 
 ``box_shell`` here is also what rib_gmsh_check.py builds its body from.
 """
@@ -125,6 +135,33 @@ def box_shell(lx, ly, lz, nx, ny, nz):
     face(np.array([-hx, -hy, -hz]), 2 * hx * X, 2 * hz * Z, nx, nz, -Y)
     face(np.array([-hx, hy, -hz]), 2 * hx * X, 2 * hz * Z, nx, nz, Y)
     return np.array(verts), np.array(tris, dtype=np.int64)
+
+
+def plate(lx, ly, nx, ny):
+    """An open flat plate in z = 0, [0, lx] x [0, ly], nx x ny cells split
+    in two, wound with the normal along +z."""
+    verts = np.array([[lx * i / nx, ly * j / ny, 0.0] for j in range(ny + 1) for i in range(nx + 1)])
+    tris = []
+    for j in range(ny):
+        for i in range(nx):
+            a = j * (nx + 1) + i
+            tris.append([a, a + 1, a + nx + 2])
+            tris.append([a, a + nx + 2, a + nx + 1])
+    return verts, np.array(tris, dtype=np.int64)
+
+
+# An AS4-class carbon/epoxy tape as a lamina card (SI), with strengths.
+TAPE = {"form": "UD", "lamina": "AS4-class tape", "density": 1580.0, "thickness": 0.000125,
+        "e1": 142e9, "e2": 10.3e9, "nu12": 0.27, "g12": 7.2e9, "g13": 7.2e9, "g23": 3.5e9,
+        "t1": 2280e6, "c1": 1440e6, "t2": 57e6, "c2": 228e6, "s12": 71e6, "s13": 71e6, "s23": 71e6, "locking_angle": 0.0}
+CLOTH = dict(TAPE, form="Woven", lamina="cloth", e1=60e9, e2=60e9, nu12=0.05, g12=4.5e9, g13=4.5e9, g23=2.0e9, thickness=0.0002, locking_angle=35.0)
+
+
+def laminate_card(name, plies):
+    """A laminate material card as the application writes it: the expanded
+    stack (outer face first), each ply a lamina card with its angle."""
+    return {"name": name, "density": 0.0, "youngs_modulus": 0.0, "poisson_ratio": 0.0, "allowable_stress": 0.0,
+            "plies": [dict(lamina, angle=angle) for lamina, angle in plies]}
 
 
 def read_vtk(path):
@@ -369,6 +406,104 @@ def main(argv):
         failures += not check(len(pts_r) == nn and (cd_r["kind"] == 2).sum() == rr["rib_faces"] and (cd_r["material"][cd_r["kind"] == 2] == 2).all(),
                               "ribs: the VTK marks the rib shells as kind 2 of region 2")
         print("  ribs: %d dof in %.1f s; tip %.4g m vs %.4g plain; rib peak %.3g Pa" % (rrb["dofs"], rrb["seconds_solve"], rrb["max_displacement"], r0["max_displacement"], rrb["per_material"][1]["max_von_mises"]))
+
+        # ------------------------------------------------------------------
+        # Composite laminates (2026-11-12): a cantilever plate of eight
+        # tape plies, clamped at x = 0, a tip load along -z shared by the
+        # tip nodes. Beam theory with E1 (fibres along x) or E2 (across).
+        # ------------------------------------------------------------------
+        lam_dir = os.path.join(job_dir, "laminate")
+        os.makedirs(lam_dir)
+        pL, pB, pnx, pny = 1.0, 0.2, 20, 4
+        pverts, ptris = plate(pL, pB, pnx, pny)
+        write_mesh(os.path.join(lam_dir, "nodes.bin"), pverts)
+        write_faces(os.path.join(lam_dir, "faces.bin"), ptris, np.ones(len(ptris), dtype=np.int32))
+        n_ply = 8
+        t_lam = n_ply * TAPE["thickness"]
+        I_p = pB * t_lam ** 3 / 12.0
+        F_tip = 10.0
+        tip_nodes = pverts[np.abs(pverts[:, 0] - pL) < 1e-9]
+        tip_forces = [{"at": [float(p[0]), float(p[1]), float(p[2])], "force": [0.0, 0.0, -F_tip / len(tip_nodes)]} for p in tip_nodes]
+        delta_e1 = F_tip * pL ** 3 / (3 * TAPE["e1"] * I_p)
+        delta_e2 = F_tip * pL ** 3 / (3 * TAPE["e2"] * I_p)
+        zero_card = laminate_card("tape [0]_8", [(TAPE, 0.0)] * n_ply)
+
+        def lam_job(tag, card, axes=None, drape=None, forces=None):
+            skin = {"material": card, "thickness": t_lam}
+            job = {"nodes": "nodes.bin", "faces": "faces.bin", "rib_faces": None,
+                   "regions": [{"id": 1, "label": "plate", "skin": skin, "rib": None}],
+                   "supports": [{"axis": "x", "value": "min", "tolerance": 0.0, "bounds": None}],
+                   "loads": {"load_factor": 0.0, "pressure": 0.0, "pressure_file": None, "point_forces": forces or tip_forces},
+                   "solver": {"echo_level": 0, "linear_solver": solver, "shell_element": "ShellThinElement3D3N", "modes": 0},
+                   "outputs": {"vtk": os.path.join(lam_dir, tag + ".vtk"), "result": tag + "_result.json"}}
+            if axes is not None:
+                np.tile(np.asarray(axes, dtype="<f8"), (len(ptris), 1)).tofile(os.path.join(lam_dir, tag + "_axes.bin"))
+                job["axes"] = tag + "_axes.bin"
+            if drape is not None:
+                skin["drape_file"] = tag + "_drape.bin"
+                np.asarray(drape, dtype="<f4").tofile(os.path.join(lam_dir, tag + "_drape.bin"))
+            return run(lam_dir, job)
+
+        def tip_uz(tag):
+            pts, cells, types, pd, cd = read_vtk(os.path.join(lam_dir, tag + ".vtk"))
+            tip = np.abs(pts[:, 0] - pL) < 1e-9
+            return float(pd["displacement"][tip, 2].mean()), pd, cd
+
+        r1 = lam_job("lam_x", zero_card, axes=[1.0, 0.0, 0.0])
+        uz1, pd1, cd1 = tip_uz("lam_x")
+        failures += not check(r1["ok"] and r1["balanced"] and r1["laminates"] == 1 and abs(r1["reaction"][2] - F_tip) < 0.01 * F_tip, "laminate: the laminate plate solves and the clamp carries the tip load (%.4g N)" % r1["reaction"][2])
+        failures += not check(abs(-uz1 / delta_e1 - 1.0) < 0.03, "laminate: fibres along the plate -- the tip deflection is the E1 beam's (%.4g vs %.4g m, %.1f%%)" % (-uz1, delta_e1, 100 * (-uz1 / delta_e1 - 1)))
+        failures += not check(abs(r1["mass"] - TAPE["density"] * t_lam * pL * pB) < 1e-9 * r1["mass"], "laminate: the mass is the plies' rho t A (%.5g kg)" % r1["mass"])
+        e1 = r1["per_material"][0]
+        failures += not check(e1["criterion"] == "Tsai-Wu" and e1["reserve_factor"] > 1.0 and abs(e1["margin"] - (e1["reserve_factor"] - 1.0)) < 1e-12 and e1["plies"] == n_ply and abs(e1["thickness"] - t_lam) < 1e-12 and e1["stacks"] == 1 and e1["drape"] is None,
+                              "laminate: per_material reports Tsai-Wu's reserve factor (%.3g), margin RF - 1, %d plies in one stack, no drape" % (e1["reserve_factor"], e1["plies"]))
+        failures += not check("reserve_factor" in cd1 and cd1["reserve_factor"].min() > 0.0 and abs(cd1["reserve_factor"].min() / e1["reserve_factor"] - 1.0) < 1e-6 and "ply_shear_max" in cd1 and "fibre_deviation_max" in cd1 and cd1["ply_shear_max"].max() == 0.0,
+                              "laminate: the VTK carries the reserve factor per cell (min %.3g) and the drape fields (zero, undraped)" % cd1["reserve_factor"].min())
+        print("  laminate [0]_8 along x: tip %.4g m vs E1 beam %.4g; RF min %.3g; %d dof in %.1f s" % (-uz1, delta_e1, e1["reserve_factor"], r1["dofs"], r1["seconds_solve"]))
+
+        r2 = lam_job("lam_y", zero_card, axes=[0.0, 1.0, 0.0])
+        uz2, _, _ = tip_uz("lam_y")
+        failures += not check(abs(-uz2 / delta_e2 - 1.0) < 0.03, "laminate: the material axis turned 90 degrees -- the tip deflection is the E2 beam's (%.4g vs %.4g m, %.1f%%)" % (-uz2, delta_e2, 100 * (-uz2 / delta_e2 - 1)))
+        failures += not check(r2["per_material"][0]["reserve_factor"] < e1["reserve_factor"], "laminate: ...and the reserve factor is lower across the fibres (%.3g vs %.3g)" % (r2["per_material"][0]["reserve_factor"], e1["reserve_factor"]))
+
+        r3 = lam_job("lam_auto", zero_card)
+        uz3, _, _ = tip_uz("lam_auto")
+        failures += not check(abs(uz3 / uz1 - 1.0) < 1e-6, "laminate: without an axes file the region's longest extent (x) is the reference direction (tip %.4g vs %.4g m)" % (-uz3, -uz1))
+
+        # A drape turning every ply 90 degrees is the E2 plate again.
+        drape90 = np.zeros((len(ptris), n_ply, 2))
+        drape90[:, :, 0] = 90.0
+        r4 = lam_job("lam_drape", zero_card, axes=[1.0, 0.0, 0.0], drape=drape90)
+        uz4, _, cd4 = tip_uz("lam_drape")
+        failures += not check(abs(uz4 / uz2 - 1.0) < 1e-6 and r4["per_material"][0]["drape"]["max_deviation"] == 90.0 and r4["per_material"][0]["stacks"] == 1 and cd4["fibre_deviation_max"].max() == 90.0,
+                              "laminate: a drape turning the fibres 90 degrees gives the E2 plate (tip %.4g vs %.4g m), one stack, deviation 90 in the result and the VTK" % (-uz4, -uz2))
+        # A woven ply sheared 60 degrees: the thickness and the mass double.
+        cloth_card = laminate_card("cloth [0]_2", [(CLOTH, 0.0)] * 2)
+        t_cloth = 2 * CLOTH["thickness"]
+        drape60 = np.zeros((len(ptris), 2, 2))
+        drape60[:, :, 1] = 60.0
+        r5 = lam_job("cloth_plain", cloth_card, axes=[1.0, 0.0, 0.0])
+        r6 = lam_job("cloth_sheared", cloth_card, axes=[1.0, 0.0, 0.0], drape=drape60)
+        failures += not check(abs(r5["mass"] - CLOTH["density"] * t_cloth * pL * pB) < 1e-9 * r5["mass"] and abs(r6["mass"] / r5["mass"] - 2.0) < 1e-6,
+                              "laminate: a cloth sheared 60 degrees is 1 / cos 60 = twice as thick and heavy (%.5g vs %.5g kg)" % (r6["mass"], r5["mass"]))
+        failures += not check(r6["per_material"][0]["drape"]["faces_past_locking"] == 2 * len(ptris) and r6["per_material"][0]["drape"]["max_shear"] == 60.0,
+                              "laminate: every face of both plies is past the cloth's 35 degree locking angle (%d)" % r6["per_material"][0]["drape"]["faces_past_locking"])
+        uz6, _, _ = tip_uz("cloth_sheared")
+        uz5, _, _ = tip_uz("cloth_plain")
+        failures += not check(-uz6 < -uz5, "laminate: the thickened sheared cloth deflects less (%.4g vs %.4g m)" % (-uz6, -uz5))
+        # Without strengths: no margin, and the criterion says so.
+        bare = laminate_card("bare [0]_8", [(dict(TAPE, t1=0.0, c1=0.0, t2=0.0, c2=0.0, s12=0.0), 0.0)] * n_ply)
+        r7 = lam_job("lam_bare", bare, axes=[1.0, 0.0, 0.0])
+        e7 = r7["per_material"][0]
+        failures += not check(r7["ok"] and e7["reserve_factor"] == 0.0 and e7["margin"] == 0.0 and e7["criterion"].startswith("Tsai-Wu (no strengths"), "laminate: a lamina without strengths reports no margin and says so")
+        # An unsymmetric [0_4/90_4] strip under axial tension bends towards
+        # its stiff outer plies, which lie on the +normal (first row) side.
+        unsym = laminate_card("tape [0_4/90_4]", [(TAPE, 0.0)] * 4 + [(TAPE, 90.0)] * 4)
+        axial = [{"at": [float(p[0]), float(p[1]), float(p[2])], "force": [100.0 / len(tip_nodes), 0.0, 0.0]} for p in tip_nodes]
+        r8 = lam_job("lam_unsym", unsym, axes=[1.0, 0.0, 0.0], forces=axial)
+        uz8, _, _ = tip_uz("lam_unsym")
+        failures += not check(r8["ok"] and uz8 > 1e-4, "laminate: an unsymmetric strip in tension bends towards its stiff outer plies on the +normal side (tip z %.4g m)" % uz8)
+        print("  laminate: E2 plate %.4g m (theory %.4g); drape-90 %.4g; cloth sheared 60: mass x%.3f; unsymmetric tip z %.4g m" % (-uz2, delta_e2, -uz4, r6["mass"] / r5["mass"], uz8))
 
         if keep:
             os.makedirs(keep, exist_ok=True)

@@ -71,6 +71,15 @@ namespace AerotelicStructuralFea
 		// them, they are not wetted; their mass counts.
 		aerotelic::Material Rib;       // SI
 		double RibThickness = 0.0;
+		// A LAMINATE skin's drape (2026-11-12; empty otherwise): per face of
+		// this region in FRequest::ShellFaces order, per ply of the expanded
+		// stack, (deviation, shear) in degrees -- the angle from the ply's
+		// nominal direction to its draped warp, and how far warp and weft
+		// have closed from 90 (core drape.hpp, computed by the model
+		// builder). The script turns the plies and thickens the woven ones
+		// by it. Faces x plies x 2 floats.
+		TArray<float> SkinDrape;
+		TArray<float> RibDrape;   // the same for a laminate rib layer (planar: normally none)
 
 		bool HasShells() const { return SkinThickness > 0.0; }
 		bool HasRibs() const { return RibThickness > 0.0; }
@@ -132,6 +141,15 @@ namespace AerotelicStructuralFea
 		TArray<FShellFace> ShellFaces;
 		// The rib faces (FRegion::Rib): shells inside the body, not wetted.
 		TArray<FShellFace> RibFaces;
+		// The REFERENCE DIRECTION of every shell (2026-11-12), one per
+		// ShellFaces / RibFaces entry or empty: the fibre direction of a
+		// laminate's 0 degree ply, as the model builder takes it from the
+		// body's loft (the along-the-loft direction in each triangle) or a
+		// planar member's longest extent. Any vector; the script projects it
+		// into the face. Only matters to laminate regions; a zero vector
+		// leaves the face to the script's own fallback.
+		TArray<aerotelic::Vec3> ShellAxes;
+		TArray<aerotelic::Vec3> RibAxes;
 		double LengthToSI = 1.0;
 		TArray<FRegion> Regions;
 
@@ -193,9 +211,26 @@ namespace AerotelicStructuralFea
 		FString Label;
 		FString Kind;                 // "skin" or "rib"
 		double MaxVonMises = 0.0;     // Pa
-		double Margin = 0.0;          // allowable / peak - 1 (0 without an allowable)
-		double Allowable = 0.0;       // Pa
+		double Margin = 0.0;          // reserve factor - 1 (0 without an allowable / strengths)
+		double Allowable = 0.0;       // Pa (an isotropic material's)
 		double Mass = 0.0;            // kg
+		// The criterion the margin follows (2026-11-12): "von Mises" for an
+		// isotropic material (reserve factor = allowable / peak), "Tsai-Wu"
+		// for a laminate (the smallest reserve factor over its plies and
+		// elements; "Tsai-Wu (no strengths: no margin)" when a lamina lacks
+		// them). ReserveFactor 0 when none.
+		FString Criterion = TEXT("von Mises");
+		double ReserveFactor = 0.0;
+		// A laminate's stack as analysed: plies, thickness (m), distinct
+		// draped stacks, and the drape's extremes (degrees) when one was
+		// given.
+		int32 Plies = 0;
+		double Thickness = 0.0;
+		int32 Stacks = 0;
+		bool bDraped = false;
+		double DrapeMaxShear = 0.0, DrapeMaxDeviation = 0.0;
+		int32 DrapeFacesPastLocking = 0;
+		bool IsLaminate() const { return Plies > 0; }
 	};
 
 	struct FResult
@@ -214,6 +249,7 @@ namespace AerotelicStructuralFea
 		double MaxVonMises = 0.0;               // Pa
 		int32 MaxVonMisesRegion = 0;
 		TArray<FEntryResult> Entries;
+		int32 Laminates = 0;                    // regions analysed as laminates
 
 		// The force balance: the reactions at the support against what
 		// was applied. Equal and opposite in a converged solution:

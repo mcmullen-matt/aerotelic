@@ -1727,12 +1727,17 @@ std::vector<NamedMesh> WingModel::BuildBodies(double tolerance, std::vector<Wing
 			// vertices), the centre rib shared.
 			TriMesh& m = out.back().mesh;
 			const int n0 = static_cast<int>(m.vertices.size());
+			// The loft's parameters at the starboard vertices; the port
+			// half's mirror them with the station negated.
+			AssignLoftParameters(plan, m.vertices.size(), rings);
 			std::vector<int> port(n0);
 			std::vector<Vec3> added;
 			for (int i = 0; i < n0; ++i) {
 				if (m.vertices[i].y == 0.0) { port[i] = i; continue; }
 				port[i] = n0 + static_cast<int>(added.size());
 				added.push_back(reflected(m.vertices[i]));
+				plan.vertex_u.push_back(-plan.vertex_u[i]);
+				plan.vertex_v.push_back(plan.vertex_v[i]);
 			}
 			m.vertices.insert(m.vertices.end(), added.begin(), added.end());
 			const size_t nt = m.triangles.size();
@@ -1752,6 +1757,7 @@ std::vector<NamedMesh> WingModel::BuildBodies(double tolerance, std::vector<Wing
 				plan.ribs.push_back(std::move(rib));
 			}
 		}
+		if (!plan.HasParameters()) AssignLoftParameters(plan, out.back().mesh.vertices.size(), rings);
 		plans.push_back(std::move(plan));
 	}
 
@@ -1791,6 +1797,7 @@ std::vector<NamedMesh> WingModel::BuildBodies(double tolerance, std::vector<Wing
 			if (rib.rim.size() < 3) continue;
 			plan.ribs.push_back(std::move(rib));
 		}
+		AssignLoftParameters(plan, out.back().mesh.vertices.size(), fr);
 		plans.push_back(plan);
 		if (symmetric) {
 			// The port flap: a body of its own, the reflection of this one

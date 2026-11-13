@@ -22,6 +22,7 @@
 #include "Widgets/MessageBox.h"
 
 #include "aerotelic/body_structure.hpp"
+#include "aerotelic/laminate.hpp"
 #include "aerotelic/mass_properties.hpp"
 
 #define LOCTEXT_NAMESPACE "AerotelicStructureDialog"
@@ -184,6 +185,17 @@ void OpenAerotelicStructureDialog(AAerotelicEntityActor* Entity, const FString& 
 	};
 
 	// ------------------------------------------------------------------ Skin
+	// A LAMINATE's thickness is its stack's (2026-11-12): picking one sets
+	// the skin thickness to the plies' sum in the project's unit and locks
+	// the field; the stack is edited under Model > Material Properties.
+	auto SyncLaminateThickness = [D]()
+	{
+		if (D->S.material.IsLaminate())
+		{
+			D->S.skin_thickness = aerotelic::StackThickness(aerotelic::ExpandedStack(D->S.material)) / D->Units.LengthToSI();
+		}
+	};
+	SyncLaminateThickness();
 	TSharedRef<SWidget> SkinTab =
 		SNew(SVerticalBox)
 		+ SVerticalBox::Slot().AutoHeight()
@@ -192,12 +204,26 @@ void OpenAerotelicStructureDialog(AAerotelicEntityActor* Entity, const FString& 
 				SNew(SAerotelicMaterialPicker)
 				.Current_Lambda([D]() { return D->S.material; })
 				.AllowNone(true)
-				.OnPicked_Lambda([D](const Material& M) { D->S.material = M; D->Touch(); }))
+				.OnPicked_Lambda([D, SyncLaminateThickness](const Material& M) { D->S.material = M; SyncLaminateThickness(); D->Touch(); }))
 		]
 		+ SVerticalBox::Slot().AutoHeight().Padding(0, 6, 0, 0)
 		[
 			FormRow(WithUnit(LOCTEXT("SkinThickness", "Skin thickness, 0 = solid"), Units.LengthName()),
-				Length([D]() { return &D->S.skin_thickness; }, 0.0, 0.001))
+				SNew(SBox).IsEnabled_Lambda([D]() { return !D->S.material.IsLaminate(); })
+				[ Length([D]() { return &D->S.skin_thickness; }, 0.0, 0.001) ])
+		]
+		+ SVerticalBox::Slot().AutoHeight().Padding(0, 2, 0, 0)
+		[
+			SNew(STextBlock).AutoWrapText(true)
+			.Visibility_Lambda([D]() { return D->S.material.IsLaminate() ? EVisibility::Visible : EVisibility::Collapsed; })
+			.ColorAndOpacity(FSlateColor(FLinearColor(0.95f, 0.85f, 0.55f)))
+			.Text_Lambda([D]()
+			{
+				const std::vector<aerotelic::Ply> Stack = aerotelic::ExpandedStack(D->S.material);
+				return FText::FromString(FString::Printf(TEXT("A laminate: the thickness is the stack's, %d plies %s = %.4g %s (read-only; edit the stack under Model > Material Properties). "
+					"Fibres at 0 degrees run along the body's loft (a wing's span, a fuselage's length); the analysis drapes each ply over the body and reports Tsai-Wu margins."),
+					(int32)Stack.size(), UTF8_TO_TCHAR(aerotelic::StackingNotation(D->S.material).c_str()), D->S.skin_thickness, UTF8_TO_TCHAR(D->Units.LengthName())));
+			})
 		]
 		+ SVerticalBox::Slot().AutoHeight().Padding(0, 6, 0, 0)
 		[

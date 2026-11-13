@@ -346,7 +346,10 @@ std::vector<NamedMesh> FuselageModel::BuildMeshes(double tolerance) const {
 	std::vector<std::string> notes;
 	if (!problem.empty()) notes.push_back(problem);
 	BodyStructurePlan plan = PlanFrameStructure("Main", body.mesh, rings, spec, set, Vec3{1.0, 0.0, 0.0}, notes);
-	if (!plan.IsEmpty() || !plan.notes.empty()) last_structure_.push_back(std::move(plan));
+	// The plan always goes out: even without frames it carries the loft's
+	// parameters at the vertices, which the analysis's fibre directions use.
+	AssignLoftParameters(plan, body.mesh.vertices.size(), rings);
+	last_structure_.push_back(std::move(plan));
 	std::vector<NamedMesh> out;
 	out.push_back(std::move(body));
 	return out;

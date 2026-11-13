@@ -3144,3 +3144,162 @@ seconds), only its converged angles drawn, as markers, and the polar dims as
 Re 1e6, 16 of the 23 angles converge; the misses are the post-stall angles
 above about 10 deg, where the viscous Cl bends over while the inviscid
 lines keep climbing.
+
+## Composite laminates: plies, drape, Tsai-Wu (2026-11-12)
+
+**What was asked.** Symmetric and general composite laminates as
+materials, with the plies' orientation tracked as the cloth is laid over
+a doubly curved body (the owner's confirmed choices: a parametric rosette
+for the reference direction and a kinematic drape of each ply; the Skin
+thickness read-only once a laminate is picked; Tsai-Wu margins).
+
+**Two new kinds of material row** (`core/include/aerotelic/materials.hpp`).
+A **lamina** (`Material::lamina`, category "Lamina") is ONE PLY's
+orthotropic figures in the ply's own axes -- form UD or Woven, the cured
+ply thickness, E1, E2, nu12, G12, G13, G23, the strengths T1, C1, T2, C2,
+S12, S13, S23 (all five in-plane ones or none), a cloth's locking angle --
+and its density; it weighs and is complete, but is not structural and the
+picker never offers it to a body. A **laminate** (`Material::plies`,
+category "Laminate") is a stack of plies, each an angle, a thickness (0 =
+the lamina's nominal) and a COPY of its lamina's figures (the name is kept
+too); `symmetric` says the listed plies are the outer half, mirrored, and
+`symmetric_odd` that the last listed is the single centre ply. Plies are
+listed from the OUTER face (the one the outward normal leaves) inward; a
+positive angle turns counter-clockwise about that normal from the
+REFERENCE DIRECTION. A laminate's four isotropic figures are COMPUTED from
+the stack by classical lamination theory (`core/include/aerotelic/
+laminate.hpp`: Q, Q-bar, A, B, D, the engineering constants with the
+curvatures free -- A^-1 for a symmetric stack --, the flexural moduli,
+`RefreshLaminate`): density the thickness-weighted mean, Young's modulus
+Ex along the reference direction, Poisson's ratio nu_xy, and the allowable
+the FIRST-PLY-FAILURE tensile strength along x by Tsai-Wu (plane stress,
+F12 = -1/2 sqrt(F11 F22)), 0 when a lamina lacks strengths -- so every
+consumer that weighs, sorts or displays by them keeps working, while the
+analysis gets the plies. The stacking notation parses both ways
+(`ParseStackingNotation` / `StackingNotation`: `[0/±45/90]s`, `[0/90]2s`,
+`0_2` repeats, `~` on the last angle of a symmetric stack for an odd
+centre ply, `+-` for the sign). `laminate_check` reproduces NASA RP-1351's
+worked examples (Nettles 1994: the AS4/3501-6 lamina's Q and Q-bar, the
+[0/45]s A and D and Ex = 11.333 Msi, the [0/45]T B, D and Ex = 5.839 Msi,
+which also fixes the convention that the first listed ply is at +h/2),
+the quasi-isotropic identities, Tsai-Wu's closed forms (T1 / sigma1 under
+fibre tension...), the notation round trips and the library file.
+
+**The library file and the presets.** `materials_presets.yaml` gained four
+laminae from MIL-HDBK-17-2F (Composite Materials Handbook vol. 2, US DoD
+2002, Distribution Statement A, no copyright notice -- AS4 12k/3502 tape
+with B-basis strengths, T300 3k/934 plain weave, E-glass 7781/EA9396
+8-harness satin, S-2 glass/SP381 tape; each row's source names the
+section, tables, fibre volume and basis, and says which figures are
+literature values where the handbook has none) and five laminates of them
+(`CFRP AS4/3502 tape [0/±45/90]s`, `[0/90]s`, `CFRP T300/934 cloth
+[0/45]s`, `GFRP 7781 cloth [0_2]`, `[0/45]s`), listed under `plies:` by
+the lamina's NAME and resolved on reading (`ReadMaterialsYaml` takes the
+presets as extra laminae for the user's file). The project file writes a
+laminate's plies WITH the lamina's figures (`props:`), so it stands alone
+(project_yaml `EncodeMaterial` / `DecodeMaterial`; a hand-written file
+naming a preset lamina alone takes its figures). The two old isotropic
+"quasi-isotropic" rows stay.
+
+**The reference direction and the drape.** Every body plan now carries the
+loft's parameters at the grid's vertices (`BodyStructurePlan::vertex_u /
+vertex_v`, `AssignLoftParameters`, filled by the wing, fuselage and nacelle
+models -- the plan goes out even without frames; the wing's port half
+mirrors them with the station negated). `AerotelicFeaModelBuilder` takes
+each skin triangle's reference direction as the GRADIENT OF u over the
+triangle -- the along-the-loft direction, a wing's span, a fuselage's
+length: a laminator's rosette -- falling back to the body's longest
+bounding-box extent where u is unknown or constant (caps, pockets,
+primitives, boolean results) and to its own longest extent for a layer (a
+rib's chord, a spar's span); the directions ride in
+`FBuilt::ShellAxes / RibAxes` and `FRequest::ShellAxes / RibAxes` (trimmed
+with the faces when some float), and the script sets each element's
+`LOCAL_MATERIAL_AXIS_1` before the elements initialise
+(`ModifyInitialGeometry`), from which Kratos's shell takes its material
+orientation. For a LAMINATE skin the builder then DRAPES each distinct ply
+direction over the body (`core/include/aerotelic/drape.hpp`, `DrapeNet`):
+a pin-jointed net of pitch diagonal/60 from a seed half-way along the
+loft and half-way round the section (a wing's leading edge), its two
+generators geodesics (a step-and-project walk), every other node the
+surface point a pitch from its two placed neighbours (Newton in the
+tangent plane, re-projected), stopping at free edges, where it would
+overlap itself round a closed body, and where a cell would fold; each
+triangle takes the nearest cell's warp, weft and shear (the angle warp and
+weft have closed from 90). `drape_check`: no shear and the warp kept on a
+plane and a cylinder (within the faceting), and on a sphere the diagonal
+shear equal to K u v to first order (0.5785 vs 0.573, 2.284 vs 2.292, 5.17
+vs 5.16, 9.18 vs 9.17 degrees at 2, 4, 6, 8 cells -- the Chebyshev net
+equation), the four quadrants alike, the net stopping at a patch's edge
+and not reaching the far skin of a thin box. The region's `SkinDrape` is
+(deviation, shear) per face per ply, the deviation being the draped warp's
+angle from the ply's nominal direction.
+
+**The solver** (`tools/structural_fea.py`). A region whose material card
+carries `plies` gets StructuralMechanicsApplication's layered section:
+`SHELL_ORTHOTROPIC_LAYERS` (a row per ply: t, angle, rho, E1, E2, nu12,
+G12, G13, G23 and, when every lamina has strengths, T1, C1, T2, C2, S12,
+S13, S23) under `LinearElasticOrthotropic2DLaw`, which lives in
+**KratosConstitutiveLawsApplication** -- installed in the WingDesigner
+environment on 2026-11-12 (`pip install KratosConstitutiveLawsApplication`
+at Kratos's version, 10.4.4); the script says so if it is missing. No
+THICKNESS, YOUNG_MODULUS or POISSON_RATIO beside the layers (Kratos
+refuses them); the plies' densities give the mass. Checked on Kratos
+10.4.4: the first row lies on the +normal side and a positive angle turns
+counter-clockwise about the normal, both as the application defines them
+(a [0_4/90_4] strip in tension bends towards its stiff outer plies; a [30]
+strip shears the way CLT's A16 says). With a `drape_file`, each face's
+stack has its plies turned by their deviation and, WOVEN, thickened by
+1 / cos(shear) (areal weight is conserved; a UD tape cannot shear and
+keeps its thickness -- its shear is reported as the gap or overlap strips
+would need); the stacks are binned to 2 degrees (coarsened until a region
+has at most 400 distinct stacks) and one Properties written per bin, its
+elements in a sub model part `Skin_<id>_b<k>`; the conditions take the
+skin's Properties. A laminate region's margin is **Tsai-Wu's**:
+`TSAI_WU_RESERVE_FACTOR`, the smallest over the plies and integration
+points of every element, `per_material` reporting `criterion` "Tsai-Wu",
+`reserve_factor` and `margin` = RF - 1 (no margin, and the criterion says
+so, when a lamina lacks strengths); the VTK gains `reserve_factor`,
+`ply_shear_max` and `fibre_deviation_max` per cell. `structural_fea_check`
+adds a cantilever plate of eight AS4-class plies: the E1 beam's deflection
+with the axes along it, the E2 beam's (fourteen times more) with the axes
+turned 90 degrees or with a drape turning every ply 90, the longest-extent
+fallback, a cloth sheared 60 degrees twice as thick and heavy and past its
+locking angle, no margin without strengths, and the unsymmetric strip's
+bend. NOT modelled, by design and said so: the non-orthogonality of a
+sheared cloth's stiffness (Hofstee & van Keulen 2001), the mass change of
+a draped cloth in the mass report (the FEA mass has it), and any in-
+viewport picture of the drape -- the VTK has it.
+
+**The application.** The Structure dialog's Skin thickness field locks
+when a laminate is picked and shows the stack ("8 plies [0/±45/90]s = 1.118
+mm, read-only"); `AerotelicFeaModelBuilder` sets a laminate region's
+thickness to its stack's whatever the field says. The material picker
+leaves laminae out and labels laminates with their ply count and
+thickness. The Structural dialog's result lines read, for a laminate,
+"laminate of 8 plies, 1.118 mm, in 3 stacks; Tsai-Wu reserve factor 2.4
+(margin +1.40); von Mises ...; draped: cloth sheared up to 12 deg, fibres
+turned up to 9 deg", with "PAST THE LOCKING ANGLE" when any face-ply is.
+Model > Material Properties: the Custom tab has a KIND combo -- Isotropic
+(the four figures), Lamina (form, ply thickness, E1, E2, nu12, G12, G13,
+G23, the strengths, the locking angle) and Laminate (pick a lamina, type
+the stacking notation, Build the stack; a live summary of plies,
+thickness, Ex, Ey, Gxy, nu_xy, the flexural moduli, the first-ply-failure
+allowable, and the warnings an unsymmetric (B != 0: extension-bending
+coupling, warps on cure) or unbalanced (A16 != 0: shears under tension)
+stack earns); the table shows a lamina's E1, nu12 and T1 in the modulus,
+Poisson and allowable columns; the Help tab has the theory and the
+sources. Tests: `laminate_check` (88 checks), `drape_check` (22),
+`mass_properties_check` (123), `project_yaml_check` (145, with the
+laminate round trip), the Python check, and the Document commandlet's
+library (a user's laminate built from
+a notation, saved by the lamina's name and resolved on reading) and FEA
+(the box beam in the quasi-isotropic preset: eight plies, Tsai-Wu's
+margin, the plies' mass, the reserve factor in the VTK) steps.
+
+**References.** Jones, Mechanics of Composite Materials, 2nd ed., 1999,
+ch. 4; Nettles, Basic Mechanics of Laminated Composite Plates, NASA
+RP-1351, 1994; Tsai & Wu, J. Composite Materials 5 (1971) 58; MIL-HDBK-17-2F
+(2002); Mack & Taylor, J. Textile Inst. 47 (1956) T477; Van Der Weeën,
+Int. J. Numer. Meth. Eng. 31 (1991) 1415; Hancock & Potter, Composites A
+37 (2006) 413; Boisse et al., Composites A 42 (2011) 1156 (locking angles);
+Hofstee & van Keulen, Composite Structures 54 (2001) 179.

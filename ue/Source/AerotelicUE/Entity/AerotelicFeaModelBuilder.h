@@ -59,6 +59,16 @@ namespace AerotelicFeaModelBuilder
 		std::vector<aerotelic::Vec3> Nodes;
 		TArray<AerotelicStructuralFea::FShellFace> ShellFaces;
 		TArray<AerotelicStructuralFea::FShellFace> RibFaces;
+		// The material REFERENCE DIRECTION of every face (2026-11-12), one
+		// per ShellFaces / RibFaces entry: in a body's skin the along-the-
+		// loft direction of its triangle (the gradient of the loft's u over
+		// the triangle, from the plan's vertex parameters: a wing's span, a
+		// fuselage's length), or the body's longest extent when it is no
+		// loft; in a layer its mesh's longest extent. Projected into the
+		// face by the solver. A laminate's 0 degree ply runs along it; an
+		// isotropic region ignores it.
+		TArray<aerotelic::Vec3> ShellAxes;
+		TArray<aerotelic::Vec3> RibAxes;
 		TArray<AerotelicStructuralFea::FRegion> Regions;
 		TArray<FString> Problems;
 		int32 NextId = 1;

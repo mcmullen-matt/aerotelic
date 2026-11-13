@@ -61,6 +61,12 @@ add_library(aerotelic_core STATIC
 	src/mass_properties.cpp
 	src/units.cpp
 	src/materials.cpp
+	# Composite laminates (2026-11-12): classical lamination theory, the
+	# stacking notation, Tsai-Wu; and the kinematic drape of a ply over a
+	# surface (the pin-jointed net), for the fibre directions the analysis
+	# gives Kratos.
+	src/laminate.cpp
+	src/drape.cpp
 	src/body_structure.cpp
 	src/structure_plan.cpp
 	src/mesh_cut.cpp
@@ -246,4 +252,10 @@ target_link_libraries(vortex_panel_check PRIVATE aerotelic_core)
 
 add_executable(ibl_check tests/ibl_check.cpp)
 target_link_libraries(ibl_check PRIVATE aerotelic_core)
+
+add_executable(laminate_check tests/laminate_check.cpp)
+target_link_libraries(laminate_check PRIVATE aerotelic_core)
+
+add_executable(drape_check tests/drape_check.cpp)
+target_link_libraries(drape_check PRIVATE aerotelic_core)
 

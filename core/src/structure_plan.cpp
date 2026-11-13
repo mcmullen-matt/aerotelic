@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <stdexcept>
 
 namespace aerotelic {
@@ -109,6 +110,33 @@ void FrameStructureSpec::Validate() const {
 		if (!(st.x_start >= 0.0 && st.x_end <= 1.0 && st.x_end > st.x_start)) throw std::invalid_argument("stringer '" + st.name + "': the extent must run 0 <= start < end <= 1");
 		if (!(st.thickness >= 0.0) || !(st.height >= 0.0)) throw std::invalid_argument("stringer '" + st.name + "': the thickness and the height must not be negative");
 	}
+}
+
+// ---------------------------------------------------------------------
+// The loft's parameters at the vertices
+// ---------------------------------------------------------------------
+
+void AssignLoftParameters(BodyStructurePlan& plan, size_t vertex_count, const std::vector<LoftRings>& rings) {
+	const double nan = std::numeric_limits<double>::quiet_NaN();
+	plan.vertex_u.assign(vertex_count, nan);
+	plan.vertex_v.assign(vertex_count, nan);
+	for (const LoftRings& R : rings) {
+		for (size_t i = 0; i < R.rings.size() && i < R.u.size(); ++i) {
+			const std::vector<int>& ring = R.rings[i];
+			const std::vector<double>* rv = i < R.ring_v.size() ? &R.ring_v[i] : nullptr;
+			for (size_t k = 0; k < ring.size(); ++k) {
+				const int idx = ring[k];
+				if (idx < 0 || static_cast<size_t>(idx) >= vertex_count) continue;
+				if (!std::isnan(plan.vertex_u[idx])) continue;
+				plan.vertex_u[idx] = R.u[i];
+				plan.vertex_v[idx] = rv && k < rv->size() ? (*rv)[k] : nan;
+			}
+		}
+	}
+}
+
+void AssignLoftParameters(BodyStructurePlan& plan, size_t vertex_count, const LoftRings& rings) {
+	AssignLoftParameters(plan, vertex_count, std::vector<LoftRings>{rings});
 }
 
 // ---------------------------------------------------------------------

@@ -1,5 +1,7 @@
 #include "aerotelic/project_yaml.hpp"
 
+#include "aerotelic/laminate.hpp"
+
 #include <algorithm>
 #include <cmath>
 #include <fstream>
@@ -773,14 +775,81 @@ MassSpec DecodeMassSpec(const YAML::Node& node) {
 // and the structure of each solid body (body_structure.hpp)
 // ===========================================================================
 
+namespace {
+
+// A lamina's figures as a flow map (materials.hpp Lamina; the keys of the
+// library file, materials.cpp), and back. The optional figures are written
+// only when set.
+YAML::Node EncodeLamina(const Lamina& l) {
+	YAML::Node n;
+	n["form"] = l.form;
+	n["ply_thickness"] = l.ply_thickness;
+	n["e1"] = l.e1;
+	n["e2"] = l.e2;
+	n["nu12"] = l.nu12;
+	n["g12"] = l.g12;
+	if (l.g13 > 0.0) n["g13"] = l.g13;
+	if (l.g23 > 0.0) n["g23"] = l.g23;
+	n["t1"] = l.t1;
+	n["c1"] = l.c1;
+	n["t2"] = l.t2;
+	n["c2"] = l.c2;
+	n["s12"] = l.s12;
+	if (l.s13 > 0.0) n["s13"] = l.s13;
+	if (l.s23 > 0.0) n["s23"] = l.s23;
+	if (l.locking_angle > 0.0) n["locking_angle"] = l.locking_angle;
+	n.SetStyle(YAML::EmitterStyle::Flow);
+	return n;
+}
+
+Lamina DecodeLamina(const YAML::Node& n) {
+	Lamina l;
+	auto num = [&n](const char* key) { return n[key] ? n[key].as<double>() : 0.0; };
+	if (n["form"]) l.form = n["form"].as<std::string>();
+	l.ply_thickness = num("ply_thickness");
+	l.e1 = num("e1"); l.e2 = num("e2"); l.nu12 = num("nu12");
+	l.g12 = num("g12"); l.g13 = num("g13"); l.g23 = num("g23");
+	l.t1 = num("t1"); l.c1 = num("c1"); l.t2 = num("t2"); l.c2 = num("c2");
+	l.s12 = num("s12"); l.s13 = num("s13"); l.s23 = num("s23");
+	l.locking_angle = num("locking_angle");
+	return l;
+}
+
+} // namespace
+
 YAML::Node EncodeMaterial(const Material& m) {
+	// The name and the four figures (SI) in flow style, so the file stands
+	// on its own when a preset changes. A LAMINATE (2026-11-12) adds its
+	// plies, each with the lamina's name AND figures (the file must stand
+	// alone here too: a library of another machine may not have the
+	// lamina), and its symmetry; a lamina row adds its figures.
 	YAML::Node mat;
 	mat["name"] = m.name;
 	mat["density"] = m.density;
 	mat["youngs_modulus"] = m.youngs_modulus;
 	mat["poisson_ratio"] = m.poisson_ratio;
 	mat["allowable_stress"] = m.allowable_stress;
-	mat.SetStyle(YAML::EmitterStyle::Flow);
+	if (m.IsLamina()) mat["lamina"] = EncodeLamina(*m.lamina);
+	if (m.IsLaminate()) {
+		mat["stacking"] = StackingNotation(m);
+		mat["symmetric"] = m.symmetric;
+		if (m.symmetric_odd) mat["symmetric_odd"] = true;
+		YAML::Node plies(YAML::NodeType::Sequence);
+		for (const Ply& p : m.plies) {
+			YAML::Node pn;
+			pn["angle"] = p.angle;
+			if (p.thickness > 0.0) pn["thickness"] = p.thickness;
+			pn["lamina"] = p.lamina;
+			pn["density"] = p.density;
+			pn["props"] = EncodeLamina(p.props);
+			pn.SetStyle(YAML::EmitterStyle::Flow);
+			plies.push_back(pn);
+		}
+		mat["plies"] = plies;
+		mat.SetStyle(YAML::EmitterStyle::Block);
+	} else {
+		mat.SetStyle(YAML::EmitterStyle::Flow);
+	}
 	return mat;
 }
 
@@ -792,6 +861,35 @@ Material DecodeMaterial(const YAML::Node& mat) {
 	if (mat["youngs_modulus"]) m.youngs_modulus = mat["youngs_modulus"].as<double>();
 	if (mat["poisson_ratio"]) m.poisson_ratio = mat["poisson_ratio"].as<double>();
 	if (mat["allowable_stress"]) m.allowable_stress = mat["allowable_stress"].as<double>();
+	if (const YAML::Node l = mat["lamina"]; l && l.IsMap()) {
+		m.lamina = DecodeLamina(l);
+		if (m.category.empty()) m.category = "Lamina";
+	}
+	if (const YAML::Node plies = mat["plies"]; plies && plies.IsSequence()) {
+		if (mat["symmetric"]) m.symmetric = mat["symmetric"].as<bool>();
+		if (mat["symmetric_odd"]) m.symmetric_odd = mat["symmetric_odd"].as<bool>();
+		for (const YAML::Node& pn : plies) {
+			if (!pn.IsMap()) continue;
+			Ply p;
+			if (pn["angle"]) p.angle = pn["angle"].as<double>();
+			if (pn["thickness"]) p.thickness = pn["thickness"].as<double>();
+			if (pn["lamina"]) p.lamina = pn["lamina"].as<std::string>();
+			if (pn["density"]) p.density = pn["density"].as<double>();
+			if (const YAML::Node lp = pn["props"]; lp && lp.IsMap()) {
+				p.props = DecodeLamina(lp);
+			} else if (const Material* preset = FindMaterialPreset(p.lamina); preset != nullptr && preset->IsLamina()) {
+				// A file written without the figures (by hand): the preset's.
+				p.props = *preset->lamina;
+				if (!(p.density > 0.0)) p.density = preset->density;
+			}
+			m.plies.push_back(p);
+		}
+		if (!m.plies.empty()) {
+			m.lamina.reset();
+			if (m.category.empty()) m.category = "Laminate";
+			RefreshLaminate(m);
+		}
+	}
 	return m;
 }
 

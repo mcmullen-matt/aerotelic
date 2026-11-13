@@ -23,12 +23,14 @@
 #include "Entity/AerotelicDocumentSubsystem.h"
 #include "Entity/AerotelicMaterialLibrary.h"
 
+#include "aerotelic/laminate.hpp"
 #include "aerotelic/materials.hpp"
 #include "aerotelic/units.hpp"
 
 #define LOCTEXT_NAMESPACE "MaterialLibraryDialog"
 
 using aerotelic::Material;
+using aerotelic::Lamina;
 
 namespace
 {
@@ -53,19 +55,44 @@ namespace
 	// shaft in torsion (section fixed, radius free), sigma/rho for a tie of
 	// least mass at a given load. G is the isotropic E / (2 (1 + nu)). A
 	// ratio's ranking is the same in any units.
+	// The figures the table shows in the modulus, Poisson and allowable
+	// columns: a material's own; a LAMINA's E1, nu12 and T1 (its fibre-
+	// direction figures), since it has no isotropic ones; a laminate's
+	// effective constants are already in its fields. The shear modulus for
+	// the ratio columns: the isotropic E / (2 (1 + nu)), or a lamina's G12.
+	struct FShown { double Modulus = 0.0, Poisson = 0.0, Allowable = 0.0, Shear = 0.0; };
+	FShown ShownOf(const Material& M)
+	{
+		FShown S;
+		if (M.IsLamina())
+		{
+			S.Modulus = M.lamina->e1;
+			S.Poisson = M.lamina->nu12;
+			S.Allowable = M.lamina->t1;
+			S.Shear = M.lamina->g12;
+			return S;
+		}
+		S.Modulus = M.youngs_modulus;
+		S.Poisson = M.poisson_ratio;
+		S.Allowable = M.allowable_stress;
+		S.Shear = M.youngs_modulus / (2.0 * (1.0 + M.poisson_ratio));
+		return S;
+	}
+
 	struct FIndices { double E = 0.0, RootE = 0.0, G = 0.0, RootG = 0.0, Strength = 0.0; };
 	FIndices IndicesOf(const Material& M, const aerotelic::UnitSystem& U)
 	{
 		FIndices I;
 		const double Rho = M.density / U.DensityToSI();
 		if (Rho <= 0.0) return I;
-		const double E = M.youngs_modulus / U.StressToSI();
-		const double G = E / (2.0 * (1.0 + M.poisson_ratio));
+		const FShown S = ShownOf(M);
+		const double E = S.Modulus / U.StressToSI();
+		const double G = S.Shear / U.StressToSI();
 		I.E = E / Rho;
 		I.RootE = FMath::Sqrt(FMath::Max(E, 0.0)) / Rho;
 		I.G = G / Rho;
 		I.RootG = FMath::Sqrt(FMath::Max(G, 0.0)) / Rho;
-		I.Strength = (M.allowable_stress / U.StressToSI()) / Rho;
+		I.Strength = (S.Allowable / U.StressToSI()) / Rho;
 		return I;
 	}
 
@@ -89,11 +116,19 @@ namespace
 		FName SortColumn = ColName;
 		EColumnSortMode::Type SortMode = EColumnSortMode::None;
 
-		// Custom tab: the user's materials and the one being typed.
+		// Custom tab: the user's materials and the one being typed. The
+		// draft is one of three KINDS (2026-11-12): an isotropic material
+		// (the four figures), a lamina (one ply's orthotropic figures) or a
+		// laminate (a stack of a lamina, built from the stacking notation).
+		enum class EKind { Isotropic, Lamina, Laminate };
 		TArray<FRowPtr> CustomRows;
 		TSharedPtr<SListView<FRowPtr>> CustomList;
 		Material Draft;
-		TSharedPtr<SEditableTextBox> NameBox, CategoryBox;
+		EKind Kind = EKind::Isotropic;
+		FString Notation;                 // the laminate draft's stacking, as typed
+		FString LaminaName;               // ...and the lamina its plies are cut from
+		TArray<TSharedPtr<FString>> LaminaOptions;
+		TSharedPtr<SEditableTextBox> NameBox, CategoryBox, NotationBox;
 		TSharedPtr<SMultiLineEditableTextBox> SourceBox;
 		FText Note;
 
@@ -107,6 +142,8 @@ namespace
 			Draft = Material{};
 			Draft.name.clear();
 			Draft.category = "Custom";
+			Kind = EKind::Isotropic;
+			Notation.Empty();
 			PushDraftToBoxes();
 		}
 
@@ -117,7 +154,102 @@ namespace
 			{
 				Draft.name = M.name + " (custom)";
 			}
+			Kind = M.IsLamina() ? EKind::Lamina : (M.IsLaminate() ? EKind::Laminate : EKind::Isotropic);
+			if (M.IsLaminate())
+			{
+				Notation = Str(aerotelic::StackingNotation(M));
+				LaminaName = Str(M.plies[0].lamina);
+			}
 			PushDraftToBoxes();
+		}
+
+		// The draft's lamina figures, there to edit (made when the kind is
+		// switched to Lamina).
+		Lamina& LaminaDraft()
+		{
+			if (!Draft.lamina) Draft.lamina = Lamina{};
+			return *Draft.lamina;
+		}
+
+		void SetKind(EKind K)
+		{
+			if (K == Kind) return;
+			Kind = K;
+			const bool bGenericCategory = Draft.category.empty() || Draft.category == "Custom" || Draft.category == "Lamina" || Draft.category == "Laminate";
+			if (K == EKind::Lamina)
+			{
+				Draft.plies.clear();
+				LaminaDraft();
+				if (bGenericCategory) Draft.category = "Lamina";
+			}
+			else if (K == EKind::Laminate)
+			{
+				Draft.lamina.reset();
+				if (bGenericCategory) Draft.category = "Laminate";
+			}
+			else
+			{
+				Draft.lamina.reset();
+				Draft.plies.clear();
+				if (bGenericCategory) Draft.category = "Custom";
+			}
+			PushDraftToBoxes();
+		}
+
+		// The laminae a laminate can be cut from: every lamina row of the
+		// library (presets and the user's).
+		void RebuildLaminaOptions()
+		{
+			LaminaOptions.Reset();
+			for (const Material& M : AerotelicMaterialLibrary::All())
+			{
+				if (M.IsLamina()) LaminaOptions.Add(MakeShared<FString>(Str(M.name)));
+			}
+			if (LaminaName.IsEmpty() && LaminaOptions.Num() > 0) LaminaName = *LaminaOptions[0];
+		}
+
+		// Builds the laminate draft's plies from the notation and the chosen
+		// lamina, keeping its name, category and source. False with a reason.
+		bool BuildStack(FString& OutError)
+		{
+			const Material* L = AerotelicMaterialLibrary::Find(Std(LaminaName));
+			if (L == nullptr || !L->IsLamina())
+			{
+				OutError = TEXT("pick the lamina the plies are cut from");
+				return false;
+			}
+			try
+			{
+				Material Built = aerotelic::MakeLaminate(Draft.name, Std(Notation), *L, Draft.source);
+				Built.category = Draft.category.empty() ? "Laminate" : Draft.category;
+				Draft = Built;
+				Kind = EKind::Laminate;
+				return true;
+			}
+			catch (const std::exception& e)
+			{
+				OutError = UTF8_TO_TCHAR(e.what());
+				return false;
+			}
+		}
+
+		// What the laminate draft amounts to, for the Custom tab's summary.
+		FText LaminateSummary(const aerotelic::UnitSystem& U) const
+		{
+			if (!Draft.IsLaminate()) return LOCTEXT("NoStack", "No stack yet: pick a lamina, type the stacking and Build.");
+			const std::vector<aerotelic::Ply> Stack = aerotelic::ExpandedStack(Draft);
+			const aerotelic::LaminateStiffness S = aerotelic::ComputeStiffness(Stack);
+			const aerotelic::LaminateConstants C = aerotelic::EngineeringConstants(S);
+			const double St = U.StressToSI(), Lt = U.LengthToSI();
+			FString Text = FString::Printf(TEXT("%d plies %s of '%s': %.4g %s thick, density %.4g %s.\nIn-plane (curvatures free): Ex %.4g, Ey %.4g, Gxy %.4g %s, nu_xy %.3f; flexural Ex %.4g, Ey %.4g %s.\nFirst-ply-failure tension along x (Tsai-Wu): %s."),
+				(int32)Stack.size(), *Str(aerotelic::StackingNotation(Draft)), *Str(Draft.plies[0].lamina), C.thickness / Lt, *Str(U.LengthName()), C.density / U.DensityToSI(), *Str(U.DensityName()),
+				C.ex / St, C.ey / St, C.gxy / St, *Str(U.StressName()), C.nuxy, C.ex_flexural / St, C.ey_flexural / St, *Str(U.StressName()),
+				Draft.allowable_stress > 0.0 ? *FString::Printf(TEXT("%.4g %s"), Draft.allowable_stress / St, *Str(U.StressName())) : TEXT("none (the lamina has no strengths, so no margin will be reported)"));
+			if (C.symmetric && C.balanced) Text += TEXT("\nSymmetric and balanced: no extension-bending coupling (B = 0) and no shear-extension coupling (A16 = A26 = 0).");
+			if (!C.symmetric) Text += TEXT("\nWARNING -- UNSYMMETRIC: B != 0, so in-plane loads bend and twist it and it warps on cure; the effective moduli above hold with the curvatures free.");
+			if (!C.balanced) Text += TEXT("\nWARNING -- UNBALANCED: A16 or A26 != 0, so it shears under tension along the reference direction.");
+			if (C.symmetric && C.balanced && !C.orthotropic) Text += TEXT("\nBend-twist coupled (D16, D26 != 0): the +/- plies sit at different depths, as in every [0/±45/90]s.");
+			return FText::FromString(Text);
 		}
 
 		void PushDraftToBoxes()
@@ -125,6 +257,7 @@ namespace
 			if (NameBox.IsValid()) NameBox->SetText(FText::FromString(Str(Draft.name)));
 			if (CategoryBox.IsValid()) CategoryBox->SetText(FText::FromString(Str(Draft.category)));
 			if (SourceBox.IsValid()) SourceBox->SetText(FText::FromString(Str(Draft.source)));
+			if (NotationBox.IsValid()) NotationBox->SetText(FText::FromString(Notation));
 		}
 
 		void RebuildRows()
@@ -158,9 +291,9 @@ namespace
 			if (SortColumn == ColName) return CompareText(A.M.name, B.M.name);
 			if (SortColumn == ColCategory) return CompareText(A.M.category, B.M.category);
 			if (SortColumn == ColDensity) return CompareNumber(A.M.density, B.M.density);
-			if (SortColumn == ColModulus) return CompareNumber(A.M.youngs_modulus, B.M.youngs_modulus);
-			if (SortColumn == ColPoisson) return CompareNumber(A.M.poisson_ratio, B.M.poisson_ratio);
-			if (SortColumn == ColAllowable) return CompareNumber(A.M.allowable_stress, B.M.allowable_stress);
+			if (SortColumn == ColModulus) return CompareNumber(ShownOf(A.M).Modulus, ShownOf(B.M).Modulus);
+			if (SortColumn == ColPoisson) return CompareNumber(ShownOf(A.M).Poisson, ShownOf(B.M).Poisson);
+			if (SortColumn == ColAllowable) return CompareNumber(ShownOf(A.M).Allowable, ShownOf(B.M).Allowable);
 			if (SortColumn == ColSource) return CompareText(A.M.source, B.M.source);
 			const FIndices IA = IndicesOf(A.M, Units), IB = IndicesOf(B.M, Units);
 			if (SortColumn == ColSpecE) return CompareNumber(IA.E, IB.E);
@@ -217,14 +350,33 @@ namespace
 		virtual TSharedRef<SWidget> GenerateWidgetForColumn(const FName& Column) override
 		{
 			const Material& M = Row->M;
+			const FShown S = ShownOf(M);
 			FText Text, Tip;
 			bool bRight = false;
-			if (Column == ColName) { Text = FText::FromString(Str(M.name)); Tip = Text; }
+			if (Column == ColName)
+			{
+				Text = FText::FromString(Str(M.name));
+				Tip = Text;
+				if (M.IsLamina())
+				{
+					const Lamina& L = *M.lamina;
+					Tip = FText::FromString(FString::Printf(TEXT("%s\nA LAMINA (one ply, %s): ply %.4g %s; E1 %.4g, E2 %.4g, G12 %.4g %s, nu12 %.3f; T1 %.4g, C1 %.4g, T2 %.4g, C2 %.4g, S12 %.4g %s%s"),
+						*Str(M.name), *Str(L.form), L.ply_thickness / Units.LengthToSI(), *Str(Units.LengthName()), L.e1 / Units.StressToSI(), L.e2 / Units.StressToSI(), L.g12 / Units.StressToSI(), *Str(Units.StressName()), L.nu12,
+						L.t1 / Units.StressToSI(), L.c1 / Units.StressToSI(), L.t2 / Units.StressToSI(), L.c2 / Units.StressToSI(), L.s12 / Units.StressToSI(), *Str(Units.StressName()),
+						L.locking_angle > 0.0 ? *FString::Printf(TEXT("; locking angle %.0f deg"), L.locking_angle) : TEXT("")));
+				}
+				else if (M.IsLaminate())
+				{
+					const std::vector<aerotelic::Ply> Stack = aerotelic::ExpandedStack(M);
+					Tip = FText::FromString(FString::Printf(TEXT("%s\nA LAMINATE: %d plies %s of '%s', %.4g %s thick; the figures are the stack's effective constants along the reference direction (classical lamination theory) and the allowable its first-ply-failure tension (Tsai-Wu)"),
+						*Str(M.name), (int32)Stack.size(), *Str(aerotelic::StackingNotation(M)), *Str(M.plies[0].lamina), aerotelic::StackThickness(Stack) / Units.LengthToSI(), *Str(Units.LengthName())));
+				}
+			}
 			else if (Column == ColCategory) Text = FText::FromString(Str(M.category));
 			else if (Column == ColDensity) { Text = FormatG(M.density / Units.DensityToSI(), 4); bRight = true; }
-			else if (Column == ColModulus) { Text = FormatG(M.youngs_modulus / Units.StressToSI(), 4); bRight = true; }
-			else if (Column == ColPoisson) { Text = FormatG(M.poisson_ratio, 3); bRight = true; }
-			else if (Column == ColAllowable) { Text = FormatG(M.allowable_stress / Units.StressToSI(), 4); bRight = true; }
+			else if (Column == ColModulus) { Text = FormatG(S.Modulus / Units.StressToSI(), 4); bRight = true; if (M.IsLamina()) Tip = LOCTEXT("LaminaE1", "A lamina: E1, along the fibre (E2 and G12 in the name's tooltip)"); }
+			else if (Column == ColPoisson) { Text = FormatG(S.Poisson, 3); bRight = true; if (M.IsLamina()) Tip = LOCTEXT("LaminaNu12", "A lamina: nu12, the major Poisson's ratio"); }
+			else if (Column == ColAllowable) { Text = FormatG(S.Allowable / Units.StressToSI(), 4); bRight = true; if (M.IsLamina()) Tip = LOCTEXT("LaminaT1", "A lamina: T1, the tensile strength along the fibre"); }
 			else if (Column == ColSpecE) { Text = FormatG(IndicesOf(M, Units).E, 4); bRight = true; }
 			else if (Column == ColSpecRootE) { Text = FormatG(IndicesOf(M, Units).RootE, 4); bRight = true; }
 			else if (Column == ColSpecG) { Text = FormatG(IndicesOf(M, Units).G, 4); bRight = true; }
@@ -264,7 +416,7 @@ namespace
 	const FText kHelp = LOCTEXT("Help",
 		"MATERIAL PROPERTIES\n"
 		"\n"
-		"A material is what a solid body is made of: its density, Young's modulus, Poisson's ratio and the allowable stress a margin is reported against. "
+		"A material is what a solid body is made of: its density, Young's modulus, Poisson's ratio and the allowable stress a margin is reported against -- or, since 2026-11-12, a composite LAMINATE, a stack of plies whose figures are computed from the plies (see COMPOSITE LAMINAE AND LAMINATES below). "
 		"Analysis > Mass Properties weighs a body by its density (over the volume it encloses, or over its skin), and Analysis > Structural (Kratos FEA) analyses it with the other three. "
 		"A material is a property of the stuff, not of the project's units: every figure is kept in SI (kg/m^3, Pa) and shown here in the project's units (Model > Units), so changing the units changes the numbers on screen and nothing underneath.\n"
 		"\n"
@@ -305,7 +457,22 @@ namespace
 		"Metals: MIL-HDBK-5J design values, room temperature, for at least ten aluminium, steel, magnesium and titanium alloys each. The allowable is the handbook's MINIMUM tensile yield -- A-basis (99% of material exceeds it, 95% confidence) where the handbook gives one, else S-basis (the procurement specification's minimum) -- longitudinal, for the product form, condition and thickness range the Source column names: a design minimum rather than a typical figure, 5-15% below the typical yield of the same alloy. "
 		"Magnesium casting rows are the handbook's 'any area' minimums, which are well below separately cast test-bar figures. Where the handbook gives no Poisson's ratio (some titanium alloys) a literature value is used and the Source column says so. "
 		"(The seven metal rows the application used to ship -- 2024-T3, 7075-T6, 6061-T6, Ti-6Al-4V, 4130, 17-4PH H900, AZ31B -- were the ASM Handbook's TYPICAL values with the typical yield as allowable; they are in the restricted file and in the library of a user who held them, and have handbook rows of the same alloys here.)\n"
-		"Laminates: representative quasi-isotropic in-plane figures for a carbon/epoxy and an E-glass/epoxy laminate, not any one supplier's; the allowable is a representative laminate strength.\n"
+		"Laminates (the two isotropic 'quasi-isotropic' rows): representative in-plane figures for a carbon/epoxy and an E-glass/epoxy laminate, not any one supplier's; the allowable is a representative laminate strength.\n"
+		"\n"
+		"COMPOSITE LAMINAE AND LAMINATES (2026-11-12)\n"
+		"\n"
+		"A LAMINA (category Lamina) is ONE PLY's material -- a unidirectional tape (UD) or a woven cloth -- in the ply's own axes: 1 along the fibre (a cloth's warp), 2 across it in the plane. Its row carries the density, the cured ply thickness, E1, E2, nu12, G12 (and G13, G23 for thick shells; the thin shell used here does not need them), "
+		"the strengths T1 and C1 (tension and compression along the fibre), T2 and C2 (across) and S12 (in-plane shear), and a cloth's shear LOCKING ANGLE. A lamina is never assigned to a body; the table shows its E1, nu12 and T1 in the modulus, Poisson and allowable columns.\n"
+		"A LAMINATE (category Laminate) is a stack of plies of a lamina, written in the usual stacking notation: [0/±45/90]s is 0, +45, -45, 90 and the same again in reverse (s mirrors the listed half about the midplane; ~ on the last angle makes it the single centre ply); [0/90]2s repeats the group; 0_2 repeats a ply; +- may be typed for ±. Plies are listed from the OUTER face -- the one the body's outward normal leaves, where a laminator lays the first ply on a female tool -- inward. "
+		"Its density, Young's modulus, Poisson's ratio and allowable are COMPUTED from the plies by classical lamination theory and never typed: the density is the thickness-weighted mean; the modulus and Poisson's ratio are the stack's effective in-plane constants along the REFERENCE DIRECTION with the curvatures free (the inverse of [A B; B D] -- for a symmetric stack simply A^-1); the allowable is the FIRST-PLY-FAILURE tensile strength along that direction by the Tsai-Wu criterion (0 when the lamina has no strengths). "
+		"These effective figures let a laminate be weighed, sorted and ranked like any material; the structural analysis itself is given the plies.\n"
+		"SYMMETRIC OR GENERAL. A symmetric stack has no extension-bending coupling (B = 0): in-plane loads stretch it and moments bend it, separately, and it comes off the tool flat. A general (unsymmetric) stack couples the two -- tension bends and twists it, and it warps as it cures -- so its effective modulus is a figure with the curvatures free, not a material constant; the Custom tab's summary warns of it, and of an UNBALANCED stack (A16, A26 != 0: it shears under tension). Both are analysed alike: Kratos's layered shell integrates the full A, B, D.\n"
+		"THE REFERENCE DIRECTION AND THE DRAPE. A 0 degree ply runs along the body's loft -- the span of a wing, the length of a fuselage, the along-the-loft direction in every triangle (a laminator's rosette); on a planar rib or spar, along its longest extent. A positive angle turns counter-clockwise about the outward normal. "
+		"Before the analysis each ply is DRAPED over the body as a pin-jointed net (Mack & Taylor 1956; Van Der Weeen 1991): where the surface is developable (a cylinder, a nearly flat wing skin) the cloth lies as cut, where it has double curvature (a nose, a tip, a fillet) warp and weft shear closer than 90 degrees and the fibres turn from their nominal direction. "
+		"The analysis then turns each ply by its deviation and thickens a WOVEN ply by 1 / cos(shear) (areal weight is conserved as a cloth shears); a UD tape cannot shear in its plane and keeps its thickness -- on double curvature it is laid in strips, and the net's shear says how much gap or overlap they would need. Faces where a cloth is sheared past its locking angle are counted and reported: they will wrinkle, not drape. "
+		"Not modelled: the change of a sheared cloth's stiffness with the angle between its fibres (Hofstee & van Keulen 2001), which grows past about 20 degrees of shear.\n"
+		"MARGINS. A laminate region's margin is Tsai-Wu's: the reserve factor by which the stresses of every ply, at every point, could be scaled before the criterion reaches one (Tsai & Wu 1971, plane stress, F12 = -1/2 sqrt(F11 F22)); the margin is that factor less one. It needs all five strengths on the lamina; without them the analysis reports no margin and says so. Von Mises is still reported for a laminate as a stress magnitude, not as a criterion.\n"
+		"THE FILE. A lamina row has a 'lamina' map (form, ply_thickness, e1, e2, nu12, g12, g13, g23, t1, c1, t2, c2, s12, s13, s23, locking_angle; SI: Pa, m); a laminate row has 'plies' (a list of {angle, thickness (optional), lamina (by name)}), 'symmetric' and 'symmetric_odd', its plies resolved against the laminae of the file and of the presets when read. A project file writes a laminate's plies with the lamina's figures, so it stands alone. To mix laminae in one stack or give a ply its own thickness, edit the file.\n"
 		"Woods: the USDA Wood Handbook's clear-wood figures along the grain at 12% moisture, density from its specific gravity, Poisson's ratio nu_LR from its Table 5-1; the allowable is the compression strength parallel to the grain (the lower of the two, what a spar cap buckles at). Balsa is sold by weight, so three grades are given -- contest-light, medium, hard -- with the Handbook's figures scaled in proportion to density (its stiffness and strength go roughly as its density: Borrega & Gibson 2015). The two plywoods (aircraft birch, poplar lite-ply) take the solid wood at two-thirds along the face grain of a three-ply sheet, ANC-18's approach, and an approximate in-plane Poisson's ratio of 0.2. Weigh a sheet: hobby stock varies more than any handbook.\n"
 		"\n"
 		"CONVENTIONS OF THE DATA-SHEET MATERIALS (not shipped; in your library if you hold them)\n"
@@ -321,6 +488,10 @@ namespace
 		"Wood: Forest Products Laboratory, Wood Handbook -- Wood as an Engineering Material, General Technical Report FPL-GTR-190, USDA, 2010: Table 5-3 (Sitka spruce, American basswood, Eastern white pine, yellow-poplar, Coast Douglas-fir, yellow birch), Table 5-5 (balsa), Table 5-1 (Poisson's ratios), all at 12% moisture; "
 		"M. Borrega and L. J. Gibson, 'Mechanics of balsa (Ochroma pyramidale) wood', Mechanics of Materials 84 (2015) 75-90, for the density scaling of the balsa grades; "
 		"ANC-18, Design of Wood Aircraft Structures, ANC Bulletin, US Army-Navy-Civil Committee on Aircraft Design Criteria, 1951, for the plywood approach.\n"
+		"Composite laminae: MIL-HDBK-17-2F, Composite Materials Handbook, Volume 2, Polymer Matrix Composites: Materials Properties, US Department of Defense, 17 June 2002 (Distribution Statement A: approved for public release, distribution unlimited; no copyright notice) -- section 4.2.8 AS4 12k/3502 tape (B-basis strengths), 4.2.6 T-300 3k/934 plain weave, 6.2.4 E-glass 7781/EA 9396 8-harness satin, 6.2.1 S2-449/SP381 tape; "
+		"each row's Source names its tables, the fibre volume the figures are normalised to, the basis, and which figures (a cloth's nu12, G12, S12; a tape's nu12) are literature values the handbook lacks. The handbook's successor CMH-17 is copyrighted and is not used. "
+		"Theory: R. M. Jones, Mechanics of Composite Materials, 2nd ed., Taylor & Francis, 1999, ch. 4 (classical lamination theory); A. T. Nettles, Basic Mechanics of Laminated Composite Plates, NASA RP-1351, 1994 (whose worked examples the code's checks reproduce); S. W. Tsai and E. M. Wu, A General Theory of Strength for Anisotropic Materials, J. Composite Materials 5 (1971) 58-80. "
+		"Drape: C. Mack and H. M. Taylor, The fitting of woven cloth to surfaces, J. Textile Institute 47 (1956) T477; F. Van Der Weeen, Algorithms for draping fabrics on doubly-curved surfaces, Int. J. Numer. Meth. Eng. 31 (1991) 1415; A. P. Hancock and K. D. Potter, Composites Part A 37 (2006) 413; P. Boisse et al., Composites Part A 42 (2011) 1156 (locking angles); H. J. Hofstee and F. van Keulen, Composite Structures 54 (2001) 179.\n"
 		"\n"
 		"Sources of the data-sheet materials, whose terms of use restrict redistribution (so they are not shipped): ASM Handbook vol. 1 (Irons, Steels and High-Performance Alloys) and vol. 2 (Nonferrous Alloys), ASM International, and the AK Steel 17-4 PH product data bulletin, for the seven former metal rows. "
 		"Foam: Evonik Industries, ROHACELL IG / IG-F technical data sheet (grade 71).\n"
@@ -384,6 +555,7 @@ void ShowAerotelicMaterialLibraryDialog(TFunction<void(const FText&)> Status)
 		[
 			MakeInfoLabel(FText::Format(LOCTEXT("TableHint",
 				"Every material a body can be made of: the presets, then your own in bold (Custom tab). Click a column header to sort by it, again to reverse. Figures are in the project's units -- density in {0}, stresses in {1} (Model > Units) -- kept in SI underneath. "
+				"A Lamina row is one ply's figures (E1, nu12 and T1 shown; hover its name for the rest) and is never assigned to a body; a Laminate row is a stack of plies whose figures are computed from them (hover its name). "
 				"The five ratio columns rank stiffness and strength against weight: E/ρ for a tie, √E/ρ for a beam, G/ρ and √G/ρ for a shaft, σ/ρ for strength (G from E and ν); their order is the same in any units. Hover a row for its full source; double-click one to start a material of your own from it."),
 				FText::FromString(Str(Units.DensityName())), FText::FromString(Str(Units.StressName()))))
 		]
@@ -431,9 +603,29 @@ void ShowAerotelicMaterialLibraryDialog(TFunction<void(const FText&)> Status)
 			.LiveUpdate(true)
 			.OnValueCommitted_Lambda([State, Member, ToSI](double V, ETextCommit::Type) { State->Draft.*Member = V * ToSI; });
 	};
+	// A lamina figure, the same way.
+	auto LField = [State](double Lamina::* Member, double ToSI, double Delta, double Max)
+	{
+		return SNew(SAerotelicNumericEntry)
+			.Value_Lambda([State, Member, ToSI]() { return (State->LaminaDraft().*Member) / ToSI; })
+			.MinValue(0.0).MaxValue(Max).Delta(Delta)
+			.LiveUpdate(true)
+			.OnValueCommitted_Lambda([State, Member, ToSI](double V, ETextCommit::Type) { State->LaminaDraft().*Member = V * ToSI; });
+	};
+	// A part of the form shown for one kind of draft only.
+	auto OnlyFor = [State](FState::EKind K, TSharedRef<SWidget> W)
+	{
+		return SNew(SBox).Visibility_Lambda([State, K]() { return State->Kind == K ? EVisibility::Visible : EVisibility::Collapsed; })[W];
+	};
+	const double StressDelta = 1.0e9 / Units.StressToSI(), StrengthDelta = 1.0e6 / Units.StressToSI();
+	const double PlyDelta = 1.0e-5 / Units.LengthToSI();
 
 	TArray<TSharedPtr<FString>> StartOptions;
 	for (const Material& M : AerotelicMaterialLibrary::All()) StartOptions.Add(MakeShared<FString>(Str(M.name)));
+	TArray<TSharedPtr<FString>> KindOptions = { MakeShared<FString>(TEXT("Isotropic material")), MakeShared<FString>(TEXT("Lamina (one ply's orthotropic figures)")), MakeShared<FString>(TEXT("Laminate (a stack of plies)")) };
+	TArray<TSharedPtr<FString>> FormOptions = { MakeShared<FString>(TEXT("UD")), MakeShared<FString>(TEXT("Woven")) };
+	State->RebuildLaminaOptions();
+	auto KindLabel = [State, KindOptions]() { return FText::FromString(*KindOptions[State->Kind == FState::EKind::Isotropic ? 0 : (State->Kind == FState::EKind::Lamina ? 1 : 2)]); };
 
 	auto SelectedCustom = [State]() -> FRowPtr
 	{
@@ -447,6 +639,25 @@ void ShowAerotelicMaterialLibraryDialog(TFunction<void(const FText&)> Status)
 		M.name = Std(Str(M.name).TrimStartAndEnd());
 		M.category = Std(Str(M.category).TrimStartAndEnd());
 		M.source = Std(Str(M.source).TrimStartAndEnd());
+		if (State->Kind == FState::EKind::Lamina)
+		{
+			// A lamina carries no isotropic figures.
+			M.plies.clear();
+			if (!M.lamina) M.lamina = Lamina{};
+			M.youngs_modulus = 0.0;
+			M.poisson_ratio = 0.0;
+			M.allowable_stress = 0.0;
+		}
+		else if (State->Kind == FState::EKind::Laminate)
+		{
+			M.lamina.reset();
+			aerotelic::RefreshLaminate(M);   // the effective figures from the plies
+		}
+		else
+		{
+			M.lamina.reset();
+			M.plies.clear();
+		}
 		return M;
 	};
 	auto Commit = [State](const TArray<Material>& NewCustom, const FText& Done, const FString& SelectName)
@@ -588,13 +799,127 @@ void ShowAerotelicMaterialLibraryDialog(TFunction<void(const FText&)> Status)
 						.OnTextChanged_Lambda([State](const FText& T) { State->Draft.category = Std(T.ToString()); }))
 				]
 				+ SVerticalBox::Slot().AutoHeight().Padding(0, 8, 0, 0)
-				[ FormRow(WithUnit(LOCTEXT("Density", "Density"), Units.DensityName()), Field(&Material::density, Units.DensityToSI(), 10.0, 1.0e9)) ]
+				[
+					FormRow(LOCTEXT("Kind", "Kind:"),
+						SNew(SComboBox<TSharedPtr<FString>>)
+						.OptionsSource(&KindOptions)
+						.OnGenerateWidget_Lambda([](TSharedPtr<FString> S) { return SNew(STextBlock).Text(FText::FromString(*S)); })
+						.OnSelectionChanged_Lambda([State, KindOptions](TSharedPtr<FString> S, ESelectInfo::Type Info)
+						{
+							if (!S.IsValid() || Info == ESelectInfo::Direct) return;
+							const int32 I = KindOptions.IndexOfByKey(S);
+							State->SetKind(I == 1 ? FState::EKind::Lamina : (I == 2 ? FState::EKind::Laminate : FState::EKind::Isotropic));
+							if (I == 2) State->RebuildLaminaOptions();
+						})
+						[ SNew(STextBlock).Text_Lambda(KindLabel) ])
+				]
+				+ SVerticalBox::Slot().AutoHeight().Padding(0, 8, 0, 0)
+				[ FormRow(WithUnit(LOCTEXT("Density", "Density"), Units.DensityName()), SNew(SBox).IsEnabled_Lambda([State]() { return State->Kind != FState::EKind::Laminate; }) [ Field(&Material::density, Units.DensityToSI(), 10.0, 1.0e9) ]) ]
+				// ---- isotropic ----
 				+ SVerticalBox::Slot().AutoHeight()
-				[ FormRow(WithUnit(LOCTEXT("Young", "Young's modulus"), Units.StressName()), Field(&Material::youngs_modulus, Units.StressToSI(), 1.0e9 / Units.StressToSI(), 1.0e15)) ]
+				[
+					OnlyFor(FState::EKind::Isotropic,
+						SNew(SVerticalBox)
+						+ SVerticalBox::Slot().AutoHeight()
+						[ FormRow(WithUnit(LOCTEXT("Young", "Young's modulus"), Units.StressName()), Field(&Material::youngs_modulus, Units.StressToSI(), StressDelta, 1.0e15)) ]
+						+ SVerticalBox::Slot().AutoHeight()
+						[ FormRow(LOCTEXT("Poisson", "Poisson's ratio:"), Field(&Material::poisson_ratio, 1.0, 0.01, 0.4999)) ]
+						+ SVerticalBox::Slot().AutoHeight()
+						[ FormRow(WithUnit(LOCTEXT("Allowable", "Allowable stress"), Units.StressName()), Field(&Material::allowable_stress, Units.StressToSI(), StrengthDelta, 1.0e15)) ])
+				]
+				// ---- lamina ----
 				+ SVerticalBox::Slot().AutoHeight()
-				[ FormRow(LOCTEXT("Poisson", "Poisson's ratio:"), Field(&Material::poisson_ratio, 1.0, 0.01, 0.4999)) ]
+				[
+					OnlyFor(FState::EKind::Lamina,
+						SNew(SVerticalBox)
+						+ SVerticalBox::Slot().AutoHeight()
+						[
+							FormRow(LOCTEXT("Form", "Form:"),
+								SNew(SComboBox<TSharedPtr<FString>>)
+								.OptionsSource(&FormOptions)
+								.OnGenerateWidget_Lambda([](TSharedPtr<FString> S) { return SNew(STextBlock).Text(FText::FromString(*S)); })
+								.OnSelectionChanged_Lambda([State](TSharedPtr<FString> S, ESelectInfo::Type Info) { if (S.IsValid() && Info != ESelectInfo::Direct) State->LaminaDraft().form = Std(*S); })
+								[ SNew(STextBlock).Text_Lambda([State]() { return FText::FromString(Str(State->LaminaDraft().form)); }) ])
+						]
+						+ SVerticalBox::Slot().AutoHeight()
+						[ FormRow(WithUnit(LOCTEXT("PlyThickness", "Cured ply thickness"), Units.LengthName()), LField(&Lamina::ply_thickness, Units.LengthToSI(), PlyDelta, 1.0e9)) ]
+						+ SVerticalBox::Slot().AutoHeight().Padding(0, 6, 0, 0)
+						[ FormRow(WithUnit(LOCTEXT("E1", "E1, along the fibre"), Units.StressName()), LField(&Lamina::e1, Units.StressToSI(), StressDelta, 1.0e15)) ]
+						+ SVerticalBox::Slot().AutoHeight()
+						[ FormRow(WithUnit(LOCTEXT("E2", "E2, across"), Units.StressName()), LField(&Lamina::e2, Units.StressToSI(), StressDelta, 1.0e15)) ]
+						+ SVerticalBox::Slot().AutoHeight()
+						[ FormRow(LOCTEXT("Nu12", "nu12, major Poisson's ratio:"), LField(&Lamina::nu12, 1.0, 0.01, 2.0)) ]
+						+ SVerticalBox::Slot().AutoHeight()
+						[ FormRow(WithUnit(LOCTEXT("G12", "G12, in-plane shear"), Units.StressName()), LField(&Lamina::g12, Units.StressToSI(), StressDelta, 1.0e15)) ]
+						+ SVerticalBox::Slot().AutoHeight()
+						[ FormRow(WithUnit(LOCTEXT("G13", "G13 (0 = G12)"), Units.StressName()), LField(&Lamina::g13, Units.StressToSI(), StressDelta, 1.0e15)) ]
+						+ SVerticalBox::Slot().AutoHeight()
+						[ FormRow(WithUnit(LOCTEXT("G23", "G23 (0 = G12 / 2)"), Units.StressName()), LField(&Lamina::g23, Units.StressToSI(), StressDelta, 1.0e15)) ]
+						+ SVerticalBox::Slot().AutoHeight().Padding(0, 6, 0, 0)
+						[ FormRow(WithUnit(LOCTEXT("T1", "T1, tension along the fibre"), Units.StressName()), LField(&Lamina::t1, Units.StressToSI(), StrengthDelta, 1.0e15)) ]
+						+ SVerticalBox::Slot().AutoHeight()
+						[ FormRow(WithUnit(LOCTEXT("C1", "C1, compression along"), Units.StressName()), LField(&Lamina::c1, Units.StressToSI(), StrengthDelta, 1.0e15)) ]
+						+ SVerticalBox::Slot().AutoHeight()
+						[ FormRow(WithUnit(LOCTEXT("T2", "T2, tension across"), Units.StressName()), LField(&Lamina::t2, Units.StressToSI(), StrengthDelta, 1.0e15)) ]
+						+ SVerticalBox::Slot().AutoHeight()
+						[ FormRow(WithUnit(LOCTEXT("C2", "C2, compression across"), Units.StressName()), LField(&Lamina::c2, Units.StressToSI(), StrengthDelta, 1.0e15)) ]
+						+ SVerticalBox::Slot().AutoHeight()
+						[ FormRow(WithUnit(LOCTEXT("S12", "S12, in-plane shear strength"), Units.StressName()), LField(&Lamina::s12, Units.StressToSI(), StrengthDelta, 1.0e15)) ]
+						+ SVerticalBox::Slot().AutoHeight()
+						[ FormRow(WithUnit(LOCTEXT("S13", "S13 (0 = S12)"), Units.StressName()), LField(&Lamina::s13, Units.StressToSI(), StrengthDelta, 1.0e15)) ]
+						+ SVerticalBox::Slot().AutoHeight()
+						[ FormRow(WithUnit(LOCTEXT("S23", "S23 (0 = S12)"), Units.StressName()), LField(&Lamina::s23, Units.StressToSI(), StrengthDelta, 1.0e15)) ]
+						+ SVerticalBox::Slot().AutoHeight().Padding(0, 6, 0, 0)
+						[ FormRow(LOCTEXT("Locking", "Locking angle, deg (cloth; 0 = none):"), LField(&Lamina::locking_angle, 1.0, 1.0, 89.0)) ]
+						+ SVerticalBox::Slot().AutoHeight().Padding(0, 6, 0, 0)
+						[
+							MakeInfoLabel(LOCTEXT("LaminaHint", "One ply's figures in the ply's own axes: 1 along the fibre (a cloth's warp), 2 across it in the plane. Give all five of T1, C1, T2, C2 and S12 for Tsai-Wu margins, or none. "
+								"A lamina is not assigned to a body: build a laminate of it (Kind: Laminate). The transverse shear moduli and strengths may be left 0 (the thin shell does not use them)."))
+						])
+				]
+				// ---- laminate ----
 				+ SVerticalBox::Slot().AutoHeight()
-				[ FormRow(WithUnit(LOCTEXT("Allowable", "Allowable stress"), Units.StressName()), Field(&Material::allowable_stress, Units.StressToSI(), 1.0e6 / Units.StressToSI(), 1.0e15)) ]
+				[
+					OnlyFor(FState::EKind::Laminate,
+						SNew(SVerticalBox)
+						+ SVerticalBox::Slot().AutoHeight()
+						[
+							FormRow(LOCTEXT("LaminaOf", "Plies cut from:"),
+								SNew(SComboBox<TSharedPtr<FString>>)
+								.OptionsSource(&State->LaminaOptions)
+								.OnGenerateWidget_Lambda([](TSharedPtr<FString> S) { return SNew(STextBlock).Text(FText::FromString(*S)); })
+								.OnComboBoxOpening_Lambda([State]() { State->RebuildLaminaOptions(); })
+								.OnSelectionChanged_Lambda([State](TSharedPtr<FString> S, ESelectInfo::Type Info) { if (S.IsValid() && Info != ESelectInfo::Direct) State->LaminaName = *S; })
+								[ SNew(STextBlock).Text_Lambda([State]() { return State->LaminaName.IsEmpty() ? LOCTEXT("PickLamina", "pick a lamina...") : FText::FromString(State->LaminaName); }) ])
+						]
+						+ SVerticalBox::Slot().AutoHeight()
+						[
+							FormRow(LOCTEXT("Stacking", "Stacking:"),
+								SNew(SHorizontalBox)
+								+ SHorizontalBox::Slot().FillWidth(1.0f)
+								[
+									SAssignNew(State->NotationBox, SEditableTextBox)
+									.Text(FText::FromString(State->Notation))
+									.HintText(LOCTEXT("StackingHint", "[0/±45/90]s   [0/90]2s   [45/-45/0_2/90~]s   (outer face first; +- for ±; _n repeats; ]s mirrors; ~ marks the single centre ply)"))
+									.OnTextChanged_Lambda([State](const FText& T) { State->Notation = T.ToString(); })
+								]
+								+ SHorizontalBox::Slot().AutoWidth().Padding(6, 0, 0, 0)
+								[
+									Button(LOCTEXT("Build", "Build stack"), LOCTEXT("BuildTip", "Make the plies from the stacking notation and the lamina, each at the lamina's ply thickness; the figures below follow"),
+										[State]() { FString Err; if (State->BuildStack(Err)) State->Say(LOCTEXT("Built", "Stack built; the figures below are the laminate's. Add as new or Update selected to keep it.")); else State->Say(FText::Format(LOCTEXT("NotBuilt", "No stack: {0}"), FText::FromString(Err))); })
+								])
+						]
+						+ SVerticalBox::Slot().AutoHeight().Padding(0, 6, 0, 0)
+						[
+							SNew(STextBlock).AutoWrapText(true)
+							.Text_Lambda([State]() { return State->LaminateSummary(State->Units); })
+						]
+						+ SVerticalBox::Slot().AutoHeight().Padding(0, 6, 0, 0)
+						[
+							MakeInfoLabel(LOCTEXT("LaminateHint", "A laminate's density, modulus, Poisson's ratio and allowable are computed from its plies by classical lamination theory (Jones 1999 ch. 4) and are not typed. Plies are listed from the OUTER face inward; a positive angle turns counter-clockwise about the outward normal from the reference direction, "
+								"which on a body is the loft's own direction (a wing's span, a fuselage's length). The analysis drapes each ply over the body and reports Tsai-Wu margins. To change a ply's thickness or mix laminae, edit the stack in the library file (plies: [{angle, thickness, lamina}])."))
+						])
+				]
 				+ SVerticalBox::Slot().AutoHeight().Padding(0, 8, 0, 0)
 				[
 					FormRow(LOCTEXT("Source", "Source / notes:"),

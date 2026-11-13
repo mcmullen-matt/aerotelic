@@ -16,7 +16,25 @@
 #     rows are "any area" minimums. 1 ksi = 6.894757 MPa, 1 lb/in^3 =
 #     27679.9 kg/m^3. Where the handbook leaves Poisson's ratio blank a
 #     literature value is used and the source says so.
-#   Composites -- representative quasi-isotropic laminates, no one's data.
+#   Composites -- two representative quasi-isotropic laminates as plain
+#     isotropic rows (no one's data), and since 2026-11-12 the LAMINAE
+#     (category Lamina: one ply's orthotropic figures under `lamina:`) and
+#     LAMINATES (category Laminate: `plies:` naming a lamina per ply, with
+#     `symmetric:` for a mirrored half stack) from MIL-HDBK-17-2F,
+#     Composite Materials Handbook Vol. 2, Polymer Matrix Composites:
+#     Materials Properties, US Department of Defense, 17 June 2002
+#     (Distribution Statement A, approved for public release, distribution
+#     unlimited; no copyright notice). Each lamina row names its section
+#     and tables, the fibre volume the figures are normalised to, and the
+#     basis: B-basis strengths (90% of material exceeds them at 95%
+#     confidence) where the handbook gives them, else its mean values; a
+#     figure the handbook lacks (a cloth's nu12 or G12) is a literature
+#     value and the source says so. A laminate's density, modulus, Poisson's
+#     ratio and allowable are COMPUTED from its plies by classical
+#     lamination theory on reading (core laminate.hpp): the allowable is
+#     the first-ply-failure tensile strength along the reference direction
+#     by Tsai-Wu. 1 ksi = 6.894757 MPa, 1 Msi = 6.894757 GPa, 1 in =
+#     25.4 mm, 1 g/cm^3 = 1000 kg/m^3.
 #   Woods -- USDA Forest Products Laboratory, Wood Handbook FPL-GTR-190
 #     (2010), Tables 5-1, 5-3 and 5-5 at 12% moisture (public domain);
 #     ANC-18 (1951) for the plywood rule; Borrega & Gibson 2015 for the
@@ -447,6 +465,53 @@ materials:
     poisson_ratio: 0.28
     allowable_stress: 250000000
     source: Representative quasi-isotropic E-glass/epoxy laminate (~55% fibre volume), in-plane; allowable = a representative laminate tensile strength
+  # ---- laminae: one ply's orthotropic figures (SI: Pa, m), MIL-HDBK-17-2F ----
+  - name: AS4/3502 carbon tape (MIL-HDBK-17-2F 4.2.8)
+    category: Lamina
+    density: 1570
+    lamina: {form: UD, ply_thickness: 0.0001397, e1: 133100000000, e2: 9310000000, nu12: 0.34, g12: 3744000000, t1: 1413000000, c1: 1179000000, t2: 43300000, c2: 183400000, s12: 92400000}
+    source: "MIL-HDBK-17-2F section 4.2.8, Hercules AS4 12k/3502 unidirectional tape, 58% fibre volume nominal, cured ply 0.0055 in, density 1.57 g/cm^3, room temperature dry, normalised to 60% fibre volume: Table 4.2.8(a) F1tu B-basis 205 ksi (mean 258), E1t 19.3 Msi; (c) F2tu B 6.28 ksi, E2t 1.35 Msi; (d) F1cu B 171 ksi; (f) F2cu B 26.6 ksi; (g) F12su B 13.4 ksi, G12 0.543 Msi. Strengths are the handbook's B-basis values, moduli its means; nu12 0.340 is the mean of the interim data set, Table 4.2.8(h), the B-basis set giving none. A tape cannot shear in its plane: on a doubly curved surface it is laid in strips"
+  - name: T300/934 carbon plain weave (MIL-HDBK-17-2F 4.2.6)
+    category: Lamina
+    density: 1550
+    lamina: {form: Woven, ply_thickness: 0.000198, e1: 62700000000, e2: 62100000000, nu12: 0.05, g12: 4500000000, t1: 627000000, c1: 655000000, t2: 607000000, c2: 621000000, s12: 90000000, locking_angle: 35}
+    source: "MIL-HDBK-17-2F section 4.2.6, Toray T-300 3k/Fiberite 934 plain-weave cloth, 58-60% fibre volume, cured ply 0.0078 in typical, density 1.55 g/cm^3, room temperature dry, normalised to 57% fibre volume, mean (interim and screening) values: Table 4.2.6(a) F1tu 91 ksi, E1t 9.1 Msi; (c) F2tu 88 ksi, E2t 9.0 Msi; (e) F1cu 95 ksi; (g) F2cu 90 ksi. The handbook gives no nu12, G12 or F12su for this cloth: 0.05, 0.65 Msi and 13 ksi are literature values for a balanced carbon/epoxy plain weave, and the shear locking angle of 35 degrees is a literature figure for plain weaves (Boisse et al., Composites Part A 42, 2011). Mean values, not design minima"
+  - name: E-glass 7781/EA9396 8-harness satin (MIL-HDBK-17-2F 6.2.4)
+    category: Lamina
+    density: 1910
+    lamina: {form: Woven, ply_thickness: 0.000216, e1: 23400000000, e2: 23500000000, nu12: 0.115, g12: 5230000000, t1: 333000000, c1: 320000000, t2: 348000000, c2: 260000000, s12: 79300000, locking_angle: 50}
+    source: "MIL-HDBK-17-2F section 6.2.4, style 7781 E-glass 8-harness satin cloth in Hysol EA 9396 wet lay-up epoxy, 54% fibre volume, cured ply 0.0085 in, density 1.91 g/cm^3, room temperature dry, normalised to 50% fibre volume, mean (interim) values: Table 6.2.4(a) F1tu 48.3 ksi, E1t 3.39 Msi, nu12 0.115 (screening); (b) F2tu 50.5 ksi, E2t 3.41 Msi; (d) F1cu 46.4 ksi; (e) F2cu 37.7 ksi; (g) F12su 11.5 ksi, G12 0.758 Msi. A wet lay-up repair material with 4-5% voids, so a conservative card for a vacuum-bagged skin. Locking angle 50 degrees: a literature figure for satin weaves. Mean values, not design minima"
+  - name: S-2 glass/SP381 tape (MIL-HDBK-17-2F 6.2.1)
+    category: Lamina
+    density: 1850
+    lamina: {form: UD, ply_thickness: 0.0002286, e1: 47600000000, e2: 13300000000, nu12: 0.27, g12: 4750000000, t1: 1365000000, c1: 1158000000, t2: 62000000, c2: 140000000, s12: 98600000}
+    source: "MIL-HDBK-17-2F section 6.2.1, Owens-Corning S2-449 43.5k/3M SP381 unidirectional tape, 50% fibre volume, cured ply 0.009 in, density 1.85 g/cm^3, room temperature dry, normalised to 50% fibre volume: Table 6.2.1(a) F1tu B-basis 198 ksi (mean 246), E1t 6.91 Msi; (c) F2tu 9.0 ksi, E2t 1.93 Msi (screening); (d) F1cu 168 ksi (screening); (f) F12su 14.3 ksi, G12 0.689 Msi (screening). The handbook gives no nu12 or F2cu: 0.27 and 20 ksi are literature values for an S-glass/epoxy tape. F1tu is B-basis, the rest means"
+  # ---- laminates: stacks of the laminae above (figures computed from the plies) ----
+  - name: CFRP AS4/3502 tape [0/±45/90]s
+    category: Laminate
+    symmetric: true
+    plies: [{angle: 0, lamina: "AS4/3502 carbon tape (MIL-HDBK-17-2F 4.2.8)"}, {angle: 45, lamina: "AS4/3502 carbon tape (MIL-HDBK-17-2F 4.2.8)"}, {angle: -45, lamina: "AS4/3502 carbon tape (MIL-HDBK-17-2F 4.2.8)"}, {angle: 90, lamina: "AS4/3502 carbon tape (MIL-HDBK-17-2F 4.2.8)"}]
+    source: "Quasi-isotropic symmetric eight-ply stack of the AS4/3502 tape above (1.12 mm): the laminate's density, in-plane modulus, Poisson's ratio and first-ply-failure tensile allowable are computed from the plies by classical lamination theory (Jones 1999 ch. 4; Tsai-Wu 1971 with F12* = -1/2)"
+  - name: CFRP AS4/3502 tape [0/90]s
+    category: Laminate
+    symmetric: true
+    plies: [{angle: 0, lamina: "AS4/3502 carbon tape (MIL-HDBK-17-2F 4.2.8)"}, {angle: 90, lamina: "AS4/3502 carbon tape (MIL-HDBK-17-2F 4.2.8)"}]
+    source: "Cross-ply symmetric four-ply stack of the AS4/3502 tape above (0.56 mm); figures computed from the plies by classical lamination theory"
+  - name: CFRP T300/934 cloth [0/45]s
+    category: Laminate
+    symmetric: true
+    plies: [{angle: 0, lamina: "T300/934 carbon plain weave (MIL-HDBK-17-2F 4.2.6)"}, {angle: 45, lamina: "T300/934 carbon plain weave (MIL-HDBK-17-2F 4.2.6)"}]
+    source: "Four plies of the T300/934 plain weave above, quasi-isotropic (0.79 mm); figures computed from the plies by classical lamination theory"
+  - name: GFRP 7781 cloth [0_2]
+    category: Laminate
+    symmetric: false
+    plies: [{angle: 0, lamina: "E-glass 7781/EA9396 8-harness satin (MIL-HDBK-17-2F 6.2.4)"}, {angle: 0, lamina: "E-glass 7781/EA9396 8-harness satin (MIL-HDBK-17-2F 6.2.4)"}]
+    source: "Two plies of the 7781 E-glass satin above, warp along the reference direction (0.43 mm), a light sailplane-style skin; figures computed from the plies by classical lamination theory"
+  - name: GFRP 7781 cloth [0/45]s
+    category: Laminate
+    symmetric: true
+    plies: [{angle: 0, lamina: "E-glass 7781/EA9396 8-harness satin (MIL-HDBK-17-2F 6.2.4)"}, {angle: 45, lamina: "E-glass 7781/EA9396 8-harness satin (MIL-HDBK-17-2F 6.2.4)"}]
+    source: "Four plies of the 7781 E-glass satin above, quasi-isotropic (0.86 mm); figures computed from the plies by classical lamination theory"
   - name: Spruce (along grain)
     category: Wood
     density: 450

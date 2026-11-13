@@ -79,6 +79,60 @@ averaged to the nodes for the VTK; per region the peak von Mises of the
 skin and of the ribs and the margin allowable / peak - 1 (``per_material``,
 kind "skin" or "rib").
 
+COMPOSITE LAMINATES (2026-11-12). A region's material may be a LAMINATE:
+its card carries ``plies``, the stack as laid from the OUTER face (the one
+the face normal leaves) inward, every ply with its angle (degrees,
+counter-clockwise about the outward normal from the region's REFERENCE
+DIRECTION), thickness, density and the lamina's orthotropic figures
+(e1, e2, nu12, g12, g13, g23; the strengths t1, c1, t2, c2, s12, s13, s23;
+form "UD" or "Woven"; locking_angle). Such a region's shells get
+StructuralMechanicsApplication's layered section -- the Properties carry
+SHELL_ORTHOTROPIC_LAYERS, one row a ply [t, angle, rho, E1, E2, nu12, G12,
+G13, G23 (, T1, C1, T2, C2, S12, S13, S23)], under the
+LinearElasticOrthotropic2DLaw of KratosConstitutiveLawsApplication (pip
+install it at Kratos's version) -- and no THICKNESS, YOUNG_MODULUS or
+POISSON_RATIO, which Kratos refuses beside the layers; the plies' own
+densities give the mass. Checked on Kratos 10.4.4 (2026-11-12): the first
+row lies on the +normal side, and a positive ply angle turns
+counter-clockwise about the normal, both as the application defines them.
+
+The REFERENCE DIRECTION of every shell -- the fibre direction of a 0 degree
+ply -- comes per face from ``axes`` (skin faces) and ``rib_axes`` (rib
+faces): float64 xyz per face, in the faces' order, zero where the
+application has none. The application takes it from the body's loft (the
+gradient of the along-the-loft parameter in each triangle: a wing's span,
+a fuselage's length, a laminator's rosette) and, on a planar member, from
+its longest in-plane extent. A face without one takes the longest extent
+of its region's nodes. Each is projected into the face's plane and set as
+the element's LOCAL_MATERIAL_AXIS_1 before the elements initialise
+(AnalysisStage.ModifyInitialGeometry), from which the shell computes its
+MATERIAL_ORIENTATION_ANGLE. Without a laminate the axes change nothing (an
+isotropic shell has no direction) and are not set.
+
+DRAPE. A laminate card may name a ``drape_file``: float32 (deviation,
+shear) in degrees per face of the region (in the faces' order) per ply, the
+application's kinematic drape of each ply over the body (core drape.hpp: a
+pin-jointed net; the deviation is the angle from the reference direction
+to the draped warp, the shear how far warp and weft have closed from 90
+degrees). Each face's stack then has its plies turned by their deviation
+and, for a WOVEN ply, thickened by 1 / cos(shear) (areal weight is
+conserved as a cloth shears; a tape cannot shear and keeps its thickness).
+The stacks are binned to DRAPE_BIN_DEGREES (coarsened until a region has
+at most MAX_STACK_BINS distinct stacks) and one Properties is written per
+bin, its elements in a sub model part of their own (Skin_<id>_b<k>).
+
+MARGINS of a laminate region are Tsai-Wu's (Tsai & Wu 1971, plane
+stress, Kratos's TSAI_WU_RESERVE_FACTOR, the smallest over the plies and
+the integration points of every element): ``per_material`` reports
+"criterion" "Tsai-Wu", the smallest "reserve_factor" and "margin" =
+reserve factor - 1, when every lamina has its five strengths; without
+them no margin (0) and the criterion says so. An isotropic region's entry
+reports "criterion" "von Mises" and its reserve factor allowable / peak,
+as before. The VTK gains per cell "reserve_factor" (-1 where none),
+"ply_shear_max" and "fibre_deviation_max" (degrees) when any region is a
+laminate. Von Mises is still reported for every shell as a stress
+magnitude; for a laminate it is not a failure measure.
+
 THE LINEAR SOLVER. "auto" takes the direct solver (sparse_lu) up to
 AUTO_DIRECT_DOFS degrees of freedom and amgcl beyond. The direct solver is
 exact; amgcl (cg + ilu0) can stop short on the stiffness contrasts of thin
@@ -130,6 +184,11 @@ JobError = tg.JobError
 G0 = 9.80665
 SHELL_PROPERTIES_OFFSET = 1000   # skin properties id = region id + this
 RIB_PROPERTIES_OFFSET = 2000     # rib shell properties id = region id + this
+# A laminate region's stacks: properties id = base + 1000 * region id + bin.
+LAMINATE_SKIN_PROPERTIES_BASE = 100000
+LAMINATE_RIB_PROPERTIES_BASE = 200000
+DRAPE_BIN_DEGREES = 2.0          # the deviation and shear of a draped ply are rounded to this
+MAX_STACK_BINS = 400             # distinct stacks per region before the bins are coarsened
 NODES_MAGIC = b"AERONOD1"        # rib_gmsh.py's nodes.bin header, optional here
 
 # "auto" takes the direct solver (sparse_lu) up to this many degrees of
@@ -420,25 +479,74 @@ def _integration_values(elem, variable, process_info):
     return list(values) if values is not None else []
 
 
-def run_kratos(job_dir, parameters, n_nodes, face_pressure, echo_level):
+def _analysis_class(element_axes):
+    """StructuralMechanicsAnalysis with the elements' material axes set
+    before they initialise: `element_axes` (n_elements, 3), a zero row
+    leaving the element to Kratos's default (its first edge). The shell
+    reads LOCAL_MATERIAL_AXIS_1 in its Initialize and turns it into its
+    MATERIAL_ORIENTATION_ANGLE, so the value must be there before the
+    solver initialises -- ModifyInitialGeometry is the hook between the
+    model's import and that."""
+    import KratosMultiphysics as KM
+    import KratosMultiphysics.StructuralMechanicsApplication as SMA
+    from KratosMultiphysics.StructuralMechanicsApplication.structural_mechanics_analysis import StructuralMechanicsAnalysis
+
+    class AerotelicAnalysis(StructuralMechanicsAnalysis):
+        def ModifyInitialGeometry(self):
+            super().ModifyInitialGeometry()
+            if element_axes is None:
+                return
+            structure = self.model["Structure"]
+            n_set = 0
+            for elem in structure.Elements:
+                a = element_axes[elem.Id - 1]
+                if a[0] != 0.0 or a[1] != 0.0 or a[2] != 0.0:
+                    elem.SetValue(SMA.LOCAL_MATERIAL_AXIS_1, KM.Vector([float(a[0]), float(a[1]), float(a[2])]))
+                    n_set += 1
+            log("  Kratos: material axes set on %d of %d elements" % (n_set, structure.NumberOfElements()))
+
+    return AerotelicAnalysis
+
+
+def _import_laminate_law():
+    """The orthotropic ply law lives in KratosConstitutiveLawsApplication,
+    a separate wheel: a laminate region needs it imported before the
+    materials are read."""
+    import KratosMultiphysics as KM
+    try:
+        import KratosMultiphysics.ConstitutiveLawsApplication  # noqa: F401
+    except ImportError:
+        version = ""
+        try:
+            version = " %s" % KM.KratosGlobals.Kernel.Version()
+        except Exception:
+            pass
+        raise JobError("a composite laminate needs KratosConstitutiveLawsApplication, which is not installed: pip install KratosConstitutiveLawsApplication at Kratos's version%s in the same environment." % version)
+    if not KM.KratosGlobals.HasConstitutiveLaw("LinearElasticOrthotropic2DLaw"):
+        raise JobError("KratosConstitutiveLawsApplication is installed but does not register LinearElasticOrthotropic2DLaw (a version mismatch with Kratos?).")
+
+
+def run_kratos(job_dir, parameters, n_nodes, face_pressure, echo_level, element_axes=None, needs_laminates=False):
     """Builds and solves the Kratos model from the files already in
     job_dir. Returns the model part and the analysis for post-processing,
-    with the solve time."""
+    with the solve time. `element_axes`: the material axis per element
+    (see _analysis_class), or None."""
     import KratosMultiphysics as KM
-    from KratosMultiphysics.StructuralMechanicsApplication.structural_mechanics_analysis import StructuralMechanicsAnalysis
     try:
         # Registers sparse_lu (Eigen's SparseLU); amgcl is in the core.
         import KratosMultiphysics.LinearSolversApplication  # noqa: F401
     except ImportError:
         if parameters["solver_settings"]["linear_solver_settings"]["solver_type"] == "sparse_lu":
             raise JobError("the sparse_lu solver needs KratosLinearSolversApplication (pip install it at Kratos's version).")
+    if needs_laminates:
+        _import_laminate_law()
 
     if echo_level == 0:
         KM.Logger.GetDefaultOutput().SetSeverity(KM.Logger.Severity.WARNING)
     model = KM.Model()
     t_solve = time.time()
     log("  Kratos: reading the model")
-    analysis = StructuralMechanicsAnalysis(model, KM.Parameters(json.dumps(parameters)))
+    analysis = _analysis_class(element_axes)(model, KM.Parameters(json.dumps(parameters)))
     analysis.Initialize()
     structure = model["Structure"]
     if structure.NumberOfNodes() != n_nodes:
@@ -455,14 +563,15 @@ def run_kratos(job_dir, parameters, n_nodes, face_pressure, echo_level):
     return model, structure, analysis, time.time() - t_solve
 
 
-def run_modes(job_dir, mdpa_base, materials_path, n_nodes, echo_level, count, eigensolver):
+def run_modes(job_dir, mdpa_base, materials_path, n_nodes, echo_level, count, eigensolver, element_axes=None):
     """The lowest `count` natural frequencies (Hz, ascending) and mode shapes
     ((count, n_nodes, 3), each scaled to a unit largest displacement) of the
-    model already written to mdpa_base, clamped as the static solve was.
-    Spectra first; the subspace solver if it fails."""
+    model already written to mdpa_base, clamped as the static solve was,
+    its elements' material axes set as the static solve's were. Spectra
+    first; the subspace solver if it fails."""
     import KratosMultiphysics as KM
     import KratosMultiphysics.StructuralMechanicsApplication as SMA
-    from KratosMultiphysics.StructuralMechanicsApplication.structural_mechanics_analysis import StructuralMechanicsAnalysis
+    StructuralMechanicsAnalysis = _analysis_class(element_axes)
     import KratosMultiphysics.LinearSolversApplication  # noqa: F401  (the eigensolvers)
     if echo_level == 0:
         KM.Logger.GetDefaultOutput().SetSeverity(KM.Logger.Severity.WARNING)
@@ -661,11 +770,150 @@ def _support_nodes(nodes, supports):
 
 
 def _check_material(m, label):
+    if m.get("plies"):
+        for i, p in enumerate(m["plies"]):
+            who = "'%s' ply %d" % (label, i + 1)
+            if not (float(p.get("thickness", 0.0)) > 0.0):
+                raise JobError("%s has no thickness." % who)
+            if not (float(p.get("density", 0.0)) > 0.0):
+                raise JobError("%s has no density." % who)
+            if not (float(p.get("e1", 0.0)) > 0.0 and float(p.get("e2", 0.0)) > 0.0 and float(p.get("g12", 0.0)) > 0.0):
+                raise JobError("%s has no stiffness (E1, E2 and G12 must be positive)." % who)
+            nu = float(p.get("nu12", 0.0))
+            if not (0.0 <= nu and 1.0 - nu * nu * float(p["e2"]) / float(p["e1"]) > 0.0):
+                raise JobError("%s has an inadmissible nu12 of %g." % (who, nu))
+        return
     if not (float(m["youngs_modulus"]) > 0.0 and float(m["density"]) > 0.0):
         raise JobError("'%s' has no stiffness or no density." % label)
     nu = float(m["poisson_ratio"])
     if not (0.0 <= nu < 0.5):
         raise JobError("'%s' has a Poisson's ratio of %g; it must be in [0, 0.5)." % (label, nu))
+
+
+# ---------------------------------------------------------------------------
+# Laminates
+# ---------------------------------------------------------------------------
+
+def _stack_from_card(material):
+    """The plies of a laminate card as the layer rows want them: a list of
+    dicts with t, angle, rho, e1, e2, nu12, g12, g13, g23, the strengths
+    (zero when unknown), woven and locking_angle. g13 defaults to g12, g23
+    to g12 / 2, s13 and s23 to s12 -- the lamina's own conventions
+    (materials.hpp)."""
+    stack = []
+    for p in material["plies"]:
+        g12 = float(p["g12"])
+        s12 = float(p.get("s12", 0.0))
+        stack.append({
+            "t": float(p["thickness"]), "angle": float(p.get("angle", 0.0)), "rho": float(p["density"]),
+            "e1": float(p["e1"]), "e2": float(p["e2"]), "nu12": float(p.get("nu12", 0.0)), "g12": g12,
+            "g13": float(p.get("g13", 0.0)) or g12, "g23": float(p.get("g23", 0.0)) or 0.5 * g12,
+            "t1": float(p.get("t1", 0.0)), "c1": float(p.get("c1", 0.0)), "t2": float(p.get("t2", 0.0)), "c2": float(p.get("c2", 0.0)),
+            "s12": s12, "s13": float(p.get("s13", 0.0)) or s12, "s23": float(p.get("s23", 0.0)) or s12,
+            "woven": str(p.get("form", "UD")) == "Woven", "locking_angle": float(p.get("locking_angle", 0.0)),
+        })
+    return stack
+
+
+def _stack_has_strengths(stack):
+    return all(p["t1"] > 0.0 and p["c1"] > 0.0 and p["t2"] > 0.0 and p["c2"] > 0.0 and p["s12"] > 0.0 for p in stack)
+
+
+def _read_drape(job_dir, name, n_faces, n_plies):
+    """The drape file of a laminate region: float32 (deviation, shear) in
+    degrees per face per ply, or None when the card names none."""
+    if not name:
+        return None
+    data = np.fromfile(os.path.join(job_dir, name), dtype="<f4")
+    if len(data) != n_faces * n_plies * 2:
+        raise JobError("the drape file %s holds %d values; %d faces x %d plies x 2 were expected." % (name, len(data), n_faces, n_plies))
+    return data.reshape(n_faces, n_plies, 2).astype(np.float64)
+
+
+def _bin_stacks(stack, drape, n_faces):
+    """Every face's stack as laid: the plies turned by their drape deviation
+    and, woven, thickened by 1 / cos(shear); binned to DRAPE_BIN_DEGREES
+    (coarsened until at most MAX_STACK_BINS distinct stacks). Returns
+    (bin per face, the layer rows per bin, rho t per face, stats)."""
+    n_plies = len(stack)
+    if drape is None:
+        dev = np.zeros((n_faces, n_plies))
+        shear = np.zeros((n_faces, n_plies))
+    else:
+        dev = drape[:, :, 0]
+        shear = np.abs(drape[:, :, 1])
+    woven = np.array([p["woven"] for p in stack], dtype=bool)
+    shear_eff = np.where(woven[None, :], np.minimum(shear, 80.0), 0.0)   # a tape does not shear
+    has_strengths = _stack_has_strengths(stack)
+    bin_deg = DRAPE_BIN_DEGREES
+    while True:
+        qd = np.round(dev / bin_deg) * bin_deg
+        qs = np.round(shear_eff / bin_deg) * bin_deg
+        keys = np.concatenate([qd, qs], axis=1) if n_faces else np.zeros((0, 2 * n_plies))
+        uniq, inverse = np.unique(keys, axis=0, return_inverse=True) if n_faces else (np.zeros((1, 2 * n_plies)), np.zeros(0, dtype=np.int64))
+        if len(uniq) <= MAX_STACK_BINS or bin_deg >= 90.0:
+            break
+        bin_deg = {2.0: 5.0, 5.0: 10.0, 10.0: 15.0, 15.0: 30.0}.get(bin_deg, 90.0)
+    inverse = np.asarray(inverse).reshape(-1)
+    rows_per_bin = []
+    rho_t_per_bin = np.zeros(len(uniq))
+    for k, key in enumerate(uniq):
+        rows = []
+        for i, p in enumerate(stack):
+            t = p["t"] / np.cos(np.radians(key[n_plies + i]))
+            row = [t, p["angle"] + key[i], p["rho"], p["e1"], p["e2"], p["nu12"], p["g12"], p["g13"], p["g23"]]
+            if has_strengths:
+                row += [p["t1"], p["c1"], p["t2"], p["c2"], p["s12"], p["s13"], p["s23"]]
+            rows.append([float(v) for v in row])
+            rho_t_per_bin[k] += p["rho"] * t
+        rows_per_bin.append(rows)
+    rho_t = rho_t_per_bin[inverse] if n_faces else np.zeros(0)
+    past_locking = 0
+    if n_faces and drape is not None:
+        for i, p in enumerate(stack):
+            if p["woven"] and p["locking_angle"] > 0.0:
+                past_locking += int((shear[:, i] > p["locking_angle"]).sum())
+    stats = {
+        "plies": n_plies, "thickness": float(sum(p["t"] for p in stack)), "has_strengths": has_strengths,
+        "bins": int(len(uniq)), "bin_degrees": float(bin_deg), "draped": drape is not None,
+        "max_shear": float(shear.max()) if (n_faces and drape is not None) else 0.0,
+        "max_deviation": float(np.abs(dev).max()) if (n_faces and drape is not None) else 0.0,
+        "faces_past_locking": past_locking,
+        "shear_per_face": shear.max(axis=1) if n_faces else np.zeros(0),
+        "deviation_per_face": np.abs(dev).max(axis=1) if n_faces else np.zeros(0),
+    }
+    return inverse, rows_per_bin, rho_t, stats
+
+
+def _longest_axis(points):
+    """The unit axis of the longest bounding-box extent of a point set."""
+    if len(points) == 0:
+        return np.array([1.0, 0.0, 0.0])
+    extent = points.max(axis=0) - points.min(axis=0)
+    axis = np.zeros(3)
+    axis[int(np.argmax(extent))] = 1.0
+    return axis
+
+
+def _project_axes(nodes, tris, axes, fallback):
+    """Each face's axis projected into its plane and normalised; a zero or
+    degenerate one takes the fallback vector (then the next coordinate
+    axis if that too is normal to the face). Returns (n, 3)."""
+    out = np.zeros((len(tris), 3))
+    if len(tris) == 0:
+        return out
+    n = face_normals_area(nodes, tris)
+    n /= np.maximum(np.linalg.norm(n, axis=1), 1e-300)[:, None]
+    candidates = [axes if axes is not None else np.zeros((len(tris), 3)), np.tile(fallback, (len(tris), 1)),
+                  np.tile(np.roll(fallback, 1), (len(tris), 1)), np.tile(np.roll(fallback, 2), (len(tris), 1))]
+    done = np.zeros(len(tris), dtype=bool)
+    for cand in candidates:
+        proj = cand - n * np.einsum("ij,ij->i", cand, n)[:, None]
+        length = np.linalg.norm(proj, axis=1)
+        ok = (~done) & (length > 1e-6 * np.maximum(np.linalg.norm(cand, axis=1), 1e-300)) & (np.linalg.norm(cand, axis=1) > 0.0)
+        out[ok] = proj[ok] / length[ok][:, None]
+        done |= ok
+    return out
 
 
 def _regions_from_job(job):
@@ -692,6 +940,13 @@ def run_job(job_dir):
                       not wetted, so no pressure lands on it and it takes
                       no part in the mean normal displacement; its mass
                       counts.
+        axes          null, or float64 xyz per skin face (faces order): the
+        rib_axes      material reference direction of each face (and the
+                      same for the rib faces); see COMPOSITE LAMINATES above
+        regions[].skin / rib may carry "drape_file": float32 (deviation,
+                      shear) degrees per face of the region per ply of a
+                      laminate material, and a material card may carry
+                      "plies" (the laminate's stack, see above)
         regions       [{"id", "label",
                         "skin": null | {"material": {...}, "thickness": m},
                         "rib": null | {"material": {...}, "thickness": m}}],
@@ -844,30 +1099,59 @@ def run_job(job_dir):
         "applied_point": [float(v) for v in applied_point],
     }
 
-    # The materials: a plane-stress law per skin and per rib, and rho t
-    # per face for the mass.
+    # The materials: a plane-stress law per isotropic skin and rib, a
+    # layered section per laminate (one Properties per distinct draped
+    # stack, see the docstring), and rho t per face for the mass.
     material_entries = []
     property_ids = []
     skin_density_t = np.zeros(len(faces))     # rho t per skin face
     rib_density_t = np.zeros(len(rib_faces))  # rho t per rib face
+    skin_prop = region_of_face + SHELL_PROPERTIES_OFFSET
+    rib_prop = rib_region + RIB_PROPERTIES_OFFSET
+    skin_part = ["Skin_%d" % int(rid) for rid in region_of_face]
+    rib_part = ["Rib_%d" % int(rid) for rid in rib_region]
+    laminates = {}   # (region id, "skin" | "rib") -> the stack's stats
+    needs_laminates = False
     for rid in ids:
         r = by_id[rid]
-        skin = r.get("skin")
-        if skin:
-            t = float(skin["thickness"])
-            skin_density_t[region_of_face == rid] = float(skin["material"]["density"]) * t
-            material_entries.append(("Skin_%d" % rid, rid + SHELL_PROPERTIES_OFFSET, "LinearElasticPlaneStress2DLaw",
-                                     {"DENSITY": float(skin["material"]["density"]), "YOUNG_MODULUS": float(skin["material"]["youngs_modulus"]),
-                                      "POISSON_RATIO": float(skin["material"]["poisson_ratio"]), "THICKNESS": t}))
-            property_ids.append(rid + SHELL_PROPERTIES_OFFSET)
-        rib = r.get("rib")
-        if rib:
-            t_rib = float(rib["thickness"])
-            rib_density_t[rib_region == rid] = float(rib["material"]["density"]) * t_rib
-            material_entries.append(("Rib_%d" % rid, rid + RIB_PROPERTIES_OFFSET, "LinearElasticPlaneStress2DLaw",
-                                     {"DENSITY": float(rib["material"]["density"]), "YOUNG_MODULUS": float(rib["material"]["youngs_modulus"]),
-                                      "POISSON_RATIO": float(rib["material"]["poisson_ratio"]), "THICKNESS": t_rib}))
-            property_ids.append(rid + RIB_PROPERTIES_OFFSET)
+        for kind in ("skin", "rib"):
+            card = r.get(kind)
+            if not card:
+                continue
+            is_rib = kind == "rib"
+            region_array = rib_region if is_rib else region_of_face
+            sel = np.nonzero(region_array == rid)[0]
+            density_t = rib_density_t if is_rib else skin_density_t
+            props = rib_prop if is_rib else skin_prop
+            parts = rib_part if is_rib else skin_part
+            prefix = "Rib" if is_rib else "Skin"
+            m = card["material"]
+            t = float(card["thickness"])
+            if m.get("plies"):
+                needs_laminates = True
+                stack = _stack_from_card(m)
+                drape = _read_drape(job_dir, card.get("drape_file"), len(sel), len(stack))
+                bins, rows_per_bin, rho_t, stats = _bin_stacks(stack, drape, len(sel))
+                base = (LAMINATE_RIB_PROPERTIES_BASE if is_rib else LAMINATE_SKIN_PROPERTIES_BASE) + 1000 * rid
+                for k, rows in enumerate(rows_per_bin):
+                    material_entries.append(("%s_%d_b%d" % (prefix, rid, k), base + k, "LinearElasticOrthotropic2DLaw", {"SHELL_ORTHOTROPIC_LAYERS": rows}))
+                    property_ids.append(base + k)
+                props[sel] = base + bins
+                for f, k in zip(sel, bins):
+                    parts[f] = "%s_%d_b%d" % (prefix, rid, int(k))
+                density_t[sel] = rho_t
+                stats["faces"] = sel
+                laminates[(rid, kind)] = stats
+                log("  %s %s: a laminate of %d plies (%.4g m) in %d draped stack(s)%s%s" % (
+                    r.get("label", rid), kind, stats["plies"], stats["thickness"], stats["bins"],
+                    "" if not stats["draped"] else ", shear up to %.1f deg, fibres turned up to %.1f deg" % (stats["max_shear"], stats["max_deviation"]),
+                    "" if stats["has_strengths"] else " (no strengths: no margin)"))
+            else:
+                density_t[sel] = float(m["density"]) * t
+                material_entries.append(("%s_%d" % (prefix, rid), rid + (RIB_PROPERTIES_OFFSET if is_rib else SHELL_PROPERTIES_OFFSET), "LinearElasticPlaneStress2DLaw",
+                                         {"DENSITY": float(m["density"]), "YOUNG_MODULUS": float(m["youngs_modulus"]),
+                                          "POISSON_RATIO": float(m["poisson_ratio"]), "THICKNESS": t}))
+                property_ids.append(rid + (RIB_PROPERTIES_OFFSET if is_rib else SHELL_PROPERTIES_OFFSET))
     mass = float((skin_density_t * face_area).sum()) + float((rib_density_t * rib_area).sum())
 
     # The elements: the skin's shells on every wetted face, then the ribs'
@@ -877,8 +1161,33 @@ def run_job(job_dir):
     shells = np.concatenate([faces, rib_faces]) if len(rib_faces) else faces
     shell_region = np.concatenate([region_of_face, rib_region]) if len(rib_faces) else region_of_face
     shell_is_rib = np.concatenate([np.zeros(n_skin_shells, dtype=bool), np.ones(len(rib_faces), dtype=bool)])
-    shell_prop = np.where(shell_is_rib, shell_region + RIB_PROPERTIES_OFFSET, shell_region + SHELL_PROPERTIES_OFFSET)
-    shell_part = ["%s_%d" % ("Rib" if is_rib else "Skin", int(rid)) for rid, is_rib in zip(shell_region, shell_is_rib)]
+    shell_prop = np.concatenate([skin_prop, rib_prop]) if len(rib_faces) else skin_prop
+    shell_part = skin_part + rib_part
+
+    # The material axes, one per shell: the application's per face
+    # (projected into the face), else the longest extent of the region's
+    # nodes; only set on the elements when a laminate needs them.
+    element_axes = None
+    if needs_laminates:
+        def axes_file(key, count):
+            if not job.get(key):
+                return None
+            a = np.fromfile(os.path.join(job_dir, job[key]), dtype="<f8")
+            if len(a) != 3 * count:
+                raise JobError("%s holds %d values for %d faces." % (job[key], len(a), count))
+            return a.reshape(count, 3)
+        given = [axes_file("axes", len(faces)), axes_file("rib_axes", len(rib_faces))]
+        pieces = []
+        for tris, region_array, g in ((faces, region_of_face, given[0]), (rib_faces, rib_region, given[1])):
+            out = np.zeros((len(tris), 3))
+            for rid in ids:
+                sel = np.nonzero(region_array == rid)[0]
+                if len(sel) == 0:
+                    continue
+                fallback = _longest_axis(nodes[np.unique(tris[sel])])
+                out[sel] = _project_axes(nodes, tris[sel], None if g is None else g[sel], fallback)
+            pieces.append(out)
+        element_axes = np.concatenate(pieces) if len(rib_faces) else pieces[0]
     # Six degrees of freedom on every node. Known before the solve, so
     # "auto" can choose its solver by them.
     dofs = 6 * len(nodes)
@@ -887,7 +1196,9 @@ def run_job(job_dir):
     loose = len(nodes) - len(np.unique(shells))
     if loose:
         log("  note: %d node(s) belong to no shell (they stay put)" % loose)
-    wetted_prop = region_of_face + SHELL_PROPERTIES_OFFSET
+    # A condition needs some Properties that exist: its face's skin's (a
+    # laminate skin's are the binned stacks', not region + offset).
+    wetted_prop = skin_prop
     point_prop = property_ids[0]
     t0 = time.time()
     log("  writing the Kratos model: %d nodes, %d shells (%d of them ribs), %d dofs" % (len(nodes), len(shells), len(rib_faces), dofs))
@@ -896,33 +1207,68 @@ def run_job(job_dir):
     write_materials(materials_path, material_entries)
     seconds_mdpa = time.time() - t0
     parameters = project_parameters(mdpa_base, materials_path, loads, point_loads, echo_level, linear_solver)
-    log("  solving %d dofs with %s (%d shells)" % (dofs, linear_solver, len(shells)))
-    model, structure, analysis, seconds_solve = run_kratos(job_dir, parameters, len(nodes), face_pressure, echo_level)
+    log("  solving %d dofs with %s (%d shells%s)" % (dofs, linear_solver, len(shells), ", %d laminate region(s)" % len(laminates) if laminates else ""))
+    model, structure, analysis, seconds_solve = run_kratos(job_dir, parameters, len(nodes), face_pressure, echo_level, element_axes, needs_laminates)
     displacement, rotation, reaction = read_nodal(structure, len(nodes))
     n_elements = len(shells)
     log("  post-processing: stresses, margins, the force balance")
     von_mises_elem = element_von_mises(structure, n_elements)
+    # Tsai-Wu reserve factors of the laminate shells whose laminae have
+    # strengths (the smallest over the plies and integration points), -1
+    # elsewhere; and the drape per shell for the VTK.
+    reserve_elem = np.full(n_elements, -1.0)
+    shear_elem = np.zeros(n_elements)
+    deviation_elem = np.zeros(n_elements)
+    if laminates:
+        import KratosMultiphysics.StructuralMechanicsApplication as SMA
+        for (rid, kind), stats in laminates.items():
+            elem_ids = stats["faces"] + (n_skin_shells if kind == "rib" else 0)
+            if stats["draped"]:
+                shear_elem[elem_ids] = stats["shear_per_face"]
+                deviation_elem[elem_ids] = stats["deviation_per_face"]
+            if not stats["has_strengths"]:
+                continue
+            for e in elem_ids:
+                values = _integration_values(structure.GetElement(int(e) + 1), SMA.TSAI_WU_RESERVE_FACTOR, structure.ProcessInfo)
+                if values:
+                    reserve_elem[e] = min(float(v) for v in values)
 
     # The peaks per region: the skin's shells and the ribs', each with the
-    # margin against its own allowable.
+    # margin against its own criterion -- von Mises against the allowable,
+    # or Tsai-Wu's reserve factor for a laminate.
     def margin(allowable, peak):
         return (allowable / peak - 1.0) if (allowable > 0.0 and peak > 0.0) else 0.0
     per_material = []
     for rid in ids:
         r = by_id[rid]
         label = r.get("label", "")
-        sel_s = np.nonzero((shell_region == rid) & ~shell_is_rib)[0]
-        sel_r = np.nonzero((shell_region == rid) & shell_is_rib)[0]
-        if r.get("skin"):
-            a = float(r["skin"]["material"].get("allowable_stress", 0.0))
-            peak = float(von_mises_elem[sel_s].max()) if len(sel_s) else 0.0
-            per_material.append({"id": rid, "label": "%s skin" % label, "kind": "skin", "max_von_mises": peak, "margin": margin(a, peak), "allowable": a,
-                                 "mass": float((skin_density_t[region_of_face == rid] * face_area[region_of_face == rid]).sum())})
-        if r.get("rib"):
-            a = float(r["rib"]["material"].get("allowable_stress", 0.0))
-            peak = float(von_mises_elem[sel_r].max()) if len(sel_r) else 0.0
-            per_material.append({"id": rid, "label": "%s ribs" % label, "kind": "rib", "max_von_mises": peak, "margin": margin(a, peak), "allowable": a,
-                                 "mass": float((rib_density_t[rib_region == rid] * rib_area[rib_region == rid]).sum())})
+        for kind in ("skin", "rib"):
+            card = r.get(kind)
+            if not card:
+                continue
+            is_rib = kind == "rib"
+            sel = np.nonzero((shell_region == rid) & (shell_is_rib == is_rib))[0]
+            peak = float(von_mises_elem[sel].max()) if len(sel) else 0.0
+            if is_rib:
+                mass_here = float((rib_density_t[rib_region == rid] * rib_area[rib_region == rid]).sum())
+            else:
+                mass_here = float((skin_density_t[region_of_face == rid] * face_area[region_of_face == rid]).sum())
+            entry = {"id": rid, "label": "%s %s" % (label, "ribs" if is_rib else "skin"), "kind": kind, "max_von_mises": peak, "mass": mass_here}
+            stats = laminates.get((rid, kind))
+            if stats is None:
+                a = float(card["material"].get("allowable_stress", 0.0))
+                entry.update({"criterion": "von Mises", "allowable": a, "margin": margin(a, peak),
+                              "reserve_factor": (a / peak) if (a > 0.0 and peak > 0.0) else 0.0})
+            else:
+                rf = reserve_elem[sel]
+                rf = rf[rf > 0.0]
+                rf_min = float(rf.min()) if len(rf) else 0.0
+                entry.update({"criterion": "Tsai-Wu" if stats["has_strengths"] else "Tsai-Wu (no strengths: no margin)", "allowable": 0.0,
+                              "reserve_factor": rf_min, "margin": (rf_min - 1.0) if rf_min > 0.0 else 0.0,
+                              "plies": stats["plies"], "thickness": stats["thickness"], "stacks": stats["bins"],
+                              "drape": None if not stats["draped"] else {"max_shear": stats["max_shear"], "max_deviation": stats["max_deviation"],
+                                                                          "faces_past_locking": stats["faces_past_locking"], "bin_degrees": stats["bin_degrees"]}})
+            per_material.append(entry)
     i_vm = int(np.argmax(von_mises_elem)) if n_elements else 0
     result.update({"elements": int(n_elements), "shells": int(len(shells)), "rib_shells": int(len(rib_faces)), "seconds_mdpa": seconds_mdpa})
 
@@ -969,7 +1315,7 @@ def run_job(job_dir):
         log("  natural frequencies: the lowest %d modes of the same model" % n_modes)
         try:
             frequencies, mode_shapes, eigensolver_used = run_modes(job_dir, mdpa_base, materials_path, len(nodes), echo_level,
-                                                                  n_modes, str(solver_opts.get("eigensolver") or "spectra_sym_g_eigs_shift"))
+                                                                  n_modes, str(solver_opts.get("eigensolver") or "spectra_sym_g_eigs_shift"), element_axes)
         except JobError as exc:
             warnings.append(str(exc))
             log("  WARNING: " + warnings[-1])
@@ -1008,6 +1354,9 @@ def run_job(job_dir):
     log("  writing the solution to %s" % outputs["vtk"])
     # kind: 1 a skin shell, 2 a rib shell.
     cell_data = {"material": shell_region.astype(np.int64), "kind": np.where(shell_is_rib, 2, 1).astype(np.int64), "von_mises_element": von_mises_elem}
+    if laminates:
+        cell_data.update({"reserve_factor": reserve_elem, "ply_shear_max": shear_elem, "fibre_deviation_max": deviation_elem})
+        result["laminates"] = len(laminates)
     point_data = {"displacement": displacement, "rotation": rotation, "von_mises": nodal_average(len(nodes), [shells], von_mises_elem)}
     if mode_shapes is not None:
         for k in range(len(frequencies)):

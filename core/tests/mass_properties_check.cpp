@@ -259,10 +259,13 @@ void CheckModeNames() {
 		bool all_structural = true, unique = true;
 		const auto& presets = MaterialPresets();
 		for (size_t i = 0; i < presets.size(); ++i) {
-			all_structural = all_structural && presets[i].IsStructural() && presets[i].allowable_stress > 0.0;
+			// A lamina row (2026-11-12) is one ply's figures, not a material a
+			// shell is made of: it weighs and is complete, but is not structural.
+			if (presets[i].IsLamina()) all_structural = all_structural && presets[i].HasDensity() && MaterialProblem(presets[i]).empty();
+			else all_structural = all_structural && presets[i].IsStructural() && presets[i].allowable_stress > 0.0;
 			for (size_t j = 0; j < i; ++j) unique = unique && presets[i].name != presets[j].name;
 		}
-		Check(all_structural, "every preset has density, modulus, a Poisson's ratio below 0.5 and an allowable");
+		Check(all_structural, "every preset has density, modulus, a Poisson's ratio below 0.5 and an allowable (a lamina: density and complete ply figures)");
 		Check(unique, "preset names are unique");
 		// The materials whose sources restrict redistribution are no presets
 		// (2026-11-07): they are data/materials_restricted.yaml, which is not

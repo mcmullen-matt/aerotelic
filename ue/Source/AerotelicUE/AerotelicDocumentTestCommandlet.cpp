@@ -19,6 +19,7 @@
 #include "Widgets/CurveTabControls.h"
 
 #include "aerotelic/fuselage_model.hpp"
+#include "aerotelic/laminate.hpp"
 #include "aerotelic/materials.hpp"
 #include "aerotelic/mesh_cut.hpp"
 #include "aerotelic/primitive_model.hpp"
@@ -300,12 +301,28 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 		Check(!AerotelicMaterialLibrary::SetCustom({ Bad }, Error), "library: a material without a modulus is refused");
 		Check(AerotelicMaterialLibrary::Custom().Num() == 1, "library: a refused change leaves the library as it was");
 
+		// A laminate of the user's (2026-11-12): plies of a preset lamina,
+		// built from the stacking notation, saved by the lamina's name and
+		// resolved on reading; the laminate presets are there to pick.
+		const aerotelic::Material* Tape = AerotelicMaterialLibrary::Find("AS4/3502 carbon tape (MIL-HDBK-17-2F 4.2.8)");
+		Check(Tape != nullptr && Tape->IsLamina(), "library: the MIL-HDBK-17-2F tape lamina is a preset");
+		Check(AerotelicMaterialLibrary::Find("CFRP AS4/3502 tape [0/90]s") != nullptr && AerotelicMaterialLibrary::Find("CFRP AS4/3502 tape [0/90]s")->IsLaminate(), "library: the cross-ply laminate is a preset");
+		aerotelic::Material MyLam;
+		if (Tape != nullptr)
+		{
+			MyLam = aerotelic::MakeLaminate("My tape [0/90]s", "[0/90]s", *Tape, "a test");
+			Check(MyLam.IsLaminate() && MyLam.plies.size() == 2 && MyLam.symmetric && MyLam.youngs_modulus > 0.0, "library: a laminate is built from a notation and a lamina");
+			Check(AerotelicMaterialLibrary::SetCustom({ Mine, MyLam }, Error), FString::Printf(TEXT("library: a laminate of the user's is accepted (%s)"), *Error));
+		}
+
 		// Reload from the file: every field comes back.
 		AerotelicMaterialLibrary::SetFilePathOverride(LibPath);
 		const TArray<aerotelic::Material>& Back = AerotelicMaterialLibrary::Custom();
-		Check(Back.Num() == 1 && Back[0].name == "Balsa, test" && Back[0].category == "Wood" && Back[0].source == "a test"
+		Check(Back.Num() >= 1 && Back[0].name == "Balsa, test" && Back[0].category == "Wood" && Back[0].source == "a test"
 			&& Back[0].density == 160.0 && Back[0].youngs_modulus == 3.0e9 && Back[0].allowable_stress == 10.0e6,
 			"library: the user's material round-tripped through the file");
+		Check(Back.Num() == 2 && Back[1].IsLaminate() && aerotelic::SameMaterial(Back[1], MyLam) && Back[1].plies[0].props.e1 == 133.1e9,
+			"library: the user's laminate round-tripped, its plies resolved to the preset lamina");
 
 		IFileManager::Get().Delete(*LibPath);
 		AerotelicMaterialLibrary::SetFilePathOverride(FString());
@@ -1107,6 +1124,44 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 							"fea (beam): the VTK carries the four mode shapes as point vectors");
 					}
 					IFileManager::Get().Delete(*Request.VtkPath, false, true, true);
+
+					// The same beam in a composite LAMINATE (2026-11-12): the
+					// quasi-isotropic AS4/3502 preset, fibres of the 0 plies along
+					// the beam (the material axis y on every face), a stack 1.12 mm
+					// thick -- the solver's layered section, with Tsai-Wu's reserve
+					// factor as the margin and the stack's thickness and mass.
+					{
+						const aerotelic::Material* Qi = aerotelic::FindMaterialPreset("CFRP AS4/3502 tape [0/\xC2\xB1""45/90]s");
+						Check(Qi != nullptr && Qi->IsLaminate(), "fea (laminate): the quasi-isotropic preset exists");
+						if (Qi != nullptr)
+						{
+							AerotelicStructuralFea::FRequest Lam = Request;
+							Lam.Modes = 0;
+							Lam.Regions[0].Skin = *Qi;
+							const double TStack = aerotelic::StackThickness(aerotelic::ExpandedStack(*Qi));
+							Lam.Regions[0].SkinThickness = TStack;
+							for (int32 i = 0; i < Lam.ShellFaces.Num(); ++i) Lam.ShellAxes.Add(aerotelic::Vec3{ 0.0, 1.0, 0.0 });
+							Lam.VtkPath = FPaths::Combine(FPlatformProcess::UserTempDir(), TEXT("aerotelic_document_test_fea_laminate.vtk"));
+							AerotelicStructuralFea::FResult RL;
+							FString LamError;
+							const bool bLam = AerotelicStructuralFea::Run(Lam, RL, LamError);
+							Check(bLam, FString::Printf(TEXT("fea (laminate): the laminate box beam solved (%s)"), bLam ? *FString::Printf(TEXT("%d dof, %.1f s"), RL.Dofs, RL.Seconds) : *LamError));
+							if (bLam)
+							{
+								Check(RL.bBalanced && RL.Laminates == 1 && RL.Entries.Num() == 1 && RL.Entries[0].IsLaminate() && RL.Entries[0].Plies == 8 && FMath::IsNearlyEqual(RL.Entries[0].Thickness, TStack, 1e-9),
+									FString::Printf(TEXT("fea (laminate): one laminate region of 8 plies, %.4g m thick, balanced (%d laminates, %d plies)"), TStack, RL.Laminates, RL.Entries.Num() ? RL.Entries[0].Plies : -1));
+								Check(RL.Entries.Num() == 1 && RL.Entries[0].Criterion == TEXT("Tsai-Wu") && RL.Entries[0].ReserveFactor > 0.0 && FMath::IsNearlyEqual(RL.Entries[0].Margin, RL.Entries[0].ReserveFactor - 1.0, 1e-9),
+									FString::Printf(TEXT("fea (laminate): the margin is Tsai-Wu's reserve factor minus one (RF %.3g, margin %+.2f)"), RL.Entries.Num() ? RL.Entries[0].ReserveFactor : 0.0, RL.Entries.Num() ? RL.Entries[0].Margin : 0.0));
+								const double Area = 2.0 * (1.0 * 10.0 + 10.0 * 1.0 + 1.0 * 1.0);
+								Check(FMath::Abs(RL.Mass - Qi->density * TStack * Area) < 1e-6 * RL.Mass, FString::Printf(TEXT("fea (laminate): the mass is the plies' rho t A (%.5g kg)"), RL.Mass));
+								// Thinner and less stiff than the 10 mm aluminium: it moves more.
+								Check(RL.MaxDisplacement > R.MaxDisplacement, FString::Printf(TEXT("fea (laminate): the 1.12 mm laminate deflects more than the 10 mm aluminium (%.4g vs %.4g m)"), RL.MaxDisplacement, R.MaxDisplacement));
+								FString LamVtk;
+								Check(FFileHelper::LoadFileToString(LamVtk, *Lam.VtkPath) && LamVtk.Contains(TEXT("SCALARS reserve_factor double")), "fea (laminate): the VTK carries the reserve factor per cell");
+							}
+							IFileManager::Get().Delete(*Lam.VtkPath, false, true, true);
+						}
+					}
 				}
 
 			}

@@ -5,6 +5,8 @@
 
 #include "Entity/AerotelicMaterialLibrary.h"
 
+#include "aerotelic/laminate.hpp"
+
 #define LOCTEXT_NAMESPACE "AerotelicMaterialPicker"
 
 using aerotelic::Material;
@@ -54,9 +56,17 @@ void SAerotelicMaterialPicker::Rebuild()
 	}
 	for (const Material& M : AerotelicMaterialLibrary::All())
 	{
+		// A lamina is one ply's figures, not something a shell is made of:
+		// it is picked into a laminate (Model > Material Properties), never
+		// onto a body.
+		if (M.IsLamina()) continue;
 		TSharedPtr<FChoice> C = MakeShared<FChoice>();
 		C->M = M;
 		C->Label = UTF8_TO_TCHAR(M.name.c_str());
+		if (M.IsLaminate())
+		{
+			C->Label += FString::Printf(TEXT("  (laminate, %d plies, %.3g mm)"), (int32)aerotelic::ExpandedStack(M).size(), 1000.0 * aerotelic::StackThickness(aerotelic::ExpandedStack(M)));
+		}
 		Choices.Add(C);
 	}
 	const Material Now = Current.Get();

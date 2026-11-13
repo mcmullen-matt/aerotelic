@@ -781,7 +781,43 @@ void CheckRealPythonProjectFile() {
 
 } // namespace
 
+// A LAMINATE through the project file (2026-11-12): EncodeMaterial writes
+// the plies with the lamina's figures, so the file stands alone; a lamina
+// row round-trips too; a file hand-written with the lamina by name alone
+// takes the preset's figures.
+void CheckLaminateMaterialRoundTrip() {
+	const Material* qi = FindMaterialPreset("CFRP AS4/3502 tape [0/\xC2\xB1""45/90]s");
+	Check(qi != nullptr && qi->IsLaminate(), "laminate round trip: the quasi-isotropic preset exists");
+	if (qi == nullptr) return;
+	const YAML::Node node = EncodeMaterial(*qi);
+	Check(node["plies"] && node["plies"].IsSequence() && node["plies"].size() == 4 && node["symmetric"].as<bool>() && node["plies"][0]["props"]["e1"].as<double>() == 133.1e9,
+		"laminate round trip: the file carries the four listed plies, the symmetry and the lamina's figures");
+	const Material back = DecodeMaterial(node);
+	Check(back.IsLaminate() && SameMaterial(back, *qi) && IsMaterialPreset(back), "laminate round trip: the laminate decodes the same and is still the preset");
+	Check(back.youngs_modulus == qi->youngs_modulus && back.density == qi->density && back.allowable_stress == qi->allowable_stress, "laminate round trip: the effective figures are recomputed the same");
+	const Material* tape = FindMaterialPreset("AS4/3502 carbon tape (MIL-HDBK-17-2F 4.2.8)");
+	Check(tape != nullptr && tape->IsLamina(), "laminate round trip: the tape lamina exists");
+	if (tape != nullptr) {
+		const Material lamina_back = DecodeMaterial(EncodeMaterial(*tape));
+		Check(lamina_back.IsLamina() && SameMaterial(lamina_back, *tape), "laminate round trip: a lamina row decodes the same");
+	}
+	// By name alone: the preset lamina's figures are taken.
+	const YAML::Node by_name = YAML::Load("{name: mine, plies: [{angle: 0, lamina: 'AS4/3502 carbon tape (MIL-HDBK-17-2F 4.2.8)'}, {angle: 90, lamina: 'AS4/3502 carbon tape (MIL-HDBK-17-2F 4.2.8)'}], symmetric: true}");
+	const Material named = DecodeMaterial(by_name);
+	Check(named.IsLaminate() && named.plies.size() == 2 && named.plies[1].props.e1 == 133.1e9 && named.plies[1].density == 1570.0 && named.youngs_modulus > 0.0 && named.density == 1570.0,
+		"laminate round trip: a hand-written stack naming a preset lamina takes its figures and computes its own");
+	// On a body: the structure's material survives the entity round trip.
+	BodyStructure s;
+	s.material = *qi;
+	s.skin_thickness = 1.118;
+	YAML::Node into;
+	EncodeBodyStructure(s, into);
+	const BodyStructure s_back = DecodeBodyStructure(into, nullptr, nullptr);
+	Check(s_back.material.IsLaminate() && SameMaterial(s_back.material, *qi) && s_back.skin_thickness == 1.118, "laminate round trip: a body's laminate skin survives its structure's round trip");
+}
+
 int main() {
+	CheckLaminateMaterialRoundTrip();
 	try {
 		CheckWingRoundTrip();
 		CheckFuselageRoundTrip();

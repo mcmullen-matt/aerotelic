@@ -44,7 +44,8 @@ namespace AerotelicMaterialLibrary
 			}
 			try
 			{
-				for (const aerotelic::Material& M : aerotelic::ReadMaterialsYaml(TCHAR_TO_UTF8(*Text)))
+				// A laminate of the user's may name a preset lamina for its plies.
+				for (const aerotelic::Material& M : aerotelic::ReadMaterialsYaml(TCHAR_TO_UTF8(*Text), &aerotelic::MaterialPresets()))
 				{
 					S.Custom.Add(M);
 				}

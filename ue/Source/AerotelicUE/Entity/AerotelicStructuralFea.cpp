@@ -10,6 +10,8 @@
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
 
+#include "aerotelic/laminate.hpp"
+
 namespace AerotelicStructuralFea
 {
 	namespace
@@ -24,10 +26,51 @@ namespace AerotelicStructuralFea
 			return TEXT("\"") + S.Replace(TEXT("\\"), TEXT("\\\\")).Replace(TEXT("\""), TEXT("\\\"")) + TEXT("\"");
 		}
 
+		// A material's card: the four figures, and for a LAMINATE its plies
+		// as laid -- the EXPANDED stack (a symmetric laminate's mirror half
+		// written out), outer face first, each ply with its angle, thickness
+		// and the lamina's figures, the transverse shear moduli and
+		// strengths resolved to the lamina's conventions (materials.hpp).
 		FString MaterialJson(const aerotelic::Material& M)
 		{
-			return FString::Printf(TEXT("{\"name\": %s, \"density\": %s, \"youngs_modulus\": %s, \"poisson_ratio\": %s, \"allowable_stress\": %s}"),
-				*JsonString(UTF8_TO_TCHAR(M.name.c_str())), *Num(M.density), *Num(M.youngs_modulus), *Num(M.poisson_ratio), *Num(M.allowable_stress));
+			FString Plies;
+			if (M.IsLaminate())
+			{
+				for (const aerotelic::Ply& P : aerotelic::ExpandedStack(M))
+				{
+					const aerotelic::Lamina& L = P.props;
+					Plies += FString::Printf(TEXT("%s{\"angle\": %s, \"thickness\": %s, \"density\": %s, \"lamina\": %s, \"form\": %s, ")
+						TEXT("\"e1\": %s, \"e2\": %s, \"nu12\": %s, \"g12\": %s, \"g13\": %s, \"g23\": %s, ")
+						TEXT("\"t1\": %s, \"c1\": %s, \"t2\": %s, \"c2\": %s, \"s12\": %s, \"s13\": %s, \"s23\": %s, \"locking_angle\": %s}"),
+						Plies.IsEmpty() ? TEXT("") : TEXT(", "), *Num(P.angle), *Num(P.Thickness()), *Num(P.density), *JsonString(UTF8_TO_TCHAR(P.lamina.c_str())), *JsonString(UTF8_TO_TCHAR(L.form.c_str())),
+						*Num(L.e1), *Num(L.e2), *Num(L.nu12), *Num(L.g12), *Num(L.G13()), *Num(L.G23()),
+						*Num(L.t1), *Num(L.c1), *Num(L.t2), *Num(L.c2), *Num(L.s12), *Num(L.S13()), *Num(L.S23()), *Num(L.locking_angle));
+				}
+				Plies = TEXT(", \"plies\": [") + Plies + TEXT("]");
+			}
+			return FString::Printf(TEXT("{\"name\": %s, \"density\": %s, \"youngs_modulus\": %s, \"poisson_ratio\": %s, \"allowable_stress\": %s%s}"),
+				*JsonString(UTF8_TO_TCHAR(M.name.c_str())), *Num(M.density), *Num(M.youngs_modulus), *Num(M.poisson_ratio), *Num(M.allowable_stress), *Plies);
+		}
+
+		// axes.bin / rib_axes.bin: float64 xyz per face, in the faces' order.
+		bool WriteAxes(const TArray<aerotelic::Vec3>& Axes, const FString& Path)
+		{
+			TArray<uint8> Bytes;
+			Bytes.Reserve(Axes.Num() * 24);
+			for (const aerotelic::Vec3& A : Axes)
+			{
+				const double Xyz[3] = { A.x, A.y, A.z };
+				Bytes.Append(reinterpret_cast<const uint8*>(Xyz), sizeof(Xyz));
+			}
+			return FFileHelper::SaveArrayToFile(Bytes, *Path);
+		}
+
+		// A region's drape: float32 (deviation, shear) per face per ply.
+		bool WriteDrape(const TArray<float>& Drape, const FString& Path)
+		{
+			TArray<uint8> Bytes;
+			Bytes.Append(reinterpret_cast<const uint8*>(Drape.GetData()), Drape.Num() * sizeof(float));
+			return FFileHelper::SaveArrayToFile(Bytes, *Path);
 		}
 
 		// nodes.bin for the script, already in metres: uint32 count, then
@@ -191,20 +234,49 @@ namespace AerotelicStructuralFea
 			}
 		}
 
-		// The regions: a skin card, a rib card, or null for each.
+		// The material axes per face, when the builder gave them.
+		FString AxesFile, RibAxesFile;
+		if (Request.ShellAxes.Num() == Request.ShellFaces.Num() && Request.ShellAxes.Num() > 0)
+		{
+			AxesFile = TEXT("axes.bin");
+			if (!WriteAxes(Request.ShellAxes, FPaths::Combine(Dir, AxesFile)))
+			{
+				OutError = TEXT("could not write the material axes for the solver");
+				Cleanup();
+				return false;
+			}
+		}
+		if (Request.RibAxes.Num() == Request.RibFaces.Num() && Request.RibAxes.Num() > 0)
+		{
+			RibAxesFile = TEXT("rib_axes.bin");
+			if (!WriteAxes(Request.RibAxes, FPaths::Combine(Dir, RibAxesFile)))
+			{
+				OutError = TEXT("could not write the rib material axes for the solver");
+				Cleanup();
+				return false;
+			}
+		}
+
+		// The regions: a skin card, a rib card, or null for each; a laminate
+		// card names its drape file when the builder draped it.
 		FString Regions;
 		for (int32 i = 0; i < Request.Regions.Num(); ++i)
 		{
 			const FRegion& R = Request.Regions[i];
 			FString Skin = TEXT("null"), Rib = TEXT("null");
-			if (R.HasShells())
+			auto Card = [&](const aerotelic::Material& M, double Thickness, const TArray<float>& Drape, const TCHAR* Prefix) -> FString
 			{
-				Skin = FString::Printf(TEXT("{\"material\": %s, \"thickness\": %s}"), *MaterialJson(R.Skin), *Num(R.SkinThickness * L));
-			}
-			if (R.HasRibs())
-			{
-				Rib = FString::Printf(TEXT("{\"material\": %s, \"thickness\": %s}"), *MaterialJson(R.Rib), *Num(R.RibThickness * L));
-			}
+				FString DrapeJson = TEXT("null");
+				if (M.IsLaminate() && Drape.Num() > 0)
+				{
+					const FString File = FString::Printf(TEXT("%s_%d.bin"), Prefix, R.Id);
+					if (WriteDrape(Drape, FPaths::Combine(Dir, File))) DrapeJson = JsonString(File);
+					else UE_LOG(LogTemp, Warning, TEXT("AerotelicStructuralFea: could not write %s; the region is analysed undraped"), *File);
+				}
+				return FString::Printf(TEXT("{\"material\": %s, \"thickness\": %s, \"drape_file\": %s}"), *MaterialJson(M), *Num(Thickness * L), *DrapeJson);
+			};
+			if (R.HasShells()) Skin = Card(R.Skin, R.SkinThickness, R.SkinDrape, TEXT("drape"));
+			if (R.HasRibs()) Rib = Card(R.Rib, R.RibThickness, R.RibDrape, TEXT("rib_drape"));
 			Regions += FString::Printf(TEXT("%s{\"id\": %d, \"label\": %s, \"skin\": %s, \"rib\": %s}"),
 				i ? TEXT(", ") : TEXT(""), R.Id, *JsonString(R.Label), *Skin, *Rib);
 		}
@@ -233,12 +305,13 @@ namespace AerotelicStructuralFea
 				*Num(P.At.x * L), *Num(P.At.y * L), *Num(P.At.z * L), *Num(P.Force.x), *Num(P.Force.y), *Num(P.Force.z));
 		}
 		const FString Job = FString::Printf(
-			TEXT("{\n \"nodes\": \"nodes.bin\",\n \"faces\": %s,\n \"rib_faces\": %s,\n \"regions\": [%s],\n")
+			TEXT("{\n \"nodes\": \"nodes.bin\",\n \"faces\": %s,\n \"rib_faces\": %s,\n \"axes\": %s,\n \"rib_axes\": %s,\n \"regions\": [%s],\n")
 			TEXT(" \"supports\": [%s],\n")
 			TEXT(" \"loads\": {\"load_factor\": %s, \"pressure\": %s, \"pressure_file\": %s, \"point_forces\": [%s]},\n")
 			TEXT(" \"solver\": {\"echo_level\": 0, \"linear_solver\": %s, \"shell_element\": %s, \"modes\": %d},\n")
 			TEXT(" \"outputs\": {\"vtk\": %s, \"result\": \"result.json\"}\n}\n"),
-			FacesFile.IsEmpty() ? TEXT("null") : *JsonString(FacesFile), RibsFile.IsEmpty() ? TEXT("null") : *JsonString(RibsFile), *Regions,
+			FacesFile.IsEmpty() ? TEXT("null") : *JsonString(FacesFile), RibsFile.IsEmpty() ? TEXT("null") : *JsonString(RibsFile),
+			AxesFile.IsEmpty() ? TEXT("null") : *JsonString(AxesFile), RibAxesFile.IsEmpty() ? TEXT("null") : *JsonString(RibAxesFile), *Regions,
 			*SupportsJson,
 			*Num(Request.LoadFactor), *Num(Request.Pressure), PressureFile.IsEmpty() ? TEXT("null") : *JsonString(PressureFile), *PointsJson,
 			*JsonString(Request.LinearSolver.IsEmpty() ? FString(TEXT("auto")) : Request.LinearSolver),
@@ -291,10 +364,24 @@ namespace AerotelicStructuralFea
 					E.Margin = NumberOr(*Obj, TEXT("margin"));
 					E.Allowable = NumberOr(*Obj, TEXT("allowable"));
 					E.Mass = NumberOr(*Obj, TEXT("mass"));
+					if (!(*Obj)->TryGetStringField(TEXT("criterion"), E.Criterion)) E.Criterion = TEXT("von Mises");
+					E.ReserveFactor = NumberOr(*Obj, TEXT("reserve_factor"));
+					E.Plies = static_cast<int32>(NumberOr(*Obj, TEXT("plies")));
+					E.Thickness = NumberOr(*Obj, TEXT("thickness"));
+					E.Stacks = static_cast<int32>(NumberOr(*Obj, TEXT("stacks")));
+					const TSharedPtr<FJsonObject>* DrapeObj = nullptr;
+					if ((*Obj)->TryGetObjectField(TEXT("drape"), DrapeObj) && DrapeObj != nullptr && DrapeObj->IsValid())
+					{
+						E.bDraped = true;
+						E.DrapeMaxShear = NumberOr(*DrapeObj, TEXT("max_shear"));
+						E.DrapeMaxDeviation = NumberOr(*DrapeObj, TEXT("max_deviation"));
+						E.DrapeFacesPastLocking = static_cast<int32>(NumberOr(*DrapeObj, TEXT("faces_past_locking")));
+					}
 					Out.Entries.Add(E);
 				}
 			}
 		}
+		Out.Laminates = Int(TEXT("laminates"));
 		ReadVec3(Result, TEXT("reaction"), Out.Reaction);
 		ReadVec3(Result, TEXT("applied_gravity"), Out.AppliedGravity);
 		ReadVec3(Result, TEXT("applied_pressure"), Out.AppliedPressure);

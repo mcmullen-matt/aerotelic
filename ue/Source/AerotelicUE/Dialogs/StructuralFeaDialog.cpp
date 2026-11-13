@@ -301,6 +301,11 @@ namespace
 		std::vector<aerotelic::Vec3> FullNodes;
 		TArray<AerotelicStructuralFea::FShellFace> FullShellFaces;
 		TArray<AerotelicStructuralFea::FShellFace> FullRibFaces;
+		// The faces' material axes (one per face, 2026-11-12) and the
+		// regions as built, with their laminates' drapes: trimmed with the
+		// faces when some float.
+		TArray<aerotelic::Vec3> FullShellAxes, FullRibAxes;
+		TArray<AerotelicStructuralFea::FRegion> FullRegions;
 		std::vector<aerotelic::Vec3> Nodes;
 		AerotelicStructuralFea::FRequest Request;
 		FModel Model;
@@ -526,6 +531,9 @@ namespace
 			B->FullNodes = std::move(Built2.Nodes);
 			B->FullShellFaces = Built2.ShellFaces;
 			B->FullRibFaces = Built2.RibFaces;
+			B->FullShellAxes = Built2.ShellAxes;
+			B->FullRibAxes = Built2.RibAxes;
+			B->FullRegions = Built2.Regions;
 			Request.Regions = Built2.Regions;
 			B->Problems = Built2.Problems;
 			if (B->FullShellFaces.Num() == 0)
@@ -591,6 +599,9 @@ namespace
 			B.Request.Nodes = &B.Nodes;
 			B.Request.ShellFaces = B.FullShellFaces;
 			B.Request.RibFaces = B.FullRibFaces;
+			B.Request.ShellAxes = B.FullShellAxes;
+			B.Request.RibAxes = B.FullRibAxes;
+			B.Request.Regions = B.FullRegions;
 			B.Dropped.Reset();
 			FString Error;
 			if (!AerotelicFeaPreprocess::Build(B.Request, B.Model, Error))
@@ -608,6 +619,10 @@ namespace
 				TMap<int32, int32> DroppedPerRegion;
 				std::vector<aerotelic::Vec3> Trimmed;
 				TArray<AerotelicStructuralFea::FShellFace> TrimmedFaces, TrimmedRibs;
+				TArray<aerotelic::Vec3> TrimmedAxes, TrimmedRibAxes;
+				// Which of each region's faces survive, in the region's order,
+				// so a laminate's drape (per face per ply) is trimmed with them.
+				TMap<int32, TArray<bool>> KeptSkinFaces, KeptRibFaces;
 				TArray<int32> NewIndex;
 				NewIndex.Init(-1, static_cast<int32>(B.Nodes.size()));
 				auto Index = [&](int32 Old)
@@ -615,19 +630,47 @@ namespace
 					if (NewIndex[Old] < 0) { NewIndex[Old] = static_cast<int32>(Trimmed.size()); Trimmed.push_back(B.Nodes[Old]); }
 					return NewIndex[Old];
 				};
-				for (const AerotelicStructuralFea::FShellFace& F : B.Request.ShellFaces)
+				const bool bAxes = B.Request.ShellAxes.Num() == B.Request.ShellFaces.Num() && B.Request.RibAxes.Num() == B.Request.RibFaces.Num();
+				for (int32 i = 0; i < B.Request.ShellFaces.Num(); ++i)
 				{
-					if (!Kept(F.N[0])) { ++DroppedPerRegion.FindOrAdd(F.Region, 0); continue; }
+					const AerotelicStructuralFea::FShellFace& F = B.Request.ShellFaces[i];
+					const bool bKeep = Kept(F.N[0]);
+					KeptSkinFaces.FindOrAdd(F.Region).Add(bKeep);
+					if (!bKeep) { ++DroppedPerRegion.FindOrAdd(F.Region, 0); continue; }
 					AerotelicStructuralFea::FShellFace G = F;
 					G.N[0] = Index(F.N[0]); G.N[1] = Index(F.N[1]); G.N[2] = Index(F.N[2]);
 					TrimmedFaces.Add(G);
+					if (bAxes) TrimmedAxes.Add(B.Request.ShellAxes[i]);
 				}
-				for (const AerotelicStructuralFea::FShellFace& F : B.Request.RibFaces)
+				for (int32 i = 0; i < B.Request.RibFaces.Num(); ++i)
 				{
-					if (!Kept(F.N[0])) { ++DroppedPerRegion.FindOrAdd(F.Region, 0); continue; }
+					const AerotelicStructuralFea::FShellFace& F = B.Request.RibFaces[i];
+					const bool bKeep = Kept(F.N[0]);
+					KeptRibFaces.FindOrAdd(F.Region).Add(bKeep);
+					if (!bKeep) { ++DroppedPerRegion.FindOrAdd(F.Region, 0); continue; }
 					AerotelicStructuralFea::FShellFace G = F;
 					G.N[0] = Index(F.N[0]); G.N[1] = Index(F.N[1]); G.N[2] = Index(F.N[2]);
 					TrimmedRibs.Add(G);
+					if (bAxes) TrimmedRibAxes.Add(B.Request.RibAxes[i]);
+				}
+				// The drapes of the regions that lost faces.
+				auto TrimDrape = [](TArray<float>& Drape, const TArray<bool>* KeptFaces)
+				{
+					if (Drape.Num() == 0 || KeptFaces == nullptr || KeptFaces->Num() == 0 || Drape.Num() % (2 * KeptFaces->Num()) != 0) return;
+					const int32 PerFace = Drape.Num() / KeptFaces->Num();
+					TArray<float> Out;
+					Out.Reserve(Drape.Num());
+					for (int32 f = 0; f < KeptFaces->Num(); ++f)
+					{
+						if (!(*KeptFaces)[f]) continue;
+						for (int32 k = 0; k < PerFace; ++k) Out.Add(Drape[f * PerFace + k]);
+					}
+					Drape = MoveTemp(Out);
+				};
+				for (AerotelicStructuralFea::FRegion& R : B.Request.Regions)
+				{
+					TrimDrape(R.SkinDrape, KeptSkinFaces.Find(R.Id));
+					TrimDrape(R.RibDrape, KeptRibFaces.Find(R.Id));
 				}
 				for (const auto& Entry : DroppedPerRegion)
 				{
@@ -639,6 +682,8 @@ namespace
 				B.Nodes = std::move(Trimmed);
 				B.Request.ShellFaces = TrimmedFaces;
 				B.Request.RibFaces = TrimmedRibs;
+				B.Request.ShellAxes = TrimmedAxes;
+				B.Request.RibAxes = TrimmedRibAxes;
 				// The regions that lost everything go too, or the solver would
 				// want faces for them.
 				B.Request.Regions.RemoveAll([&M](const AerotelicStructuralFea::FRegion& X) { return M.FloatingRegions.Contains(X.Id); });
@@ -1325,6 +1370,22 @@ namespace
 			FString Peaks;
 			for (const AerotelicStructuralFea::FEntryResult& E : R.Entries)
 			{
+				if (E.IsLaminate())
+				{
+					// A laminate: Tsai-Wu's reserve factor is the margin's measure;
+					// the von Mises figure is a stress magnitude, not a criterion.
+					FString Drape;
+					if (E.bDraped)
+					{
+						Drape = FString::Printf(TEXT("; draped: cloth sheared up to %.1f deg, fibres turned up to %.1f deg%s"), E.DrapeMaxShear, E.DrapeMaxDeviation,
+							E.DrapeFacesPastLocking > 0 ? *FString::Printf(TEXT(", %d face-plies PAST THE LOCKING ANGLE (wrinkles)"), E.DrapeFacesPastLocking) : TEXT(""));
+					}
+					Peaks += FString::Printf(TEXT("%s%s [%s]: laminate of %d plies, %.4g %s, in %d stack(s); %s; von Mises %.4g %s%s"), Peaks.IsEmpty() ? TEXT("") : TEXT("\n"), *E.Label, *E.Kind,
+						E.Plies, E.Thickness / L2, *UnitName(Units.LengthName()), E.Stacks,
+						E.ReserveFactor > 0.0 ? *FString::Printf(TEXT("Tsai-Wu reserve factor %.3g (margin %+.2f)"), E.ReserveFactor, E.Margin) : TEXT("no strengths on a lamina, so no margin"),
+						E.MaxVonMises / S2, *UnitName(Units.StressName()), *Drape);
+					continue;
+				}
 				Peaks += FString::Printf(TEXT("%s%s [%s]: %.4g %s%s"), Peaks.IsEmpty() ? TEXT("") : TEXT("\n"), *E.Label, *E.Kind, E.MaxVonMises / S2, *UnitName(Units.StressName()),
 					E.Allowable > 0.0 ? *FString::Printf(TEXT(", margin %+.2f against %.4g"), E.Margin, E.Allowable / S2) : TEXT(" (no allowable set)"));
 			}
