@@ -2523,6 +2523,204 @@ misses the plane: the full disc; a bay crossing the rim: no hole, one
 note; a bay enclosing the disc: no faces, one note); the UE editor
 build; the Document (271), RealProject (43) and Licence (42) commandlets.
 
+### Mass items, free flight and the follower-load fix (2026-11-13)
+
+Matt did not like the constraints: a clamp at a support plane is a bench
+test, not a flight case -- it reacts the whole net load at the plane and
+invents stresses around it. He asked how modern solvers constrain an
+airframe to represent 1 g trimmed flight, listed eight things the model
+still lacked (mass cards, their attachments, hinge rotations, control
+surface load paths, blunt trailing edges, trailing-edge tagging, aero
+loads onto the FEA, propeller loads), and asked for stages 1 and 2 of the
+plan that followed: stage 1 is masses, attachments and inertia relief
+(this section); stage 2 the lifting configuration in the panel method
+(the next one).
+
+**How the industry does it.** A flying airframe is held by nothing, so a
+loads model is solved free-free the way Nastran's SUPORT with
+PARAM,INREL does it: the net force and moment of every applied load are
+turned into the six rigid-body accelerations the free body would have
+(a0 = F / m, alpha = I_cg^-1 M about the mass centre), the d'Alembert
+load of that motion is added to every mass so the load set is
+self-equilibrated, and the singular stiffness is removed by a
+STATICALLY DETERMINATE support -- six degrees of freedom at one
+reference grid (or a 3-2-1 on three nodes) -- which cannot load the
+structure and whose reactions, zero to round-off, are the check that the
+case is legitimate. Masses that are not structure (payload, engines,
+batteries) go in as concentrated masses (CONM2) on load-distributing
+RBE3 attachments, which hand a mass's force to a set of nodes by virtual
+work without stiffening them. References: Rodden and Johnson, MSC/NASTRAN
+Aeroelastic Analysis User's Guide (1994); Wright and Cooper, Introduction
+to Aircraft Aeroelasticity and Loads (2015); Liao, "A Study of Inertia
+Relief Analysis", AIAA 2011-2002.
+
+**What was built.**
+
+* **Mass items** (`core/include/aerotelic/mass_properties.hpp`
+  `MassItem`; `masses:` at the top level of the project file,
+  `EncodeMassItem` / `DecodeMassItem`, the loader refusing an item hung on
+  a name the file does not have): name, mass and inertia tensor about the
+  item's own centre AS BUILT (the project's units, not scaled with the
+  model -- a 2 kg battery is 2 kg in the replica), position full-scale,
+  and what it hangs on: a scene item by name (an entity, its mirror, a
+  boolean result), one of its bodies by role, and how many of that body's
+  nearest grid nodes carry it. The document keeps them
+  (`UAerotelicDocumentSubsystem::GetMassItems` / `SetMassItems`), New
+  clears them, Open takes the file's, Save writes an item whose entity
+  left the scene hanging on nothing.
+* **The script** (`tools/structural_fea.py`, job keys `masses` and
+  `inertia_relief`): each item is a node of its own carrying a
+  `NodalConcentratedElement3D1N` (NODAL_MASS) and a
+  `LinearMasterSlaveConstraint` over its six degrees of freedom -- the
+  RBE3 relation, the mass node's translation the weighted mean of the
+  attachment nodes' plus the least-squares rotation of the set times the
+  offset, its rotation that rotation (`rbe3_rows`; unit weights; a
+  collinear set is refused, since the rotation about the line would be
+  undetermined). A point moment -I alpha goes on the mass node in free
+  flight. `rigid_body_properties` takes the shells as uniform laminae on
+  each triangle (exact second moments, the same order Kratos integrates
+  its body load to) plus the items; `inertia_relief` gives a0, alpha and
+  the per-node field g - a0 - alpha x (r - cg), set as every node's
+  VOLUME_ACCELERATION. The support in free flight is the structural node
+  nearest the reference (the mass centre unless given), all six degrees
+  of freedom fixed through the same `Support` sub model part; its
+  REACTION and REACTION_MOMENT are reported with `balance_error` and
+  `moment_error`. The modal solve in free flight is free-free, the six
+  rigid modes at ~0 Hz dropped.
+* **The follower-load fix.** While proving the method on a plate the
+  reference node reacted 1e-4 of the load with the direct solver, to first
+  order in the deflection. Kratos's `SurfaceLoadCondition3D3N` is a
+  follower load: when `compute_reactions` re-evaluates the right-hand side
+  after the solve it does so on the displaced nodes (the mesh itself does
+  not move, `move_mesh_flag` false), so the reported reactions were those
+  of the pressure on the deformed shape, and the stresses depended on
+  where the support sat by 7e-5. The pressures are now applied as the
+  consistent NODAL loads of each face (-p n A, a third to each corner,
+  exactly the linear shell's consistent load for a uniform pressure on a
+  flat triangle) through `PointLoadCondition3D1N`s, and every load --
+  gravity, the inertial field, the pressures, the point forces -- is set
+  on the nodes directly rather than through processes. The reactions
+  now balance to 1e-14 of the loads and the stresses are the same from
+  any reference node to 1e-10.
+* **The application.** `FRequest::Masses`, `bFreeFlight`, `Reference`;
+  `FResult` gains the reaction moment, the inertial resultant, the
+  rigid-body accelerations, the load factor at the mass centre, the
+  support node and each item's displacement and force.
+  `AerotelicFeaPreprocess` mirrors it all (the items, the exact inertia
+  tensor, the reference node, a0 and alpha from the same loads) for the
+  pictures. `AerotelicFeaModelBuilder::AttachmentNodes` picks a body's
+  nearest nodes. The Structural dialog gains a MASSES tab (cards for the
+  items -- name, mass, position, the six inertia figures, the body it
+  hangs on from the picker's rows, the node count -- Apply writing them
+  to the document and hanging them on the built model; the picture draws
+  each item sized by its mass with bars to its nodes and the mass centre
+  in green) and a SUPPORT MODE on the Support tab: clamped at the planes,
+  or free flight with the reference at the mass centre or near a typed
+  point. The Result's force-balance line in free flight gives a0, alpha,
+  the load factor felt at the mass centre and the reference node's
+  reaction force and moment. Items are resolved onto the mesh after the
+  floating parts are dropped (the nodes are renumbered then); an item
+  hung on a body not in the model is left out and named.
+
+**What a free-flight case means.** Gravity alone loads nothing: the body
+falls freely and the field is zero. Lift equal to the weight through the
+mass centre is the trimmed 1 g case (a0 = alpha = 0, load factor 1).
+Lift of twice the weight under 1 g is a 2 g pull-up: the body accelerates
+up at g, feels 2 g, and its stresses are exactly those of the trimmed
+2 g case (checked). A moment about the mass centre becomes a pitch
+acceleration, and the stresses are those of the accelerating body --
+physical, but not the trimmed state; the dialog prints the accelerations
+so an untrimmed load set is seen for what it is.
+
+**Verified.** `tools/structural_fea_check.py` (62 checks): the existing
+cases unchanged under the nodal-load pressures (the sphere's spurious
+reaction down from 1e-3 to 1e-9 N); a 50 kg item on the clamped box
+beam's tip (the clamp carries the skin's and the item's weight to 1e-6,
+the tip moves as under a point force of that weight to 0.4%, a collinear
+attachment is refused); the free-flight plate with an offset pod under
+lift equal to its weight (reaction 1e-13 N and 6e-13 N m against 148 N,
+alpha = I_cg^-1 M, the stresses the same from a corner node to 2e-10,
+gravity alone zero, the 2 g equivalence to 0, three free-free modes with
+the first near the free-free beam's 2.63 Hz, planes with free flight and
+no support at all refused). `project_yaml_check` (125): the items' round
+trip and a dangling attachment refused. The Document commandlet: a 5 kg
+item on the thin sphere under 1 g (the clamp carries both weights
+exactly, the pre-processor's mass, centre, inertia and DOF count match
+the script's) and the sphere in free flight under the pressure (the
+reference node reacts nothing, free fall at g, the membrane stress alone
+with no clamp artefact), and the items through save and reopen.
+
+### The lifting configuration: trailing edges tagged, blunt edges closed (2026-11-13)
+
+Stage 2 of the flight-loads plan: every body that has a trailing edge
+sheds a wake in the high order panel method, so the whole aircraft
+lifts, and a blunt section no longer breaks the solve.
+
+* **The tag lives in the parameterisation** (`core/include/aerotelic/
+  solid_model.hpp` `LoftTrailingEdge`, on `NamedLoft`), never guessed from
+  the triangles (DUST's dihedral-angle rule is what a triangle soup
+  forces on you; a loft knows). Two kinds. `VSeam`: an airfoil-sectioned
+  loft whose trailing edge is the seam v = 0 / 1 at every station -- the
+  mechanism a flap body or a symmetric wing will use once they are lofts.
+  `UStation`: a thin annular wall whose two skins are the stations u and
+  mirror_u - u (`LoftSource::mirror_u`) meeting at station u -- both
+  nacelle models tag theirs (the lofted cowl's rim u in [1, 2] and the
+  simple nacelle's u = 1).
+* **`panel::LoftNetworks`** (`wing_panels.hpp`) honours the tag:
+  `BodyNetworks` and the panel dialog go through it, `LoftNetwork` stays
+  the closed non-lifting body. A VSeam loft becomes one doublet network
+  with prescribed sources, OPEN at its ends, its seam closed by the blend
+  below, the wake abutting both seam edges -- what `WingNetworks` does
+  with rows. A UStation loft becomes the wall's MEAN SURFACE as one
+  doublet sheet under the velocity condition, facing outward, with a
+  closed ring wake at its last row: the thin annular wing.
+* **Why those two forms.** The scratch runs (`core/tests/
+  panel_scratch.cpp`) showed the interior-potential formulation failing on
+  its own, with no wake involved: a capped airfoil slab gave Cp of -2260
+  and the thick closed cowl Cp of -900 (pivots 1e-3 against 0.3 for the
+  source body), the cowl's wall being thin against its panels. The same
+  slab as an open tube with its wake solved cleanly (lift 0.31 against
+  lifting line's 0.33), and capped with the wake went singular. So:
+  lifting lofts are left open like a wing's tube, and a thin wall is a
+  sheet.
+* **Blunt trailing edges.** `WingNetworks` closes a blunt section's aero
+  copy with `CloseTrailingEdge` (section_aero.hpp, the XFOIL-style blend:
+  the gap taken out over the last 30% of the chord, quadratically), so the
+  two trailing-edge rows coincide and the wake abuts them; until now the
+  wake's head sat on the base's midpoint, off the surface, and the solve
+  threw. A NACA 0012 opened by a quarter percent each side lifts within
+  0.6% of the closed one. A VSeam loft's seam gets the same blend in v
+  (`BodyPaneling::seam_blend`).
+* **Buried trailing edges.** With the other bodies' placed meshes given
+  (`BodyPaneling::other_bodies`), a tagged edge is probed a little
+  downstream (`TrailingEdgeBuried`, `MeshSdf`): inside another body along
+  a quarter of the edge, or within 5% of the extent along half of it, and
+  the wake is dropped with a note. The P-38's engine nacelle sits ahead of
+  its boom: its ring wake run through the boom took the whole
+  configuration's lift from 0.55 to 0.09; buried, it is a closed body
+  again and the configuration lifts as before. The panel dialog hands
+  every loft the other chosen entities' meshes (mirrors included) and
+  prints the notes in its summary.
+* **The wake lift generalised.** `Solution::lift_from_wake` is now
+  (2 / V S) Σ μ_j (Δl_j x V̂) · L̂ over the wake columns, L̂
+  `Options::lift_direction` (default normal to the stream in the plane of
+  the stream and +z), so a wake shed from any edge counts -- a cowl's
+  ring, a fin's -- not only one running in y; the sign is orientation-
+  independent because the column order and the side μ is measured from
+  flip together in `WakeNetwork`, which now orients a closed ring's wake
+  outward (the end-to-end rule has no direction on a ring).
+
+**Verified.** `wing_panels_check` (38): the blunt wing; the seam loft
+(two networks, wake lift within 6% of lifting line; the pressure lift of
+the open-ended rectangular tube runs 35% high, the known open-tip effect
+of `WingPaneling::collapse_tip_fraction`, loosely checked); the lofted
+nacelle as a sheet with its ring wake, finite, lifting at 5 degrees with
+the wake's and the pressures' lift agreeing to 0.2% (1.044 vs 1.042),
+cancelling at zero incidence. `panel_p38_config_check` (17): the nacelle
+noted as buried, the configuration at 0.55. `panel_method_check` (26),
+`panel_p38_check` (26), `mesh_check` unchanged. Not done: a UE smoke run
+of the panel dialog with a free cowl (the standalone target compiles).
+
 ## The Model menu and the material library (2026-11-07)
 
 **Geometry became Model.** The menu that holds the airfoils, the
@@ -2799,10 +2997,13 @@ back with every field.
   defaults and up to about 12 chordwise panels; at 16 or 20 chordwise the
   tiny leading-edge panels of the last strips still go wrong (Cp of -40
   to -2000 at the very tip), so refine a pointed-tip wing spanwise rather
-  than chordwise. Bodies other than wings are source networks built from
-  their lofts, not from their triangulations (a triangle mesh has no
-  structured grid for the method's splines), so boolean results
-  and propellers cannot be paneled; a loft whose end ring has collapsed to
+  than chordwise. Bodies other than wings are networks built from their
+  lofts, not from their triangulations (a triangle mesh has no structured
+  grid for the method's splines), so boolean results and propellers
+  cannot be paneled; a fuselage or a primitive is a closed source body,
+  and a nacelle is a lifting annular sheet with a ring wake at its tagged
+  rim unless that rim is buried in a body behind it (2026-11-13, *The
+  lifting configuration*); a loft whose end ring has collapsed to
   a line (the P-38 boom's nose and tail: zero half-width, finite height)
   gets no cap there, since a fan on a line is a ring of panels of no area
   whose frames are NaN and took the whole solution with them; bodies that

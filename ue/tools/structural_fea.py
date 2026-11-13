@@ -58,20 +58,80 @@ normal displacement; its mass counts.
 LOADS. An inertial load factor (the model's own mass under ``load_factor``
 x g along -z), a pressure on the wetted faces -- one number, or one per
 face from ``pressure_file`` (the pressure field from the flow solvers
-goes there) -- and a point force at the node nearest a point.
-POSITIVE_FACE_PRESSURE on a condition acts AGAINST the face's normal, so
-with the wetted faces outward a positive pressure presses inwards, as an
+goes there) -- and a point force at the node nearest a point. A positive
+pressure presses inwards (against the outward face normal), as an
 external pressure does; the mean of u.n over the wetted nodes is reported
-so the sign can be seen to be right.
+so the sign can be seen to be right. The pressure is applied as the
+consistent NODAL loads of each face (-p n A, a third to each corner --
+exactly the linear shell's consistent load for a uniform pressure on a
+flat triangle), through point-load conditions, NOT through Kratos's
+surface-load condition (2026-11-13): that condition is a follower load
+evaluated on the displaced nodes, so the reactions Kratos reports after
+the solve were those of the pressure on the deformed shape, off by first
+order in the displacement (a 2 m plate deflecting 47 mm read 1e-4 of the
+load as a spurious reaction, and the stresses depended on where the
+support sat by 7e-5); as nodal loads the reactions balance to round-off.
+Gravity and the inertial loads are a VOLUME_ACCELERATION set on every
+node (the shells integrate it with their mass per unit area, exactly for
+the linear fields used here).
 
-SUPPORT. Every degree of freedom (displacements and rotations) of the
-nodes within ``tolerance`` of the plane ``axis = value`` is fixed; ``value``
-may be "min" or "max" for the mesh's own extreme, and ``bounds`` limits the
-plane to a rectangular patch. The result reports ``support_nodes`` (and
-``support_corner_nodes``, the same number: there are no mid-edge nodes any
-more, the key stays for the application). The reactions there are summed
-and reported against the applied loads: equal and opposite in a converged
-solution.
+MASS ITEMS (2026-11-13). ``masses`` lists concentrated masses that are not
+part of the shell structure -- a battery, a motor, the payload -- each
+with its mass, position and (optionally) its inertia tensor about its own
+centre, and the structural nodes it hangs on. Each becomes a node of its
+own carrying a NodalConcentratedElement (NODAL_MASS), tied to its
+attachment nodes by an RBE3-type constraint: the mass node's displacement
+is the weighted mean of the attachment nodes' displacements plus the
+least-squares rotation of the attachment set times the offset, and its
+rotation that rotation (Nastran's RBE3, translations of the attachment
+nodes only, unit weights; a LinearMasterSlaveConstraint over the six
+slave degrees of freedom). Such a constraint distributes the mass's
+force to the attachment nodes by virtual work -- resultant force AND
+moment preserved -- and adds NO stiffness to the structure, unlike a
+rigid (RBE2) tie. The attachment set must not be collinear (the rotation
+about the line would be undetermined); the application picks the nearest
+few nodes of a body. In the result, ``mass`` is the structure's shells
+plus the items (``mass_structure`` and ``mass_items`` separately).
+
+SUPPORT. Two modes.
+
+  CLAMPED (``supports``): every degree of freedom (displacements and
+  rotations) of the nodes within ``tolerance`` of the plane ``axis =
+  value`` is fixed; ``value`` may be "min" or "max" for the mesh's own
+  extreme, and ``bounds`` limits the plane to a rectangular patch. The
+  result reports ``support_nodes`` (and ``support_corner_nodes``, the same
+  number: there are no mid-edge nodes any more, the key stays for the
+  application). The reactions there are summed and reported against the
+  applied loads: equal and opposite in a converged solution.
+
+  FREE FLIGHT, inertia relief (``inertia_relief``, 2026-11-13): a flying
+  airframe is held by nothing. The model is solved free-free the way
+  Nastran's SUPORT / PARAM,INREL do it: the net force and moment of every
+  applied load (pressures, point forces, gravity on the structure and the
+  mass items) are turned into the six rigid-body accelerations the free
+  body would have, a0 = F / m and alpha = I_cg^-1 M_cg, and the
+  d'Alembert load of that motion, -m (a0 + alpha x (r - cg)) on every
+  node and -I alpha on every mass item, is added so the load set is
+  self-equilibrated. The singular stiffness is then removed by a
+  statically determinate support: all six degrees of freedom of ONE node
+  -- the structural node nearest ``reference`` (the mass centre when
+  null) -- are fixed. Being statically determinate, that support cannot
+  load the structure; its reaction force and moment are minus the
+  residual of the whole load set, zero to round-off when the solve is
+  right, and they are reported (``reaction``, ``reaction_moment``,
+  ``balance_error``, ``moment_error``) as THE check of the case. The
+  displacements are measured from that node (its translation and
+  rotation are the datum); the stresses do not depend on which node it
+  is. The accelerations themselves are reported
+  (``rigid_acceleration``, ``rigid_angular_acceleration``, and
+  ``load_factor_at_cg`` = the vertical inertial load the structure feels
+  at its mass centre, in g): for a trimmed 1 g case they are zero and the
+  load factor is 1; a lift that is not the weight shows up as a vertical
+  acceleration, an aerodynamic moment about the mass centre as a pitch
+  acceleration, and the stresses are those of that accelerating state --
+  physical, but not the trimmed one. Gravity alone in free flight loads
+  nothing (the body falls freely): stress comes from where the air loads
+  act against where the mass sits.
 
 RESULTS. Per node the displacement and rotation; per element the von
 Mises stress (the largest over its top, middle and bottom surfaces),
@@ -187,6 +247,7 @@ RIB_PROPERTIES_OFFSET = 2000     # rib shell properties id = region id + this
 # A laminate region's stacks: properties id = base + 1000 * region id + bin.
 LAMINATE_SKIN_PROPERTIES_BASE = 100000
 LAMINATE_RIB_PROPERTIES_BASE = 200000
+MASS_PROPERTIES_ID = 900000      # the (empty) Properties of the mass items' concentrated elements
 DRAPE_BIN_DEGREES = 2.0          # the deviation and shear of a draped ply are rounded to this
 MAX_STACK_BINS = 400             # distinct stacks per region before the bins are coarsened
 NODES_MAGIC = b"AERONOD1"        # rib_gmsh.py's nodes.bin header, optional here
@@ -283,42 +344,59 @@ def _write_block(w, kind, name, rows, ids, prop_of_row):
     w("End %s\n\n" % kind)
 
 
-def write_mdpa(path, nodes, shells, shell_prop, shell_part, wetted, wetted_prop, support_nodes, point_loads, property_ids, shell_element, point_prop):
+def write_mdpa(path, nodes, shells, shell_prop, shell_part, support_nodes, loaded_nodes, mass_items, property_ids, shell_element, point_prop):
     """The model: a shell element on every skin face and every rib face
     (`shells`, with `shell_prop` the Properties id per shell -- region +
     SHELL_PROPERTIES_OFFSET for a skin, + RIB_PROPERTIES_OFFSET for a rib
     -- and `shell_part` the sub model part each belongs to, Skin_<id> or
-    Rib_<id>), the wetted faces as surface-load conditions whose ids are
-    the faces' order (so a pressure per face maps by id), the point loads'
-    nodes as point-load conditions, and the sub model parts the materials
-    and the parameters refer to (Skin_<id>, Rib_<id>, Support, Wetted,
-    PointLoad_<i>)."""
-    n_cond = len(wetted)
+    Rib_<id>); a node and a NodalConcentratedElement per mass item after
+    them (ids len(nodes) + 1 + k and len(shells) + 1 + k); a point-load
+    condition on every node that carries a nodal load (the pressures'
+    consistent loads and the point forces, `loaded_nodes`) and a point-
+    moment condition on every mass node; and the sub model parts the
+    materials, the parameters and the solve refer to (Skin_<id>, Rib_<id>,
+    Support, Loaded, Masses)."""
+    n_shells = len(shells)
+    n_masses = len(mass_items)
     with open(path, "w", encoding="utf-8") as f:
         w = f.write
         w("Begin ModelPartData\nEnd ModelPartData\n\n")
         for pid in property_ids:
             w("Begin Properties %d\nEnd Properties\n" % int(pid))
+        if n_masses:
+            w("Begin Properties %d\nEnd Properties\n" % MASS_PROPERTIES_ID)
         w("\nBegin Nodes\n")
         for i, p in enumerate(nodes):
             w("%d %.17g %.17g %.17g\n" % (i + 1, p[0], p[1], p[2]))
+        for k, item in enumerate(mass_items):
+            p = item["at"]
+            w("%d %.17g %.17g %.17g\n" % (len(nodes) + 1 + k, p[0], p[1], p[2]))
         w("End Nodes\n\n")
-        _write_block(w, "Elements", shell_element, shells, np.arange(len(shells)), shell_prop)
-        _write_block(w, "Conditions", "SurfaceLoadCondition3D3N", wetted, np.arange(n_cond), wetted_prop)
-        if point_loads:
+        _write_block(w, "Elements", shell_element, shells, np.arange(n_shells), shell_prop)
+        if n_masses:
+            w("Begin Elements NodalConcentratedElement3D1N\n")
+            for k in range(n_masses):
+                w("%d %d %d\n" % (n_shells + 1 + k, MASS_PROPERTIES_ID, len(nodes) + 1 + k))
+            w("End Elements\n\n")
+        if len(loaded_nodes):
             w("Begin Conditions PointLoadCondition3D1N\n")
-            for i, (node, _) in enumerate(point_loads):
-                w("%d %d %d\n" % (n_cond + 1 + i, int(point_prop), int(node) + 1))
+            for i, node in enumerate(loaded_nodes):
+                w("%d %d %d\n" % (1 + i, int(point_prop), int(node) + 1))
+            w("End Conditions\n\n")
+        if n_masses:
+            w("Begin Conditions PointMomentCondition3D1N\n")
+            for k in range(n_masses):
+                w("%d %d %d\n" % (len(loaded_nodes) + 1 + k, int(point_prop), len(nodes) + 1 + k))
             w("End Conditions\n\n")
         parts = np.array(shell_part)
         for name in sorted(set(str(p) for p in parts)):
             sel = np.nonzero(parts == name)[0]
             _write_sub_model_part(w, name, np.unique(shells[sel]), sel)
         _write_sub_model_part(w, "Support", support_nodes)
-        _write_sub_model_part(w, "Wetted", np.unique(wetted) if n_cond else [], (), range(n_cond))
-        # One sub model part per point force: each carries its own POINT_LOAD.
-        for i, (node, _) in enumerate(point_loads):
-            _write_sub_model_part(w, "PointLoad_%d" % i, [node], (), [n_cond + i])
+        _write_sub_model_part(w, "Loaded", loaded_nodes, (), range(len(loaded_nodes)))
+        if n_masses:
+            _write_sub_model_part(w, "Masses", [len(nodes) + k for k in range(n_masses)], [n_shells + k for k in range(n_masses)],
+                                  [len(loaded_nodes) + k for k in range(n_masses)])
 
 
 def write_materials(path, entries):
@@ -334,9 +412,13 @@ def write_materials(path, entries):
         json.dump({"properties": props}, f, indent=1)
 
 
-def _constraint_processes():
+def _constraint_processes(support=True):
     """The clamp at the support, shared by the static and the modal solve:
-    displacements and rotations alike (every node is a shell node)."""
+    displacements and rotations alike (every node is a shell node). In
+    free flight the Support part holds the one reference node; the modal
+    solve of a free-flying model passes support=False (free-free)."""
+    if not support:
+        return []
     return [{
         "python_module": "assign_vector_variable_process",
         "kratos_module": "KratosMultiphysics",
@@ -350,9 +432,10 @@ def _constraint_processes():
     } for variable in ("DISPLACEMENT", "ROTATION")]
 
 
-def modal_parameters(mdpa_base, materials_path, echo_level, count, eigensolver):
+def modal_parameters(mdpa_base, materials_path, echo_level, count, eigensolver, support=True):
     """The eigenvalue analysis of the same model: the clamp, no loads, the
-    lowest `count` modes of K phi = omega^2 M phi."""
+    lowest `count` modes of K phi = omega^2 M phi (free-free, rigid modes
+    included, with support=False)."""
     settings = {"solver_type": eigensolver, "number_of_eigenvalues": int(count), "max_iteration": 1000, "echo_level": echo_level}
     if eigensolver == "eigen_eigensystem":
         settings["tolerance"] = 1e-6
@@ -377,7 +460,7 @@ def modal_parameters(mdpa_base, materials_path, echo_level, count, eigensolver):
             "eigensolver_settings": settings,
         },
         "processes": {
-            "constraints_process_list": _constraint_processes(),
+            "constraints_process_list": _constraint_processes(support),
             "loads_process_list": [],
             "list_other_processes": [],
         },
@@ -385,36 +468,12 @@ def modal_parameters(mdpa_base, materials_path, echo_level, count, eigensolver):
     }
 
 
-def project_parameters(mdpa_base, materials_path, loads, point_loads, echo_level, linear_solver):
+def project_parameters(mdpa_base, materials_path, echo_level, linear_solver):
+    """The static solve. The loads are not processes: every node's
+    VOLUME_ACCELERATION, POINT_LOAD and POINT_MOMENT are set on the model
+    directly (run_kratos), so the gravity, the inertial field, the
+    pressures' nodal loads and the point forces are all one mechanism."""
     load_list = []
-    g = float(loads["load_factor"]) * G0
-    if g != 0.0:
-        load_list.append({
-            "python_module": "assign_vector_by_direction_process",
-            "kratos_module": "KratosMultiphysics",
-            "Parameters": {
-                "model_part_name": "Structure",
-                "variable_name": "VOLUME_ACCELERATION",
-                # A load, not a degree of freedom: the process must not try
-                # to fix it (its default would).
-                "constrained": False,
-                "modulus": abs(g),
-                "direction": [0.0, 0.0, -1.0 if g > 0.0 else 1.0],
-                "interval": [0.0, "End"],
-            },
-        })
-    for i, (_, pf) in enumerate(point_loads):
-        load_list.append({
-            "python_module": "assign_vector_variable_process",
-            "kratos_module": "KratosMultiphysics",
-            "Parameters": {
-                "model_part_name": "Structure.PointLoad_%d" % i,
-                "variable_name": "POINT_LOAD",
-                "constrained": [False, False, False],
-                "value": [float(pf[0]), float(pf[1]), float(pf[2])],
-                "interval": [0.0, "End"],
-            },
-        })
     if linear_solver == "sparse_lu":
         solver = {"solver_type": "sparse_lu"}
     else:
@@ -456,6 +515,9 @@ def project_parameters(mdpa_base, materials_path, loads, point_loads, echo_level
             "rotation_dofs": True,
             "compute_reactions": True,
             "block_builder": True,
+            # A linear analysis: the nodes stay where they are, and the
+            # reactions are evaluated on the undeformed geometry.
+            "move_mesh_flag": False,
             "linear_solver_settings": solver,
         },
         "processes": {
@@ -526,12 +588,43 @@ def _import_laminate_law():
         raise JobError("KratosConstitutiveLawsApplication is installed but does not register LinearElasticOrthotropic2DLaw (a version mismatch with Kratos?).")
 
 
-def run_kratos(job_dir, parameters, n_nodes, face_pressure, echo_level, element_axes=None, needs_laminates=False):
+def _apply_mass_items(structure, n_nodes, n_shells, mass_items, point_moments):
+    """The mass items on the model Kratos has read: NODAL_MASS on each
+    concentrated element, the inertial moment on each mass node, and the
+    RBE3 constraint tying the mass node's six degrees of freedom to its
+    attachment nodes' translations (see the docstring)."""
+    import KratosMultiphysics as KM
+    import KratosMultiphysics.StructuralMechanicsApplication as SMA
+    disp = [KM.DISPLACEMENT_X, KM.DISPLACEMENT_Y, KM.DISPLACEMENT_Z]
+    rot = [KM.ROTATION_X, KM.ROTATION_Y, KM.ROTATION_Z]
+    for k, item in enumerate(mass_items):
+        node = structure.GetNode(n_nodes + 1 + k)
+        elem = structure.GetElement(n_shells + 1 + k)
+        elem.SetValue(KM.NODAL_MASS, float(item["mass"]))
+        node.SetValue(KM.NODAL_MASS, float(item["mass"]))
+        node.SetSolutionStepValue(SMA.POINT_MOMENT, KM.Vector([float(v) for v in point_moments[k]]))
+        T = item["rbe3"]
+        master_dofs = []
+        for m in item["attach"]:
+            mn = structure.GetNode(int(m) + 1)
+            master_dofs += [mn.GetDof(v) for v in disp]
+        slave_dofs = [node.GetDof(v) for v in disp + rot]
+        Tm = KM.Matrix(6, T.shape[1])
+        for i in range(6):
+            for j in range(T.shape[1]):
+                Tm[i, j] = float(T[i, j])
+        structure.CreateNewMasterSlaveConstraint("LinearMasterSlaveConstraint", k + 1, master_dofs, slave_dofs, Tm, KM.Vector(6, 0.0))
+
+
+def run_kratos(job_dir, parameters, n_nodes, n_shells, nodal_load, nodal_acceleration, mass_items, mass_moments, echo_level, element_axes=None, needs_laminates=False):
     """Builds and solves the Kratos model from the files already in
     job_dir. Returns the model part and the analysis for post-processing,
-    with the solve time. `element_axes`: the material axis per element
-    (see _analysis_class), or None."""
+    with the solve time. `nodal_load` (n_nodes, 3) is the POINT_LOAD of
+    every structural node, `nodal_acceleration` (n_nodes + n_masses, 3)
+    the VOLUME_ACCELERATION of every node, mass nodes last; `element_axes`
+    the material axis per element (see _analysis_class), or None."""
     import KratosMultiphysics as KM
+    import KratosMultiphysics.StructuralMechanicsApplication as SMA
     try:
         # Registers sparse_lu (Eigen's SparseLU); amgcl is in the core.
         import KratosMultiphysics.LinearSolversApplication  # noqa: F401
@@ -549,13 +642,22 @@ def run_kratos(job_dir, parameters, n_nodes, face_pressure, echo_level, element_
     analysis = _analysis_class(element_axes)(model, KM.Parameters(json.dumps(parameters)))
     analysis.Initialize()
     structure = model["Structure"]
-    if structure.NumberOfNodes() != n_nodes:
-        raise JobError("Kratos read %d of %d nodes." % (structure.NumberOfNodes(), n_nodes))
-    # The pressure, per wetted face: one mechanism whether it is a constant
-    # or a field, set on the conditions after the model is in.
-    wetted = structure.GetSubModelPart("Wetted")
-    for cond in wetted.Conditions:
-        cond.SetValue(KM.POSITIVE_FACE_PRESSURE, float(face_pressure[cond.Id - 1]))
+    n_all = n_nodes + len(mass_items)
+    if structure.NumberOfNodes() != n_all:
+        raise JobError("Kratos read %d of %d nodes." % (structure.NumberOfNodes(), n_all))
+    # The loads, on the nodes: the acceleration field (gravity and the
+    # inertial field), the nodal loads (the pressures' consistent loads and
+    # the point forces), and the mass items.
+    for node in structure.Nodes:
+        i = node.Id - 1
+        a = nodal_acceleration[i]
+        node.SetSolutionStepValue(KM.VOLUME_ACCELERATION, KM.Vector([float(a[0]), float(a[1]), float(a[2])]))
+        if i < n_nodes:
+            f = nodal_load[i]
+            if f[0] != 0.0 or f[1] != 0.0 or f[2] != 0.0:
+                node.SetSolutionStepValue(SMA.POINT_LOAD, KM.Vector([float(f[0]), float(f[1]), float(f[2])]))
+    if mass_items:
+        _apply_mass_items(structure, n_nodes, n_shells, mass_items, mass_moments)
     log("  Kratos: model read in %.1f s; assembling and solving with %s" % (time.time() - t_solve, parameters["solver_settings"]["linear_solver_settings"]["solver_type"]))
     analysis.RunSolutionLoop()
     analysis.Finalize()
@@ -563,12 +665,15 @@ def run_kratos(job_dir, parameters, n_nodes, face_pressure, echo_level, element_
     return model, structure, analysis, time.time() - t_solve
 
 
-def run_modes(job_dir, mdpa_base, materials_path, n_nodes, echo_level, count, eigensolver, element_axes=None):
+def run_modes(job_dir, mdpa_base, materials_path, n_nodes, n_shells, mass_items, echo_level, count, eigensolver, element_axes=None, support=True):
     """The lowest `count` natural frequencies (Hz, ascending) and mode shapes
     ((count, n_nodes, 3), each scaled to a unit largest displacement) of the
-    model already written to mdpa_base, clamped as the static solve was,
-    its elements' material axes set as the static solve's were. Spectra
-    first; the subspace solver if it fails."""
+    model already written to mdpa_base, clamped as the static solve was
+    (or free-free with support=False: the six rigid modes come out at
+    about 0 Hz and are dropped, `count` flexible modes are returned), its
+    elements' material axes set as the static solve's were, its mass
+    items hung on as in the static solve. Spectra first; the subspace
+    solver if it fails."""
     import KratosMultiphysics as KM
     import KratosMultiphysics.StructuralMechanicsApplication as SMA
     StructuralMechanicsAnalysis = _analysis_class(element_axes)
@@ -576,6 +681,8 @@ def run_modes(job_dir, mdpa_base, materials_path, n_nodes, echo_level, count, ei
     if echo_level == 0:
         KM.Logger.GetDefaultOutput().SetSeverity(KM.Logger.Severity.WARNING)
     solvers = [eigensolver] + [s for s in ("spectra_sym_g_eigs_shift", "eigen_eigensystem") if s != eigensolver]
+    n_rigid = 0 if support else 6
+    n_all = n_nodes + len(mass_items)
     # EIGENVECTOR_MATRIX has a column per degree of freedom of the node IN
     # THE NODE'S OWN ORDER, which Kratos keeps sorted by variable key -- a
     # hash of the name, so ROTATION_X/Y/Z (key 9130...) come BEFORE
@@ -594,8 +701,13 @@ def run_modes(job_dir, mdpa_base, materials_path, n_nodes, echo_level, count, ei
         model = KM.Model()
         try:
             analysis = StructuralMechanicsAnalysis(model, KM.Parameters(json.dumps(
-                modal_parameters(mdpa_base, materials_path, echo_level, count, solver))))
-            analysis.Run()
+                modal_parameters(mdpa_base, materials_path, echo_level, count + n_rigid, solver, support))))
+            analysis.Initialize()
+            if mass_items:
+                structure = model["Structure"]
+                _apply_mass_items(structure, n_nodes, n_shells, mass_items, np.zeros((len(mass_items), 3)))
+            analysis.RunSolutionLoop()
+            analysis.Finalize()
         except Exception as exc:  # a solver that is not built in, or did not converge
             last = "%s: %s" % (solver, exc)
             log("  modes: %s failed (%s)" % (solver, exc))
@@ -603,7 +715,7 @@ def run_modes(job_dir, mdpa_base, materials_path, n_nodes, echo_level, count, ei
         structure = model["Structure"]
         values = structure.ProcessInfo[SMA.EIGENVALUE_VECTOR]
         lam = np.array([float(values[i]) for i in range(len(values))])
-        shapes = np.zeros((len(lam), n_nodes, 3))
+        shapes = np.zeros((len(lam), n_all, 3))
         for node in structure.Nodes:
             m = node.GetValue(SMA.EIGENVECTOR_MATRIX)
             rows = min(m.Size1(), len(lam))
@@ -611,10 +723,18 @@ def run_modes(job_dir, mdpa_base, materials_path, n_nodes, echo_level, count, ei
             for k in range(rows):
                 shapes[k, node.Id - 1] = (m[k, cols[0]], m[k, cols[1]], m[k, cols[2]])
         order = np.argsort(lam)
-        lam, shapes = lam[order], shapes[order]
+        lam, shapes = lam[order], shapes[order][:, :n_nodes]
         # omega^2 to hertz; a tiny negative from round-off on a rigid mode is 0.
         frequencies = np.sqrt(np.maximum(lam, 0.0)) / (2.0 * np.pi)
-        for k in range(len(lam)):
+        if n_rigid:
+            # Free-free: the rigid modes are the ones at (numerically) zero
+            # frequency, well below the first flexible one. Drop them, and
+            # complain if they are not there to drop.
+            flexible = frequencies > 1e-3 * max(float(frequencies.max()), 1e-300)
+            if int((~flexible).sum()) != n_rigid:
+                log("  modes: free-free solve found %d rigid mode(s) at ~0 Hz, not %d; frequencies %s" % (int((~flexible).sum()), n_rigid, np.round(frequencies, 4)))
+            frequencies, shapes = frequencies[flexible][:count], shapes[flexible][:count]
+        for k in range(len(frequencies)):
             peak = float(np.linalg.norm(shapes[k], axis=1).max())
             if peak > 0.0:
                 shapes[k] /= peak
@@ -622,24 +742,34 @@ def run_modes(job_dir, mdpa_base, materials_path, n_nodes, echo_level, count, ei
     raise JobError("the natural frequencies could not be computed: %s" % last)
 
 
-def read_nodal(structure, n_nodes):
+def read_nodal(structure, n_nodes, n_masses=0):
+    """Displacements and rotations of the structural nodes, the reaction
+    force and moment of every node of the Support part, and the
+    displacements of the mass nodes."""
     import KratosMultiphysics as KM
     displacement = np.zeros((n_nodes, 3))
     rotation = np.zeros((n_nodes, 3))
+    mass_displacement = np.zeros((n_masses, 3))
     for node in structure.Nodes:
         i = node.Id - 1
         u = node.GetSolutionStepValue(KM.DISPLACEMENT)
-        displacement[i] = (u[0], u[1], u[2])
-        r = node.GetSolutionStepValue(KM.ROTATION)
-        rotation[i] = (r[0], r[1], r[2])
+        if i < n_nodes:
+            displacement[i] = (u[0], u[1], u[2])
+            r = node.GetSolutionStepValue(KM.ROTATION)
+            rotation[i] = (r[0], r[1], r[2])
+        else:
+            mass_displacement[i - n_nodes] = (u[0], u[1], u[2])
     # The reactions at the support. Read from the Support sub model part
     # rather than by IsFixed(): the constraint process frees the degrees
     # of freedom again once the step is over, so nothing is fixed by now.
     reaction = np.zeros((n_nodes, 3))
+    reaction_moment = np.zeros((n_nodes, 3))
     for node in structure.GetSubModelPart("Support").Nodes:
         r = node.GetSolutionStepValue(KM.REACTION)
         reaction[node.Id - 1] = (r[0], r[1], r[2])
-    return displacement, rotation, reaction
+        m = node.GetSolutionStepValue(KM.REACTION_MOMENT)
+        reaction_moment[node.Id - 1] = (m[0], m[1], m[2])
+    return displacement, rotation, reaction, reaction_moment, mass_displacement
 
 
 def element_von_mises(structure, n_elements):
@@ -654,6 +784,8 @@ def element_von_mises(structure, n_elements):
     shell_vars = [v for v in shell_vars if v is not None]
     vm_var = getattr(SMA, "VON_MISES_STRESS", None) or KM.VON_MISES_STRESS
     for elem in structure.Elements:
+        if elem.Id > n_elements:
+            continue   # a mass item's concentrated element: no stress
         best = 0.0
         for var in shell_vars:
             values = _integration_values(elem, var, process_info)
@@ -922,6 +1054,140 @@ def _regions_from_job(job):
             for r in job.get("regions", [])]
 
 
+# ---------------------------------------------------------------------------
+# Mass items, rigid-body mass properties, inertia relief
+# ---------------------------------------------------------------------------
+
+def _cross_matrix(d):
+    """[d]x, the matrix of d x (.)"""
+    return np.array([[0.0, -d[2], d[1]], [d[2], 0.0, -d[0]], [-d[1], d[0], 0.0]])
+
+
+def rbe3_rows(masters, reference, weights=None):
+    """The RBE3 relation [u_ref; theta_ref] = T [u_1; ...; u_n] over the
+    translations u_i of the attachment nodes at `masters` (n, 3), for a
+    reference node at `reference`: u_ref = u_bar + theta_bar x (ref -
+    r_bar), theta_ref = theta_bar, with u_bar the weighted mean of the
+    u_i, r_bar the weighted centroid and theta_bar = J^-1 sum w_i d_i x
+    u_i the least-squares rotation of the set (d_i = r_i - r_bar, J =
+    sum w_i (|d_i|^2 I - d_i d_i^T), unit weights unless given). Returns
+    (T (6, 3n), r_bar), or (None, None) when the set is collinear (J
+    singular: the rotation about the line is undetermined)."""
+    masters = np.asarray(masters, dtype=np.float64)
+    n = len(masters)
+    w = np.ones(n) if weights is None else np.asarray(weights, dtype=np.float64)
+    W = float(w.sum())
+    rbar = (w[:, None] * masters).sum(axis=0) / W
+    d = masters - rbar
+    J = np.zeros((3, 3))
+    for i in range(n):
+        J += w[i] * (np.dot(d[i], d[i]) * np.eye(3) - np.outer(d[i], d[i]))
+    sv = np.linalg.svd(J, compute_uv=False)
+    if sv[0] <= 0.0 or sv[-1] <= 1e-9 * sv[0]:
+        return None, None
+    Jinv = np.linalg.inv(J)
+    T_theta = np.zeros((3, 3 * n))
+    T_u = np.zeros((3, 3 * n))
+    for i in range(n):
+        T_theta[:, 3 * i:3 * i + 3] = Jinv @ (w[i] * _cross_matrix(d[i]))
+        T_u[:, 3 * i:3 * i + 3] = (w[i] / W) * np.eye(3)
+    T_u -= _cross_matrix(np.asarray(reference, dtype=np.float64) - rbar) @ T_theta
+    return np.vstack([T_u, T_theta]), rbar
+
+
+def shell_mass_moments(nodes, tris, rho_t):
+    """(mass, first moment, second-moment matrix S = integral r r^T dm
+    about the origin) of shells of areal density `rho_t` per face, exact
+    for a uniform lamina on each flat triangle (what Kratos's shells
+    integrate their body load with, to the same order)."""
+    if len(tris) == 0:
+        return 0.0, np.zeros(3), np.zeros((3, 3))
+    A, B, C = nodes[tris[:, 0]], nodes[tris[:, 1]], nodes[tris[:, 2]]
+    area = 0.5 * np.linalg.norm(np.cross(B - A, C - A), axis=1)
+    m = np.asarray(rho_t, dtype=np.float64) * area
+    cen = (A + B + C) / 3.0
+    first = (m[:, None] * cen).sum(axis=0)
+    S = np.zeros((3, 3))
+    for P in (A, B, C):
+        S += np.einsum("i,ij,ik->jk", m / 12.0, P, P)
+    S += np.einsum("i,ij,ik->jk", 9.0 * m / 12.0, cen, cen)
+    return float(m.sum()), first, S
+
+
+def _inertia_about(S, mass, first, point):
+    """The inertia tensor about `point` from the second-moment matrix
+    about the origin: shift S, then I = tr(S') 1 - S'."""
+    a = np.asarray(point, dtype=np.float64)
+    Sp = S - np.outer(first, a) - np.outer(a, first) + mass * np.outer(a, a)
+    return np.trace(Sp) * np.eye(3) - Sp
+
+
+def _mass_items_from_job(job, nodes):
+    """The mass items: [{"name", "mass" kg, "at" (3,), "inertia" (3, 3)
+    about the item's own centre, "attach" the attachment node indices,
+    "rbe3" the constraint rows}]; validated."""
+    items = []
+    for k, m in enumerate(job.get("masses") or []):
+        name = str(m.get("name") or "mass %d" % (k + 1))
+        mass = float(m.get("mass", 0.0))
+        if not mass > 0.0:
+            raise JobError("mass item '%s' has no mass." % name)
+        at = np.array(m["at"], dtype=np.float64).reshape(3)
+        inertia = np.zeros((3, 3))
+        if m.get("inertia") is not None:
+            ixx, iyy, izz, ixy, ixz, iyz = (float(v) for v in m["inertia"])
+            inertia = np.array([[ixx, ixy, ixz], [ixy, iyy, iyz], [ixz, iyz, izz]])
+            if np.linalg.eigvalsh(inertia).min() < -1e-12 * max(1.0, abs(inertia).max()):
+                raise JobError("mass item '%s' has an inertia tensor that is not positive semi-definite." % name)
+        attach = np.array(sorted(set(int(v) for v in (m.get("attach") or []))), dtype=np.int64)
+        if len(attach) < 3:
+            raise JobError("mass item '%s' hangs on %d node(s); an attachment needs at least three, not in a line." % (name, len(attach)))
+        if attach.min() < 0 or attach.max() >= len(nodes):
+            raise JobError("mass item '%s' hangs on nodes the mesh does not have." % name)
+        T, rbar = rbe3_rows(nodes[attach], at)
+        if T is None:
+            raise JobError("mass item '%s' hangs on %d nodes that lie on a line: the attachment cannot carry a moment about it. Attach it to more nodes." % (name, len(attach)))
+        items.append({"name": name, "mass": mass, "at": at, "inertia": inertia, "attach": attach, "rbe3": T, "attach_centre": rbar})
+    return items
+
+
+def rigid_body_properties(nodes, faces, skin_density_t, rib_faces, rib_density_t, mass_items):
+    """Total mass, mass centre and inertia tensor about it of the shells
+    (exact laminae) and the mass items (points with their own tensors)."""
+    m_s, f_s, S_s = shell_mass_moments(nodes, faces, skin_density_t)
+    m_r, f_r, S_r = shell_mass_moments(nodes, rib_faces, rib_density_t)
+    mass = m_s + m_r
+    first = f_s + f_r
+    S = S_s + S_r
+    own = np.zeros((3, 3))
+    for item in mass_items:
+        mass += item["mass"]
+        first += item["mass"] * item["at"]
+        S += item["mass"] * np.outer(item["at"], item["at"])
+        own += item["inertia"]
+    if not mass > 0.0:
+        raise JobError("the model has no mass.")
+    cg = first / mass
+    inertia = _inertia_about(S, mass, first, cg) + own
+    return mass, cg, inertia
+
+
+def inertia_relief(nodes, nodal_load, mass_items, mass, cg, inertia, gravity):
+    """The rigid-body accelerations of the free body under the nodal loads
+    and gravity: a0 = F / m at the mass centre, alpha = I_cg^-1 M_cg.
+    Returns (a0, alpha, the acceleration field g - a0 - alpha x (r - cg) at
+    every structural node then every mass node, the moment -I_item alpha
+    on each item)."""
+    force = nodal_load.sum(axis=0) + mass * gravity
+    moment = np.cross(nodes - cg, nodal_load).sum(axis=0)
+    a0 = force / mass
+    alpha = np.linalg.solve(inertia, moment) if np.linalg.cond(inertia) < 1e12 else np.linalg.lstsq(inertia, moment, rcond=None)[0]
+    points = np.concatenate([nodes, np.array([it["at"] for it in mass_items]).reshape(-1, 3)]) if mass_items else nodes
+    field = gravity[None, :] - a0[None, :] - np.cross(alpha[None, :], points - cg)
+    moments = np.array([-(it["inertia"] @ alpha) for it in mass_items]).reshape(-1, 3)
+    return a0, alpha, field, moments
+
+
 def run_job(job_dir):
     """job.json:
 
@@ -961,7 +1227,19 @@ def run_job(job_dir):
                       diagonal), "bounds": null | [u0, u1, w0, w1]}], every
                       plane clamping its nodes -- within the rectangle
                       along the plane's in-plane axes ((axis + 1) % 3,
-                      (axis + 2) % 3) when bounds are given
+                      (axis + 2) % 3) when bounds are given. Empty or
+                      absent in free flight.
+        inertia_relief  null (clamped), or {"reference": null | [x,y,z]}:
+                      FREE FLIGHT (see SUPPORT above) -- the loads are
+                      balanced by the rigid-body inertial field and the
+                      structural node nearest the reference (the mass
+                      centre when null) is the statically determinate
+                      support whose reactions are the check.
+        masses        [{"name", "mass": kg, "at": [x,y,z], "inertia": null |
+                      [Ixx, Iyy, Izz, Ixy, Ixz, Iyz] (kg m^2 about the
+                      item's own centre, the products with the sign of
+                      integral x y dm), "attach": [node indices, >= 3, not
+                      collinear]}] -- the MASS ITEMS (see above)
         loads         {"load_factor": g's along -z, "pressure": pascals on
                       every wetted face, "pressure_file": float64 per
                       wetted face overriding it (in faces.bin order),
@@ -979,25 +1257,37 @@ def run_job(job_dir):
                       "eigen_eigensystem"; either falls back to the other)}
         outputs       {"vtk": the solution file, "result": the statistics}
 
-    The result reports the model's size ("nodes", "elements", "dofs" --
-    six per node --, "shells" all the shells, "rib_shells" those of them
-    that are ribs, "wetted_faces", "support_nodes" and
-    "support_corner_nodes", the same number), "mass", the peak
+    The result reports the model's size ("nodes" the structural nodes,
+    "elements" shells plus mass elements, "dofs" -- six per node --,
+    "shells" all the shells, "rib_shells" those of them that are ribs,
+    "wetted_faces", "support_nodes" and "support_corner_nodes", the same
+    number), the mass ("mass" = "mass_structure" + "mass_items",
+    "mass_centre", "inertia_cg" the 3 x 3 tensor about it), the peak
     displacement and where ("max_displacement", "max_displacement_at"),
     the peak von Mises and whose ("max_von_mises",
     "max_von_mises_material"), "per_material" entries of kind "skin" or
-    "rib" with their peak, margin, allowable and mass, the force balance
-    -- "reaction", "applied_gravity", "applied_pressure", "applied_point",
-    "balance_error" = |sum of reactions + applied loads| over the loads'
-    magnitude, "balanced" when it is within BALANCE_TOLERANCE -- a
-    "warnings" list, the solver used ("linear_solver"),
-    "mean_normal_displacement", and the times ("seconds",
-    "seconds_solve", "seconds_modes"). An unbalanced solve is a solver
-    that did not converge, and its fields are not to be trusted. With
-    modes > 0 it also reports "natural_frequencies" (Hz, lowest first;
-    empty with a warning if the eigensolve failed) and "eigensolver", and
-    the VTK carries the mode shapes as "mode_1" ... point vectors. A
-    failure writes {"ok": false, "error": ...} and exits 1.
+    "rib" with their peak, margin, allowable and mass, "mass_items" as a
+    list ("items": [{"name", "mass", "at", "node", "attach_nodes",
+    "displacement", "force" the force it puts on the structure}]), the
+    force balance -- "reaction", "reaction_moment" (about the support
+    node, free flight), "applied_gravity", "applied_pressure",
+    "applied_point", "applied_inertial" (the d'Alembert resultant, zero
+    when clamped), "balance_error" = |sum of reactions + applied loads|
+    over the loads' magnitude, "moment_error" likewise for the moment
+    over the loads times the mesh diagonal (free flight), "balanced" when
+    within BALANCE_TOLERANCE --, the support ("support_mode" "clamped" |
+    "free flight", "support_node" and "support_at" in free flight), the
+    rigid-body motion ("rigid_acceleration" m/s^2, "rigid_angular_
+    acceleration" rad/s^2, "load_factor_at_cg" g; zero, zero and the
+    load factor when clamped), a "warnings" list, the solver used
+    ("linear_solver"), "mean_normal_displacement", and the times
+    ("seconds", "seconds_solve", "seconds_modes"). An unbalanced solve is
+    a solver that did not converge, and its fields are not to be trusted.
+    With modes > 0 it also reports "natural_frequencies" (Hz, lowest
+    first; empty with a warning if the eigensolve failed; free-free with
+    the rigid modes dropped in free flight) and "eigensolver", and the
+    VTK carries the mode shapes as "mode_1" ... point vectors. A failure
+    writes {"ok": false, "error": ...} and exits 1.
     """
     t_start = time.time()
     with open(os.path.join(job_dir, "job.json"), "r", encoding="utf-8-sig") as f:
@@ -1010,8 +1300,12 @@ def run_job(job_dir):
     loads.update(job.get("loads", {}))
     point_forces = list(loads.get("point_forces") or [])
     supports = list(job.get("supports") or [])
-    if not supports:
-        raise JobError("no support: give at least one plane whose nodes are fixed.")
+    relief = job.get("inertia_relief")
+    free_flight = relief is not None
+    if not supports and not free_flight:
+        raise JobError("no support: give at least one plane whose nodes are fixed, or ask for free flight (inertia relief).")
+    if supports and free_flight:
+        raise JobError("free flight takes no support planes: the model is held by its own inertia and one reference node.")
     regions = _regions_from_job(job)
 
     # The mesh: the nodes, the skin faces (wetted) and the rib faces.
@@ -1039,7 +1333,13 @@ def run_job(job_dir):
     log("  mesh read: %d nodes, %d skin faces, %d rib faces; regions %s"
         % (len(nodes), len(faces), len(rib_faces), sorted(set(present_faces) | set(present_ribs))))
 
-    support_nodes, support_planes = _support_nodes(nodes, supports)
+    lo, hi = nodes.min(axis=0), nodes.max(axis=0)
+    diagonal = float(np.linalg.norm(hi - lo))
+    if free_flight:
+        support_nodes, support_planes = np.zeros(0, dtype=np.int64), []
+    else:
+        support_nodes, support_planes = _support_nodes(nodes, supports)
+    mass_items = _mass_items_from_job(job, nodes)
 
     # The pressure, per wetted face.
     if loads.get("pressure_file"):
@@ -1058,6 +1358,17 @@ def run_job(job_dir):
         force = np.array(pf["force"], dtype=np.float64)
         point_loads.append((node, force))
         applied_point += force
+
+    # The nodal loads: the pressures' consistent loads (-p n A, a third to
+    # each corner of the face) and the point forces.
+    nodal_load = np.zeros((len(nodes), 3))
+    if len(faces):
+        face_force = -(face_pressure[:, None] * n_area)
+        for k in range(3):
+            np.add.at(nodal_load, faces[:, k], face_force / 3.0)
+    for node, force in point_loads:
+        nodal_load[node] += force
+    loaded_nodes = np.nonzero(np.any(nodal_load != 0.0, axis=1))[0]
 
     # The regions against the mesh: every id present has one, and each
     # region is what its faces need.
@@ -1094,9 +1405,10 @@ def run_job(job_dir):
     materials_path = os.path.join(job_dir, "materials.json")
     result = {
         "ok": True, "wetted_faces": int(len(faces)),
-        "support_nodes": int(len(support_nodes)), "support_corner_nodes": int(len(support_nodes)), "support_planes": support_planes,
+        "support_planes": support_planes,
         "point_nodes": [int(n) for n, _ in point_loads],
         "applied_point": [float(v) for v in applied_point],
+        "support_mode": "free flight" if free_flight else "clamped",
     }
 
     # The materials: a plane-stress law per isotropic skin and rib, a
@@ -1152,11 +1464,37 @@ def run_job(job_dir):
                                          {"DENSITY": float(m["density"]), "YOUNG_MODULUS": float(m["youngs_modulus"]),
                                           "POISSON_RATIO": float(m["poisson_ratio"]), "THICKNESS": t}))
                 property_ids.append(rid + (RIB_PROPERTIES_OFFSET if is_rib else SHELL_PROPERTIES_OFFSET))
-    mass = float((skin_density_t * face_area).sum()) + float((rib_density_t * rib_area).sum())
+    mass_structure = float((skin_density_t * face_area).sum()) + float((rib_density_t * rib_area).sum())
+    mass_of_items = float(sum(it["mass"] for it in mass_items))
+    mass, cg, inertia_cg = rigid_body_properties(nodes, faces, skin_density_t, rib_faces, rib_density_t, mass_items)
+    if abs(mass - mass_structure - mass_of_items) > 1e-9 * mass:
+        raise JobError("the mass did not add up (%.9g against %.9g + %.9g)." % (mass, mass_structure, mass_of_items))
+
+    # Gravity, and in free flight the inertial field that balances the
+    # whole load set; the support in free flight is the structural node
+    # nearest the reference point.
+    g = float(loads["load_factor"]) * G0
+    gravity = np.array([0.0, 0.0, -g])
+    if free_flight:
+        reference = cg if (relief.get("reference") is None) else np.array(relief["reference"], dtype=np.float64).reshape(3)
+        support_node = int(np.argmin(np.linalg.norm(nodes - reference, axis=1)))
+        support_nodes = np.array([support_node], dtype=np.int64)
+        a0, alpha, nodal_acceleration, mass_moments = inertia_relief(nodes, nodal_load, mass_items, mass, cg, inertia_cg, gravity)
+        log("  free flight: mass %.6g kg (%.6g of it in %d item(s)), mass centre (%.4g, %.4g, %.4g); the loads give a0 (%.4g, %.4g, %.4g) m/s^2, "
+            "alpha (%.4g, %.4g, %.4g) rad/s^2; support node %d at (%.4g, %.4g, %.4g)"
+            % (mass, mass_of_items, len(mass_items), cg[0], cg[1], cg[2], a0[0], a0[1], a0[2], alpha[0], alpha[1], alpha[2],
+               support_node, nodes[support_node][0], nodes[support_node][1], nodes[support_node][2]))
+    else:
+        support_node = -1
+        a0, alpha = np.zeros(3), np.zeros(3)
+        nodal_acceleration = np.tile(gravity, (len(nodes) + len(mass_items), 1))
+        mass_moments = np.zeros((len(mass_items), 3))
+    result.update({"support_nodes": int(len(support_nodes)), "support_corner_nodes": int(len(support_nodes)),
+                   "support_node": support_node, "support_at": [float(v) for v in nodes[support_node]] if free_flight else None})
 
     # The elements: the skin's shells on every wetted face, then the ribs'
-    # (unloaded) on the rib faces; a surface-load condition on every wetted
-    # face, its id the face's order.
+    # (unloaded) on the rib faces; a point-load condition on every node
+    # that carries a nodal load.
     n_skin_shells = len(faces)
     shells = np.concatenate([faces, rib_faces]) if len(rib_faces) else faces
     shell_region = np.concatenate([region_of_face, rib_region]) if len(rib_faces) else region_of_face
@@ -1188,28 +1526,29 @@ def run_job(job_dir):
                 out[sel] = _project_axes(nodes, tris[sel], None if g is None else g[sel], fallback)
             pieces.append(out)
         element_axes = np.concatenate(pieces) if len(rib_faces) else pieces[0]
-    # Six degrees of freedom on every node. Known before the solve, so
-    # "auto" can choose its solver by them.
-    dofs = 6 * len(nodes)
+    # Six degrees of freedom on every node (the mass items' too). Known
+    # before the solve, so "auto" can choose its solver by them.
+    dofs = 6 * (len(nodes) + len(mass_items))
     linear_solver = resolve_linear_solver(solver_opts["linear_solver"], dofs)
     result["linear_solver"] = linear_solver
     loose = len(nodes) - len(np.unique(shells))
     if loose:
         log("  note: %d node(s) belong to no shell (they stay put)" % loose)
-    # A condition needs some Properties that exist: its face's skin's (a
-    # laminate skin's are the binned stacks', not region + offset).
-    wetted_prop = skin_prop
+    # A condition needs some Properties that exist: the first material's.
     point_prop = property_ids[0]
+    if mass_items:
+        material_entries.append(("Masses", MASS_PROPERTIES_ID, "LinearElasticPlaneStress2DLaw", {}))
     t0 = time.time()
-    log("  writing the Kratos model: %d nodes, %d shells (%d of them ribs), %d dofs" % (len(nodes), len(shells), len(rib_faces), dofs))
-    write_mdpa(mdpa_base + ".mdpa", nodes, shells, shell_prop, shell_part, faces, wetted_prop, support_nodes, point_loads,
+    log("  writing the Kratos model: %d nodes, %d shells (%d of them ribs), %d mass item(s), %d dofs" % (len(nodes), len(shells), len(rib_faces), len(mass_items), dofs))
+    write_mdpa(mdpa_base + ".mdpa", nodes, shells, shell_prop, shell_part, support_nodes, loaded_nodes, mass_items,
                property_ids, solver_opts["shell_element"], point_prop)
     write_materials(materials_path, material_entries)
     seconds_mdpa = time.time() - t0
-    parameters = project_parameters(mdpa_base, materials_path, loads, point_loads, echo_level, linear_solver)
+    parameters = project_parameters(mdpa_base, materials_path, echo_level, linear_solver)
     log("  solving %d dofs with %s (%d shells%s)" % (dofs, linear_solver, len(shells), ", %d laminate region(s)" % len(laminates) if laminates else ""))
-    model, structure, analysis, seconds_solve = run_kratos(job_dir, parameters, len(nodes), face_pressure, echo_level, element_axes, needs_laminates)
-    displacement, rotation, reaction = read_nodal(structure, len(nodes))
+    model, structure, analysis, seconds_solve = run_kratos(job_dir, parameters, len(nodes), len(shells), nodal_load, nodal_acceleration, mass_items, mass_moments,
+                                                           echo_level, element_axes, needs_laminates)
+    displacement, rotation, reaction, reaction_moment, mass_displacement = read_nodal(structure, len(nodes), len(mass_items))
     n_elements = len(shells)
     log("  post-processing: stresses, margins, the force balance")
     von_mises_elem = element_von_mises(structure, n_elements)
@@ -1270,29 +1609,46 @@ def run_job(job_dir):
                                                                           "faces_past_locking": stats["faces_past_locking"], "bin_degrees": stats["bin_degrees"]}})
             per_material.append(entry)
     i_vm = int(np.argmax(von_mises_elem)) if n_elements else 0
-    result.update({"elements": int(n_elements), "shells": int(len(shells)), "rib_shells": int(len(rib_faces)), "seconds_mdpa": seconds_mdpa})
+    result.update({"elements": int(n_elements + len(mass_items)), "shells": int(len(shells)), "rib_shells": int(len(rib_faces)), "seconds_mdpa": seconds_mdpa})
 
-    # The force balance. Gravity on the mass; the pressure's resultant as
-    # -p n A over the outward faces; the point force as given.
-    g = float(loads["load_factor"]) * G0
-    applied_gravity = np.array([0.0, 0.0, -mass * g])
+    # The force balance. Gravity on the mass (the items' too); the
+    # pressure's resultant as -p n A over the outward faces; the point
+    # forces as given; in free flight the inertial field's resultant,
+    # -m a0, which cancels the rest by construction.
+    applied_gravity = mass * gravity
     applied_pressure = -(face_pressure[:, None] * n_area).sum(axis=0) if len(faces) else np.zeros(3)
+    applied_inertial = -mass * a0
     reaction_sum = reaction.sum(axis=0)
+    reaction_moment_sum = reaction_moment.sum(axis=0)
     # Equilibrium: the reactions and the applied loads sum to zero. The
     # error is measured against the loads' magnitude -- the gross figure,
     # so a pressure whose resultant cancels over a closed surface still
     # sets a scale, and nothing divides by zero.
-    applied_total = applied_gravity + applied_pressure + applied_point
+    applied_total = applied_gravity + applied_pressure + applied_point + applied_inertial
     load_scale = max(float(np.linalg.norm(applied_total)),
                      float(np.linalg.norm(applied_gravity)) + float((np.abs(face_pressure) * face_area).sum()) + sum(float(np.linalg.norm(f)) for _, f in point_loads))
     imbalance = float(np.linalg.norm(reaction_sum + applied_total))
     balance_error = imbalance / load_scale if load_scale > 0.0 else 0.0
-    balanced = balance_error <= BALANCE_TOLERANCE
+    moment_error = 0.0
+    if free_flight:
+        # The whole load set (the inertial field included) has no resultant
+        # and no moment, so the support's moment is the residual outright.
+        moment_error = float(np.linalg.norm(reaction_moment_sum)) / (load_scale * diagonal) if load_scale > 0.0 and diagonal > 0.0 else 0.0
+    balanced = balance_error <= BALANCE_TOLERANCE and moment_error <= BALANCE_TOLERANCE
     warnings = []
     if not balanced:
-        warnings.append("the reactions miss the applied loads by %.1f%% (|R + F| = %.4g N against loads of %.4g N): the linear solver (%s) did not converge, so the displacements and stresses are not to be trusted. Use the direct solver (sparse_lu)."
-                        % (100.0 * balance_error, imbalance, load_scale, linear_solver))
+        warnings.append("the reactions miss the applied loads by %.1f%% (|R + F| = %.4g N against loads of %.4g N%s): the linear solver (%s) did not converge, so the displacements and stresses are not to be trusted. Use the direct solver (sparse_lu)."
+                        % (100.0 * balance_error, imbalance, load_scale, (", moment residual %.1f%%" % (100.0 * moment_error)) if free_flight else "", linear_solver))
         log("  WARNING: " + warnings[-1])
+    # What each mass item puts on the structure: its own inertial and
+    # gravity load, m times the field at its node, as a check and for the
+    # application's picture.
+    item_results = []
+    for k, it in enumerate(mass_items):
+        field = nodal_acceleration[len(nodes) + k]
+        item_results.append({"name": it["name"], "mass": it["mass"], "at": [float(v) for v in it["at"]], "node": int(len(nodes) + k),
+                             "attach_nodes": int(len(it["attach"])), "attach_centre": [float(v) for v in it["attach_centre"]],
+                             "displacement": [float(v) for v in mass_displacement[k]], "force": [float(v) for v in it["mass"] * field]})
 
     # Inward or outward: u.n averaged over the wetted nodes, with the node
     # normal the area-weighted mean of its faces'.
@@ -1314,8 +1670,9 @@ def run_job(job_dir):
         t0 = time.time()
         log("  natural frequencies: the lowest %d modes of the same model" % n_modes)
         try:
-            frequencies, mode_shapes, eigensolver_used = run_modes(job_dir, mdpa_base, materials_path, len(nodes), echo_level,
-                                                                  n_modes, str(solver_opts.get("eigensolver") or "spectra_sym_g_eigs_shift"), element_axes)
+            frequencies, mode_shapes, eigensolver_used = run_modes(job_dir, mdpa_base, materials_path, len(nodes), len(shells), mass_items, echo_level,
+                                                                  n_modes, str(solver_opts.get("eigensolver") or "spectra_sym_g_eigs_shift"), element_axes,
+                                                                  support=not free_flight)
         except JobError as exc:
             warnings.append(str(exc))
             log("  WARNING: " + warnings[-1])
@@ -1333,16 +1690,29 @@ def run_job(job_dir):
         "nodes": int(len(nodes)),
         "dofs": int(dofs),
         "mass": mass,
+        "mass_structure": mass_structure,
+        "mass_items": mass_of_items,
+        "mass_centre": [float(v) for v in cg],
+        "inertia_cg": [[float(v) for v in row] for row in inertia_cg],
+        "items": item_results,
         "max_displacement": float(u_mag[i_max]),
         "max_displacement_at": [float(v) for v in nodes[i_max]],
         "max_von_mises": float(von_mises_elem[i_vm]) if n_elements else 0.0,
         "max_von_mises_material": int(shell_region[i_vm]) if n_elements else 0,
         "per_material": per_material,
         "reaction": [float(v) for v in reaction_sum],
+        "reaction_moment": [float(v) for v in reaction_moment_sum],
         "applied_gravity": [float(v) for v in applied_gravity],
         "applied_pressure": [float(v) for v in applied_pressure],
+        "applied_inertial": [float(v) for v in applied_inertial],
+        "rigid_acceleration": [float(v) for v in a0],
+        "rigid_angular_acceleration": [float(v) for v in alpha],
+        # The vertical inertial load the structure feels at its mass centre,
+        # in g: the field there is g_vec - a0, downward positive.
+        "load_factor_at_cg": float(-(gravity[2] - a0[2]) / G0),
         "mean_normal_displacement": mean_normal_disp,
         "balance_error": balance_error,
+        "moment_error": moment_error,
         "balanced": bool(balanced),
         "load_scale": load_scale,
         "warnings": warnings,
@@ -1366,12 +1736,15 @@ def run_job(job_dir):
     result["seconds"] = time.time() - t_start
     with open(os.path.join(job_dir, outputs["result"]), "w", encoding="utf-8") as f:
         json.dump(result, f, indent=1)
-    log("  solved %d dofs (%d shells, %d of them ribs) with %s in %.2f s: mass %.6g kg, max displacement %.4g m, max von Mises %.4g Pa (region %d); "
-        "reaction (%.4g, %.4g, %.4g) N against gravity (%.4g, %.4g, %.4g) + pressure (%.4g, %.4g, %.4g) + point (%.4g, %.4g, %.4g): %s; wrote %s"
-        % (dofs, len(shells), len(rib_faces), linear_solver, result["seconds_solve"], mass, result["max_displacement"], result["max_von_mises"], result["max_von_mises_material"],
-           reaction_sum[0], reaction_sum[1], reaction_sum[2], applied_gravity[0], applied_gravity[1], applied_gravity[2],
+    log("  solved %d dofs (%d shells, %d of them ribs, %d mass item(s)) with %s in %.2f s: mass %.6g kg, max displacement %.4g m, max von Mises %.4g Pa (region %d); "
+        "reaction (%.4g, %.4g, %.4g) N%s against gravity (%.4g, %.4g, %.4g) + pressure (%.4g, %.4g, %.4g) + point (%.4g, %.4g, %.4g)%s: %s; wrote %s"
+        % (dofs, len(shells), len(rib_faces), len(mass_items), linear_solver, result["seconds_solve"], mass, result["max_displacement"], result["max_von_mises"], result["max_von_mises_material"],
+           reaction_sum[0], reaction_sum[1], reaction_sum[2],
+           (" and (%.4g, %.4g, %.4g) Nm" % tuple(reaction_moment_sum)) if free_flight else "",
+           applied_gravity[0], applied_gravity[1], applied_gravity[2],
            applied_pressure[0], applied_pressure[1], applied_pressure[2], applied_point[0], applied_point[1], applied_point[2],
-           ("balanced to %.2e" % balance_error) if balanced else ("NOT BALANCED (%.1f%%)" % (100.0 * balance_error)), outputs["vtk"]))
+           (" + inertial (%.4g, %.4g, %.4g)" % tuple(applied_inertial)) if free_flight else "",
+           ("balanced to %.2e" % max(balance_error, moment_error)) if balanced else ("NOT BALANCED (%.1f%%)" % (100.0 * max(balance_error, moment_error))), outputs["vtk"]))
     if n_modes > 0 and len(frequencies):
         log("  natural frequencies (%s, %.2f s): %s Hz" % (eigensolver_used, seconds_modes, ", ".join("%.4g" % f for f in frequencies)))
     return result

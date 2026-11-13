@@ -182,6 +182,7 @@ int main() {
 				LoftedNacelleModel nac(ns);
 				BodyPaneling np;
 				np.along = 8; np.around = 12;
+				np.wake = false;   // the closed non-lifting body; the lifting sheet is checked below
 				std::vector<Network> nn = BodyNetworks(nac, "nacelle", np, {1.0, 0.0, 0.0});
 				Check(nn.size() == 1 && nn[0].rows > 8, "lofted nacelle: one network round the periodic chain");
 				Solution sn = Solve(nn, {1.0, 0.0, 0.0}, o);
@@ -195,6 +196,124 @@ int main() {
 			for (Network& n : BodyNetworks(fus, "fuselage", bp, vinf)) all.push_back(n);
 			Solution sa = Solve(all, vinf, opt);
 			Check(sa.networks.size() == 3 && sa.lift_from_wake.has_value() && *sa.lift_from_wake > 0.2, F("wing and fuselage together: the wing lifts (C_L %.4f)", sa.lift_from_wake.value_or(0.0)));
+		}
+
+		// ---- the lifting configuration (2026-11-13) ----
+		// A BLUNT section: NACA 0012 with its trailing edge opened by a
+		// quarter percent of chord each side, as a .dat file has it. The aero
+		// copy closes it by the XFOIL-style blend, the solve runs, and the
+		// lift is the closed section's within a few percent.
+		{
+			std::unique_ptr<Airfoil> base = Airfoil::Naca4("0012");
+			Mat open = base->fit_points();
+			open(0, 1) -= 0.0025;              // lower TE down
+			open(open.rows() - 1, 1) += 0.0025; // upper TE up
+			std::unique_ptr<Airfoil> blunt = Airfoil::FromPoints(open, 3, "0012 blunt");
+			Check(blunt->te_line() != nullptr, "blunt wing: the opened section reports a trailing-edge line");
+			WingModel bw(ps, "Blunt");
+			bw.AddSection(blunt->Clone(), 0.0);
+			bw.AddSection(blunt->Clone(), 1.0);
+			bool solved = false;
+			double cl_blunt = 0.0;
+			try {
+				std::vector<Network> bn = WingNetworks(bw, thick, vinf);
+				const Network& body = bn[0];
+				double te_gap = 0.0;
+				for (int j = 1; j <= body.cols; ++j) te_gap = std::max(te_gap, Distance(body.Corner(1, j), body.Corner(body.rows, j)));
+				Check(te_gap < 1e-9, F("blunt wing: the aero copy's trailing-edge rows coincide (gap %.2e)", te_gap));
+				Solution sb = Solve(bn, vinf, opt);
+				cl_blunt = sb.lift_from_wake.value_or(0.0);
+				solved = true;
+			} catch (const std::exception& e) {
+				std::printf("  blunt wing: %s\n", e.what());
+			}
+			Check(solved, "blunt wing: the blunt-section wing solves (the wake has an edge to abut)");
+			Check(solved && std::fabs(cl_blunt / s_thick.lift_from_wake.value_or(1.0) - 1.0) < 0.05, F("blunt wing: lift %.4f within 5%% of the closed section's %.4f", cl_blunt, s_thick.lift_from_wake.value_or(0.0)));
+		}
+		// A VSeam loft: an untwisted rectangular wing, chord 1, span 6 (AR 6),
+		// lofted from an airfoil section with its trailing edge tagged as the
+		// seam -- the mechanism a flap body or a symmetric wing will use. Two
+		// networks (the body and its wake); the lift near lifting line's.
+		{
+			std::shared_ptr<Airfoil> af = Airfoil::Naca4("0012");
+			const double span = 6.0;
+			NamedLoft loft;
+			loft.name = "slab";
+			loft.source.u_min = -0.5 * span;
+			loft.source.u_max = 0.5 * span;
+			loft.source.closed_curve = false;
+			loft.source.v_seeds = {af->LeadingEdgeParameter()};
+			// The section runs lower TE -> LE -> upper TE in t; v = t.
+			loft.source.section = [af](double u, const std::vector<double>& v) {
+				Mat xy = af->nurbs_curve().Evaluate(v);
+				Mat out(xy.rows(), 3);
+				for (int j = 0; j < xy.rows(); ++j) { out(j, 0) = xy(j, 0); out(j, 1) = u; out(j, 2) = xy(j, 1); }
+				return out;
+			};
+			loft.trailing_edge = LoftTrailingEdge::Seam();
+			BodyPaneling bp;
+			bp.along = 12; bp.around = 24;
+			bp.wake_direction = vinf;
+			std::vector<Network> nets = LoftNetworks(loft, "slab", bp, vinf);
+			// The wake has a column per station; the tube is left open at its
+			// ends (no caps), as WingNetworks leaves a wing.
+			Check(nets.size() == 2 && nets[0].type == NetworkType::DoubletAnalysis && nets[1].IsWake() && nets[1].cols == nets[0].rows,
+				F("seam loft: a doublet body open at its ends and its wake, %.0f wake columns for %.0f rows", nets.size() == 2 ? static_cast<double>(nets[1].cols) : -1.0, nets.empty() ? -1.0 : static_cast<double>(nets[0].rows)));
+			Options o;
+			o.reference_area = span * 1.0;
+			Solution s = Solve(nets, vinf, o);
+			const double cl_slab = 2.0 * 3.14159265358979323846 * 6.0 / (6.0 + 2.0) * alpha;
+			std::printf("seam loft: %d unknowns, C_L wake %.4f, lifting line %.4f, pressures %.4f\n", s.unknowns, s.lift_from_wake.value_or(0.0), cl_slab, s.force_coefficient.z);
+			Check(s.lift_from_wake.has_value() && std::fabs(*s.lift_from_wake / cl_slab - 1.0) < 0.25, F("seam loft: the wake lift %.4f is within 25%% of lifting line's %.4f", s.lift_from_wake.value_or(0.0), cl_slab));
+			// The pressure lift of an open-ended rectangular tube runs high (the
+			// ending doublet sheet at a full-chord tip acts as a bound vortex,
+			// see WingPaneling::collapse_tip_fraction): the same as WingNetworks
+			// on an untapered planform, loosely checked.
+			Check(std::fabs(s.force_coefficient.z / s.lift_from_wake.value_or(1.0) - 1.0) < 0.5, F("seam loft: the pressure lift %.4f is of the wake's order (open tube ends)", s.force_coefficient.z));
+			// With the wake off: one closed source body, as before.
+			bp.wake = false;
+			Check(LoftNetworks(loft, "slab", bp, vinf).size() == 1, "seam loft: with the wake off, the one closed network of LoftNetwork");
+		}
+		// A UStation loft: the default lofted nacelle, its rim tagged by the
+		// model. The wall's mean surface as one sheet under the velocity
+		// condition plus a closed ring wake; every panel finite; at incidence
+		// the annular wing lifts (and its lift, resolved in wind axes, is the
+		// wake's).
+		{
+			LoftedNacelleSpec ns;
+			LoftedNacelleModel nac(ns);
+			std::vector<NamedLoft> lofts = nac.BuildLofts();
+			Check(lofts.size() == 1 && lofts[0].trailing_edge.kind == LoftTrailingEdge::Kind::UStation, "nacelle: the lofted nacelle tags its trailing-edge rim");
+			BodyPaneling np;
+			np.along = 10; np.around = 16;
+			const double a5 = 5.0 * 3.14159265358979323846 / 180.0;
+			const Vec3 v5{std::cos(a5), 0.0, std::sin(a5)};
+			np.wake_direction = v5;
+			std::vector<Network> nn = BodyNetworks(nac, "nacelle", np, v5);
+			Check(nn.size() == 2 && nn[1].IsWake() && nn[0].type == NetworkType::DoubletAnalysis && nn[0].bc.kind == BoundaryCondition::Kind::Velocity && !nn[0].prescribed_source,
+				F("nacelle: the wall's mean surface as a sheet under the velocity condition, and a ring wake (%.0f networks)", static_cast<double>(nn.size())));
+			double ring_gap = nn.size() == 2 ? Distance(nn[1].Corner(1, 1), nn[1].Corner(1, nn[1].cols)) : 1.0;
+			Check(ring_gap < 1e-9, F("nacelle: the wake's trailing edge is a closed ring (gap %.2e)", ring_gap));
+			Options o;
+			o.reference_area = 1.0;
+			Solution sn = Solve(nn, v5, o);
+			bool finite = true;
+			double cpn = 1.0;
+			for (const NetworkResult& nr : sn.networks) {
+				for (const PanelResult& p : nr.panels) {
+					finite = finite && std::isfinite(p.cp_upper) && std::isfinite(p.mu);
+					if (nr.type == NetworkType::DoubletAnalysis) cpn = std::min(cpn, p.cp_upper);
+				}
+			}
+			const double lift5 = sn.force_coefficient.z * std::cos(a5) - sn.force_coefficient.x * std::sin(a5);
+			std::printf("nacelle with wake: %d unknowns, Cp min %.3f, C_L wake %.4f, C_L pressures %.4f, max delta %.3f\n", sn.unknowns, cpn, sn.lift_from_wake.value_or(0.0), lift5, sn.max_delta);
+			Check(finite && cpn > -5.0, F("nacelle with wake: every panel finite, Cp min %.3f", cpn));
+			Check(sn.lift_from_wake.has_value() && *sn.lift_from_wake > 0.0 && lift5 > 0.0, F("nacelle with wake: the annular wing lifts at 5 degrees (C_L wake %.4f, pressures %.4f)", sn.lift_from_wake.value_or(0.0), lift5));
+			// Zero incidence on the cowl: whatever lift there is, the ring wake
+			// resolves to (nearly) none in wind axes -- the ring is symmetric.
+			np.wake_direction = {1.0, 0.0, 0.0};
+			Solution s0n = Solve(BodyNetworks(nac, "nacelle", np, {1.0, 0.0, 0.0}), {1.0, 0.0, 0.0}, o);
+			Check(std::fabs(s0n.lift_from_wake.value_or(1.0)) < 0.2 * std::fabs(sn.lift_from_wake.value_or(1.0)) + 1e-6, F("nacelle with wake: at zero incidence the ring's wake lift cancels (%.2e)", s0n.lift_from_wake.value_or(0.0)));
 		}
 	} catch (const std::exception& e) {
 		std::printf("FAIL: exception: %s\n", e.what());

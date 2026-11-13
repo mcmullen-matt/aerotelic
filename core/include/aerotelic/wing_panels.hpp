@@ -4,7 +4,12 @@
 // sections placed by its planform, paneled as the report's check cases
 // are -- rows round the section from the trailing edge over the leading
 // edge and back, columns along the span -- with a wake network shed from
-// the trailing edge.
+// the trailing edge. A BLUNT section (a .dat airfoil with an open
+// trailing edge, a hand-edited one) is closed for the aero copy by the
+// XFOIL-style blend of section_aero.hpp (CloseTrailingEdge: the gap taken
+// out over the last 30% of the chord, quadratically), so the wake abuts
+// one edge; until 2026-11-13 the wake's head sat on the base's midpoint,
+// off the surface, and the solve threw.
 
 #include <optional>
 #include <string>
@@ -72,7 +77,43 @@ struct BodyPaneling {
 	// the other half. A body wholly to one side is left alone. Throws if a
 	// ring crosses the plane other than twice.
 	std::optional<double> half_plane_y;
+	// THE WAKE (2026-11-13). A loft with a trailing-edge tag
+	// (NamedLoft::trailing_edge) sheds a doublet wake from it, along
+	// wake_direction (a unit vector; the free stream) for wake_length (0:
+	// twenty times the body's extent); the body is then a doublet network
+	// under the interior-potential formulation with prescribed sources,
+	// whatever `sources` says, since only doublet networks can abut a
+	// wake. false panels every body as a closed non-lifting one, as before.
+	bool wake = true;
+	Vec3 wake_direction{1.0, 0.0, 0.0};
+	double wake_length = 0.0;
+	// VSeam: how much of the ring, in its parameter v, the blunt-edge blend
+	// spans at each end (the aero copy's closure of an open section).
+	double seam_blend = 0.2;
+	// A BURIED trailing edge sheds no wake (2026-11-13): a cowl whose rim
+	// meets the boom behind it, a fin lofted into a fuselage. With the
+	// other bodies of the configuration given (their placed triangle
+	// meshes, not owned), the tagged edge is probed `buried_probe`
+	// downstream along wake_direction (0: 2% of the body's extent) and the
+	// wake is dropped when most of the probes lie inside another body or
+	// within `buried_tolerance` of one (0: 5% of the extent); the body is
+	// then paneled as a closed non-lifting one and `notes`, when given,
+	// says so. A free wake run through a body behind it is nonsense for
+	// both (the P-38's engine nacelle ahead of its boom lost the whole
+	// configuration its lift).
+	std::vector<const TriMesh*> other_bodies;
+	double buried_probe = 0.0;
+	double buried_tolerance = 0.0;
+	std::vector<std::string>* notes = nullptr;
 };
+
+// Whether a wake shed from `trailing_edge` along `direction` would run
+// into one of `bodies`: the edge's points stepped `probe` downstream lie
+// inside a body along a quarter of the edge (the wake would pierce it),
+// or within `tolerance` of a surface along `fraction` of it (the wake
+// would sit on it) (BodyPaneling::other_bodies).
+bool TrailingEdgeBuried(const std::vector<Vec3>& trailing_edge, const Vec3& direction, double probe, double tolerance,
+	const std::vector<const TriMesh*>& bodies, double fraction = 0.5);
 
 // One corner-point network from a loft: its stations are the loft's seed
 // stations plus `along` uniform ones, its ring parameters the loft's seeds
@@ -81,10 +122,25 @@ struct BodyPaneling {
 // triangular panels. Panels face outward (the network is flipped if its
 // quads enclose a negative volume). `free_stream` is a unit vector; it
 // only matters for the prescribed sources of the doublet formulation.
+// The loft's trailing-edge tag is IGNORED here: a closed non-lifting
+// body, as before 2026-11-13. LoftNetworks honours it.
 Network LoftNetwork(const NamedLoft& loft, const std::string& name, const BodyPaneling& paneling, const Vec3& free_stream);
 
+// The networks of a loft WITH ITS WAKE when it carries a trailing-edge
+// tag and paneling.wake is on (2026-11-13): VSeam -- the body as one
+// doublet network with prescribed sources, open at its ends and the seam
+// closed by the blend, the wake abutting both seam edges (what
+// WingNetworks does with rows); UStation -- the wall's mean surface as one
+// doublet SHEET under the velocity condition, facing outward, the ring
+// wake abutting its last row (the thin annular wing); the wake network
+// named "<name> wake" last. Without a tag, or with the wake off, the one
+// closed network of LoftNetwork. A VSeam loft cut at the symmetry plane
+// (half_plane_y) gets no wake: its ring is an arc, not a section.
+std::vector<Network> LoftNetworks(const NamedLoft& loft, const std::string& name, const BodyPaneling& paneling, const Vec3& free_stream);
+
 // All of a model's lofts (ISolidModel::BuildLofts) as networks named
-// "<name>/<body>" (or `name` alone for a single body). Empty for a model
+// "<name>/<body>" (or `name` alone for a single body), through
+// LoftNetworks -- with their wakes where tagged. Empty for a model
 // without lofts.
 std::vector<Network> BodyNetworks(const ISolidModel& model, const std::string& name, const BodyPaneling& paneling, const Vec3& free_stream);
 

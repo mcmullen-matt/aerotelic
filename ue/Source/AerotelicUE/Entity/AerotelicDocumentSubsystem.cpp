@@ -678,6 +678,7 @@ void UAerotelicDocumentSubsystem::ClearScene()
 	CurrentPath.Empty();
 	Units = aerotelic::UnitSystem{};
 	ModelScale = 1.0;
+	MassItems.Empty();
 	OnEntityListChanged.Broadcast();
 }
 
@@ -1630,6 +1631,10 @@ bool UAerotelicDocumentSubsystem::OpenProjectPath(const FString& InPath, bool bA
 			Actor->SetEntityVisible(false);
 		}
 	}
+	// The mass items, as the file has them (the loader checked that each
+	// hangs on something listed).
+	MassItems.Empty();
+	for (const MassItem& M : Project.masses) MassItems.Add(M);
 	// The structures with an interior (plane networks behind a skin),
 	// generated over the bodies now in the scene -- the generated geometry
 	// is not saved, only what describes it.
@@ -1728,6 +1733,21 @@ bool UAerotelicDocumentSubsystem::SaveProjectToPath(const FString& InPath)
 		// own theirs).
 		Pb.bodies = ProjectBodiesOf(Entity);
 		Project.booleans.push_back(std::move(Pb));
+	}
+
+	// The mass items. One hung on an item no longer in the scene is written
+	// hanging on nothing (the loader refuses a dangling name), so it still
+	// weighs when the file is opened again.
+	for (const MassItem& M : MassItems)
+	{
+		MassItem Out = M;
+		if (!Out.attach_entity.empty() && !IsNameTaken(UTF8_TO_TCHAR(Out.attach_entity.c_str())))
+		{
+			Out.attach_entity.clear();
+			Out.attach_mirror = false;
+			Out.attach_body.clear();
+		}
+		Project.masses.push_back(std::move(Out));
 	}
 
 	try

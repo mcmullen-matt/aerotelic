@@ -2,7 +2,11 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <stdexcept>
+
+#include "aerotelic/sdf.hpp"
+#include "aerotelic/section_aero.hpp"
 
 namespace aerotelic::panel {
 
@@ -52,6 +56,14 @@ std::vector<Network> WingNetworks(const WingModel& wing, const WingPaneling& pan
 			for (int k = pan.chordwise; k >= 0; --k) ts.push_back(t_le + (1.0 - t_le) * cs[k]); // upper: TE -> LE
 			for (int k = 1; k <= pan.chordwise; ++k) ts.push_back(t_le - t_le * cs[k]);          // lower: LE -> TE
 			Mat pts2 = af->nurbs_curve().Evaluate(ts);
+			// A blunt section: the aero copy closes it by the XFOIL-style
+			// blend (the gap taken out over the last 30% of the chord), so
+			// the two trailing-edge rows coincide and the wake abuts them.
+			{
+				double gap = 0.0;
+				Mat closed = CloseTrailingEdge(pts2, 0.7, &gap);
+				if (gap > 1e-9) pts2 = closed;
+			}
 			Mat xyz = pf.AirfoilCoordsToXyz(etas[j], pts2);
 			collapse(xyz, j);
 			const bool pin = pan.pin_root_to_plane && j == 0 && etas[0] == 0.0;
@@ -143,24 +155,122 @@ double RingArea(const std::vector<Vec3>& row) {
 	return 0.5 * Length(a);
 }
 
-} // namespace
+// The loft sampled onto its grid: one row of corner points per station,
+// the station of each row (NaN for a cap), whether the body was cut at
+// the symmetry plane, and -- with the trailing-edge tag honoured -- the
+// row that is the trailing-edge ring (UStation) or whether the open
+// section's ends were blended together (VSeam).
+struct SampledLoft {
+	std::vector<std::vector<Vec3>> rows;
+	std::vector<double> row_u;
+	std::vector<bool> row_cap;
+	bool half = false;
+	double scale = 1.0;
+	int te_row = -1;
+	bool seam_closed = false;
+};
 
-Network LoftNetwork(const NamedLoft& loft, const std::string& name, const BodyPaneling& pan, const Vec3& free_stream) {
+// Whether the rows, as corner quads, enclose a negative volume (a half
+// body is closed by its reflection first, so the volume is of the whole):
+// the network must then be flipped to face outward.
+bool NeedsFlip(const std::vector<std::vector<Vec3>>& rows, bool half, double y0) {
+	const int nr = static_cast<int>(rows.size()), nc = static_cast<int>(rows.front().size());
+	TriMesh m;
+	for (const auto& r : rows) for (const Vec3& p : r) m.vertices.push_back(p);
+	if (half) for (const auto& r : rows) for (const Vec3& p : r) m.vertices.push_back({p.x, 2.0 * y0 - p.y, p.z});
+	for (int i = 0; i + 1 < nr; ++i) {
+		for (int j = 0; j + 1 < nc; ++j) {
+			int a = i * nc + j, b = i * nc + j + 1, c = (i + 1) * nc + j + 1, d = (i + 1) * nc + j;
+			// Panel order P1 (I,J) -> P2 (I,J+1) -> P3 (I+1,J+1) -> P4 (I+1,J) is CCW
+			// seen from ζ = (∂P/∂J) x (∂P/∂I) = (P2 - P1) x (P4 - P1), so the
+			// triangles (a, b, d) and (b, c, d) face ζ.
+			m.triangles.push_back({a, b, d});
+			m.triangles.push_back({b, c, d});
+			if (half) {
+				// The reflection reverses the winding.
+				const int o = nr * nc;
+				m.triangles.push_back({a + o, d + o, b + o});
+				m.triangles.push_back({b + o, d + o, c + o});
+			}
+		}
+	}
+	m.RemoveDegenerateTriangles();
+	return m.SignedVolume() < 0.0;
+}
+
+// A network from rows of corner points: source/analysis (impermeable), a
+// doublet/analysis closed body under the interior-potential condition
+// with the sources prescribed, or a doublet/analysis SHEET under the
+// velocity condition (the thin-wing cases: one-sided impermeability, no
+// sources); flipped when asked so it faces outward.
+enum class NetKind { Sources, Doublet, Sheet };
+Network MakeNetwork(const std::vector<std::vector<Vec3>>& rows, const std::string& name, bool curved, NetKind kind, const Vec3& free_stream, bool flip) {
+	Network net;
+	net.name = name;
+	net.type = kind == NetKind::Sources ? NetworkType::SourceAnalysis : NetworkType::DoubletAnalysis;
+	net.rows = static_cast<int>(rows.size());
+	net.cols = static_cast<int>(rows.front().size());
+	net.corners.resize(static_cast<size_t>(net.rows) * net.cols);
+	for (int i = 0; i < net.rows; ++i)
+		for (int j = 0; j < net.cols; ++j) net.corners[static_cast<size_t>(i) * net.cols + j] = rows[i][j];
+	if (flip) FlipNormals(net);
+	net.curved = curved;
+	if (kind == NetKind::Doublet) {
+		net.bc = BoundaryCondition::InteriorPotentialZero();
+		net.prescribed_source = [free_stream](const Vec3&, const Vec3& n) { return -Dot(free_stream, n); };
+	} else {
+		net.bc = BoundaryCondition::Impermeable();
+	}
+	return net;
+}
+
+// Whether a sheet's middle panel faces away from the sheet's centroid:
+// the orientation an annular sheet's "upper" side wants (the outside).
+bool SheetFacesInward(const std::vector<std::vector<Vec3>>& rows) {
+	Vec3 centroid{0.0, 0.0, 0.0};
+	int count = 0;
+	for (const auto& r : rows) for (const Vec3& p : r) { centroid += p; ++count; }
+	centroid = centroid * (1.0 / std::max(count, 1));
+	const int I = std::max(0, static_cast<int>(rows.size()) / 2 - 1), J = std::max(0, static_cast<int>(rows.front().size()) / 2 - 1);
+	if (I + 1 >= static_cast<int>(rows.size()) || J + 1 >= static_cast<int>(rows.front().size())) return false;
+	const Vec3 P1 = rows[I][J], P2 = rows[I][J + 1], P3 = rows[I + 1][J + 1], P4 = rows[I + 1][J];
+	const Vec3 zeta = Cross(P1 + P4 - P2 - P3, P1 + P2 - P3 - P4);
+	return Dot(zeta, (P1 + P2 + P3 + P4) * 0.25 - centroid) < 0.0;
+}
+
+SampledLoft SampleLoft(const NamedLoft& loft, const std::string& name, const BodyPaneling& pan, bool with_tag) {
 	const LoftSource& src = loft.source;
 	if (!src.section) throw std::invalid_argument("LoftNetwork: the loft '" + name + "' has no section function");
-	// Rows along u (the loft's stations), columns round v.
-	std::vector<double> us = MergedValues(src.u_min, src.u_max, std::max(pan.along, 1), src.u_seeds);
+	const LoftTrailingEdge& tag = loft.trailing_edge;
+	const bool u_station = with_tag && tag.kind == LoftTrailingEdge::Kind::UStation;
+	const bool v_seam = with_tag && tag.kind == LoftTrailingEdge::Kind::VSeam;
+	SampledLoft out;
+	// Rows along u (the loft's stations), columns round v. A thin annular
+	// wall (UStation) is paneled as its MEAN SURFACE from the first station
+	// to the trailing-edge station: each row the mean of the station and
+	// its twin across the wall (LoftSource::mirror_u), the thick closed
+	// body being ill-conditioned under the interior-potential formulation
+	// (a cowl's wall is thin against its panels: Cp of -900, 2026-11-13).
+	const bool mean_sheet = u_station && std::isfinite(src.mirror_u);
+	std::vector<double> useeds;
+	for (double s : src.u_seeds) if (!mean_sheet || (s >= src.u_min && s <= tag.u)) useeds.push_back(s);
+	if (mean_sheet) useeds.push_back(tag.u);
+	std::vector<double> us = MergedValues(src.u_min, mean_sheet ? tag.u : src.u_max, std::max(pan.along, 1), useeds);
 	const int around = std::max(pan.around, 3);
 	std::vector<double> vs = MergedValues(0.0, 1.0, around, src.v_seeds);
 	auto sample = [&](const std::vector<double>& vv) {
-		std::vector<std::vector<Vec3>> out;
+		std::vector<std::vector<Vec3>> rr;
 		for (double u : us) {
 			Mat pts = src.section(u, vv);
+			if (mean_sheet) {
+				Mat twin = src.section(src.mirror_u - u, vv);
+				for (int j = 0; j < pts.rows() && j < twin.rows(); ++j) for (int c = 0; c < 3; ++c) pts(j, c) = 0.5 * (pts(j, c) + twin(j, c));
+			}
 			std::vector<Vec3> row;
 			for (int j = 0; j < pts.rows(); ++j) row.push_back({pts(j, 0), pts(j, 1), pts(j, 2)});
-			out.push_back(std::move(row));
+			rr.push_back(std::move(row));
 		}
-		return out;
+		return rr;
 	};
 	auto size_of = [](const std::vector<std::vector<Vec3>>& rr) {
 		Vec3 lo = rr.front().front(), hi = lo;
@@ -233,25 +343,54 @@ Network LoftNetwork(const NamedLoft& loft, const std::string& name, const BodyPa
 	// An open section closes on the straight segment from its last point
 	// back to its first (an airfoil's trailing edge): one more column, unless
 	// the two ends already meet. A half ring's ends lie on the plane instead.
+	// A tagged seam (the aero copy of a lifting body) is closed by the
+	// blend instead: the gap taken out over the last `seam_blend` of the
+	// ring's parameter at each end, quadratically, so the surface slopes
+	// are kept and the two ends meet at the gap's midpoint -- never a base
+	// column, which would leave the wake nothing to abut.
 	if (!src.closed_curve && !half) {
 		bool apart = false;
 		for (const auto& r : rows) apart = apart || Distance(r.front(), r.back()) > coincide;
-		if (apart) for (auto& r : rows) r.push_back(r.front());
+		if (v_seam) {
+			const double vb = std::clamp(pan.seam_blend, 1e-6, 0.49);
+			for (auto& r : rows) {
+				const Vec3 g = r.back() - r.front();
+				if (apart) {
+					for (size_t j = 0; j < r.size() && j < vs.size(); ++j) {
+						const double v = vs[j];
+						if (v < vb) { const double f = (vb - v) / vb; r[j] += g * (0.5 * f * f); }
+						else if (v > 1.0 - vb) { const double f = (v - (1.0 - vb)) / vb; r[j] -= g * (0.5 * f * f); }
+					}
+				}
+				const Vec3 mid = (r.front() + r.back()) * 0.5;
+				r.front() = mid;
+				r.back() = mid;
+			}
+			out.seam_closed = true;
+		} else if (apart) {
+			for (auto& r : rows) r.push_back(r.front());
+		}
 	}
 	// Rows that coincide with their predecessor (a rim of zero thickness, a
-	// seed on top of a uniform station) would make panels of no area.
+	// seed on top of a uniform station, the collapsed trailing-edge rim)
+	// would make panels of no area.
+	std::vector<double> row_u = us;
 	{
 		std::vector<std::vector<Vec3>> kept;
-		for (auto& r : rows) {
+		std::vector<double> kept_u;
+		for (size_t i = 0; i < rows.size(); ++i) {
 			if (!kept.empty()) {
 				double d = 0.0;
-				for (size_t j = 0; j < r.size(); ++j) d = std::max(d, Distance(r[j], kept.back()[j]));
+				for (size_t j = 0; j < rows[i].size(); ++j) d = std::max(d, Distance(rows[i][j], kept.back()[j]));
 				if (d <= coincide) continue;
 			}
-			kept.push_back(std::move(r));
+			kept.push_back(std::move(rows[i]));
+			kept_u.push_back(row_u[i]);
 		}
 		rows = std::move(kept);
+		row_u = std::move(kept_u);
 	}
+	std::vector<bool> row_cap(rows.size(), false);
 	// Caps: an open end that is not already an apex gets a row collapsed to
 	// its centroid, a fan of triangular panels (from the midpoint of the
 	// chord on the plane for a half ring, so the fan fills the half disc).
@@ -260,58 +399,107 @@ Network LoftNetwork(const NamedLoft& loft, const std::string& name, const BodyPa
 	// needs no cap: a fan on it would be a ring of panels of no area, whose
 	// frames are NaN and take the whole solution with them (the P-38 boom,
 	// 2026-10-27).
-	if (!src.periodic_u) {
+	// A lifting aero copy is left OPEN at its ends, as WingNetworks leaves a
+	// wing's tube: capped, the interior-potential formulation on a sharp-
+	// edged section goes singular (a capped airfoil slab with its wake,
+	// 2026-11-13), and a mean-surface sheet has no inside to cap.
+	if (!src.periodic_u && !v_seam && !mean_sheet) {
 		auto apex_of = [half](const std::vector<Vec3>& r) { return half ? (r.front() + r.back()) * 0.5 : RowCentroid(r); };
 		auto open = [&](const std::vector<Vec3>& r) { return RowSpread(r) > coincide && RingArea(r) > 1e-9 * scale * scale; };
-		if (src.cap_start && open(rows.front())) rows.insert(rows.begin(), std::vector<Vec3>(rows.front().size(), apex_of(rows.front())));
-		if (src.cap_end && open(rows.back())) rows.push_back(std::vector<Vec3>(rows.back().size(), apex_of(rows.back())));
+		const double nan = std::numeric_limits<double>::quiet_NaN();
+		if (src.cap_start && open(rows.front())) {
+			rows.insert(rows.begin(), std::vector<Vec3>(rows.front().size(), apex_of(rows.front())));
+			row_u.insert(row_u.begin(), nan);
+			row_cap.insert(row_cap.begin(), true);
+		}
+		if (src.cap_end && open(rows.back())) {
+			rows.push_back(std::vector<Vec3>(rows.back().size(), apex_of(rows.back())));
+			row_u.push_back(nan);
+			row_cap.push_back(true);
+		}
 	}
 	if (rows.size() < 2) throw std::invalid_argument("LoftNetwork: the loft '" + name + "' collapses to one station");
+	if (mean_sheet) out.te_row = static_cast<int>(rows.size()) - 1;
+	out.rows = std::move(rows);
+	out.row_u = std::move(row_u);
+	out.row_cap = std::move(row_cap);
+	out.half = half;
+	out.scale = scale;
+	return out;
+}
 
-	Network net;
-	net.name = name;
-	net.type = pan.sources ? NetworkType::SourceAnalysis : NetworkType::DoubletAnalysis;
-	net.rows = static_cast<int>(rows.size());
-	net.cols = static_cast<int>(rows.front().size());
-	net.corners.resize(static_cast<size_t>(net.rows) * net.cols);
-	for (int i = 0; i < net.rows; ++i)
-		for (int j = 0; j < net.cols; ++j) net.corners[static_cast<size_t>(i) * net.cols + j] = rows[i][j];
-	// Outward: the quads as triangles enclose a positive volume (a half body
-	// is closed by its reflection first, so the volume is of the whole).
-	{
-		TriMesh m;
-		m.vertices = net.corners;
-		if (half) {
-			const double y0 = *pan.half_plane_y;
-			for (const Vec3& p : net.corners) m.vertices.push_back({p.x, 2.0 * y0 - p.y, p.z});
-		}
-		for (int i = 0; i + 1 < net.rows; ++i) {
-			for (int j = 0; j + 1 < net.cols; ++j) {
-				int a = i * net.cols + j, b = i * net.cols + j + 1, c = (i + 1) * net.cols + j + 1, d = (i + 1) * net.cols + j;
-				// Panel order P1 (I,J) -> P2 (I,J+1) -> P3 (I+1,J+1) -> P4 (I+1,J) is CCW
-				// seen from ζ = (∂P/∂J) x (∂P/∂I) = (P2 - P1) x (P4 - P1), so the
-				// triangles (a, b, d) and (b, c, d) face ζ.
-				m.triangles.push_back({a, b, d});
-				m.triangles.push_back({b, c, d});
-				if (half) {
-					// The reflection reverses the winding.
-					const int o = net.rows * net.cols;
-					m.triangles.push_back({a + o, d + o, b + o});
-					m.triangles.push_back({b + o, d + o, c + o});
-				}
-			}
-		}
-		m.RemoveDegenerateTriangles();
-		if (m.SignedVolume() < 0.0) FlipNormals(net);
+} // namespace
+
+Network LoftNetwork(const NamedLoft& loft, const std::string& name, const BodyPaneling& pan, const Vec3& free_stream) {
+	SampledLoft s = SampleLoft(loft, name, pan, false);
+	const bool flip = NeedsFlip(s.rows, s.half, pan.half_plane_y.value_or(0.0));
+	return MakeNetwork(s.rows, name, !loft.flat, pan.sources ? NetKind::Sources : NetKind::Doublet, free_stream, flip);
+}
+
+std::vector<Network> LoftNetworks(const NamedLoft& loft, const std::string& name, const BodyPaneling& pan, const Vec3& free_stream) {
+	const LoftTrailingEdge& tag = loft.trailing_edge;
+	if (!pan.wake || !tag.IsSet()) return {LoftNetwork(loft, name, pan, free_stream)};
+	const bool v_seam = tag.kind == LoftTrailingEdge::Kind::VSeam;
+	if (!v_seam && !std::isfinite(loft.source.mirror_u)) return {LoftNetwork(loft, name, pan, free_stream)};
+	SampledLoft s = SampleLoft(loft, name, pan, true);
+	if ((v_seam && (s.half || !s.seam_closed)) || (!v_seam && s.te_row < 0)) {
+		// No edge to shed from (a half ring, a closed curve tagged as a seam):
+		// the closed body, as before.
+		return {LoftNetwork(loft, name, pan, free_stream)};
 	}
-	net.curved = !loft.flat;
-	if (pan.sources) {
-		net.bc = BoundaryCondition::Impermeable();
+	const double length = pan.wake_length > 0.0 ? pan.wake_length : 20.0 * s.scale;
+	std::vector<Network> out;
+	std::vector<Vec3> te;
+	// The trailing edge, for the buried test before any network is made.
+	if (!pan.other_bodies.empty()) {
+		std::vector<Vec3> edge;
+		if (v_seam) { for (size_t i = 0; i < s.rows.size(); ++i) if (!s.row_cap[i]) edge.push_back(s.rows[i].front()); }
+		else edge = s.rows.back();
+		const double probe = pan.buried_probe > 0.0 ? pan.buried_probe : 0.02 * s.scale;
+		const double tolerance = pan.buried_tolerance > 0.0 ? pan.buried_tolerance : 0.05 * s.scale;
+		if (TrailingEdgeBuried(edge, pan.wake_direction, probe, tolerance, pan.other_bodies)) {
+			if (pan.notes) pan.notes->push_back(name + ": its trailing edge runs into another body (a wake shed there would pierce it), so it is paneled as a closed non-lifting body");
+			return {LoftNetwork(loft, name, pan, free_stream)};
+		}
+	}
+	if (v_seam) {
+		// One thick network, open at its ends, under the interior-potential
+		// formulation (what WingNetworks makes of a wing); the trailing edge
+		// is the seam point of every station.
+		const bool flip = NeedsFlip(s.rows, s.half, pan.half_plane_y.value_or(0.0));
+		out.push_back(MakeNetwork(s.rows, name, !loft.flat, NetKind::Doublet, free_stream, flip));
+		for (size_t i = 0; i < s.rows.size(); ++i) if (!s.row_cap[i]) te.push_back(s.rows[i].front());
 	} else {
-		net.bc = BoundaryCondition::InteriorPotentialZero();
-		net.prescribed_source = [free_stream](const Vec3&, const Vec3& n) { return -Dot(free_stream, n); };
+		// The wall's mean surface as one sheet under the velocity condition,
+		// facing outward, its last row the trailing edge.
+		out.push_back(MakeNetwork(s.rows, name, !loft.flat, NetKind::Sheet, free_stream, SheetFacesInward(s.rows)));
+		te = s.rows.back();
 	}
-	return net;
+	if (te.size() < 2) return {LoftNetwork(loft, name, pan, free_stream)};
+	out.push_back(WakeNetwork(name + " wake", te, pan.wake_direction, length));
+	return out;
+}
+
+bool TrailingEdgeBuried(const std::vector<Vec3>& trailing_edge, const Vec3& direction, double probe, double tolerance,
+	const std::vector<const TriMesh*>& bodies, double fraction) {
+	if (trailing_edge.empty() || bodies.empty()) return false;
+	const Vec3 step = Normalized(direction) * probe;
+	std::vector<std::unique_ptr<MeshSdf>> fields;
+	for (const TriMesh* m : bodies) if (m != nullptr && !m->triangles.empty()) fields.push_back(std::make_unique<MeshSdf>(*m));
+	if (fields.empty()) return false;
+	int near = 0, inside = 0;
+	for (const Vec3& p : trailing_edge) {
+		const Vec3 q = p + step;
+		double d = 1e300;
+		for (const auto& f : fields) d = std::min(d, f->Distance(q));
+		if (d < tolerance) ++near;
+		if (d < 0.0) ++inside;
+	}
+	// A wake that would run INSIDE a body along a quarter of its edge
+	// pierces it; one that merely skims a body along most of its edge sits
+	// on it.
+	const double n = static_cast<double>(trailing_edge.size());
+	return inside >= 0.25 * n || near >= fraction * n;
 }
 
 std::vector<Network> BodyNetworks(const ISolidModel& model, const std::string& name, const BodyPaneling& pan, const Vec3& free_stream) {
@@ -319,7 +507,7 @@ std::vector<Network> BodyNetworks(const ISolidModel& model, const std::string& n
 	std::vector<Network> out;
 	for (const NamedLoft& l : lofts) {
 		std::string n = lofts.size() == 1 ? name : name + "/" + l.name;
-		out.push_back(LoftNetwork(l, n, pan, free_stream));
+		for (Network& net : LoftNetworks(l, n, pan, free_stream)) out.push_back(std::move(net));
 	}
 	return out;
 }

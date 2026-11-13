@@ -160,28 +160,87 @@ namespace AerotelicFeaPreprocess
 				for (int32 k = 0; k < 3; ++k) OnShell[F.N[k]] = true;
 			}
 			for (bool B : OnShell) Out.ShellNodes += B ? 1 : 0;
-			Out.Dofs = 6ll * Out.Nodes;
+			Out.Dofs = 6ll * (Out.Nodes + Request.Masses.Num());
 		}
 
-		// The mass and its centre (project units), mass-weighted over the
-		// shells and the rib shells.
+		// The mass, its centre (project units) and the inertia tensor about
+		// it (SI), over the shells and the rib shells as uniform laminae on
+		// each triangle (exact: the script's shell_mass_moments) and the
+		// mass items as points with their own tensors. The second-moment
+		// matrix S = integral r r^T dm is accumulated about the origin in
+		// metres, the tensor is tr(S) 1 - S shifted to the centre.
 		double Mass = 0.0;
-		aerotelic::Vec3 First;
+		aerotelic::Vec3 First;   // kg x project units
+		double Second[9] = { 0, 0, 0, 0, 0, 0, 0, 0, 0 };   // kg m^2, about the origin
+		auto AddTriangle = [&](const aerotelic::Vec3& A, const aerotelic::Vec3& B, const aerotelic::Vec3& C, double M)
+		{
+			Mass += M;
+			const aerotelic::Vec3 Cen = (A + B + C) / 3.0;
+			First += Cen * M;
+			const aerotelic::Vec3 P[3] = { A * L, B * L, C * L };
+			const aerotelic::Vec3 Cm = Cen * L;
+			for (int32 i = 0; i < 3; ++i)
+			{
+				for (int32 j = 0; j < 3; ++j)
+				{
+					Second[3 * i + j] += (M / 12.0) * (P[0][i] * P[0][j] + P[1][i] * P[1][j] + P[2][i] * P[2][j] + 9.0 * Cm[i] * Cm[j]);
+				}
+			}
+		};
 		for (int32 i = 0; i < NFaces; ++i)
 		{
-			const double M = SkinArealDensity[Out.WettedFaces[i].Region] * Out.FaceArea[i] * L * L;
-			Mass += M;
-			First += aerotelic::Vec3{ Out.FaceCentre[i].X, Out.FaceCentre[i].Y, Out.FaceCentre[i].Z } * M;
+			const FFace& F = Out.WettedFaces[i];
+			AddTriangle(Nodes[F.N[0]], Nodes[F.N[1]], Nodes[F.N[2]], SkinArealDensity[F.Region] * Out.FaceArea[i] * L * L);
 		}
 		for (const FFace& F : Out.RibFaces)
 		{
-			const double M = RibArealDensity[F.Region] * FaceAreaOf(F) * L * L;
-			Mass += M;
-			First += (Nodes[F.N[0]] + Nodes[F.N[1]] + Nodes[F.N[2]]) * (M / 3.0);
+			AddTriangle(Nodes[F.N[0]], Nodes[F.N[1]], Nodes[F.N[2]], RibArealDensity[F.Region] * FaceAreaOf(F) * L * L);
+		}
+		Out.MassStructure = Mass;
+		double OwnInertia[9] = { 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+		for (const AerotelicStructuralFea::FMassItem& Item : Request.Masses)
+		{
+			FModel::FMassItemView V;
+			V.Name = Item.Name;
+			V.Mass = Item.Mass;
+			V.At = ToF(Item.At);
+			V.AttachNodes = Item.AttachNodes;
+			aerotelic::Vec3 Centre;
+			int32 Counted = 0;
+			for (int32 N : Item.AttachNodes)
+			{
+				if (N < 0 || N >= Out.Nodes) continue;
+				Centre += Nodes[N];
+				++Counted;
+			}
+			V.AttachCentre = Counted > 0 ? ToF(Centre / Counted) : V.At;
+			Out.MassItems.Add(V);
+			Out.MassOfItems += Item.Mass;
+			Mass += Item.Mass;
+			First += Item.At * Item.Mass;
+			const aerotelic::Vec3 P = Item.At * L;
+			for (int32 i = 0; i < 3; ++i) for (int32 j = 0; j < 3; ++j) Second[3 * i + j] += Item.Mass * P[i] * P[j];
+			// Ixx, Iyy, Izz, Ixy, Ixz, Iyz with the products as integral x y dm:
+			// the tensor's off-diagonals are their negatives.
+			OwnInertia[0] += Item.Inertia[0]; OwnInertia[4] += Item.Inertia[1]; OwnInertia[8] += Item.Inertia[2];
+			OwnInertia[1] -= Item.Inertia[3]; OwnInertia[3] -= Item.Inertia[3];
+			OwnInertia[2] -= Item.Inertia[4]; OwnInertia[6] -= Item.Inertia[4];
+			OwnInertia[5] -= Item.Inertia[5]; OwnInertia[7] -= Item.Inertia[5];
 		}
 		Out.Mass = Mass;
 		Out.MassCentre = Mass > 0.0 ? ToF(First / Mass) : ToF(Out.Bounds.Center());
 		Out.GravityForce = FVector(0.0, 0.0, -Mass * Request.LoadFactor * kG0);
+		if (Mass > 0.0)
+		{
+			// Shift S to the mass centre: S' = S - f c^T - c f^T + m c c^T
+			// with f the first moment (kg m) and c the centre (m).
+			const aerotelic::Vec3 Cm = (First / Mass) * L;
+			const aerotelic::Vec3 Fm = First * L;
+			double Sp[9];
+			for (int32 i = 0; i < 3; ++i) for (int32 j = 0; j < 3; ++j) Sp[3 * i + j] = Second[3 * i + j] - Fm[i] * Cm[j] - Cm[i] * Fm[j] + Mass * Cm[i] * Cm[j];
+			const double Trace = Sp[0] + Sp[4] + Sp[8];
+			for (int32 i = 0; i < 3; ++i) for (int32 j = 0; j < 3; ++j) Out.InertiaCg[3 * i + j] = (i == j ? Trace : 0.0) - Sp[3 * i + j] + OwnInertia[3 * i + j];
+		}
 
 		// The supports: the script's _support_nodes, in project units (the
 		// tolerance scales with the mesh, so the set is the same as in
@@ -204,7 +263,27 @@ namespace AerotelicFeaPreprocess
 				for (const FFace& F : Out.WettedFaces) for (int32 k = 0; k < 3; ++k) AddNode(F.Region, F.N[k]);
 				for (const FFace& F : Out.RibFaces) for (int32 k = 0; k < 3; ++k) AddNode(F.Region, F.N[k]);
 			}
-			for (const AerotelicStructuralFea::FSupport& S : Request.Supports)
+			// Free flight: one node, the nearest to the reference (the mass
+			// centre unless one was given), carries the six fixed degrees of
+			// freedom; the planes are ignored.
+			Out.bFreeFlight = Request.bFreeFlight;
+			if (Request.bFreeFlight)
+			{
+				Out.Reference = Request.bReferenceGiven ? ToF(Request.Reference) : Out.MassCentre;
+				const aerotelic::Vec3 Ref{ Out.Reference.X, Out.Reference.Y, Out.Reference.Z };
+				double Best = 1e300;
+				for (int32 n = 0; n < Out.Nodes; ++n)
+				{
+					const double D = aerotelic::DistanceSq(Nodes[n], Ref);
+					if (D < Best) { Best = D; Out.SupportNode = n; }
+				}
+				if (Out.SupportNode >= 0)
+				{
+					Fixed[Out.SupportNode] = true;
+					Out.SupportAt = ToF(Nodes[Out.SupportNode]);
+				}
+			}
+			for (const AerotelicStructuralFea::FSupport& S : Request.bFreeFlight ? TArray<AerotelicStructuralFea::FSupport>() : Request.Supports)
 			{
 				FModel::FPlane P;
 				const TCHAR Axis = FChar::ToLower(S.Axis);
@@ -316,6 +395,47 @@ namespace AerotelicFeaPreprocess
 			P.Force = ToF(F.Force);
 			Out.PointResultant += P.Force;
 			Out.PointLoads.Add(P);
+		}
+
+		// Free flight: the rigid-body motion the loads give the free body,
+		// a0 = F / m and alpha = I_cg^-1 M_cg (the moment of the pressures
+		// at their face centres and of the point forces at their nodes about
+		// the mass centre; gravity has none), the script's inertia_relief().
+		Out.LoadFactorAtCg = Request.LoadFactor;
+		if (Request.bFreeFlight && Mass > 0.0)
+		{
+			const FVector F = Out.PressureResultant + Out.PointResultant + Out.GravityForce;
+			Out.RigidAcceleration = F / Mass;
+			Out.InertialResultant = -F;
+			FVector Moment = FVector::ZeroVector;   // N m
+			for (int32 i = 0; i < NFaces; ++i)
+			{
+				const FVector Fi = -Out.FaceNormal[i] * (Out.FacePressure[i] * Out.FaceArea[i] * L * L);
+				Moment += FVector::CrossProduct((Out.FaceCentre[i] - Out.MassCentre) * L, Fi);
+			}
+			for (const FModel::FPointLoad& P : Out.PointLoads) Moment += FVector::CrossProduct((P.At - Out.MassCentre) * L, P.Force);
+			const double* I = Out.InertiaCg;
+			const double Det = I[0] * (I[4] * I[8] - I[5] * I[7]) - I[1] * (I[3] * I[8] - I[5] * I[6]) + I[2] * (I[3] * I[7] - I[4] * I[6]);
+			double Scale = 0.0;
+			for (double V : Out.InertiaCg) Scale = FMath::Max(Scale, FMath::Abs(V));
+			if (FMath::Abs(Det) > 1e-12 * Scale * Scale * Scale && Scale > 0.0)
+			{
+				double Inv[9] = {
+					(I[4] * I[8] - I[5] * I[7]) / Det, (I[2] * I[7] - I[1] * I[8]) / Det, (I[1] * I[5] - I[2] * I[4]) / Det,
+					(I[5] * I[6] - I[3] * I[8]) / Det, (I[0] * I[8] - I[2] * I[6]) / Det, (I[2] * I[3] - I[0] * I[5]) / Det,
+					(I[3] * I[7] - I[4] * I[6]) / Det, (I[1] * I[6] - I[0] * I[7]) / Det, (I[0] * I[4] - I[1] * I[3]) / Det };
+				Out.RigidAngularAcceleration = FVector(
+					Inv[0] * Moment.X + Inv[1] * Moment.Y + Inv[2] * Moment.Z,
+					Inv[3] * Moment.X + Inv[4] * Moment.Y + Inv[5] * Moment.Z,
+					Inv[6] * Moment.X + Inv[7] * Moment.Y + Inv[8] * Moment.Z);
+			}
+			else
+			{
+				Out.bInertiaSingular = true;
+			}
+			// The field at the mass centre is g - a0; its vertical part in g,
+			// downward positive.
+			Out.LoadFactorAtCg = -(-Request.LoadFactor * kG0 - Out.RigidAcceleration.Z) / kG0;
 		}
 		return true;
 	}

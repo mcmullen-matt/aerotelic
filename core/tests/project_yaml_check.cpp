@@ -8,6 +8,7 @@
 //     not just that this port's own round-trip is self-consistent.
 
 #include <cmath>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <iterator>
@@ -816,8 +817,66 @@ void CheckLaminateMaterialRoundTrip() {
 	Check(s_back.material.IsLaminate() && SameMaterial(s_back.material, *qi) && s_back.skin_thickness == 1.118, "laminate round trip: a body's laminate skin survives its structure's round trip");
 }
 
+// MASS ITEMS (2026-11-13): `masses:` at the top level, each hung on a
+// scene item by name; the inertia and the attachment written only when
+// set; a dangling attachment refused on load.
+void CheckMassItemsRoundTrip() {
+	MassItem battery;
+	battery.name = "battery";
+	battery.mass = 1.25;
+	battery.position = {0.4, 0.0, -0.05};
+	battery.inertia = {0.01, 0.02, 0.03, 0.0, 0.001, 0.0};
+	battery.attach_entity = "Fuselage";
+	battery.attach_body = "Main";
+	battery.attach_nodes = 10;
+	MassItem camera;
+	camera.name = "camera";
+	camera.mass = 0.08;
+	camera.position = {1.1, 0.0, 0.0};
+	Check(MassItemProblem(battery).empty() && MassItemProblem(camera).empty(), "mass items: both items are usable");
+	const YAML::Node nb = EncodeMassItem(battery), nc = EncodeMassItem(camera);
+	Check(nb["inertia"] && nb["inertia"].size() == 6 && nb["attach"]["entity"].as<std::string>() == "Fuselage" && nb["attach"]["nodes"].as<int>() == 10 && !nb["attach"]["mirror"],
+		"mass items: the battery writes its inertia and its attachment, the mirror flag only when true");
+	Check(!nc["inertia"] && !nc["attach"], "mass items: a point mass on nothing writes neither inertia nor attach");
+	const MassItem bb = DecodeMassItem(nb), cb = DecodeMassItem(nc);
+	Check(bb.name == "battery" && bb.mass == 1.25 && bb.position[2] == -0.05 && bb.inertia[4] == 0.001 && bb.attach_entity == "Fuselage" && bb.attach_body == "Main" && bb.attach_nodes == 10 && !bb.attach_mirror,
+		"mass items: the battery decodes the same");
+	Check(cb.name == "camera" && cb.mass == 0.08 && !cb.HasInertia() && cb.attach_entity.empty() && cb.attach_nodes == 8, "mass items: the camera decodes the same, with the default attachment count");
+	MassItem bad = battery;
+	bad.inertia = {1.0, 1.0, 1.0, 5.0, 0.0, 0.0};   // a product larger than the moments: not a tensor
+	Check(!MassItemProblem(bad).empty(), "mass items: an impossible inertia tensor is a problem");
+	bad = battery;
+	bad.mass = 0.0;
+	Check(!MassItemProblem(bad).empty(), "mass items: no mass is a problem");
+	bad = battery;
+	bad.attach_nodes = 2;
+	Check(!MassItemProblem(bad).empty(), "mass items: two attachment nodes are too few");
+	// Through a whole file: an entity to hang on, and a dangling one refused.
+	const std::string path = (std::filesystem::temp_directory_path() / "aerotelic_mass_items_check.yaml").string();
+	{
+		ProjectFile pf;
+		ProjectEntity f;
+		f.name = "Fuselage";
+		f.type = EntityType::Fuselage;
+		f.model = FuselageModel(FuselageSpec{}).Serialize();
+		pf.entities.push_back(f);
+		pf.masses = {battery, camera};
+		SaveProjectYaml(pf, path);
+		const ProjectFile back = LoadProjectYaml(path);
+		Check(back.masses.size() == 2 && back.masses[0].name == "battery" && back.masses[0].attach_entity == "Fuselage" && back.masses[1].name == "camera", "mass items: a project file carries them under masses:");
+		std::ofstream out(path, std::ios::app);
+		out << "  - {name: loose, mass: 1, position: [0, 0, 0], attach: {entity: Nowhere, nodes: 6}}\n";
+		out.close();
+		bool refused = false;
+		try { LoadProjectYaml(path); } catch (const std::invalid_argument&) { refused = true; }
+		Check(refused, "mass items: an item hung on an entity the file does not have is refused");
+	}
+	std::filesystem::remove(path);
+}
+
 int main() {
 	CheckLaminateMaterialRoundTrip();
+	CheckMassItemsRoundTrip();
 	try {
 		CheckWingRoundTrip();
 		CheckFuselageRoundTrip();

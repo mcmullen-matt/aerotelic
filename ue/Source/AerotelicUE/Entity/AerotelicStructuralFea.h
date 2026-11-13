@@ -131,6 +131,23 @@ namespace AerotelicStructuralFea
 		aerotelic::Vec3 Force;
 	};
 
+	// A MASS ITEM (2026-11-13; mass_properties.hpp MassItem resolved onto
+	// the mesh): a concentrated mass hung on the structure by an RBE3-type
+	// constraint -- its force distributed to its attachment nodes by
+	// virtual work, no stiffness added. Mass in kg and the inertia tensor
+	// in kg m^2 about its own centre (Ixx, Iyy, Izz, Ixy, Ixz, Iyz, the
+	// products as integral x y dm), SI already; At in project units; the
+	// attachment nodes indices into FRequest::Nodes, at least three and not
+	// collinear (AerotelicFeaModelBuilder::AttachmentNodes picks them).
+	struct FMassItem
+	{
+		FString Name;
+		double Mass = 0.0;
+		aerotelic::Vec3 At;
+		double Inertia[6] = { 0, 0, 0, 0, 0, 0 };
+		TArray<int32> AttachNodes;
+	};
+
 	struct FRequest
 	{
 		// The nodes in PROJECT units; every face below indexes them. Each
@@ -185,6 +202,21 @@ namespace AerotelicStructuralFea
 		// planes is fixed. "min" / "max" put a plane at the mesh's own
 		// extreme instead of a value. ---
 		TArray<FSupport> Supports;
+		// FREE FLIGHT, inertia relief (2026-11-13): no planes -- the loads
+		// are balanced by the rigid-body inertial field (a0 = F / m, alpha
+		// = I_cg^-1 M_cg, the d'Alembert load on every node and mass item)
+		// and all six degrees of freedom of ONE node, the structural node
+		// nearest Reference (the mass centre unless bReferenceGiven), are
+		// fixed as a statically determinate support that cannot load the
+		// structure. Its reaction force and moment are the check of the
+		// case (FResult::Reaction, ReactionMoment: zero to round-off when
+		// the solve is right). Supports must be empty then.
+		bool bFreeFlight = false;
+		bool bReferenceGiven = false;
+		aerotelic::Vec3 Reference;   // project units
+
+		// --- the mass items hung on the structure (SI; see FMassItem) ---
+		TArray<FMassItem> Masses;
 
 		// --- loads, SI ---
 		// Inertial load factor: the body's own mass under LoadFactor x g
@@ -243,7 +275,11 @@ namespace AerotelicStructuralFea
 		// pre-processor's figure; with shells alone there are no other nodes).
 		int32 SupportNodes = 0, SupportCornerNodes = 0, WettedFaces = 0;
 
-		double Mass = 0.0;                      // kg, over every element
+		double Mass = 0.0;                      // kg, over every element: the shells' and the mass items'
+		double MassStructure = 0.0;             // kg, the shells' alone
+		double MassItems = 0.0;                 // kg, the items'
+		double MassCentre[3] = {0, 0, 0};       // m
+		double InertiaCg[9] = {0, 0, 0, 0, 0, 0, 0, 0, 0};   // kg m^2 about the mass centre, row-major
 		double MaxDisplacement = 0.0;           // m
 		double MaxDisplacementAt[3] = {0, 0, 0};
 		double MaxVonMises = 0.0;               // Pa
@@ -265,6 +301,33 @@ namespace AerotelicStructuralFea
 		double BalanceError = 0.0;
 		bool bBalanced = true;
 		TArray<FString> Warnings;
+		// Free flight (2026-11-13): the support's reaction MOMENT (N m,
+		// about the support node), the inertial field's resultant -m a0
+		// (zero when clamped), the moment residual over loads x diagonal,
+		// the support node and where it is (m), and the rigid-body motion
+		// the loads gave the free body: a0 (m/s^2), alpha (rad/s^2), and the
+		// vertical inertial load felt at the mass centre in g (1 for a
+		// trimmed 1 g case; the load factor itself when clamped).
+		bool bFreeFlight = false;
+		double ReactionMoment[3] = {0, 0, 0};
+		double AppliedInertial[3] = {0, 0, 0};
+		double MomentError = 0.0;
+		int32 SupportNode = -1;
+		double SupportAt[3] = {0, 0, 0};
+		double RigidAcceleration[3] = {0, 0, 0};
+		double RigidAngularAcceleration[3] = {0, 0, 0};
+		double LoadFactorAtCg = 0.0;
+		// Each mass item as solved: where it moved (m) and the force it put
+		// on the structure (N: its mass times the field at its node).
+		struct FItem
+		{
+			FString Name;
+			double Mass = 0.0;
+			int32 AttachNodes = 0;
+			double Displacement[3] = {0, 0, 0};
+			double Force[3] = {0, 0, 0};
+		};
+		TArray<FItem> Items;
 		// The linear solver that ran ("sparse_lu" or "amgcl"; what "auto" chose).
 		FString LinearSolver;
 		// Mean of u . n over the wetted nodes: negative is inward, which

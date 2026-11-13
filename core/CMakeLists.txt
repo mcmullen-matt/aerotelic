@@ -187,6 +187,8 @@ target_link_libraries(panel_loads_check PRIVATE aerotelic_core)
 add_executable(panel_p38_check tests/panel_p38_check.cpp)
 target_link_libraries(panel_p38_check PRIVATE aerotelic_core)
 
+add_executable(panel_scratch tests/panel_scratch.cpp)
+target_link_libraries(panel_scratch PRIVATE aerotelic_core)
 add_executable(panel_p38_config_check tests/panel_p38_config_check.cpp)
 target_link_libraries(panel_p38_config_check PRIVATE aerotelic_core)
 

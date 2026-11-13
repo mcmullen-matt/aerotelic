@@ -87,6 +87,29 @@ MassMode ParseMassMode(const std::string& s) {
 	throw std::invalid_argument("unknown mass mode '" + s + "' (expected unset, asserted or material)");
 }
 
+std::string MassItemProblem(const MassItem& m) {
+	if (m.name.empty()) return "a mass item has no name";
+	if (!(std::isfinite(m.mass) && m.mass > 0.0)) return "mass item '" + m.name + "' has no mass";
+	for (double v : m.position) if (!std::isfinite(v)) return "mass item '" + m.name + "' has no position";
+	for (double v : m.inertia) if (!std::isfinite(v)) return "mass item '" + m.name + "' has an inertia that is not a number";
+	if (m.HasInertia()) {
+		// Non-negative principal values: every diagonal term and every
+		// 2 x 2 and the full 3 x 3 principal minor of the tensor (whose
+		// off-diagonals are minus the products) must be >= 0.
+		const double ixx = m.inertia[0], iyy = m.inertia[1], izz = m.inertia[2];
+		const double ixy = -m.inertia[3], ixz = -m.inertia[4], iyz = -m.inertia[5];
+		const double scale = std::max({std::fabs(ixx), std::fabs(iyy), std::fabs(izz), std::fabs(ixy), std::fabs(ixz), std::fabs(iyz)});
+		const double eps = 1e-12 * scale * scale;
+		const double det = ixx * (iyy * izz - iyz * iyz) - ixy * (ixy * izz - iyz * ixz) + ixz * (ixy * iyz - iyy * ixz);
+		if (ixx < -1e-12 * scale || iyy < -1e-12 * scale || izz < -1e-12 * scale ||
+		    ixx * iyy - ixy * ixy < -eps || ixx * izz - ixz * ixz < -eps || iyy * izz - iyz * iyz < -eps || det < -eps * scale) {
+			return "mass item '" + m.name + "' has an inertia tensor that is not positive semi-definite";
+		}
+	}
+	if (m.attach_nodes < 3) return "mass item '" + m.name + "' must hang on at least three nodes";
+	return "";
+}
+
 MassProperties SolidMassProperties(const TriMesh& mesh, double density) {
 	// Every triangle with the origin makes a tetrahedron whose signed
 	// volume adds up, over a closed surface, to the enclosed volume

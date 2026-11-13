@@ -939,6 +939,86 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 						Check(RP.bBalanced && FMath::Abs(RP.Reaction[2] - WeightP) <= 0.02 * WeightP, FString::Printf(TEXT("fea (patch): the quadrant carries the weight (%.4g vs %.4g N)"), RP.Reaction[2], WeightP));
 						IFileManager::Get().Delete(*Request.VtkPath, false, true, true);
 					}
+
+					// A MASS ITEM (2026-11-13): 5 kg hung by an RBE3-type
+					// attachment on the six nodes nearest the top of the sphere,
+					// the sphere clamped at z = min under 1 g: the support carries
+					// the shell's weight and the item's exactly, the item puts its
+					// weight on the structure, the mass and its centre include it.
+					UE_LOG(LogAerotelicDocumentTest, Display, TEXT("step: structural fea (a mass item)"));
+					Request.Supports.Reset();
+					Support(Request);
+					Request.Pressure = 0.0;
+					AerotelicStructuralFea::FMassItem Item;
+					Item.Name = TEXT("payload");
+					Item.Mass = 5.0;
+					Item.At = aerotelic::Vec3{ 0.0, 0.0, 1.2 };
+					Item.AttachNodes = AerotelicFeaModelBuilder::AttachmentNodes(ShellNodes, Request.ShellFaces, Request.RibFaces, Request.Regions, -1, aerotelic::Vec3{ 0.0, 0.0, 1.0 }, 6);
+					Check(Item.AttachNodes.Num() == 6, FString::Printf(TEXT("fea (mass item): six nearest nodes found for the attachment (%d)"), Item.AttachNodes.Num()));
+					Request.Masses.Add(Item);
+					Request.VtkPath = FPaths::Combine(FPlatformProcess::UserTempDir(), TEXT("aerotelic_document_test_fea_mass.vtk"));
+					AerotelicStructuralFea::FResult RM;
+					FString MassError;
+					const bool bMass = AerotelicStructuralFea::Run(Request, RM, MassError);
+					Check(bMass, FString::Printf(TEXT("fea (mass item): the sphere with a 5 kg item solved (%s)"), bMass ? TEXT("ok") : *MassError));
+					if (bMass)
+					{
+						const double WeightM = (ExpectedMass + 5.0) * 9.80665;
+						Check(RM.bBalanced && FMath::Abs(RM.Reaction[2] - WeightM) <= 1e-6 * WeightM && FMath::Abs(RM.Reaction[0]) <= 1e-6 * WeightM && FMath::Abs(RM.Reaction[1]) <= 1e-6 * WeightM,
+							FString::Printf(TEXT("fea (mass item): the clamp carries the shell's weight and the item's exactly (%.6g vs %.6g N)"), RM.Reaction[2], WeightM));
+						Check(FMath::IsNearlyEqual(RM.Mass, ExpectedMass + 5.0, 1e-6 * RM.Mass) && FMath::IsNearlyEqual(RM.MassItems, 5.0, 1e-9) && RM.Items.Num() == 1 && RM.Items[0].AttachNodes == 6
+							&& FMath::IsNearlyEqual(RM.Items[0].Force[2], -5.0 * 9.80665, 1e-6) && RM.Dofs == 6 * (R.Nodes + 1),
+							FString::Printf(TEXT("fea (mass item): the mass is the shell's plus the item's, the item puts its weight on six nodes, one more node of freedom (%.5g kg, %.4g N, %d dof)"), RM.Mass, RM.Items.Num() ? RM.Items[0].Force[2] : 0.0, RM.Dofs));
+						// 5 kg at z = 1.2 against a 1.7 tonne shell centred on the origin: a few millimetres.
+						const double ExpectedCgZ = 5.0 * 1.2 / (ExpectedMass + 5.0);
+						Check(FMath::IsNearlyEqual(RM.MassCentre[2], ExpectedCgZ, 1e-6 + 0.05 * ExpectedCgZ) && FMath::Abs(RM.MassCentre[0]) < 1e-3 && FMath::Abs(RM.MassCentre[1]) < 1e-3,
+							FString::Printf(TEXT("fea (mass item): the mass centre moved up towards the item by m z / M (z = %.4g vs %.4g m)"), RM.MassCentre[2], ExpectedCgZ));
+						AerotelicFeaPreprocess::FModel PreM;
+						FString PreMError;
+						const bool bPreM = AerotelicFeaPreprocess::Build(Request, PreM, PreMError);
+						Check(bPreM && PreM.MassItems.Num() == 1 && FMath::IsNearlyEqual(PreM.Mass, RM.Mass, 1e-6 * RM.Mass) && FMath::IsNearlyEqual(PreM.MassCentre.Z, RM.MassCentre[2], 1e-6)
+							&& PreM.Dofs == RM.Dofs && FMath::IsNearlyEqual(PreM.InertiaCg[0], RM.InertiaCg[0], 1e-6 * RM.InertiaCg[0]),
+							FString::Printf(TEXT("fea (mass item, pre-processor): the item, the mass, its centre, the inertia and the DOF count are the script's (%.5g vs %.5g kg; Ixx %.5g vs %.5g)"), bPreM ? PreM.Mass : -1.0, RM.Mass, bPreM ? PreM.InertiaCg[0] : -1.0, RM.InertiaCg[0]));
+						IFileManager::Get().Delete(*Request.VtkPath, false, true, true);
+					}
+
+					// FREE FLIGHT, inertia relief (2026-11-13): the same sphere
+					// and item under the external pressure and 1 g, held by
+					// nothing. The pressure has no resultant, so the body falls
+					// freely (a0 = -g, nothing felt at the mass centre), the
+					// reference node reacts nothing, and the stress is the
+					// membrane value alone -- the clamp's artefacts gone.
+					UE_LOG(LogAerotelicDocumentTest, Display, TEXT("step: structural fea (free flight)"));
+					Request.Supports.Reset();
+					Request.bFreeFlight = true;
+					Request.Pressure = 1.0e5;
+					Request.VtkPath = FPaths::Combine(FPlatformProcess::UserTempDir(), TEXT("aerotelic_document_test_fea_free.vtk"));
+					AerotelicStructuralFea::FResult RF;
+					FString FreeError;
+					const bool bFree = AerotelicStructuralFea::Run(Request, RF, FreeError);
+					Check(bFree, FString::Printf(TEXT("fea (free flight): the sphere solved in free flight (%s)"), bFree ? *FString::Printf(TEXT("reference node %d"), RF.SupportNode) : *FreeError));
+					if (bFree)
+					{
+						const double WeightF = RF.Mass * 9.80665;
+						const double Loads = WeightF + 1.0e5 * 4.0 * PI;
+						Check(RF.bFreeFlight && RF.SupportNodes == 1 && RF.SupportNode >= 0 && RF.SupportNode < R.Nodes, FString::Printf(TEXT("fea (free flight): one reference node holds the model (node %d)"), RF.SupportNode));
+						Check(RF.bBalanced && FVector(RF.Reaction[0], RF.Reaction[1], RF.Reaction[2]).Size() <= 1e-8 * Loads && FVector(RF.ReactionMoment[0], RF.ReactionMoment[1], RF.ReactionMoment[2]).Size() <= 1e-8 * Loads,
+							FString::Printf(TEXT("fea (free flight): the reference node reacts nothing (%.2e N, %.2e N m against loads of %.4g N)"), FVector(RF.Reaction[0], RF.Reaction[1], RF.Reaction[2]).Size(), FVector(RF.ReactionMoment[0], RF.ReactionMoment[1], RF.ReactionMoment[2]).Size(), Loads));
+						Check(FMath::IsNearlyEqual(RF.RigidAcceleration[2], -9.80665, 1e-6) && FMath::Abs(RF.LoadFactorAtCg) <= 1e-9 && FVector(RF.RigidAngularAcceleration[0], RF.RigidAngularAcceleration[1], RF.RigidAngularAcceleration[2]).Size() <= 1e-6,
+							FString::Printf(TEXT("fea (free flight): the pressure has no resultant, so the body falls freely at g and feels nothing at its mass centre (a0 %.5g m/s^2, n = %.2g)"), RF.RigidAcceleration[2], RF.LoadFactorAtCg));
+						// The membrane value p a / 2t = 1.0e6 Pa, the faceted shell's
+						// bending peaks above it, and no clamp artefact on top: the
+						// free peak is no higher than the clamped case's.
+						Check(RF.Entries.Num() == 1 && RF.Entries[0].MaxVonMises > 0.8e6 && RF.Entries[0].MaxVonMises < 1.8e6 && R.Entries.Num() == 1 && RF.Entries[0].MaxVonMises <= R.Entries[0].MaxVonMises * 1.001,
+							FString::Printf(TEXT("fea (free flight): the stress is the membrane value p a / 2t = 1.0e6 Pa plus the facets' bending, no clamp artefact (peak %.4g vs %.4g clamped)"), RF.Entries.Num() ? RF.Entries[0].MaxVonMises : 0.0, R.Entries.Num() ? R.Entries[0].MaxVonMises : 0.0));
+						AerotelicFeaPreprocess::FModel PreF;
+						FString PreFError;
+						const bool bPreF = AerotelicFeaPreprocess::Build(Request, PreF, PreFError);
+						Check(bPreF && PreF.bFreeFlight && PreF.SupportNode == RF.SupportNode && PreF.SupportNodes.Num() == 1 && PreF.SupportPlanes.Num() == 0 && PreF.Dofs == RF.Dofs
+							&& FMath::IsNearlyEqual(PreF.RigidAcceleration.Z, RF.RigidAcceleration[2], 1e-6) && FMath::Abs(PreF.LoadFactorAtCg) <= 1e-9,
+							FString::Printf(TEXT("fea (free flight, pre-processor): the reference node, the DOF count and the rigid-body acceleration are the script's (node %d vs %d, a0 %.5g vs %.5g)"), bPreF ? PreF.SupportNode : -1, RF.SupportNode, bPreF ? PreF.RigidAcceleration.Z : 0.0, RF.RigidAcceleration[2]));
+						IFileManager::Get().Delete(*Request.VtkPath, false, true, true);
+					}
 				}
 			}
 		}
@@ -1381,6 +1461,31 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 		Check(Worst < 1e-9 && MirrorMeshes.size() == 1 && MirrorMeshes[0].mesh.SignedVolume() > 0.0, FString::Printf(TEXT("mirror plane: the mirrored mesh is the placed mesh reflected, still outward (worst %.2e)"), Worst));
 	}
 
+	// MASS ITEMS (2026-11-13): two on the document, one hung on the
+	// primitive's body, one on nothing; they go out under masses: and come
+	// back by name with their attachments.
+	UE_LOG(LogAerotelicDocumentTest, Display, TEXT("step: mass items"));
+	if (Primitive != nullptr)
+	{
+		TArray<aerotelic::MassItem> Items;
+		aerotelic::MassItem Battery;
+		Battery.name = "battery";
+		Battery.mass = 1.5;
+		Battery.position = { 0.1, 0.2, 0.3 };
+		Battery.inertia = { 0.01, 0.02, 0.03, 0.0, 0.0, 0.001 };
+		Battery.attach_entity = TCHAR_TO_UTF8(*Primitive->EntityName);
+		Battery.attach_body = Primitive->GetBodies().Num() ? TCHAR_TO_UTF8(*Primitive->GetBodies()[0].Name) : "";
+		Battery.attach_nodes = 10;
+		aerotelic::MassItem Camera;
+		Camera.name = "camera";
+		Camera.mass = 0.08;
+		Camera.position = { 1.0, 0.0, 0.0 };
+		Items.Add(Battery);
+		Items.Add(Camera);
+		Doc->SetMassItems(Items);
+		Check(Doc->GetMassItems().Num() == 2, "mass items: two on the document");
+	}
+
 	UE_LOG(LogAerotelicDocumentTest, Display, TEXT("step: save"));
 	const FString TmpPath = FPaths::Combine(FPlatformProcess::UserTempDir(), TEXT("aerotelic_document_test.yaml"));
 	Check(Doc->SaveProjectToPath(TmpPath), "save succeeded");
@@ -1403,6 +1508,15 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 	// Entities.Num() == 0 here, so OpenProjectPath's confirmation check
 	// short-circuits without showing a dialog.
 	Check(Doc->OpenProjectPath(TmpPath), "reopen succeeded");
+	{
+		const TArray<aerotelic::MassItem>& Back = Doc->GetMassItems();
+		Check(Back.Num() == 2 && Back[0].name == "battery" && Back[0].mass == 1.5 && Back[0].position[2] == 0.3 && Back[0].inertia[5] == 0.001 && Back[0].attach_nodes == 10 && !Back[0].attach_entity.empty()
+			&& Back[1].name == "camera" && Back[1].attach_entity.empty() && !Back[1].HasInertia(),
+			FString::Printf(TEXT("mass items: both came back through the file with their attachments (%d items)"), Back.Num()));
+		FString Saved;
+		FFileHelper::LoadFileToString(Saved, *TmpPath);
+		Check(Saved.Contains(TEXT("masses:")) && Saved.Contains(TEXT("battery")), "mass items: the project file carries them under masses:");
+	}
 	UE_LOG(LogAerotelicDocumentTest, Display, TEXT("step: reopen done"));
 	Check(Doc->GetEntities().Num() == 4, "reopened scene has 3 entities and the boolean result");
 	Check(Doc->GetUnits().length == aerotelic::LengthUnit::Foot && Doc->GetUnits().mass == aerotelic::MassUnit::PoundMass,

@@ -558,6 +558,9 @@ std::vector<NamedLoft> NacelleModel::BuildLofts() const {
 	NamedLoft loft;
 	loft.name = "Main";
 	loft.source = std::move(src);
+	// The trailing edge is the station u = 1, where PinEnds() made the two
+	// skins share their points: the panel method's wake leaves that ring.
+	loft.trailing_edge = LoftTrailingEdge::Station(1.0, 1.0, 1.0);
 	return {loft};
 }
 

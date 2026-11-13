@@ -39,6 +39,18 @@ Cases with closed forms, each run through the real job (the same
     factors are reported with the margin, the VTK carries them, and an
     unsymmetric [0_4/90_4] strip under tension bends towards its stiff
     outer plies (the first row of the stack is on the +normal side).
+  * a MASS ITEM (2026-11-13): 50 kg hung by the RBE3-type constraint on
+    six nodes of the clamped box beam's tip under 1 g -- the clamp
+    carries the skin's and the item's weight exactly, the tip moves as
+    under a point force of that weight, an attachment on a line is
+    refused.
+  * FREE FLIGHT, inertia relief (2026-11-13): a plate with an offset pod
+    under lift equal to its weight -- the reference node reacts nothing
+    (force and moment to 1e-9 of the loads), the body pitches at
+    I_cg^-1 M, the stresses are the same from any reference node,
+    gravity alone loads nothing, lift of twice the weight is the trimmed
+    2 g case, the free-free modes come with the rigid ones dropped, and
+    planes with free flight (or nothing at all) are refused.
 
 ``box_shell`` here is also what rib_gmsh_check.py builds its body from.
 """
@@ -504,6 +516,167 @@ def main(argv):
         uz8, _, _ = tip_uz("lam_unsym")
         failures += not check(r8["ok"] and uz8 > 1e-4, "laminate: an unsymmetric strip in tension bends towards its stiff outer plies on the +normal side (tip z %.4g m)" % uz8)
         print("  laminate: E2 plate %.4g m (theory %.4g); drape-90 %.4g; cloth sheared 60: mass x%.3f; unsymmetric tip z %.4g m" % (-uz2, delta_e2, -uz4, r6["mass"] / r5["mass"], uz8))
+
+        # ------------------------------------------------------------------
+        # MASS ITEMS (2026-11-13): a 50 kg item hung by an RBE3-type
+        # constraint on the six nearest nodes of the box beam's tip cap,
+        # under 1 g with the beam clamped. The clamp carries the skin's
+        # weight and the item's exactly; the item puts its weight on the
+        # structure; the tip moves as under a point force of that weight
+        # (to the few percent the six-node spread makes).
+        # ------------------------------------------------------------------
+        mass_dir = os.path.join(job_dir, "mass")
+        os.makedirs(mass_dir)
+        write_mesh(os.path.join(mass_dir, "nodes.bin"), bverts)
+        write_faces(os.path.join(mass_dir, "faces.bin"), btris, np.ones(len(btris), dtype=np.int32))
+        item_at = np.array([0.0, bL / 2 + 0.3, 0.2])
+        attach = np.argsort(np.linalg.norm(bverts - np.array([0.0, bL / 2, 0.0]), axis=1))[:6]
+        item_mass = 50.0
+        job_m = {
+            "nodes": "nodes.bin", "faces": "faces.bin", "rib_faces": None,
+            "regions": [{"id": 1, "label": "beam", "skin": {"material": AL, "thickness": bt}, "rib": None}],
+            "supports": [{"axis": "y", "value": "min", "tolerance": 0.0, "bounds": None}],
+            "masses": [{"name": "payload", "mass": item_mass, "at": [float(v) for v in item_at], "inertia": [1.0, 2.0, 3.0, 0.0, 0.0, 0.0], "attach": [int(v) for v in attach]}],
+            "loads": {"load_factor": 1.0, "pressure": 0.0, "pressure_file": None, "point_forces": []},
+            "solver": {"echo_level": 0, "linear_solver": solver, "shell_element": "ShellThinElement3D3N", "modes": 0},
+            "outputs": {"vtk": os.path.join(mass_dir, "mass.vtk"), "result": "mass_result.json"},
+        }
+        rm = run(mass_dir, job_m)
+        W_skin = AL["density"] * bt * tg.surface_area(bverts, btris.astype(np.int32)) * sf.G0
+        W_item = item_mass * sf.G0
+        failures += not check(rm["ok"] and rm["balanced"] and rm["support_mode"] == "clamped" and abs(rm["reaction"][2] - (W_skin + W_item)) < 1e-6 * (W_skin + W_item)
+                              and abs(rm["reaction"][0]) < 1e-6 * W_item and abs(rm["reaction"][1]) < 1e-6 * W_item,
+                              "mass item: the clamp carries the skin's weight and the item's exactly (%.6g vs %.6g N)" % (rm["reaction"][2], W_skin + W_item))
+        failures += not check(abs(rm["mass"] - rm["mass_structure"] - item_mass) < 1e-9 * rm["mass"] and rm["mass_items"] == item_mass and rm["elements"] == len(btris) + 1 and rm["dofs"] == 6 * (len(bverts) + 1),
+                              "mass item: the mass is the structure's plus the item's, one more element and node (%.5g kg, %d elements, %d dof)" % (rm["mass"], rm["elements"], rm["dofs"]))
+        it = rm["items"][0]
+        failures += not check(len(rm["items"]) == 1 and it["name"] == "payload" and it["attach_nodes"] == 6 and it["node"] == len(bverts)
+                              and abs(it["force"][2] + W_item) < 1e-9 * W_item and abs(it["force"][0]) < 1e-9 * W_item,
+                              "mass item: the item reports its six attachment nodes and puts its weight on them (%.5g N)" % it["force"][2])
+        cg_expected = (rm["mass_structure"] * np.array([0.0, 0.0, 0.0]) + item_mass * item_at) / rm["mass"]
+        failures += not check(np.linalg.norm(np.array(rm["mass_centre"]) - cg_expected) < 1e-6 * bL, "mass item: the mass centre moves towards the item (%s)" % np.round(rm["mass_centre"], 4))
+        # The same weight as a point force at the item's attachment centre,
+        # with the skin's own weight too.
+        job_f = dict(job_m, masses=[], loads={"load_factor": 1.0, "pressure": 0.0, "pressure_file": None,
+                                              "point_forces": [{"at": [float(v) for v in it["attach_centre"]], "force": [0.0, 0.0, -W_item]}]},
+                     outputs={"vtk": os.path.join(mass_dir, "mass_force.vtk"), "result": "mass_force_result.json"})
+        rf = run(mass_dir, job_f)
+        um, _, _, pdm, _ = read_vtk(os.path.join(mass_dir, "mass.vtk"))
+        uf, _, _, pdf, _ = read_vtk(os.path.join(mass_dir, "mass_force.vtk"))
+        tip_m = float(pdm["displacement"][tip_b, 2].mean())
+        tip_f = float(pdf["displacement"][tip_b, 2].mean())
+        failures += not check(abs(tip_m / tip_f - 1.0) < 0.05 and tip_m < 0.0, "mass item: the tip moves as under a point force of the item's weight (%.4g vs %.4g m, %.1f%%)" % (tip_m, tip_f, 100 * (tip_m / tip_f - 1)))
+        failures += not check(abs(it["displacement"][2] - tip_m) < 0.2 * abs(tip_m), "mass item: the item moves with the tip (%.4g vs %.4g m)" % (it["displacement"][2], tip_m))
+        print("  mass item: reaction %.6g N (weight %.6g), tip %.4g m vs point force %.4g" % (rm["reaction"][2], W_skin + W_item, tip_m, tip_f))
+        # An attachment on a line cannot carry a moment about it: refused.
+        line = [int(v) for v in np.nonzero((np.abs(bverts[:, 0] - 0.5) < 1e-9) & (np.abs(bverts[:, 2] - 0.5) < 1e-9))[0][:4]]
+        job_l = dict(job_m, masses=[dict(job_m["masses"][0], attach=line)], outputs={"vtk": os.path.join(mass_dir, "line.vtk"), "result": "line_result.json"})
+        refused = ""
+        try:
+            run(mass_dir, job_l)
+        except sf.JobError as exc:
+            refused = str(exc)
+        failures += not check("line" in refused, "mass item: an attachment on a line is refused (%s)" % refused[:70])
+
+        # ------------------------------------------------------------------
+        # FREE FLIGHT, inertia relief (2026-11-13): a 2 x 0.5 m aluminium
+        # plate, 2 mm, with a 2 kg item hung 0.1 m above it off its centre,
+        # under 1 g and a uniform lift equal to the total weight. The net
+        # force is zero and the net moment is not, so the free body pitches
+        # (alpha = I_cg^-1 M), the inertial field balances it, and the
+        # reference node's reaction force and moment vanish to round-off;
+        # the stresses do not depend on which node is the reference.
+        # Gravity alone loads nothing; lift of twice the weight is the same
+        # case as a 2 g load factor under that lift.
+        # ------------------------------------------------------------------
+        ff_dir = os.path.join(job_dir, "freeflight")
+        os.makedirs(ff_dir)
+        plx, ply, pnx, pny = 2.0, 0.5, 20, 5
+        pverts, ptris = plate(plx, ply, pnx, pny)
+        write_mesh(os.path.join(ff_dir, "nodes.bin"), pverts)
+        write_faces(os.path.join(ff_dir, "faces.bin"), ptris, np.ones(len(ptris), dtype=np.int32))
+        pt = 0.002
+        pm_at = np.array([0.5, 0.25, 0.1])
+        pm_mass = 2.0
+        pm_attach = [int(v) for v in np.argsort(np.linalg.norm(pverts - pm_at, axis=1))[:4]]
+        m_plate = AL["density"] * pt * plx * ply
+        m_total = m_plate + pm_mass
+        lift = -(m_total * sf.G0) / (plx * ply)   # a negative pressure pulls the upward-facing plate up
+
+        def ff_job(name, pressure, load_factor, reference=None, relief=True, modes=0, supports=None):
+            return {
+                "nodes": "nodes.bin", "faces": "faces.bin", "rib_faces": None,
+                "regions": [{"id": 1, "label": "plate", "skin": {"material": AL, "thickness": pt}, "rib": None}],
+                "supports": supports or [],
+                "inertia_relief": ({"reference": reference} if relief else None),
+                "masses": [{"name": "pod", "mass": pm_mass, "at": [float(v) for v in pm_at], "inertia": None, "attach": pm_attach}],
+                "loads": {"load_factor": load_factor, "pressure": pressure, "pressure_file": None, "point_forces": []},
+                "solver": {"echo_level": 0, "linear_solver": solver, "shell_element": "ShellThinElement3D3N", "modes": modes},
+                "outputs": {"vtk": os.path.join(ff_dir, name + ".vtk"), "result": name + "_result.json"},
+            }
+
+        r1 = run(ff_dir, ff_job("trim", lift, 1.0, modes=3))
+        scale1 = r1["load_scale"]
+        failures += not check(r1["ok"] and r1["support_mode"] == "free flight" and r1["support_nodes"] == 1 and 0 <= r1["support_node"] < len(pverts),
+                              "free flight: one reference node holds the model (node %d at %s)" % (r1["support_node"], np.round(r1["support_at"], 3)))
+        failures += not check(r1["balanced"] and np.linalg.norm(r1["reaction"]) < 1e-9 * scale1 and np.linalg.norm(r1["reaction_moment"]) < 1e-9 * scale1 * plx
+                              and r1["balance_error"] < 1e-9 and r1["moment_error"] < 1e-9,
+                              "free flight: the reference node reacts nothing -- force %.2e N, moment %.2e Nm against loads of %.4g N" % (np.linalg.norm(r1["reaction"]), np.linalg.norm(r1["reaction_moment"]), scale1))
+        failures += not check(np.linalg.norm(r1["rigid_acceleration"]) < 1e-9 * sf.G0 and abs(r1["load_factor_at_cg"] - 1.0) < 1e-9,
+                              "free flight: lift equal to the weight -- no rigid acceleration, load factor 1 at the mass centre (%.3g m/s^2, n = %.6f)" % (np.linalg.norm(r1["rigid_acceleration"]), r1["load_factor_at_cg"]))
+        # The pitch acceleration: the lift acts at the plate's centre, the
+        # weight at the mass centre; alpha = I_cg^-1 (r_plate - cg) x L.
+        cg1 = np.array(r1["mass_centre"])
+        M1 = np.cross(np.array([plx / 2, ply / 2, 0.0]) - cg1, np.array([0.0, 0.0, m_total * sf.G0]))
+        alpha1 = np.linalg.solve(np.array(r1["inertia_cg"]), M1)
+        failures += not check(np.linalg.norm(np.array(r1["rigid_angular_acceleration"]) - alpha1) < 1e-9 * np.linalg.norm(alpha1) and abs(alpha1[1]) > 1.0,
+                              "free flight: the offset mass makes the body pitch, alpha = I_cg^-1 M (%s rad/s^2)" % np.round(r1["rigid_angular_acceleration"], 4))
+        failures += not check(abs(r1["mass"] - m_total) < 1e-9 * m_total and r1["max_von_mises"] > 1e5 and r1["max_displacement"] > 1e-4,
+                              "free flight: the plate bends under the lift against its mass (%.4g Pa, %.4g m)" % (r1["max_von_mises"], r1["max_displacement"]))
+        # The same case from a corner of the plate: the same stresses.
+        r2 = run(ff_dir, ff_job("trim_corner", lift, 1.0, reference=[0.0, 0.0, 0.0]))
+        _, _, _, _, cd1 = read_vtk(os.path.join(ff_dir, "trim.vtk"))
+        _, _, _, _, cd2 = read_vtk(os.path.join(ff_dir, "trim_corner.vtk"))
+        dvm = float(np.abs(cd1["von_mises_element"] - cd2["von_mises_element"]).max() / cd1["von_mises_element"].max())
+        failures += not check(r2["ok"] and r2["support_node"] == 0 and r2["support_node"] != r1["support_node"] and dvm < 1e-8 and np.linalg.norm(r2["reaction"]) < 1e-9 * scale1,
+                              "free flight: the stresses do not depend on the reference node (node %d vs %d, max relative difference %.1e)" % (r2["support_node"], r1["support_node"], dvm))
+        # Gravity alone: the body falls freely, nothing is loaded.
+        r3 = run(ff_dir, ff_job("fall", 0.0, 1.0))
+        failures += not check(r3["ok"] and abs(r3["rigid_acceleration"][2] + sf.G0) < 1e-9 * sf.G0 and abs(r3["load_factor_at_cg"]) < 1e-9
+                              and r3["max_von_mises"] < 1e-6 * r1["max_von_mises"] and r3["max_displacement"] < 1e-9 * r1["max_displacement"],
+                              "free flight: gravity alone loads nothing -- the body falls at g (a0 %.4g m/s^2, n = %.2g, von Mises %.2e Pa)" % (r3["rigid_acceleration"][2], r3["load_factor_at_cg"], r3["max_von_mises"]))
+        # Lift of twice the weight under 1 g: the body accelerates up at g
+        # and feels 2 g; the same stresses as the 2 g trimmed case.
+        r4 = run(ff_dir, ff_job("pull_up", 2.0 * lift, 1.0))
+        r5 = run(ff_dir, ff_job("trim_2g", 2.0 * lift, 2.0))
+        _, _, _, _, cd4 = read_vtk(os.path.join(ff_dir, "pull_up.vtk"))
+        _, _, _, _, cd5 = read_vtk(os.path.join(ff_dir, "trim_2g.vtk"))
+        dvm45 = float(np.abs(cd4["von_mises_element"] - cd5["von_mises_element"]).max() / cd5["von_mises_element"].max())
+        failures += not check(r4["ok"] and r5["ok"] and abs(r4["rigid_acceleration"][2] - sf.G0) < 1e-9 * sf.G0 and abs(r4["load_factor_at_cg"] - 2.0) < 1e-9
+                              and abs(r5["load_factor_at_cg"] - 2.0) < 1e-9 and np.linalg.norm(r5["rigid_acceleration"]) < 1e-9 * sf.G0 and dvm45 < 1e-8,
+                              "free flight: lift of twice the weight = a pull-up at 2 g, the same stresses as the trimmed 2 g case (a0 %.4g m/s^2, n = %.4g, difference %.1e)" % (r4["rigid_acceleration"][2], r4["load_factor_at_cg"], dvm45))
+        # The free-free modes: the six rigid modes dropped, the first
+        # flexible mode of the plate (a free-free beam's first bending is
+        # 22.37 / (2 pi L^2) sqrt(EI / rho A), lowered a little by the pod).
+        f_ff = r1["natural_frequencies"]
+        I_p = ply * pt ** 3 / 12
+        f1_free = 22.373 / (2 * np.pi * plx ** 2) * np.sqrt(AL["youngs_modulus"] * I_p / (AL["density"] * ply * pt))
+        failures += not check(len(f_ff) == 3 and f_ff[0] > 0.5 * f1_free and f_ff[0] < 1.2 * f1_free and f_ff[1] >= f_ff[0] and f_ff[2] >= f_ff[1],
+                              "free flight: three free-free modes with the rigid ones dropped, the first near the free-free beam's %.4g Hz (%s)" % (f1_free, ", ".join("%.4g" % f for f in f_ff) if f_ff else "none: %s" % "; ".join(r1["warnings"])))
+        print("  free flight: reaction %.2e N / %.2e Nm, alpha %s, von Mises %.4g Pa, modes %s Hz (%s)" % (np.linalg.norm(r1["reaction"]), np.linalg.norm(r1["reaction_moment"]), np.round(r1["rigid_angular_acceleration"], 3), r1["max_von_mises"], ", ".join("%.4g" % f for f in f_ff), r1["eigensolver"]))
+        # Planes and free flight together are refused; neither is refused too.
+        refused = ""
+        try:
+            run(ff_dir, ff_job("both", lift, 1.0, supports=[{"axis": "x", "value": "min", "tolerance": 0.0, "bounds": None}]))
+        except sf.JobError as exc:
+            refused = str(exc)
+        failures += not check("free flight" in refused, "free flight: support planes and free flight together are refused")
+        refused = ""
+        try:
+            run(ff_dir, ff_job("neither", lift, 1.0, relief=False))
+        except sf.JobError as exc:
+            refused = str(exc)
+        failures += not check("no support" in refused, "free flight: no support at all is refused")
 
         if keep:
             os.makedirs(keep, exist_ok=True)

@@ -89,6 +89,16 @@ public:
 
 	const TArray<TWeakObjectPtr<AAerotelicEntityActor>>& GetEntities() const { return Entities; }
 
+	// The MASS ITEMS (2026-11-13; mass_properties.hpp MassItem): the
+	// concentrated masses -- a battery, a motor, the payload -- that are
+	// not part of any body's shells, each hung on a body of a scene item by
+	// name. Saved with the project under `masses:`; New clears them, Open
+	// takes the file's. An item whose entity has left the scene is kept
+	// (it still weighs) and saved hanging on nothing. Edited in Analysis >
+	// Structural's Masses tab.
+	const TArray<aerotelic::MassItem>& GetMassItems() const { return MassItems; }
+	void SetMassItems(const TArray<aerotelic::MassItem>& Items) { MassItems = Items; }
+
 	// Every section airfoil on any Wing or Propeller blade in the scene --
 	// the Sections tab's airfoil picker offers these first, matching
 	// section_panel.py's project_airfoils()/_project_airfoil_source.
@@ -307,6 +317,7 @@ private:
 	FString CurrentPath;
 	aerotelic::UnitSystem Units;
 	double ModelScale = 1.0;
+	TArray<aerotelic::MassItem> MassItems;
 	FAerotelicSurfaceStyle SurfaceStyle;
 	FAerotelicShadowStyle ShadowStyle;
 	EAerotelicRenderStyle RenderStyle = EAerotelicRenderStyle::Shaded;

@@ -281,12 +281,61 @@ namespace AerotelicStructuralFea
 				i ? TEXT(", ") : TEXT(""), R.Id, *JsonString(R.Label), *Skin, *Rib);
 		}
 
-		if (Request.Supports.Num() == 0)
+		if (Request.Supports.Num() == 0 && !Request.bFreeFlight)
 		{
-			OutError = TEXT("no support: give at least one plane whose nodes are fixed");
+			OutError = TEXT("no support: give at least one plane whose nodes are fixed, or choose free flight (inertia relief)");
 			Cleanup();
 			return false;
 		}
+		if (Request.Supports.Num() > 0 && Request.bFreeFlight)
+		{
+			OutError = TEXT("free flight takes no support planes: the model is held by its own inertia and one reference node");
+			Cleanup();
+			return false;
+		}
+		for (const FMassItem& M : Request.Masses)
+		{
+			if (!(M.Mass > 0.0))
+			{
+				OutError = FString::Printf(TEXT("mass item '%s' has no mass"), *M.Name);
+				Cleanup();
+				return false;
+			}
+			if (M.AttachNodes.Num() < 3)
+			{
+				OutError = FString::Printf(TEXT("mass item '%s' hangs on %d node(s); it needs at least three, not in a line"), *M.Name, M.AttachNodes.Num());
+				Cleanup();
+				return false;
+			}
+			for (int32 N : M.AttachNodes)
+			{
+				if (N < 0 || N >= static_cast<int32>(Request.Nodes->size()))
+				{
+					OutError = FString::Printf(TEXT("mass item '%s' hangs on a node the mesh does not have"), *M.Name);
+					Cleanup();
+					return false;
+				}
+			}
+		}
+		FString MassesJson;
+		for (int32 i = 0; i < Request.Masses.Num(); ++i)
+		{
+			const FMassItem& M = Request.Masses[i];
+			FString Attach;
+			for (int32 k = 0; k < M.AttachNodes.Num(); ++k) Attach += FString::Printf(TEXT("%s%d"), k ? TEXT(", ") : TEXT(""), M.AttachNodes[k]);
+			bool bInertia = false;
+			for (double V : M.Inertia) bInertia = bInertia || V != 0.0;
+			const FString Inertia = bInertia
+				? FString::Printf(TEXT("[%s, %s, %s, %s, %s, %s]"), *Num(M.Inertia[0]), *Num(M.Inertia[1]), *Num(M.Inertia[2]), *Num(M.Inertia[3]), *Num(M.Inertia[4]), *Num(M.Inertia[5]))
+				: FString(TEXT("null"));
+			MassesJson += FString::Printf(TEXT("%s{\"name\": %s, \"mass\": %s, \"at\": [%s, %s, %s], \"inertia\": %s, \"attach\": [%s]}"), i ? TEXT(", ") : TEXT(""),
+				*JsonString(M.Name), *Num(M.Mass), *Num(M.At.x * L), *Num(M.At.y * L), *Num(M.At.z * L), *Inertia, *Attach);
+		}
+		const FString ReliefJson = Request.bFreeFlight
+			? (Request.bReferenceGiven
+				? FString::Printf(TEXT("{\"reference\": [%s, %s, %s]}"), *Num(Request.Reference.x * L), *Num(Request.Reference.y * L), *Num(Request.Reference.z * L))
+				: FString(TEXT("{\"reference\": null}")))
+			: FString(TEXT("null"));
 		FString SupportsJson;
 		for (int32 i = 0; i < Request.Supports.Num(); ++i)
 		{
@@ -306,13 +355,13 @@ namespace AerotelicStructuralFea
 		}
 		const FString Job = FString::Printf(
 			TEXT("{\n \"nodes\": \"nodes.bin\",\n \"faces\": %s,\n \"rib_faces\": %s,\n \"axes\": %s,\n \"rib_axes\": %s,\n \"regions\": [%s],\n")
-			TEXT(" \"supports\": [%s],\n")
+			TEXT(" \"supports\": [%s],\n \"inertia_relief\": %s,\n \"masses\": [%s],\n")
 			TEXT(" \"loads\": {\"load_factor\": %s, \"pressure\": %s, \"pressure_file\": %s, \"point_forces\": [%s]},\n")
 			TEXT(" \"solver\": {\"echo_level\": 0, \"linear_solver\": %s, \"shell_element\": %s, \"modes\": %d},\n")
 			TEXT(" \"outputs\": {\"vtk\": %s, \"result\": \"result.json\"}\n}\n"),
 			FacesFile.IsEmpty() ? TEXT("null") : *JsonString(FacesFile), RibsFile.IsEmpty() ? TEXT("null") : *JsonString(RibsFile),
 			AxesFile.IsEmpty() ? TEXT("null") : *JsonString(AxesFile), RibAxesFile.IsEmpty() ? TEXT("null") : *JsonString(RibAxesFile), *Regions,
-			*SupportsJson,
+			*SupportsJson, *ReliefJson, *MassesJson,
 			*Num(Request.LoadFactor), *Num(Request.Pressure), PressureFile.IsEmpty() ? TEXT("null") : *JsonString(PressureFile), *PointsJson,
 			*JsonString(Request.LinearSolver.IsEmpty() ? FString(TEXT("auto")) : Request.LinearSolver),
 			*JsonString(Request.ShellElement.IsEmpty() ? FString(TEXT("ShellThinElement3D3N")) : Request.ShellElement),
@@ -344,6 +393,54 @@ namespace AerotelicStructuralFea
 		Out.SupportCornerNodes = Result->HasField(TEXT("support_corner_nodes")) ? Int(TEXT("support_corner_nodes")) : Out.SupportNodes;
 		Out.WettedFaces = Int(TEXT("wetted_faces"));
 		Out.Mass = Real(TEXT("mass"));
+		Out.MassStructure = Result->HasField(TEXT("mass_structure")) ? Real(TEXT("mass_structure")) : Out.Mass;
+		Out.MassItems = Real(TEXT("mass_items"));
+		ReadVec3(Result, TEXT("mass_centre"), Out.MassCentre);
+		{
+			const TArray<TSharedPtr<FJsonValue>>* Rows = nullptr;
+			if (Result->TryGetArrayField(TEXT("inertia_cg"), Rows) && Rows->Num() == 3)
+			{
+				for (int32 r = 0; r < 3; ++r)
+				{
+					const TArray<TSharedPtr<FJsonValue>>* Row = nullptr;
+					if (!(*Rows)[r].IsValid() || !(*Rows)[r]->TryGetArray(Row) || Row->Num() != 3) continue;
+					for (int32 c = 0; c < 3; ++c)
+					{
+						double V = 0.0;
+						if ((*Row)[c].IsValid() && (*Row)[c]->TryGetNumber(V)) Out.InertiaCg[3 * r + c] = V;
+					}
+				}
+			}
+		}
+		FString Mode;
+		Result->TryGetStringField(TEXT("support_mode"), Mode);
+		Out.bFreeFlight = Mode == TEXT("free flight");
+		Out.SupportNode = Result->HasField(TEXT("support_node")) ? Int(TEXT("support_node")) : -1;
+		ReadVec3(Result, TEXT("support_at"), Out.SupportAt);
+		ReadVec3(Result, TEXT("reaction_moment"), Out.ReactionMoment);
+		ReadVec3(Result, TEXT("applied_inertial"), Out.AppliedInertial);
+		ReadVec3(Result, TEXT("rigid_acceleration"), Out.RigidAcceleration);
+		ReadVec3(Result, TEXT("rigid_angular_acceleration"), Out.RigidAngularAcceleration);
+		Out.LoadFactorAtCg = Result->HasField(TEXT("load_factor_at_cg")) ? Real(TEXT("load_factor_at_cg")) : Request.LoadFactor;
+		Out.MomentError = Real(TEXT("moment_error"));
+		{
+			const TArray<TSharedPtr<FJsonValue>>* Items = nullptr;
+			if (Result->TryGetArrayField(TEXT("items"), Items))
+			{
+				for (const TSharedPtr<FJsonValue>& V : *Items)
+				{
+					const TSharedPtr<FJsonObject>* Obj = nullptr;
+					if (!V.IsValid() || !V->TryGetObject(Obj)) continue;
+					FResult::FItem I;
+					(*Obj)->TryGetStringField(TEXT("name"), I.Name);
+					I.Mass = NumberOr(*Obj, TEXT("mass"));
+					I.AttachNodes = static_cast<int32>(NumberOr(*Obj, TEXT("attach_nodes")));
+					ReadVec3(*Obj, TEXT("displacement"), I.Displacement);
+					ReadVec3(*Obj, TEXT("force"), I.Force);
+					Out.Items.Add(I);
+				}
+			}
+		}
 		Out.MaxDisplacement = Real(TEXT("max_displacement"));
 		ReadVec3(Result, TEXT("max_displacement_at"), Out.MaxDisplacementAt);
 		Out.MaxVonMises = Real(TEXT("max_von_mises"));

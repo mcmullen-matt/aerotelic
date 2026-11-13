@@ -804,6 +804,11 @@ std::vector<NamedLoft> LoftedNacelleModel::BuildLofts(std::optional<double> tole
 	NamedLoft loft;
 	loft.name = "Main";
 	loft.source = std::move(src);
+	// The trailing edge is the rim u in [1, 2] where the outer skin (u) meets
+	// the inner (3 - u, mirror_u) at x = L: the panel method's annular sheet
+	// runs from the lip (u = 0) to u = 1 and sheds its wake there
+	// (solid_model.hpp LoftTrailingEdge).
+	loft.trailing_edge = LoftTrailingEdge::Station(1.0, 1.0, 2.0);
 	return {loft};
 }
 

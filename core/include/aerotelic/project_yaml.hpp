@@ -207,6 +207,14 @@ YAML::Node Encode(const ProjectBoolean& b);
 // `networks:` key (see ProjectFile).
 ProjectBoolean DecodeProjectBoolean(const YAML::Node& node, std::vector<std::string>* ignored_infill = nullptr, std::vector<std::string>* ignored_networks = nullptr);
 
+// A mass item (mass_properties.hpp MassItem; `masses:` at the top level,
+// 2026-11-13): `{name, mass, position: [x, y, z], inertia: [Ixx, Iyy, Izz,
+// Ixy, Ixz, Iyz] (only when any is set), attach: {entity, mirror (only
+// when true), body (only when set), nodes}}` (attach only when it hangs on
+// something). Decode throws std::invalid_argument on a MassItemProblem.
+YAML::Node EncodeMassItem(const MassItem& m);
+MassItem DecodeMassItem(const YAML::Node& node);
+
 struct ProjectFile {
 	// What every length and mass in the file means (units.hpp). Always
 	// written; absent on load means metres and kilograms.
@@ -222,6 +230,10 @@ struct ProjectFile {
 	std::vector<ProjectEntity> entities;
 	// In build order; every operand names something listed before it.
 	std::vector<ProjectBoolean> booleans;
+	// The concentrated masses hung on the structure (`masses:`, 2026-11-13;
+	// mass_properties.hpp MassItem). Written when there are any; each
+	// `attach.entity` must name an entity or a boolean listed above.
+	std::vector<MassItem> masses;
 	// The names of the `lattices:` entries of a file from before 2026-11-08,
 	// NOT decoded: lattices are no longer supported at all (the structure
 	// is shells only -- skins and plane networks), so the loader skips them

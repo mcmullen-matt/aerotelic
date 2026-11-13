@@ -90,4 +90,13 @@ namespace AerotelicFeaModelBuilder
 	// False, with the reason in Built.Problems, when nothing was added.
 	bool AppendBody(const FAerotelicBooleanOperand& Operand, const FString& Role, const FString& Label, int32 BodyIndex,
 		const FOptions& Options, FCache& Cache, FBuilt& Built);
+
+	// The nodes a MASS ITEM hangs on (2026-11-13): the Count nodes of the
+	// body BodyIndex's regions (its skin and its layers) nearest At, each
+	// once -- an RBE3-type attachment's masters. Every node of the model
+	// when BodyIndex is -1. Fewer than Count when the body has fewer; empty
+	// when the body is not in the model.
+	TArray<int32> AttachmentNodes(const std::vector<aerotelic::Vec3>& Nodes, const TArray<AerotelicStructuralFea::FShellFace>& ShellFaces,
+		const TArray<AerotelicStructuralFea::FShellFace>& RibFaces, const TArray<AerotelicStructuralFea::FRegion>& Regions,
+		int32 BodyIndex, const aerotelic::Vec3& At, int32 Count);
 }

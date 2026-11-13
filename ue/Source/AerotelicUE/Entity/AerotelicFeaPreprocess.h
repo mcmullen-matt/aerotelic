@@ -136,9 +136,38 @@ namespace AerotelicFeaPreprocess
 		// is not where it was typed: the caption and the Apply status warn.
 		bool SnapIsFar(const FPointLoad& P) const { return MedianEdge > 0.0 && P.SnapDistance > MedianEdge; }
 		FVector PointResultant = FVector::ZeroVector;      // N
-		double Mass = 0.0;              // kg, the part's: the shells' and the ribs'
-		FVector MassCentre = FVector::ZeroVector;           // project units, mass-weighted
-		FVector GravityForce = FVector::ZeroVector;         // N, (0, 0, -m n g)
+		double Mass = 0.0;              // kg, everything: the shells', the ribs' and the mass items'
+		double MassStructure = 0.0;     // kg, the shells' and the ribs'
+		double MassOfItems = 0.0;       // kg, the mass items'
+		FVector MassCentre = FVector::ZeroVector;           // project units, mass-weighted, items included
+		double InertiaCg[9] = { 0, 0, 0, 0, 0, 0, 0, 0, 0 };   // kg m^2 about the mass centre, world axes, row-major
+		FVector GravityForce = FVector::ZeroVector;         // N, (0, 0, -m n g) on everything
+
+		// ---- the mass items (2026-11-13), as the solver gets them ----
+		struct FMassItemView
+		{
+			FString Name;
+			double Mass = 0.0;          // kg
+			FVector At = FVector::ZeroVector;            // project units
+			TArray<int32> AttachNodes;
+			FVector AttachCentre = FVector::ZeroVector;  // project units: the attachment nodes' centroid
+		};
+		TArray<FMassItemView> MassItems;
+
+		// ---- free flight (2026-11-13): the support is one node, and the
+		// loads give the free body a rigid-body motion the inertial field
+		// balances. Mirrors the script's inertia_relief() on the same loads
+		// (the pressures as -p n A at the face centres, the point forces at
+		// their nodes, gravity on everything). ----
+		bool bFreeFlight = false;
+		FVector Reference = FVector::ZeroVector;     // project units: the point asked for (the mass centre by default)
+		int32 SupportNode = -1;                      // the structural node nearest it
+		FVector SupportAt = FVector::ZeroVector;     // project units
+		FVector RigidAcceleration = FVector::ZeroVector;          // m/s^2, a0 = F / m
+		FVector RigidAngularAcceleration = FVector::ZeroVector;   // rad/s^2, alpha = I_cg^-1 M_cg
+		FVector InertialResultant = FVector::ZeroVector;          // N, -m a0 (the field's resultant)
+		double LoadFactorAtCg = 0.0;                 // g: the vertical inertial load felt at the mass centre
+		bool bInertiaSingular = false;               // the tensor could not be inverted (a model on a line)
 	};
 
 	// Derives the model. False with the reason when the request has no

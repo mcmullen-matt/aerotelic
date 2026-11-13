@@ -114,6 +114,12 @@ struct Options {
 	std::optional<double> symmetry_y;
 	double reference_area = 1.0;
 	Vec3 moment_reference{0, 0, 0};
+	// The direction Solution::lift_from_wake is resolved along (2026-11-13):
+	// each wake column's Kutta-Joukowski force is μ (Δl x V̂) with Δl its
+	// trailing-edge segment, so a wake shed from any edge -- a fin's, a
+	// cowl's rim -- counts, not only one running in y. Unset: normal to the
+	// stream in the plane of the stream and +z (lift in wind axes).
+	std::optional<Vec3> lift_direction;
 	// Edges whose points all lie within this distance of another network's
 	// edge abut it; points within it of the symmetry plane lie on it.
 	double abutment_tolerance = 1e-6;
@@ -200,7 +206,9 @@ struct Solution {
 	double max_delta = 0.0;  // the largest panel curvature measure; (A.23) wants < 0.066
 	double seconds_influence = 0.0, seconds_solve = 0.0;
 	// Lift coefficient from the trailing-edge doublet strength of the wakes,
-	// C_L = (2 / V∞ S_R) ∫ μ_TE dy (section 6.3.1), when there is a wake.
+	// C_L = (2 / V∞ S_R) ∫ μ_TE dy (section 6.3.1) for a wake shed along y
+	// -- in general (2 / V∞ S_R) Σ μ_j (Δl_j x V̂) · L̂ over the wake columns,
+	// L̂ Options::lift_direction -- when there is a wake.
 	std::optional<double> lift_from_wake;
 	// Internal: the singularity parameters and the panel splines, for VelocityAt().
 	std::vector<double> parameters;

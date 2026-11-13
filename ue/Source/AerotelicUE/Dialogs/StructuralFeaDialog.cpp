@@ -280,6 +280,21 @@ namespace
 		double Hi[2] = { 0.0, 0.0 };
 	};
 
+	// A mass item as the user types it (2026-11-13; the document's
+	// aerotelic::MassItem in the dialog's terms): mass and inertia in the
+	// project's units as built, the position full-scale, the attachment a
+	// row of the body picker (0 none, i > 0 the picker's choice i - 1) and
+	// how many of that body's nearest nodes carry it.
+	struct FMassRow
+	{
+		FString Name = TEXT("mass");
+		double Mass = 1.0;
+		double X = 0.0, Y = 0.0, Z = 0.0;
+		double I[6] = { 0.0, 0.0, 0.0, 0.0, 0.0, 0.0 };   // Ixx, Iyy, Izz, Ixy, Ixz, Iyz
+		int32 Attach = 0;
+		int32 Nodes = 8;
+	};
+
 	// A handle of a support patch in the Support picture: which plane,
 	// which part of its rectangle (0..3 the corners lo/lo, hi/lo, hi/hi,
 	// lo/hi; 4..7 the edges u lo, u hi, w lo, w hi) and where it is drawn
@@ -340,8 +355,8 @@ namespace
 		}
 	};
 
-	enum ETab { TabSetup = 0, TabMesh = 1, TabLoads = 2, TabSupport = 3, TabHelp = 4 };
-	constexpr int32 kPictures = 4;   // indexed by ETab; TabSetup's slot unused
+	enum ETab { TabSetup = 0, TabMesh = 1, TabLoads = 2, TabMasses = 3, TabSupport = 4, TabHelp = 5 };
+	constexpr int32 kPictures = 5;   // indexed by ETab; TabSetup's slot unused
 
 	// ---- the dialog's state: owned by its widgets (the window is modeless) ----
 
@@ -386,6 +401,20 @@ namespace
 		TArray<TSharedPtr<FPointRow>> PointRows;
 		TArray<TSharedPtr<FSupportRow>> SupportRows;
 		TSharedPtr<SVerticalBox> PointList, SupportList;
+		// The mass items (2026-11-13): the document's, edited here and
+		// written back by Apply masses; the attachment options are "none"
+		// then the picker's rows.
+		TArray<TSharedPtr<FMassRow>> MassRows;
+		TSharedPtr<SVerticalBox> MassList;
+		TArray<TSharedPtr<FString>> AttachOptions, SupportModeOptions;
+		// The support mode: 0 clamped at the planes, 1 FREE FLIGHT (inertia
+		// relief: no planes, one reference node, the loads balanced by the
+		// rigid-body inertial field). The reference is the mass centre, or
+		// a point typed full-scale.
+		int32 SupportMode = 0;
+		bool bReferenceAtCg = true;
+		double RefX = 0.0, RefY = 0.0, RefZ = 0.0;
+		bool IsFreeFlight() const { return SupportMode == 1; }
 		TSharedPtr<SEditableTextBox> PathBox;
 		TSharedPtr<STextBlock> LblMaterials, LblMesh, LblDisp, LblStress, LblMargins, LblBalance, LblModes, LblTime;
 		// The solve's own status line and marquee in the dialog, and the
@@ -408,7 +437,7 @@ namespace
 		TSharedPtr<SAerotelicSceneView> Views[kPictures];
 		TSharedPtr<STextBlock> Captions[kPictures];
 		TArray<TWeakObjectPtr<AAerotelicColoredMeshActor>> Actors[kPictures];
-		bool bFramed[kPictures] = { false, false, false, false };
+		bool bFramed[kPictures] = {};
 
 		TSharedPtr<SAerotelicTabStrip> Tabs;
 		bool bSmoke = false;
@@ -464,7 +493,10 @@ namespace
 			// (Model > Scale), so every length goes in times the scale.
 			const double Scale = ModelScale();
 			Request.Supports.Reset();
-			for (const TSharedPtr<FSupportRow>& R : SupportRows)
+			Request.bFreeFlight = IsFreeFlight();
+			Request.bReferenceGiven = IsFreeFlight() && !bReferenceAtCg;
+			Request.Reference = aerotelic::Vec3{ RefX * Scale, RefY * Scale, RefZ * Scale };
+			for (const TSharedPtr<FSupportRow>& R : IsFreeFlight() ? TArray<TSharedPtr<FSupportRow>>() : SupportRows)
 			{
 				AerotelicStructuralFea::FSupport S;
 				S.Axis = (*AxisOptions[FMath::Clamp(R->Axis, 0, 2)])[0];
@@ -496,6 +528,123 @@ namespace
 			Request.ShellElement = kShellElements[FMath::Clamp(ShellIndex, 0, 1)];
 			Request.Modes = FMath::Max(FMath::RoundToInt32(Modes), 0);
 			Request.VtkPath = PathBox.IsValid() ? PathBox->GetText().ToString().TrimStartAndEnd() : FString();
+		}
+
+		// The mass items onto the request's mesh AS IT STANDS (its nodes are
+		// renumbered when floating parts are dropped, so this runs after
+		// that too): each row with an attachment hangs on the nearest nodes
+		// of its body's regions; one whose body is not in the model is left
+		// out and named. Mass and inertia to SI, the position to the replica.
+		void ResolveMasses(FBuilt& B)
+		{
+			AerotelicStructuralFea::FRequest& Request = B.Request;
+			Request.Masses.Reset();
+			const double Scale = ModelScale();
+			const double M2 = Units.MassToSI(), L2 = Units.LengthToSI();
+			for (const TSharedPtr<FMassRow>& R : MassRows)
+			{
+				AerotelicStructuralFea::FMassItem Item;
+				Item.Name = R->Name;
+				Item.Mass = R->Mass * M2;
+				Item.At = aerotelic::Vec3{ R->X * Scale, R->Y * Scale, R->Z * Scale };
+				for (int32 k = 0; k < 6; ++k) Item.Inertia[k] = R->I[k] * M2 * L2 * L2;
+				if (R->Attach <= 0)
+				{
+					B.Dropped.Add(FString::Printf(TEXT("mass item '%s' (%.4g %s) hangs on nothing and is left out of the analysis: choose a body on the Masses tab"), *R->Name, R->Mass, *UnitName(Units.MassName())));
+					continue;
+				}
+				Item.AttachNodes = AerotelicFeaModelBuilder::AttachmentNodes(B.Nodes, Request.ShellFaces, Request.RibFaces, Request.Regions, R->Attach - 1, Item.At, FMath::Max(R->Nodes, 3));
+				if (Item.AttachNodes.Num() < 3)
+				{
+					const FString Body = AttachOptions.IsValidIndex(R->Attach) ? *AttachOptions[R->Attach] : FString::FromInt(R->Attach);
+					B.Dropped.Add(FString::Printf(TEXT("mass item '%s' (%.4g %s) hangs on %s, which is not in the model (not chosen, refused, or floating): left out"), *R->Name, R->Mass, *UnitName(Units.MassName()), *Body));
+					continue;
+				}
+				Request.Masses.Add(Item);
+			}
+		}
+
+		// The rows from the document's mass items: a row per item, the
+		// attachment matched to the picker's row by scene name, mirror and
+		// body role (an item hung on something not in the picker shows
+		// "none").
+		void LoadMassRows()
+		{
+			MassRows.Reset();
+			const UAerotelicDocumentSubsystem* Doc = UAerotelicDocumentSubsystem::Get();
+			if (Doc == nullptr) return;
+			for (const aerotelic::MassItem& M : Doc->GetMassItems())
+			{
+				TSharedPtr<FMassRow> Row = MakeShared<FMassRow>();
+				Row->Name = UTF8_TO_TCHAR(M.name.c_str());
+				Row->Mass = M.mass;
+				Row->X = M.position[0]; Row->Y = M.position[1]; Row->Z = M.position[2];
+				for (int32 k = 0; k < 6; ++k) Row->I[k] = M.inertia[k];
+				Row->Nodes = M.attach_nodes;
+				Row->Attach = 0;
+				if (!M.attach_entity.empty())
+				{
+					const FString EntityName = UTF8_TO_TCHAR(M.attach_entity.c_str());
+					const FString Body = UTF8_TO_TCHAR(M.attach_body.c_str());
+					for (int32 i = 0; i < Choices.Num(); ++i)
+					{
+						const FAerotelicBodyChoice& C = *Choices[i];
+						if (!C.Operand.Entity.IsValid() || C.Operand.Entity->EntityName != EntityName || C.Operand.bMirror != M.attach_mirror) continue;
+						if (!Body.IsEmpty() && C.Body != Body) continue;
+						Row->Attach = i + 1;
+						break;
+					}
+				}
+				MassRows.Add(Row);
+			}
+		}
+
+		// The rows back into the document (Apply masses): the attachment as
+		// the chosen row's scene name, mirror and body role.
+		void StoreMassRows()
+		{
+			UAerotelicDocumentSubsystem* Doc = UAerotelicDocumentSubsystem::Get();
+			if (Doc == nullptr) return;
+			TArray<aerotelic::MassItem> Items;
+			for (const TSharedPtr<FMassRow>& R : MassRows)
+			{
+				aerotelic::MassItem M;
+				M.name = TCHAR_TO_UTF8(*R->Name);
+				M.mass = R->Mass;
+				M.position = { R->X, R->Y, R->Z };
+				for (int32 k = 0; k < 6; ++k) M.inertia[k] = R->I[k];
+				M.attach_nodes = FMath::Max(R->Nodes, 3);
+				if (R->Attach > 0 && Choices.IsValidIndex(R->Attach - 1) && Choices[R->Attach - 1]->Operand.Entity.IsValid())
+				{
+					const FAerotelicBodyChoice& C = *Choices[R->Attach - 1];
+					M.attach_entity = TCHAR_TO_UTF8(*C.Operand.Entity->EntityName);
+					M.attach_mirror = C.Operand.bMirror;
+					M.attach_body = TCHAR_TO_UTF8(*C.Body);
+				}
+				Items.Add(M);
+			}
+			Doc->SetMassItems(Items);
+		}
+
+		// Why the rows cannot be used, or empty.
+		FString MassRowsProblem() const
+		{
+			TSet<FString> Names;
+			for (const TSharedPtr<FMassRow>& R : MassRows)
+			{
+				if (R->Name.TrimStartAndEnd().IsEmpty()) return TEXT("a mass item has no name");
+				if (Names.Contains(R->Name)) return FString::Printf(TEXT("two mass items are named '%s'"), *R->Name);
+				Names.Add(R->Name);
+				aerotelic::MassItem M;
+				M.name = TCHAR_TO_UTF8(*R->Name);
+				M.mass = R->Mass;
+				M.position = { R->X, R->Y, R->Z };
+				for (int32 k = 0; k < 6; ++k) M.inertia[k] = R->I[k];
+				M.attach_nodes = R->Nodes;
+				const std::string Problem = aerotelic::MassItemProblem(M);
+				if (!Problem.empty()) return UTF8_TO_TCHAR(Problem.c_str());
+			}
+			return FString();
 		}
 
 		// ---- the model: mesh the chosen bodies once; derive the rest ----
@@ -603,6 +752,7 @@ namespace
 			B.Request.RibAxes = B.FullRibAxes;
 			B.Request.Regions = B.FullRegions;
 			B.Dropped.Reset();
+			ResolveMasses(B);
 			FString Error;
 			if (!AerotelicFeaPreprocess::Build(B.Request, B.Model, Error))
 			{
@@ -693,6 +843,13 @@ namespace
 					Message(FText::FromString(TEXT("Nothing reaches a support: every chosen body floats free of the support planes.\n") + FString::Join(B.Dropped, TEXT("\n"))));
 					return false;
 				}
+				// The nodes were renumbered: the mass items hang on the new ones.
+				{
+					TArray<FString> KeptNotes;
+					for (const FString& D : B.Dropped) if (!D.StartsWith(TEXT("mass item"))) KeptNotes.Add(D);
+					B.Dropped = KeptNotes;
+				}
+				ResolveMasses(B);
 				if (!AerotelicFeaPreprocess::Build(B.Request, B.Model, Error))
 				{
 					Status(LOCTEXT("Ready", "Ready"));
@@ -923,8 +1080,11 @@ namespace
 				int32 Coarse = 0, Far = 0;
 				for (const FModel::FPlane& P : M.SupportPlanes) Coarse += M.ToleranceIsCoarse(P) ? 1 : 0;
 				for (const FModel::FPointLoad& P : M.PointLoads) Far += M.SnapIsFar(P) ? 1 : 0;
-				Status(FText::FromString(FString::Printf(TEXT("Applied: %d support plane(s) fixing %s nodes, %d point force(s)%s%s%s"),
-					M.SupportPlanes.Num(), *Thousands(M.SupportNodes.Num()), M.PointLoads.Num(),
+				const FString SupportText = M.bFreeFlight
+					? FString::Printf(TEXT("free flight, the reference node %d"), M.SupportNode)
+					: FString::Printf(TEXT("%d support plane(s) fixing %s nodes"), M.SupportPlanes.Num(), *Thousands(M.SupportNodes.Num()));
+				Status(FText::FromString(FString::Printf(TEXT("Applied: %s, %d mass item(s), %d point force(s)%s%s%s"),
+					*SupportText, M.MassItems.Num(), M.PointLoads.Num(),
 					Built->Dropped.Num() ? *FString::Printf(TEXT("; %d part(s) left out for floating, see the Support tab"), Built->Dropped.Num()) : TEXT(""),
 					Coarse ? *FString::Printf(TEXT("; WARNING: %d support tolerance(s) wider than the mesh's edges, see the Support tab"), Coarse) : TEXT(""),
 					Far ? *FString::Printf(TEXT("; WARNING: %d point force(s) landed more than a mesh edge from the point typed, see the Loads tab"), Far) : TEXT(""))));
@@ -1076,13 +1236,25 @@ namespace
 				{
 					AddArrow(Arrows, M.MassCentre, M.GravityForce, 0.12 * Diag, 0.005 * Diag, kGravity);
 					const FVector Centre = Full(M.MassCentre);
-					Text += FString::Printf(TEXT("\nInertial load (green): %.4g g on the model's mass of %.5g kg (the shells' rho t A, ribs included): (%.4g, %.4g, %.4g) N, drawn at the centre of mass (%.4g, %.4g, %.4g) %s; applied as a body force on every element"),
-						B.Request.LoadFactor, M.Mass,
+					Text += FString::Printf(TEXT("\nGravity (green): %.4g g on the model's mass of %.5g kg (the shells' rho t A, ribs included%s): (%.4g, %.4g, %.4g) N, drawn at the centre of mass (%.4g, %.4g, %.4g) %s; applied as a body force on every element and mass item"),
+						B.Request.LoadFactor, M.Mass, M.MassItems.Num() ? *FString::Printf(TEXT(", and %.4g kg in %d mass item(s)"), M.MassOfItems, M.MassItems.Num()) : TEXT(""),
 						M.GravityForce.X, M.GravityForce.Y, M.GravityForce.Z, Centre.X, Centre.Y, Centre.Z, *LengthUnit);
 				}
 				else
 				{
-					Text += TEXT("\nInertial load: none (load factor 0)");
+					Text += TEXT("\nGravity: none (load factor 0)");
+				}
+				if (M.bFreeFlight)
+				{
+					const FVector F = M.PressureResultant + M.PointResultant + M.GravityForce;
+					Text += FString::Printf(TEXT("\nFREE FLIGHT: the loads above sum to (%.4g, %.4g, %.4g) N, so the free body accelerates at (%.4g, %.4g, %.4g) m/s^2 and (%.4g, %.4g, %.4g) rad/s^2 about its mass centre; the inertial field of that motion (-m a on every element and mass item) is added so the load set balances, and the structure feels %.3g g at its mass centre%s"),
+						F.X, F.Y, F.Z, M.RigidAcceleration.X, M.RigidAcceleration.Y, M.RigidAcceleration.Z,
+						M.RigidAngularAcceleration.X, M.RigidAngularAcceleration.Y, M.RigidAngularAcceleration.Z, M.LoadFactorAtCg,
+						M.bInertiaSingular ? TEXT(" (WARNING: the inertia tensor is singular -- the mass lies on a line -- so the angular part could not be found)") : TEXT(""));
+					if (F.Size() > 1e-6 * FMath::Max(M.GravityForce.Size(), 1.0))
+					{
+						Text += TEXT("\n  A trimmed case has no net force and no net moment: lift equal to the weight at the mass centre. What the loads miss shows up as the acceleration above.");
+					}
 				}
 				Text += TEXT("\nArrow heads sit at the point of application; forces are newtons whatever the project's units. Edit the loads on the left and Apply.");
 				if (IsReplica())
@@ -1091,6 +1263,42 @@ namespace
 				}
 				ShowPicture(TabLoads, { &G, &Arrows }, { false, false });
 				if (Captions[TabLoads].IsValid()) Captions[TabLoads]->SetText(FText::FromString(Text));
+			}
+
+			// Masses: the surface in grey, each mass item as a marker sized by
+			// its mass with bars to the nodes it hangs on, the mass centre in
+			// green.
+			{
+				FGeom G = Surface([&](const FFace&) { return kGrey; });
+				FGeom Marks;
+				FString Text;
+				const FString MassUnit = UnitName(Units.MassName());
+				const double M2 = Units.MassToSI();
+				double Biggest = 0.0;
+				for (const FModel::FMassItemView& I : M.MassItems) Biggest = FMath::Max(Biggest, I.Mass);
+				for (int32 i = 0; i < M.MassItems.Num(); ++i)
+				{
+					const FModel::FMassItemView& I = M.MassItems[i];
+					const double R = (0.008 + 0.025 * FMath::Pow(I.Mass / FMath::Max(Biggest, 1e-300), 1.0 / 3.0)) * Diag;
+					AddOctahedron(Marks, I.At, R, kPointForce);
+					for (int32 N : I.AttachNodes) AddBar(Marks, I.At, At(N), 0.0015 * Diag, kHandle);
+					const FVector P = Full(I.At), C = Full(I.AttachCentre);
+					Text += FString::Printf(TEXT("%s%s (red): %.4g %s at (%.4g, %.4g, %.4g) %s, hung on %d nodes about (%.4g, %.4g, %.4g) %s (amber bars) -- an RBE3-type attachment: its load is shared out to those nodes, which it does not stiffen"),
+						i ? TEXT("\n") : TEXT(""), *I.Name, I.Mass / M2, *MassUnit, P.X, P.Y, P.Z, *LengthUnit, I.AttachNodes.Num(), C.X, C.Y, C.Z, *LengthUnit);
+				}
+				if (M.MassItems.Num() == 0) Text += TEXT("No mass item in the model: add one on the left (a battery, a motor, the payload), choose the body it hangs on, Apply.");
+				AddOctahedron(Marks, M.MassCentre, 0.01 * Diag, kGravity);
+				const FVector Centre = Full(M.MassCentre);
+				Text += FString::Printf(TEXT("\nMass: %.5g %s in all -- the shells %.5g %s%s; mass centre (green) at (%.4g, %.4g, %.4g) %s; inertia about it (kg m^2, world axes) Ixx %.4g, Iyy %.4g, Izz %.4g, Ixy %.3g, Ixz %.3g, Iyz %.3g"),
+					M.Mass / M2, *MassUnit, M.MassStructure / M2, *MassUnit, M.MassItems.Num() ? *FString::Printf(TEXT(", the items %.5g %s"), M.MassOfItems / M2, *MassUnit) : TEXT(""),
+					Centre.X, Centre.Y, Centre.Z, *LengthUnit, M.InertiaCg[0], M.InertiaCg[4], M.InertiaCg[8], -M.InertiaCg[1], -M.InertiaCg[2], -M.InertiaCg[5]);
+				for (const FString& D : B.Dropped) if (D.StartsWith(TEXT("mass item"))) Text += TEXT("\nLEFT OUT: ") + D;
+				if (IsReplica())
+				{
+					Text += FString::Printf(TEXT("\nPositions are the FULL-SCALE aircraft's and are scaled to the replica (%s); masses and inertias are as built, not scaled."), *ScaleText());
+				}
+				ShowPicture(TabMasses, { &G, &Marks }, { false, false });
+				if (Captions[TabMasses].IsValid()) Captions[TabMasses]->SetText(FText::FromString(Text));
 			}
 
 			// Support: the surface with its edges, a marker on every fixed
@@ -1177,28 +1385,49 @@ namespace
 						Full(M.MedianEdge), *LengthUnit);
 				}
 			}
-			if (Planes.Num() == 0) Text += TEXT("No support: add a plane on the left and Apply.");
+			if (M.bFreeFlight)
+			{
+				const FVector Ref = Full(M.Reference), SupportAt = Full(M.SupportAt), Centre = Full(M.MassCentre);
+				AddOctahedron(Marks, M.MassCentre, 0.01 * Diag, kGravity);
+				if (!bReferenceAtCg) AddOctahedron(Marks, M.Reference, 0.008 * Diag, kHandle);
+				Text += FString::Printf(TEXT("FREE FLIGHT (inertia relief): no plane holds the model. The loads are balanced by the inertial field of the rigid-body motion they would give the free body (see the Loads tab), and ONE node -- node %d at (%.4g, %.4g, %.4g) %s, the nearest to %s -- is fixed in its six degrees of freedom as a statically determinate support: it cannot load the structure, its reaction force and moment are the residual of the whole load set (zero to round-off when the solve is right) and are reported as the check, and the displacements are measured from it. The stresses do not depend on which node it is."),
+					M.SupportNode, SupportAt.X, SupportAt.Y, SupportAt.Z, *LengthUnit,
+					bReferenceAtCg ? *FString::Printf(TEXT("the mass centre (green, (%.4g, %.4g, %.4g) %s)"), Centre.X, Centre.Y, Centre.Z, *LengthUnit)
+					               : *FString::Printf(TEXT("the reference point (amber, (%.4g, %.4g, %.4g) %s)"), Ref.X, Ref.Y, Ref.Z, *LengthUnit));
+				if (M.SupportNode < 0) Text += TEXT("\nNO NODE: the model is empty.");
+			}
+			else if (Planes.Num() == 0) Text += TEXT("No support: add a plane on the left and Apply.");
 			if (IsReplica())
 			{
 				Text += FString::Printf(TEXT("\nCoordinates here and on the left are the FULL-SCALE aircraft's; the model is built at %s of that size (Model > Scale) and the picture shows the replica."), *ScaleText());
 			}
-			Text += FString::Printf(TEXT("\nFixed nodes (red): %s of %s, every degree of freedom -- the three displacements and the three rotations: a clamp"),
-				*Thousands(NSupport), *Thousands(M.Nodes));
-			if (Stride > 1) Text += FString::Printf(TEXT(" (one marker in %d drawn)"), Stride);
-			if (NSupport < 3) Text += TEXT("\nFEWER THAN THREE NODES: the solver refuses this support. Move a plane onto the geometry (or use the mesh's minimum / maximum), widen the tolerance or enlarge the patch.");
+			if (M.bFreeFlight)
+			{
+				Text += TEXT("\nFixed node (red): the one reference node, every degree of freedom.");
+			}
+			else
+			{
+				Text += FString::Printf(TEXT("\nFixed nodes (red): %s of %s, every degree of freedom -- the three displacements and the three rotations: a clamp"),
+					*Thousands(NSupport), *Thousands(M.Nodes));
+				if (Stride > 1) Text += FString::Printf(TEXT(" (one marker in %d drawn)"), Stride);
+				if (NSupport < 3) Text += TEXT("\nFEWER THAN THREE NODES: the solver refuses this support. Move a plane onto the geometry (or use the mesh's minimum / maximum), widen the tolerance or enlarge the patch.");
+			}
 			if (!bLive)
 			{
 				if (B.Dropped.Num() > 0)
 				{
-					Text += TEXT("\nLEFT OUT, no load path to any support (they would make the system singular):");
+					Text += M.bFreeFlight ? TEXT("\nLEFT OUT, not joined to the piece that holds the reference node (a loose piece in free flight has rigid motions of its own and would make the system singular):")
+					                      : TEXT("\nLEFT OUT, no load path to any support (they would make the system singular):");
 					for (const FString& D : B.Dropped) Text += TEXT("\n  ") + D;
 				}
 				else
 				{
-					Text += FString::Printf(TEXT("\nLoad path: every element reaches a support (%d connected piece%s)."), M.Components, M.Components == 1 ? TEXT("") : TEXT("s"));
+					Text += M.bFreeFlight ? FString::Printf(TEXT("\nEvery element is joined to the piece holding the reference node (%d connected piece%s)."), M.Components, M.Components == 1 ? TEXT("") : TEXT("s"))
+					                      : FString::Printf(TEXT("\nLoad path: every element reaches a support (%d connected piece%s)."), M.Components, M.Components == 1 ? TEXT("") : TEXT("s"));
 				}
 			}
-			Text += TEXT("\nEdit the supports on the left and Apply, or drag a patch's corner or edge handles here (the fixed nodes follow as you drag; the model is re-derived when you let go).");
+			Text += M.bFreeFlight ? TEXT("\nChoose the mode and the reference on the left and Apply.")
+			                      : TEXT("\nEdit the supports on the left and Apply, or drag a patch's corner or edge handles here (the fixed nodes follow as you drag; the model is re-derived when you let go).");
 			if (bMarksOnly)
 			{
 				AAerotelicColoredMeshActor* A = Actors[TabSupport][1].Get();
@@ -1230,7 +1459,12 @@ namespace
 			if (!BuildModel()) return;
 			const FBuilt& B = *Built;
 			const FModel& M = B.Model;
-			if (M.SupportNodes.Num() < 3)
+			if (M.bFreeFlight && M.SupportNode < 0)
+			{
+				Message(LOCTEXT("NoReferenceNode", "Free flight needs a reference node and the model has none."));
+				return;
+			}
+			if (!M.bFreeFlight && M.SupportNodes.Num() < 3)
 			{
 				Message(FText::FromString(FString::Printf(TEXT("Only %d node(s) lie on the support plane(s); a support needs a face of them. See the Support tab: move a plane onto the geometry (or use the mesh's minimum / maximum) or widen the tolerance.%s"), M.SupportNodes.Num(),
 					IsReplica() ? TEXT(" Coordinates are typed full-scale; the dialog scales them to the replica.") : TEXT(""))));
@@ -1361,9 +1595,11 @@ namespace
 			const FModel& M = B.Model;
 			if (!LblMesh.IsValid()) return;   // the window closed while the solver ran
 			const double L2 = Units.LengthToSI(), S2 = Units.StressToSI(), M2 = Units.MassToSI();
-			LblMesh->SetText(FText::FromString(FString::Printf(TEXT("%s nodes; %s shells%s; %s DOF; %s wetted faces; %s nodes on the supports"),
+			LblMesh->SetText(FText::FromString(FString::Printf(TEXT("%s nodes; %s shells%s%s; %s DOF; %s wetted faces; %s"),
 				*Thousands(R.Nodes), *Thousands(R.Shells), R.RibShells > 0 ? *FString::Printf(TEXT(" (%s of them rib shells, unloaded)"), *Thousands(R.RibShells)) : TEXT(""),
-				*Thousands(R.Dofs), *Thousands(R.WettedFaces), *Thousands(R.SupportNodes))));
+				R.Items.Num() > 0 ? *FString::Printf(TEXT("; %d mass item(s), %.5g %s"), R.Items.Num(), R.MassItems / M2, *UnitName(Units.MassName())) : TEXT(""),
+				*Thousands(R.Dofs), *Thousands(R.WettedFaces),
+				R.bFreeFlight ? *FString::Printf(TEXT("free flight, the reference node %d"), R.SupportNode) : *FString::Printf(TEXT("%s nodes on the supports"), *Thousands(R.SupportNodes)))));
 			LblDisp->SetText(FText::FromString(FString::Printf(TEXT("%.4g %s at (%.4g, %.4g, %.4g); mean surface displacement %s (u . n = %.3g %s)"),
 				R.MaxDisplacement / L2, *UnitName(Units.LengthName()), R.MaxDisplacementAt[0] / L2, R.MaxDisplacementAt[1] / L2, R.MaxDisplacementAt[2] / L2,
 				R.MeanNormalDisplacement < 0.0 ? TEXT("inward") : TEXT("outward"), R.MeanNormalDisplacement / L2, *UnitName(Units.LengthName()))));
@@ -1391,14 +1627,36 @@ namespace
 			}
 			LblStress->SetText(FText::FromString(FString::Printf(TEXT("%.4g %s, in region %d"), R.MaxVonMises / S2, *UnitName(Units.StressName()), R.MaxVonMisesRegion)));
 			LblMargins->SetText(FText::FromString(Peaks));
+			const double WorstError = FMath::Max(R.BalanceError, R.MomentError);
 			const FString Verdict = R.bBalanced
-				? FString::Printf(TEXT("Balanced to %.2g%%."), 100.0 * R.BalanceError)
-				: FString::Printf(TEXT("NOT CONVERGED: the reactions miss the applied loads by %.1f%%, so the linear solver (%s) did not converge and the displacements and stresses above mean nothing. Solve again with the direct solver."), 100.0 * R.BalanceError, *R.LinearSolver);
-			LblBalance->SetText(FText::FromString(FString::Printf(
-				TEXT("mass %.6g %s. Reactions (%.4g, %.4g, %.4g) N against gravity (%.4g, %.4g, %.4g) + pressure (%.4g, %.4g, %.4g) + point forces (%.4g, %.4g, %.4g) N. %s"),
-				R.Mass / M2, *UnitName(Units.MassName()), R.Reaction[0], R.Reaction[1], R.Reaction[2],
-				R.AppliedGravity[0], R.AppliedGravity[1], R.AppliedGravity[2], R.AppliedPressure[0], R.AppliedPressure[1], R.AppliedPressure[2],
-				R.AppliedPoint[0], R.AppliedPoint[1], R.AppliedPoint[2], *Verdict)));
+				? FString::Printf(TEXT("Balanced to %.2g%%."), 100.0 * WorstError)
+				: FString::Printf(TEXT("NOT CONVERGED: the reactions miss the applied loads by %.1f%%, so the linear solver (%s) did not converge and the displacements and stresses above mean nothing. Solve again with the direct solver."), 100.0 * WorstError, *R.LinearSolver);
+			if (R.bFreeFlight)
+			{
+				FString Items;
+				for (const AerotelicStructuralFea::FResult::FItem& I : R.Items)
+				{
+					Items += FString::Printf(TEXT("\n%s: %.4g %s on %d nodes, moved %.4g %s, puts (%.4g, %.4g, %.4g) N on the structure"), *I.Name, I.Mass / M2, *UnitName(Units.MassName()), I.AttachNodes,
+						FVector(I.Displacement[0], I.Displacement[1], I.Displacement[2]).Size() / L2, *UnitName(Units.LengthName()), I.Force[0], I.Force[1], I.Force[2]);
+				}
+				LblBalance->SetText(FText::FromString(FString::Printf(
+					TEXT("FREE FLIGHT. Mass %.6g %s (%.5g in %d mass item(s)), mass centre (%.4g, %.4g, %.4g) %s. The loads -- gravity (%.4g, %.4g, %.4g) + pressure (%.4g, %.4g, %.4g) + point forces (%.4g, %.4g, %.4g) N -- give the free body a0 = (%.4g, %.4g, %.4g) m/s^2 and alpha = (%.4g, %.4g, %.4g) rad/s^2, so the structure feels %.4g g at its mass centre; the inertial field (%.4g, %.4g, %.4g) N balances them. The reference node %d reacts (%.3g, %.3g, %.3g) N and (%.3g, %.3g, %.3g) N m: %s%s"),
+					R.Mass / M2, *UnitName(Units.MassName()), R.MassItems / M2, R.Items.Num(), R.MassCentre[0] / L2, R.MassCentre[1] / L2, R.MassCentre[2] / L2, *UnitName(Units.LengthName()),
+					R.AppliedGravity[0], R.AppliedGravity[1], R.AppliedGravity[2], R.AppliedPressure[0], R.AppliedPressure[1], R.AppliedPressure[2],
+					R.AppliedPoint[0], R.AppliedPoint[1], R.AppliedPoint[2],
+					R.RigidAcceleration[0], R.RigidAcceleration[1], R.RigidAcceleration[2], R.RigidAngularAcceleration[0], R.RigidAngularAcceleration[1], R.RigidAngularAcceleration[2],
+					R.LoadFactorAtCg, R.AppliedInertial[0], R.AppliedInertial[1], R.AppliedInertial[2],
+					R.SupportNode, R.Reaction[0], R.Reaction[1], R.Reaction[2], R.ReactionMoment[0], R.ReactionMoment[1], R.ReactionMoment[2], *Verdict, *Items)));
+			}
+			else
+			{
+				LblBalance->SetText(FText::FromString(FString::Printf(
+					TEXT("mass %.6g %s%s. Reactions (%.4g, %.4g, %.4g) N against gravity (%.4g, %.4g, %.4g) + pressure (%.4g, %.4g, %.4g) + point forces (%.4g, %.4g, %.4g) N. %s"),
+					R.Mass / M2, *UnitName(Units.MassName()), R.Items.Num() ? *FString::Printf(TEXT(" (%.5g in %d mass item(s))"), R.MassItems / M2, R.Items.Num()) : TEXT(""),
+					R.Reaction[0], R.Reaction[1], R.Reaction[2],
+					R.AppliedGravity[0], R.AppliedGravity[1], R.AppliedGravity[2], R.AppliedPressure[0], R.AppliedPressure[1], R.AppliedPressure[2],
+					R.AppliedPoint[0], R.AppliedPoint[1], R.AppliedPoint[2], *Verdict)));
+			}
 			// The natural frequencies: hertz whatever the project's units
 			// (of the replica under a model scale, like the rest).
 			if (B.Request.Modes <= 0)
@@ -1425,7 +1683,7 @@ namespace
 			{
 				UE_LOG(LogTemp, Warning, TEXT("StructuralFea: %s"), *W);
 			}
-			if (R.SupportCornerNodes != M.SupportNodes.Num() || R.WettedFaces != M.WettedFaces.Num() || R.Dofs != M.Dofs)
+			if (R.SupportCornerNodes != M.SupportNodes.Num() || R.WettedFaces != M.WettedFaces.Num() || R.Dofs != M.Dofs || (R.bFreeFlight && R.SupportNode != M.SupportNode))
 			{
 				UE_LOG(LogTemp, Warning, TEXT("StructuralFea: the pre-processor counted %d support nodes, %d wetted faces and %lld DOF, the solver %d, %d and %d"),
 					M.SupportNodes.Num(), M.WettedFaces.Num(), M.Dofs, R.SupportCornerNodes, R.WettedFaces, R.Dofs);
@@ -1494,6 +1752,96 @@ namespace
 						]
 						+ SVerticalBox::Slot().AutoHeight().Padding(0, 3) [ FormRow(IsReplica() ? LOCTEXT("AtFull", "At (full scale):") : LOCTEXT("At", "At:"), Triple(false), 70.0f) ]
 						+ SVerticalBox::Slot().AutoHeight().Padding(0, 3) [ FormRow(LOCTEXT("Force", "Force:"), Triple(true), 70.0f) ]
+					]
+				];
+			}
+		}
+
+		// Apply on the Masses tab: the rows into the document (they are saved
+		// with the project) and onto the built model.
+		void ApplyMasses()
+		{
+			const FString Problem = MassRowsProblem();
+			if (!Problem.IsEmpty())
+			{
+				Message(FText::FromString(Problem));
+				return;
+			}
+			StoreMassRows();
+			if (Built.IsValid()) ApplyInputs();
+			else Status(FText::FromString(FString::Printf(TEXT("%d mass item(s) kept with the project; Build the model (Set-up tab) to hang them on it."), MassRows.Num())));
+		}
+
+		void RebuildMassList()
+		{
+			if (!MassList.IsValid()) return;
+			MassList->ClearChildren();
+			const FText LengthSuffix = FText::FromString(TEXT(" ") + UnitName(Units.LengthName()));
+			const FText MassSuffix = FText::FromString(TEXT(" ") + UnitName(Units.MassName()));
+			const FText InertiaSuffix = FText::FromString(TEXT(" ") + UnitName(Units.MassName()) + TEXT(" ") + UnitName(Units.LengthName()) + TEXT("^2"));
+			TSharedPtr<FState> Self = AsShared();
+			for (int32 i = 0; i < MassRows.Num(); ++i)
+			{
+				TSharedPtr<FMassRow> Row = MassRows[i];
+				auto Triple = [this, Row, &LengthSuffix, &InertiaSuffix](int32 First)
+				{
+					// First 0: the position (X, Y, Z); 3: Ixx, Iyy, Izz; 6: Ixy, Ixz, Iyz.
+					auto Field = [this, Row, First, &LengthSuffix, &InertiaSuffix](int32 k)
+					{
+						auto Get = [Row, First, k]() -> double
+						{
+							if (First == 0) return k == 0 ? Row->X : (k == 1 ? Row->Y : Row->Z);
+							return Row->I[First - 3 + k];
+						};
+						auto Set = [Row, First, k](double V)
+						{
+							if (First == 0) (k == 0 ? Row->X : (k == 1 ? Row->Y : Row->Z)) = V;
+							else Row->I[First - 3 + k] = V;
+						};
+						return NumberField(Get, Set, First == 0 ? 0.1 : 0.01, First == 0 ? LengthSuffix : InertiaSuffix);
+					};
+					return SNew(SHorizontalBox)
+						+ SHorizontalBox::Slot().FillWidth(1).Padding(0, 0, 3, 0) [ Field(0) ]
+						+ SHorizontalBox::Slot().FillWidth(1).Padding(0, 0, 3, 0) [ Field(1) ]
+						+ SHorizontalBox::Slot().FillWidth(1) [ Field(2) ];
+				};
+				MassList->AddSlot().AutoHeight().Padding(0, 0, 0, 6)
+				[
+					SNew(SBorder).Padding(6).BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush")).BorderBackgroundColor(FLinearColor(0.1f, 0.1f, 0.12f))
+					[
+						SNew(SVerticalBox)
+						+ SVerticalBox::Slot().AutoHeight()
+						[
+							SNew(SHorizontalBox)
+							+ SHorizontalBox::Slot().FillWidth(1).VAlign(VAlign_Center) [ SNew(STextBlock).Text(FText::FromString(FString::Printf(TEXT("Mass item %d"), i + 1))).Font(FCoreStyle::GetDefaultFontStyle("Bold", 9)) ]
+							+ SHorizontalBox::Slot().AutoWidth()
+							[ Button(LOCTEXT("Delete", "Delete"), [Self, Row]() { Self->MassRows.Remove(Row); Self->RebuildMassList(); }) ]
+						]
+						+ SVerticalBox::Slot().AutoHeight().Padding(0, 3)
+						[
+							FormRow(LOCTEXT("MassName", "Name:"),
+								SNew(SEditableTextBox).Text_Lambda([Row]() { return FText::FromString(Row->Name); })
+								.OnTextCommitted_Lambda([Row](const FText& T, ETextCommit::Type) { Row->Name = T.ToString().TrimStartAndEnd(); }), 90.0f)
+						]
+						+ SVerticalBox::Slot().AutoHeight().Padding(0, 3) [ FormRow(LOCTEXT("MassMass", "Mass:"), NumberField([Row]() { return Row->Mass; }, [Row](double V) { Row->Mass = FMath::Max(V, 0.0); }, 0.1, MassSuffix, 0.0), 90.0f) ]
+						+ SVerticalBox::Slot().AutoHeight().Padding(0, 3) [ FormRow(IsReplica() ? LOCTEXT("AtFull", "At (full scale):") : LOCTEXT("At", "At:"), Triple(0), 90.0f) ]
+						+ SVerticalBox::Slot().AutoHeight().Padding(0, 3) [ FormRow(LOCTEXT("InertiaDiag", "Ixx, Iyy, Izz:"), Triple(3), 90.0f) ]
+						+ SVerticalBox::Slot().AutoHeight().Padding(0, 3) [ FormRow(LOCTEXT("InertiaOff", "Ixy, Ixz, Iyz:"), Triple(6), 90.0f) ]
+						+ SVerticalBox::Slot().AutoHeight().Padding(0, 3)
+						[
+							FormRow(LOCTEXT("HangsOn", "Hangs on:"),
+								SNew(SComboBox<TSharedPtr<FString>>)
+								.OptionsSource(&Self->AttachOptions)
+								.InitiallySelectedItem(Self->AttachOptions[FMath::Clamp(Row->Attach, 0, Self->AttachOptions.Num() - 1)])
+								.OnGenerateWidget_Lambda([](TSharedPtr<FString> Item) { return SNew(STextBlock).Text(FText::FromString(*Item)); })
+								.OnSelectionChanged_Lambda([Self, Row](TSharedPtr<FString> Item, ESelectInfo::Type)
+								{
+									const int32 I = Self->AttachOptions.IndexOfByKey(Item);
+									if (I != INDEX_NONE) Row->Attach = I;
+								})
+								[ SNew(STextBlock).Text_Lambda([Self, Row]() { return FText::FromString(*Self->AttachOptions[FMath::Clamp(Row->Attach, 0, Self->AttachOptions.Num() - 1)]); }) ], 90.0f)
+						]
+						+ SVerticalBox::Slot().AutoHeight().Padding(0, 3) [ FormRow(LOCTEXT("NearestNodes", "Nearest nodes:"), NumberField([Row]() { return (double)Row->Nodes; }, [Row](double V) { Row->Nodes = FMath::Max(FMath::RoundToInt32(V), 3); }, 1.0, FText::GetEmpty(), 3.0, 200.0), 90.0f) ]
 					]
 				];
 			}
@@ -1666,7 +2014,7 @@ namespace
 			}
 			Built.Reset();
 			Picker.Reset();
-			PointList.Reset(); SupportList.Reset();
+			PointList.Reset(); SupportList.Reset(); MassList.Reset();
 			PathBox.Reset();
 			LblMaterials.Reset(); LblMesh.Reset(); LblDisp.Reset(); LblStress.Reset(); LblMargins.Reset(); LblBalance.Reset(); LblModes.Reset(); LblTime.Reset();
 			Tabs.Reset();
@@ -1723,11 +2071,16 @@ namespace
 		"The wetted faces of the model -- the bodies' triangles -- coloured by region with their edges drawn, and the rib shells inside in their regions' colours. Where a region has a skin the wetted faces ARE its shell elements. The caption counts nodes, faces and rib shells, the cost, each region's kind, area and mass, and what was left out.\n\n"
 		"LOADS\n"
 		"On the left: the inertial load factor (the model's own mass under that many g along -z; 0 to begin with, so a test load acts alone), a uniform pressure on every wetted face (positive pressing inward), and any number of point forces, each at a point (the corner node nearest it takes the load) with its force in newtons -- add, edit, delete, then Apply. On the right the forces as arrows, each head at its point of application: orange the pressure as the traction on up to ~1500 faces (direction and relative size, not the face force), red each point force at its node, green the inertial load at the centre of mass.\n\n"
+		"MASSES (2026-11-13)\n"
+		"The concentrated masses that are not part of any body's shells -- a battery, a motor, the payload, a camera: Nastran's CONM2 on an RBE3. Each has a name, its mass and its inertia tensor about its own centre (Ixx, Iyy, Izz and the products Ixy, Ixz, Iyz as integral x y dm; all zero for a point mass) as BUILT, in the project's units and not scaled with the model; its position, full-scale like every coordinate here; the body it hangs on, from the picker's rows; and how many of that body's nearest nodes carry it (eight to begin with; at least three, not in a line). "
+		"The items are saved with the project (masses: in the file) and Apply keeps them; on the built model each hangs on its body by an RBE3-type constraint: the item's node moves with the weighted mean of its attachment nodes plus the least-squares rotation of that set, so the item's weight and inertial load are shared out to those nodes with the right resultant and moment, and the nodes are not stiffened (a rigid tie would be). An item whose body is not in the model is left out and named. The picture shows each item sized by its mass with bars to its nodes, and the mass centre of everything in green.\n\n"
 		"SUPPORT\n"
-		"On the left: any number of support planes, each axis = value (or the mesh's minimum or maximum along the axis) with a tolerance (0 is a ten-thousandth of the mesh's diagonal, about how planar a lofted section is); every node within the tolerance of any plane is clamped in every degree of freedom (the shells' rotations too) -- add, edit, delete, then Apply. "
+		"Two modes. CLAMPED: on the left, any number of support planes, each axis = value (or the mesh's minimum or maximum along the axis) with a tolerance (0 is a ten-thousandth of the mesh's diagonal, about how planar a lofted section is); every node within the tolerance of any plane is clamped in every degree of freedom (the shells' rotations too) -- add, edit, delete, then Apply. "
+		"FREE FLIGHT, inertia relief (2026-11-13): a flying airframe is held by nothing, and a clamp anywhere reacts the whole net load there and invents stresses around it. In this mode no plane holds the model. The net force and moment of every applied load -- the pressures, the point forces, gravity on the shells and the mass items -- are turned into the six rigid-body accelerations the free body would have (a0 = F / m, alpha = I_cg^-1 M about the mass centre) and the inertial field of that motion, -m a on every element and mass item, is added so the load set is self-equilibrated; this is what Nastran's SUPORT with PARAM,INREL does. The singular stiffness is then removed by fixing all six degrees of freedom of ONE node, the nearest to the mass centre (or to a point you type): a statically determinate support, which cannot load the structure. Its reaction force and moment are the residual of the whole load set -- zero to round-off when the solve is right -- and are THE check of the case; the displacements are measured from that node and the stresses do not depend on which node it is. "
+		"A trimmed 1 g case is lift equal to the weight acting through the mass centre: a0 and alpha are then zero and the structure feels 1 g. Lift that is not the weight shows up as a vertical acceleration and a load factor other than 1 at the mass centre; a moment about the mass centre as a pitch acceleration; the stresses are those of that accelerating state -- physical, but not the trimmed one. Gravity alone in free flight loads nothing: the body falls freely, and stress comes only from where the air loads act against where the mass sits. The natural frequencies in this mode are the free-free ones, the six rigid modes dropped.\n\n"
 		"A plane may be LIMITED TO A PATCH (2026-11-05): a rectangle of it along its two in-plane axes (the other two axes in order: a plane x = c has its patch in y and z), so a clamp at x = 3 through the fuselage does not also take the wing root that crosses x = 3. Tick the patch on the card and type the rectangle, press Fit to body (the chosen body's extent on the plane, or the whole mesh's), or drag the handles in the picture: a press on a corner moves two sides, on an edge's midpoint one side; the red markers follow as you drag, and the model is re-derived when you let go (the view stays put). Dragging a handle of a whole-plane support turns it into a patch starting from the frame as drawn. On the right a red marker on every fixed node, each plane as a frame (blue for the whole plane, amber for a patch) with its eight handles, and the load path: whatever reaches no support is left out and listed.\n\n"
 		"RESULT\n"
-		"Linear static, small displacement, linear elastic, the linear thin shell triangle (its reactions balance the loads exactly; the corotational triangles are options for small-displacement comparisons). The reactions at the supports must balance what was applied: the Force balance line says by how much they miss, and a miss of more than one percent means the linear solver did not converge -- the solution is then reported as NOT converged and nothing in it is to be trusted (the iterative solver can do this on thin shells; the direct solver cannot, which is why the automatic choice takes it up to 150,000 degrees of freedom). Margin is allowable / peak von Mises - 1 for each region: a body's skin, or one of its generated layers. "
+		"Linear static, small displacement, linear elastic, the linear thin shell triangle (its reactions balance the loads exactly; the corotational triangles are options for small-displacement comparisons). The pressures are applied as the consistent nodal loads of each face (a third of -p n A to each corner) rather than through the solver's own surface-load condition, which is a follower load evaluated on the displaced nodes and made the reported reactions miss by first order in the displacement. The reactions at the supports must balance what was applied: the Force balance line says by how much they miss, and a miss of more than one percent means the linear solver did not converge -- the solution is then reported as NOT converged and nothing in it is to be trusted (the iterative solver can do this on thin shells; the direct solver cannot, which is why the automatic choice takes it up to 150,000 degrees of freedom). In free flight the same line gives the rigid-body accelerations, the load factor at the mass centre and the reference node's reaction force and moment. Margin is allowable / peak von Mises - 1 for each region: a body's skin, or one of its generated layers. "
 		"The natural frequencies (2026-11-04) are the lowest modes of K phi = omega^2 M phi for the same mesh, materials and clamps with no loads: the stiffness the static solve used and the elements' own mass from the densities and thicknesses of the skin and rib shells. They are in hertz whatever the units; under a model scale they are the replica's. Checked on a 1 x 10 x 1 m thin-walled aluminium box: the degenerate first bending pair within 1.5% of the clamped-free beam's frequency corrected for shear, rotary inertia and the tip cap's mass, then the skin panels' own plate modes -- a thin-walled part goes local long before its second beam mode. The VTK holds the displacement, the stresses and the mode shapes (mode_1, mode_2, ... scaled to a unit largest displacement) for ParaView, in SI. No post-processing view yet.");
 }
 
@@ -1775,6 +2128,14 @@ void ShowAerotelicStructuralFeaDialog(TFunction<void(const FText&)> Status)
 	// the picker's bodies (i + 1 for Choices[i], as FSupportRow::Body).
 	S->BodyOptions.Add(MakeShared<FString>(TEXT("the whole mesh")));
 	for (const FAerotelicBodyChoicePtr& C : Choices) S->BodyOptions.Add(MakeShared<FString>(C->Label));
+	// What a mass item hangs on: nothing, or one of the picker's bodies
+	// (i + 1 for Choices[i], as FMassRow::Attach).
+	S->AttachOptions.Add(MakeShared<FString>(TEXT("nothing (left out of the analysis)")));
+	for (const FAerotelicBodyChoicePtr& C : Choices) S->AttachOptions.Add(MakeShared<FString>(C->Label));
+	S->SupportModeOptions = {
+		MakeShared<FString>(TEXT("Clamped at the support planes")),
+		MakeShared<FString>(TEXT("Free flight (inertia relief): one reference node, no planes")) };
+	S->LoadMassRows();
 	// One support to start with: y = 0, the root of a mirrored half.
 	S->SupportRows.Add(MakeShared<FSupportRow>());
 
@@ -1933,30 +2294,105 @@ void ShowAerotelicStructuralFeaDialog(TFunction<void(const FText&)> Status)
 				"The load factor puts the model's own mass under that many g along -z (0 to begin with, so a test load acts alone; 1 is its weight, a 4 g pull-up a real case). The pressure acts on every wetted face, positive pressing inwards -- the place a pressure field from the potential flow or DUST will plug in. Each point force goes to the corner node nearest its point; the picture warns when that node is more than a mesh edge away. Points are typed in FULL-SCALE coordinates, as the parameterisations are; with a model scale set (Model > Scale) the dialog scales them to the replica. Forces are newtons whatever the project's units or scale. Apply pushes the loads onto the built model and redraws them."))
 		];
 
+	// ---- the masses panel ----
+	TSharedRef<SWidget> MassesPanel =
+		SNew(SScrollBox)
+		+ SScrollBox::Slot().Padding(0, 0, 0, 8)
+		[
+			MakeGroup(LOCTEXT("MassesGroup", "Mass items"),
+				SNew(SVerticalBox)
+				+ SVerticalBox::Slot().AutoHeight() [ SAssignNew(S->MassList, SVerticalBox) ]
+				+ SVerticalBox::Slot().AutoHeight().HAlign(HAlign_Left)
+				[ Button(LOCTEXT("AddMass", "Add mass item"), [S]()
+				{
+					TSharedPtr<FMassRow> Row = MakeShared<FMassRow>();
+					Row->Name = FString::Printf(TEXT("mass %d"), S->MassRows.Num() + 1);
+					if (S->Built.IsValid())
+					{
+						const FVector C = FState::Full(S->Built->Model.MassCentre);
+						Row->X = C.X; Row->Y = C.Y; Row->Z = C.Z;
+					}
+					S->MassRows.Add(Row);
+					S->RebuildMassList();
+				}) ])
+		]
+		+ SScrollBox::Slot().Padding(0, 0, 0, 8).HAlign(HAlign_Left)
+		[ Button(LOCTEXT("ApplyMasses", "Apply masses"), [S]() { S->ApplyMasses(); }) ]
+		+ SScrollBox::Slot()
+		[
+			MakeInfoLabel(LOCTEXT("MassesHint",
+				"Concentrated masses that are not part of any body's shells: a battery, a motor, the payload. Mass and inertia (about the item's own centre; the products Ixy, Ixz, Iyz as integral x y dm; zero for a point mass) are the item's as BUILT, in the project's units, not scaled with the model; the position is full-scale, like every coordinate here. Each hangs on one body of the picker through that body's nearest nodes (at least three, not in a line) by an RBE3-type constraint: the item's weight and inertial load are shared out to those nodes with the right resultant and moment, and the nodes are not stiffened. Apply keeps the items with the project (saved under masses:) and hangs them on the built model; an item hung on nothing, or on a body not in the model, is left out and named on the right."))
+		];
+
 	// ---- the supports panel ----
 	TSharedRef<SWidget> SupportPanel =
 		SNew(SScrollBox)
 		+ SScrollBox::Slot().Padding(0, 0, 0, 8)
 		[
-			MakeGroup(LOCTEXT("SupportsGroup", "Support planes"),
-				SNew(SVerticalBox)
-				+ SVerticalBox::Slot().AutoHeight() [ SAssignNew(S->SupportList, SVerticalBox) ]
-				+ SVerticalBox::Slot().AutoHeight().HAlign(HAlign_Left)
-				[ Button(LOCTEXT("AddSupport", "Add support"), [S]() { S->SupportRows.Add(MakeShared<FSupportRow>()); S->RebuildSupportList(); }) ])
+			MakeGroup(LOCTEXT("SupportModeGroup", "Support mode"),
+				SNew(SComboBox<TSharedPtr<FString>>)
+				.OptionsSource(&S->SupportModeOptions)
+				.InitiallySelectedItem(S->SupportModeOptions[S->SupportMode])
+				.OnGenerateWidget_Lambda([](TSharedPtr<FString> Item) { return SNew(STextBlock).Text(FText::FromString(*Item)); })
+				.OnSelectionChanged_Lambda([S](TSharedPtr<FString> Item, ESelectInfo::Type)
+				{
+					const int32 I = S->SupportModeOptions.IndexOfByKey(Item);
+					if (I != INDEX_NONE) S->SupportMode = I;
+				})
+				[ SNew(STextBlock).Text_Lambda([S]() { return FText::FromString(*S->SupportModeOptions[FMath::Clamp(S->SupportMode, 0, 1)]); }) ])
+		]
+		+ SScrollBox::Slot().Padding(0, 0, 0, 8)
+		[
+			SNew(SBox).Visibility_Lambda([S]() { return S->IsFreeFlight() ? EVisibility::Collapsed : EVisibility::Visible; })
+			[
+				MakeGroup(LOCTEXT("SupportsGroup", "Support planes"),
+					SNew(SVerticalBox)
+					+ SVerticalBox::Slot().AutoHeight() [ SAssignNew(S->SupportList, SVerticalBox) ]
+					+ SVerticalBox::Slot().AutoHeight().HAlign(HAlign_Left)
+					[ Button(LOCTEXT("AddSupport", "Add support"), [S]() { S->SupportRows.Add(MakeShared<FSupportRow>()); S->RebuildSupportList(); }) ])
+			]
+		]
+		+ SScrollBox::Slot().Padding(0, 0, 0, 8)
+		[
+			SNew(SBox).Visibility_Lambda([S]() { return S->IsFreeFlight() ? EVisibility::Visible : EVisibility::Collapsed; })
+			[
+				MakeGroup(LOCTEXT("ReferenceGroup", "Reference node (free flight)"),
+					SNew(SVerticalBox)
+					+ SVerticalBox::Slot().AutoHeight().Padding(0, 2)
+					[
+						SNew(SCheckBox)
+						.IsChecked_Lambda([S]() { return S->bReferenceAtCg ? ECheckBoxState::Checked : ECheckBoxState::Unchecked; })
+						.OnCheckStateChanged_Lambda([S](ECheckBoxState State) { S->bReferenceAtCg = State == ECheckBoxState::Checked; })
+						[ SNew(STextBlock).Text(LOCTEXT("RefAtCg", "At the mass centre (the node nearest it)")) ]
+					]
+					+ SVerticalBox::Slot().AutoHeight().Padding(0, 3)
+					[
+						SNew(SBox).IsEnabled_Lambda([S]() { return !S->bReferenceAtCg; })
+						[
+							FormRow(S->IsReplica() ? LOCTEXT("RefAtFull", "Or near (full scale):") : LOCTEXT("RefAt", "Or near:"),
+								SNew(SHorizontalBox)
+								+ SHorizontalBox::Slot().FillWidth(1).Padding(0, 0, 3, 0) [ Spin(&FState::RefX, -1e12, 1e12, 0.1, FText::FromString(TEXT(" ") + UnitName(S->Units.LengthName()))) ]
+								+ SHorizontalBox::Slot().FillWidth(1).Padding(0, 0, 3, 0) [ Spin(&FState::RefY, -1e12, 1e12, 0.1, FText::FromString(TEXT(" ") + UnitName(S->Units.LengthName()))) ]
+								+ SHorizontalBox::Slot().FillWidth(1) [ Spin(&FState::RefZ, -1e12, 1e12, 0.1, FText::FromString(TEXT(" ") + UnitName(S->Units.LengthName()))) ], 130.0f)
+						]
+					])
+			]
 		]
 		+ SScrollBox::Slot().Padding(0, 0, 0, 8).HAlign(HAlign_Left)
 		[ Button(LOCTEXT("ApplySupports", "Apply supports"), [S]() { S->ApplyInputs(); }) ]
 		+ SScrollBox::Slot()
 		[
 			MakeInfoLabel(LOCTEXT("SupportHint",
-				"Every node within the tolerance of any plane is fixed in every degree of freedom (the shells' rotations too: a clamp). y = 0 is the root of a mirrored half -- the symmetry plane -- which is why it is the one to start with; the mesh's minimum or maximum along an axis clamps a body by its end -- 'Of' says whose end: the whole mesh's, or one body's, so a body that sticks out further does not take a support meant for another. A plane limited to a PATCH fixes only the nodes inside its rectangle: type it, Fit to body, or drag the handles in the picture (the fixed nodes follow live). Values, tolerances and patches are typed in FULL-SCALE coordinates, as the parameterisations are; with a model scale set (Model > Scale) the dialog scales them to the replica. A tolerance of 0 is a ten-thousandth of the mesh's diagonal -- about how planar a lofted section comes out, so a root ring is taken whole. Whatever reaches no plane, on its own or through a body it was fused with, is left out of the solve and listed on the right. Apply pushes the supports onto the built model and redraws them."))
+				"CLAMPED: every node within the tolerance of any plane is fixed in every degree of freedom (the shells' rotations too: a clamp). y = 0 is the root of a mirrored half -- the symmetry plane -- which is why it is the one to start with; the mesh's minimum or maximum along an axis clamps a body by its end -- 'Of' says whose end: the whole mesh's, or one body's, so a body that sticks out further does not take a support meant for another. A plane limited to a PATCH fixes only the nodes inside its rectangle: type it, Fit to body, or drag the handles in the picture (the fixed nodes follow live). Values, tolerances and patches are typed in FULL-SCALE coordinates, as the parameterisations are; with a model scale set (Model > Scale) the dialog scales them to the replica. A tolerance of 0 is a ten-thousandth of the mesh's diagonal -- about how planar a lofted section comes out, so a root ring is taken whole. Whatever reaches no plane, on its own or through a body it was fused with, is left out of the solve and listed on the right. "
+				"FREE FLIGHT (inertia relief): no plane; the loads are balanced by the inertial field of the rigid-body motion they would give the free body, and one node -- the nearest to the mass centre, or to a point you type -- is fixed in its six degrees of freedom as a support that cannot load the structure. Its reaction is the residual of the load set and is reported as the check (zero to round-off when the solve is right); the displacements are measured from it. The case to run is a TRIMMED one: lift equal to the weight through the mass centre. See the Help tab. Apply pushes the supports onto the built model and redraws them."))
 		];
 
 	TArray<FAerotelicTab> Tabs;
 	Tabs.Add({ LOCTEXT("SetupTab", "Set-up"), SetupTab });
 	Tabs.Add({ LOCTEXT("MeshTab", "Mesh"), MakePictureTab(S, TabMesh, LOCTEXT("MeshEmpty", "Build the model (Set-up tab) to see the mesh the solver is handed: its wetted faces by region, with their edges."), nullptr) });
 	Tabs.Add({ LOCTEXT("LoadsTab", "Loads"), MakePictureTab(S, TabLoads, LOCTEXT("LoadsEmpty", "Build the model (Set-up tab) to see the loads as vectors: the pressure on the wetted faces, each point force at its node, the inertial load at the centre of mass."), LoadsPanel) });
-	Tabs.Add({ LOCTEXT("SupportTab", "Support"), MakePictureTab(S, TabSupport, LOCTEXT("SupportEmpty", "Build the model (Set-up tab) to see the boundary conditions: a marker on every node the supports fix, each plane with its patch handles, and what reaches no support."), SupportPanel) });
+	Tabs.Add({ LOCTEXT("MassesTab", "Masses"), MakePictureTab(S, TabMasses, LOCTEXT("MassesEmpty", "Build the model (Set-up tab) to see the mass items hung on it, each with bars to the nodes that carry it, and the mass centre of everything."), MassesPanel) });
+	Tabs.Add({ LOCTEXT("SupportTab", "Support"), MakePictureTab(S, TabSupport, LOCTEXT("SupportEmpty", "Build the model (Set-up tab) to see the boundary conditions: a marker on every node the supports fix, each plane with its patch handles, and what reaches no support -- or, in free flight, the one reference node."), SupportPanel) });
 	Tabs.Add({ LOCTEXT("HelpTab", "Help"), MakeHelpTab(FText::FromString(kHelp)) });
 	// The Support picture's handles: a press on one drags its patch, the
 	// fixed nodes following, the model re-derived on release.
@@ -2001,6 +2437,7 @@ void ShowAerotelicStructuralFeaDialog(TFunction<void(const FText&)> Status)
 	Window->SetOnWindowClosed(FOnWindowClosed::CreateLambda([S](const TSharedRef<SWindow>&) { S->Close(); }));
 
 	S->RebuildPointList();
+	S->RebuildMassList();
 	S->RebuildSupportList();
 	S->DescribeModel();
 	Status(LOCTEXT("Ready", "Choose the bodies; Build Model to inspect them; set the loads and supports on their tabs; Solve to run."));

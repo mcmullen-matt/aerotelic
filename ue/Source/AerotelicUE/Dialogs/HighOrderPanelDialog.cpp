@@ -289,6 +289,9 @@ namespace
 		std::vector<Network> Nets;
 		TArray<FShare> Shares;
 		TArray<FString> Skipped;
+		// What the paneling decided on its own (a buried trailing edge
+		// shedding no wake), for the summary.
+		TArray<FString> Notes;
 		Solution Sol;
 		bool bSolved = false;
 		// Wind-axis coefficients (FCoefs) of the whole, and of each share.
@@ -597,8 +600,22 @@ namespace
 			C->SideDir = aerotelic::Cross(C->LiftDir, C->Stream);
 			const aerotelic::Vec3 Stream = C->Stream;
 
-			for (AAerotelicEntityActor* E : Chosen())
+			// Every chosen entity's placed meshes (the mirror's too), for the
+			// buried-trailing-edge test of the lofts that would shed a wake: a
+			// cowl whose rim meets the boom behind it sheds none.
+			const TArray<AAerotelicEntityActor*> ChosenEntities = Chosen();
+			std::vector<std::vector<aerotelic::NamedMesh>> PlacedMeshes;
+			for (AAerotelicEntityActor* E : ChosenEntities)
 			{
+				std::vector<aerotelic::NamedMesh> Mine = E->GetPlacedMeshes(false);
+				if (E->IsMirrored()) for (aerotelic::NamedMesh& M : E->GetPlacedMeshes(true)) Mine.push_back(std::move(M));
+				PlacedMeshes.push_back(std::move(Mine));
+			}
+			std::vector<std::string> Notes;
+
+			for (int32 Index = 0; Index < ChosenEntities.Num(); ++Index)
+			{
+				AAerotelicEntityActor* E = ChosenEntities[Index];
 				const FTransform Transform = E->GetActorTransform();
 				const FVector DirModel = Transform.InverseTransformVectorNoScale(FVector(Stream.x, Stream.y, Stream.z));
 				const aerotelic::Vec3 StreamModel{ DirModel.X, DirModel.Y, DirModel.Z };
@@ -660,10 +677,21 @@ namespace
 					BP.along = FMath::Clamp(Grid.stations > 0 ? Grid.stations : FMath::RoundToInt(Along), 1, 400);
 					BP.around = FMath::Clamp(Grid.around > 0 ? Grid.around : FMath::RoundToInt(Around), 3, 400);
 					if (bSymmetry && !E->IsMirrored()) BP.half_plane_y = 0.0;
+					// A loft that knows its trailing edge (a cowl's rim) sheds a
+					// wake along the stream and lifts (2026-11-13); the lofts are
+					// placed, so the stream is the world's. Unless that edge runs
+					// into another chosen body, which the others' meshes tell.
+					BP.wake_direction = Stream;
+					BP.notes = &Notes;
+					for (int32 k = 0; k < static_cast<int32>(PlacedMeshes.size()); ++k)
+					{
+						if (k == Index) continue;
+						for (const aerotelic::NamedMesh& M : PlacedMeshes[k]) BP.other_bodies.push_back(&M.mesh);
+					}
 					for (const aerotelic::NamedLoft& L : Lofts)
 					{
 						const FString Name = Lofts.size() == 1 ? E->EntityName : E->EntityName + TEXT("/") + UTF8_TO_TCHAR(L.name.c_str());
-						Own.push_back(aerotelic::panel::LoftNetwork(PlacedLoft(L, Transform), TCHAR_TO_UTF8(*Name), BP, Stream));
+						for (Network& N : aerotelic::panel::LoftNetworks(PlacedLoft(L, Transform), TCHAR_TO_UTF8(*Name), BP, Stream)) Own.push_back(std::move(N));
 					}
 				}
 				Share.OwnCount = static_cast<int32>(Own.size());
@@ -678,6 +706,7 @@ namespace
 				Share.Count = static_cast<int32>(C->Nets.size()) - Share.First;
 				C->Shares.Add(Share);
 			}
+			for (const std::string& N : Notes) C->Notes.Add(UTF8_TO_TCHAR(N.c_str()));
 			if (C->Nets.empty()) throw std::runtime_error("none of the chosen bodies has a loft to panel");
 			return C;
 		}
@@ -904,6 +933,7 @@ namespace
 				Done->Options.symmetry_y ? TEXT(", with the image about y = 0") : TEXT(", no symmetry plane"),
 				MaxDelta, MaxDelta > 0.066 ? TEXT(" (the method wants under 0.066: refine the paneling)") : TEXT(""), Seconds);
 			for (const FString& Sk : First.Skipped) Summary += FString::Printf(TEXT("\n%s: skipped (no loft to panel)"), *Sk);
+			for (const FString& N : First.Notes) Summary += TEXT("\n") + N;
 
 			// The solution files, one per case.
 			const FString Path = PathBox->GetText().ToString().TrimStartAndEnd();

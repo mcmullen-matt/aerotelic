@@ -59,6 +59,42 @@ struct MassSpec {
 const char* MassModeName(MassMode m);
 MassMode ParseMassMode(const std::string& s);
 
+// A CONCENTRATED MASS that is not part of any body's shells -- a battery,
+// a motor, the payload, a camera (2026-11-13): what Nastran calls a CONM2
+// hung on an RBE3. Its mass and inertia are the item's as BUILT (the
+// project's mass unit; the inertia in that unit times the project's length
+// unit squared, about the item's own centre, NOT scaled with the model --
+// like a skin thickness, a 2 kg battery is 2 kg in the replica too); its
+// position is in the FULL-SCALE aircraft's frame (scaled with the model at
+// placement, like every placement); and it hangs on one solid body of a
+// scene item by name -- an entity, the mirror of one, or a boolean result
+// -- through the `attach_nodes` nearest nodes of that body's grid, an
+// RBE3-type attachment that distributes the item's load to those nodes
+// without stiffening them (tools/structural_fea.py MASS ITEMS). The
+// structural analysis weighs it, hangs it on the structure and, in free
+// flight, counts it in the rigid-body mass and inertia; the mass report
+// lists it. Project file: `masses:` (project_yaml.hpp).
+struct MassItem {
+	std::string name;
+	double mass = 0.0;
+	std::array<double, 3> position{0.0, 0.0, 0.0};
+	// Ixx, Iyy, Izz, Ixy, Ixz, Iyz about the item's own centre, with the
+	// products as integral x y dm (so a tensor whose off-diagonals are the
+	// NEGATIVE of these). All zero: a point mass.
+	std::array<double, 6> inertia{0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+	std::string attach_entity;    // the scene item, by name; empty: hangs on nothing
+	bool attach_mirror = false;   // the mirrored half of that entity
+	std::string attach_body;      // the body's role name; empty: the item's first body
+	int attach_nodes = 8;         // how many of the body's nearest nodes carry it (at least 3, not collinear)
+
+	bool HasInertia() const { for (double v : inertia) if (v != 0.0) return true; return false; }
+};
+
+// Why a mass item cannot be used, or "" when it can: a name, a positive
+// finite mass, finite position and inertia (a tensor with non-negative
+// principal values), at least three attachment nodes.
+std::string MassItemProblem(const MassItem& m);
+
 // The old per-parameterisation setting as one body's structure, and back:
 // Asserted -> asserted_mass, Material -> material + skin_thickness. The
 // bridge while the application moves from the one to the other

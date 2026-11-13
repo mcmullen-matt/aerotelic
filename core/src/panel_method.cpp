@@ -1144,8 +1144,22 @@ Solution Solve(const std::vector<Network>& networks_in, const Vec3& free_stream,
 		sol.moment_coefficient += nr.moment_coefficient;
 		sol.networks.push_back(std::move(nr));
 	}
-	// Lift from the wakes' head doublet strength: C_L = (2 / V∞ S_R) ∫ μ dy.
+	// Lift from the wakes' head doublet strength: C_L = (2 / V∞ S_R) ∫ μ dy
+	// for a wake along y; in general each column's Kutta-Joukowski force
+	// μ (Δl x V̂) resolved along the lift direction, Δl the column's
+	// trailing-edge segment in the network's own column order (which the
+	// orientation of WakeNetwork fixed together with the side μ is measured
+	// from, so the two signs go together whichever way the columns run).
 	{
+		const Vec3 vhat = Normalized(free_stream);
+		Vec3 lift_dir;
+		if (options.lift_direction) {
+			lift_dir = Normalized(*options.lift_direction);
+		} else {
+			const Vec3 z{0.0, 0.0, 1.0};
+			lift_dir = z - vhat * Dot(z, vhat);
+			lift_dir = Length(lift_dir) > 1e-12 ? Normalized(lift_dir) : Vec3{1.0, 0.0, 0.0};
+		}
 		double integral = 0.0;
 		bool any = false;
 		for (const NetworkData& nd : S->data) {
@@ -1153,8 +1167,8 @@ Solution Solve(const std::vector<Network>& networks_in, const Vec3& free_stream,
 			any = true;
 			for (int j = 0; j < nd.pcols; ++j) {
 				double mu = nd.net->type == NetworkType::DoubletWake ? sol.parameters[nd.params[j].global] : sol.parameters[nd.params[0].global];
-				double dy = std::fabs(nd.net->Corner(1, j + 2).y - nd.net->Corner(1, j + 1).y);
-				integral += mu * dy;
+				const Vec3 dl = nd.net->Corner(1, j + 2) - nd.net->Corner(1, j + 1);
+				integral += mu * Dot(Cross(dl, vhat), lift_dir);
 			}
 		}
 		if (any) {
@@ -1221,12 +1235,20 @@ Network WakeNetwork(const std::string& name, const std::vector<Vec3>& trailing_e
 	// The wake's upper side is direction x (edge tangent): behind a wing
 	// whose trailing edge runs root to tip in +y and sheds in +x, that is
 	// +z, the wing's own upper side, so μ_wake = μ_upper - μ_lower comes out
-	// positive for positive lift.
+	// positive for positive lift. A CLOSED trailing edge (a cowl's rim: the
+	// polyline returns to its start, 2026-11-13) has no end-to-end
+	// direction; its upper side is the outside, away from the ring's
+	// centroid.
 	if (net.cols >= 2) {
-		int J = net.cols / 2;
+		int J = std::max(1, net.cols / 2);
 		Vec3 P1 = net.Corner(1, J), P2 = net.Corner(1, J + 1), P3 = net.Corner(2, J + 1), P4 = net.Corner(2, J);
 		Vec3 zeta = Cross(P1 + P4 - P2 - P3, P1 + P2 - P3 - P4);
-		Vec3 want = Cross(direction, trailing_edge.back() - trailing_edge.front());
+		double extent = 0.0;
+		Vec3 centroid{0.0, 0.0, 0.0};
+		for (const Vec3& p : trailing_edge) { extent = std::max(extent, Distance(p, trailing_edge.front())); centroid += p; }
+		centroid = centroid * (1.0 / static_cast<double>(trailing_edge.size()));
+		const bool closed = Distance(trailing_edge.back(), trailing_edge.front()) < 1e-9 * std::max(extent, 1e-300);
+		Vec3 want = closed ? (P1 + P2) * 0.5 - centroid : Cross(direction, trailing_edge.back() - trailing_edge.front());
 		if (Dot(zeta, want) < 0.0) FlipNormals(net);
 	}
 	return net;

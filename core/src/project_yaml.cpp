@@ -771,6 +771,61 @@ MassSpec DecodeMassSpec(const YAML::Node& node) {
 }
 
 // ===========================================================================
+// Mass items (`masses:`, 2026-11-13)
+// ===========================================================================
+
+YAML::Node EncodeMassItem(const MassItem& m) {
+	YAML::Node n;
+	n["name"] = m.name;
+	n["mass"] = m.mass;
+	YAML::Node pos;
+	for (double v : m.position) pos.push_back(v);
+	pos.SetStyle(YAML::EmitterStyle::Flow);
+	n["position"] = pos;
+	if (m.HasInertia()) {
+		YAML::Node inertia;
+		for (double v : m.inertia) inertia.push_back(v);
+		inertia.SetStyle(YAML::EmitterStyle::Flow);
+		n["inertia"] = inertia;
+	}
+	if (!m.attach_entity.empty()) {
+		YAML::Node attach;
+		attach["entity"] = m.attach_entity;
+		if (m.attach_mirror) attach["mirror"] = true;
+		if (!m.attach_body.empty()) attach["body"] = m.attach_body;
+		attach["nodes"] = m.attach_nodes;
+		attach.SetStyle(YAML::EmitterStyle::Flow);
+		n["attach"] = attach;
+	}
+	return n;
+}
+
+MassItem DecodeMassItem(const YAML::Node& node) {
+	MassItem m;
+	if (!node || !node.IsMap()) throw std::invalid_argument("a mass item must be a mapping");
+	if (node["name"]) m.name = node["name"].as<std::string>();
+	if (node["mass"]) m.mass = node["mass"].as<double>();
+	if (const YAML::Node pos = node["position"]) {
+		if (!pos.IsSequence() || pos.size() != 3) throw std::invalid_argument("mass item '" + m.name + "': position must be [x, y, z]");
+		for (int i = 0; i < 3; ++i) m.position[i] = pos[i].as<double>();
+	}
+	if (const YAML::Node inertia = node["inertia"]) {
+		if (!inertia.IsSequence() || inertia.size() != 6) throw std::invalid_argument("mass item '" + m.name + "': inertia must be [Ixx, Iyy, Izz, Ixy, Ixz, Iyz]");
+		for (int i = 0; i < 6; ++i) m.inertia[i] = inertia[i].as<double>();
+	}
+	if (const YAML::Node attach = node["attach"]) {
+		if (!attach.IsMap()) throw std::invalid_argument("mass item '" + m.name + "': attach must be a mapping");
+		if (attach["entity"]) m.attach_entity = attach["entity"].as<std::string>();
+		if (attach["mirror"]) m.attach_mirror = attach["mirror"].as<bool>();
+		if (attach["body"]) m.attach_body = attach["body"].as<std::string>();
+		if (attach["nodes"]) m.attach_nodes = attach["nodes"].as<int>();
+	}
+	const std::string problem = MassItemProblem(m);
+	if (!problem.empty()) throw std::invalid_argument(problem);
+	return m;
+}
+
+// ===========================================================================
 // Bodies (`bodies:` on an entity or a boolean result): display overrides
 // and the structure of each solid body (body_structure.hpp)
 // ===========================================================================
@@ -1222,6 +1277,20 @@ ProjectFile LoadProjectYaml(const std::string& path) {
 			project.booleans.push_back(std::move(b));
 		}
 	}
+	// The mass items: each must hang on something listed above (or on
+	// nothing at all).
+	if (root["masses"]) {
+		for (const auto& mn : root["masses"]) {
+			MassItem m = DecodeMassItem(mn);
+			if (!m.attach_entity.empty() && !seen.count(m.attach_entity)) {
+				throw std::invalid_argument("Mass item '" + m.name + "' hangs on '" + m.attach_entity + "', which does not exist.");
+			}
+			if (m.attach_mirror && !mirrored.count(m.attach_entity)) {
+				throw std::invalid_argument("Mass item '" + m.name + "' hangs on the mirror of '" + m.attach_entity + "', which is not mirrored.");
+			}
+			project.masses.push_back(std::move(m));
+		}
+	}
 	// The lattice entities of an older file: not decoded (lattices are no
 	// longer supported at all), named so the application can say what it
 	// skipped.
@@ -1262,6 +1331,11 @@ void SaveProjectYaml(const ProjectFile& project, const std::string& path) {
 		YAML::Node booleans(YAML::NodeType::Sequence);
 		for (const auto& b : project.booleans) booleans.push_back(Encode(b));
 		root["booleans"] = booleans;
+	}
+	if (!project.masses.empty()) {
+		YAML::Node masses(YAML::NodeType::Sequence);
+		for (const auto& m : project.masses) masses.push_back(EncodeMassItem(m));
+		root["masses"] = masses;
 	}
 	std::ofstream out(path);
 	if (!out) throw std::runtime_error("could not open " + path + " for writing");

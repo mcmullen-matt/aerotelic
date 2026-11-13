@@ -299,6 +299,36 @@ namespace AerotelicFeaModelBuilder
 		return Entity->GetBodies().Num() > 0 ? &Entity->GetBodyStructure(0) : nullptr;
 	}
 
+	TArray<int32> AttachmentNodes(const std::vector<aerotelic::Vec3>& Nodes, const TArray<AerotelicStructuralFea::FShellFace>& ShellFaces,
+		const TArray<AerotelicStructuralFea::FShellFace>& RibFaces, const TArray<AerotelicStructuralFea::FRegion>& Regions,
+		int32 BodyIndex, const aerotelic::Vec3& At, int32 Count)
+	{
+		TSet<int32> RegionIds;
+		for (const AerotelicStructuralFea::FRegion& R : Regions) if (BodyIndex < 0 || R.Body == BodyIndex) RegionIds.Add(R.Id);
+		TArray<bool> Candidate;
+		Candidate.Init(false, static_cast<int32>(Nodes.size()));
+		for (const AerotelicStructuralFea::FShellFace& F : ShellFaces)
+		{
+			if (!RegionIds.Contains(F.Region)) continue;
+			for (int32 k = 0; k < 3; ++k) if (F.N[k] >= 0 && F.N[k] < Candidate.Num()) Candidate[F.N[k]] = true;
+		}
+		for (const AerotelicStructuralFea::FShellFace& F : RibFaces)
+		{
+			if (!RegionIds.Contains(F.Region)) continue;
+			for (int32 k = 0; k < 3; ++k) if (F.N[k] >= 0 && F.N[k] < Candidate.Num()) Candidate[F.N[k]] = true;
+		}
+		TArray<TPair<double, int32>> Ranked;
+		for (int32 n = 0; n < Candidate.Num(); ++n)
+		{
+			if (Candidate[n]) Ranked.Add(TPair<double, int32>(aerotelic::DistanceSq(Nodes[n], At), n));
+		}
+		Ranked.Sort([](const TPair<double, int32>& A, const TPair<double, int32>& B) { return A.Key < B.Key || (A.Key == B.Key && A.Value < B.Value); });
+		TArray<int32> Out;
+		for (int32 i = 0; i < Ranked.Num() && i < FMath::Max(Count, 0); ++i) Out.Add(Ranked[i].Value);
+		Out.Sort();
+		return Out;
+	}
+
 	FString RoleOf(const AAerotelicEntityActor* Entity, const FString& Role)
 	{
 		if (!Role.IsEmpty() || Entity == nullptr) return Role;
