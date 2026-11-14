@@ -2783,12 +2783,13 @@ on the wing the way the real one does.
   horn, a servo arm. A `bar` is a `TrussLinearElement3D2N` with
   `TrussConstitutiveLaw` (E, A, ρ) between two nodes or links -- a
   pin-ended pushrod, axial stiffness and mass and nothing else. The
-  LINEAR truss on purpose: the geometrically nonlinear `TrussElement3D2N`
-  solved in one step re-evaluates its residual on the displaced ends (the
-  follower-load story again) and left the wing's root reaction off the
-  weight by the order of the rod's weight. Its force is E A (Δu·e)/L from
-  the ends' displacements (Kratos's own `AXIAL_FORCE` came back zero),
-  positive in tension;
+  LINEAR truss on purpose: a linear static solve in one step is
+  self-consistent only with linear elements (the geometrically nonlinear
+  `TrussElement3D2N` evaluates its residual on the displaced ends, the
+  follower-load story again; on the wing case below both gave the same
+  small imbalance, so it was not the culprit there). Its force is
+  E A (Δu·e)/L from the ends' displacements (Kratos's own `AXIAL_FORCE`
+  came back zero), positive in tension;
   the result carries `bars` (force, stress, length, ends, mass),
   `ties`, `links`, `mass_bars`. A bar's mass is in the rigid-body
   properties as a uniform rod, so free flight and the reaction check
@@ -2832,11 +2833,17 @@ hinged at two corners and held by a 4 mm rod -- the rod's force is W d / h
 to four figures (−62.54 N, compression), the clamp carries plate, flap and
 rod, the tied corners move together to 1e-12, without the rod the solve
 is reported unbalanced (18%, displacements 1e11: a mechanism). The
-document commandlet gains a hinged-aileron case (two ties, two links, one
-rod; unhinged the aileron floats, hinged nothing does; the rod alone holds
-the aileron's weight moment about its hinge line to 5%) -- written but not
-yet run: the editor build needs Matt's session closed. Not done: a live
-look at the deflected flap and the Support tab's hinge drawing.
+document commandlet's hinged-aileron case (315 passing): two ties, two
+links, one rod; unhinged the aileron floats, hinged nothing does; the rod
+alone holds the aileron's weight moment about the line through its tied
+nodes to 5% (−345 N, compression, on a 2 mm aileron). OPEN: that wing
+balances only to 1e-4 .. 3e-4 from run to run (a stray sideways reaction
+of up to 0.8 N against 2377 N; the rib mesh is not deterministic) where
+the plate cases balance to 1e-12 with the same ties, links and rod. Not
+pinned down: the linear and the nonlinear truss gave the same spread, so
+the master-slave constraints' reaction bookkeeping is the suspect (a tie's
+slave node may also carry a link). RealProject 46, Licence 42. Not done: a
+live look at the deflected flap and the Support tab's hinge drawing.
 
 ## The Model menu and the material library (2026-11-07)
 
