@@ -1037,8 +1037,35 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 				Region.Label = TEXT("sphere");
 				Region.Skin = Al;
 				Region.SkinThickness = Primitive->GetEffectiveMassSpec().skin_thickness;
+				Region.Body = 0;
 				Request.Regions.Add(Region);
 				Support(Request);
+				// The hinge resolver on a body that is NOT a wing (2026-11-14:
+				// it cast a boolean result's model to a wing and read its flaps
+				// from garbage -- an access violation on my_drone's BoolOp 1).
+				// A sphere, and a boolean result over it, hinge nothing and
+				// must not crash.
+				{
+					TArray<AerotelicFeaModelBuilder::FChosenBody> NotWings;
+					AerotelicFeaModelBuilder::FChosenBody Sphere;
+					Sphere.Operand.Entity = Primitive;
+					Sphere.Role = TEXT("Main");
+					Sphere.Index = 0;
+					NotWings.Add(Sphere);
+					for (const TWeakObjectPtr<AAerotelicEntityActor>& Weak : Doc->GetEntities())
+					{
+						if (!Weak.IsValid() || Weak->GetEntityType() != aerotelic::project_yaml::EntityType::Boolean) continue;
+						AerotelicFeaModelBuilder::FChosenBody Bool;
+						Bool.Operand.Entity = Weak;
+						Bool.Role = Weak->GetBodies().Num() ? Weak->GetBodies()[0].Name : TEXT("Body 1");
+						Bool.Index = 0;
+						NotWings.Add(Bool);
+					}
+					TArray<FString> HingeNotes;
+					const int32 Hinged = AerotelicFeaModelBuilder::ResolveFlapHinges(NotWings, ShellNodes, Request.ShellFaces, Request.RibFaces, Request.Regions, Request, HingeNotes);
+					Check(Hinged == 0 && Request.Ties.Num() == 0 && Request.Links.Num() == 0 && Request.Bars.Num() == 0,
+						FString::Printf(TEXT("fea (hinges): %d non-wing bodies (a sphere%s) hinge nothing and do not crash the resolver"), NotWings.Num(), NotWings.Num() > 1 ? TEXT(", boolean results") : TEXT("")));
+				}
 				Request.VtkPath = FPaths::Combine(FPlatformProcess::UserTempDir(), TEXT("aerotelic_document_test_fea_thin.vtk"));
 				IFileManager::Get().Delete(*Request.VtkPath, false, true, true);
 				Check(FMath::IsNearlyEqual(Region.SkinThickness, 0.05, 1e-12), "fea (shells only): the skin thickness is the sphere's Material Properties figure");

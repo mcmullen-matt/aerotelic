@@ -351,6 +351,11 @@ namespace AerotelicFeaModelBuilder
 		{
 			AAerotelicEntityActor* Entity = C.Operand.Entity.Get();
 			if (Entity == nullptr || C.Index < 0) continue;
+			// Only a wing has flaps. GetModelAs is an UNCHECKED cast: on a
+			// boolean result's model it returned garbage whose "flaps" were
+			// read here, and Build Model on my_drone's BoolOp 1 crashed with an
+			// access violation (2026-11-14). Ask the type first.
+			if (Entity->GetEntityType() != aerotelic::project_yaml::EntityType::Wing) continue;
 			const aerotelic::WingModel* W = Entity->GetModelAs<aerotelic::WingModel>();
 			if (W == nullptr) continue;
 			// A flap body's role is the flap's name, or that plus " (port)" for
