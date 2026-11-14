@@ -142,7 +142,7 @@ namespace
 	}
 
 	const FColor kGrey = Srgb(0.74f, 0.75f, 0.77f);
-	const FColor kBodyHot = Srgb(0.55f, 0.72f, 0.95f);
+	const FColor kBodyHot = Srgb(0.25f, 0.55f, 1.0f);   // the body the selected mass hangs on: unmistakable against the grey
 	const FColor kMass = Srgb(0.95f, 0.18f, 0.18f);
 	const FColor kMassArmed = Srgb(1.0f, 0.75f, 0.2f);
 	const FColor kCentre = Srgb(0.30f, 0.85f, 0.35f);
@@ -401,18 +401,22 @@ namespace
 			const double Scale = ModelScale();
 			const double Diag = Diagonal();
 			TSharedPtr<FPointMassRow> Sel = Selected.Pin();
-			// The body the selected mass hangs on, brighter.
+			// The body the selected mass hangs on is HIGHLIGHTED: its own actor,
+			// a strong colour, its edges drawn (Matt, 2026-11-14); the rest grey.
 			const int32 HotChoice = Sel.IsValid() && Sel->Attach > 0 ? Sel->Attach - 1 : -1;
-			FGeom BodiesGeom;
+			FGeom BodiesGeom, HotGeom;
+			FString HotLabel;
 			for (const FShownBody& B : Shown)
 			{
-				const FColor Col = B.Choice == HotChoice ? kBodyHot : kGrey;
+				const bool bHot = B.Choice == HotChoice;
+				if (bHot && Bodies.IsValidIndex(B.Choice)) HotLabel = Bodies[B.Choice]->Label;
+				FGeom& G = bHot ? HotGeom : BodiesGeom;
 				for (const auto& T : B.Mesh.triangles)
 				{
 					const aerotelic::Vec3& A = B.Mesh.vertices[T[0]];
 					const aerotelic::Vec3& Bv = B.Mesh.vertices[T[1]];
 					const aerotelic::Vec3& Cv = B.Mesh.vertices[T[2]];
-					BodiesGeom.Tri(FVector(A.x, A.y, A.z), FVector(Bv.x, Bv.y, Bv.z), FVector(Cv.x, Cv.y, Cv.z), Col);
+					G.Tri(FVector(A.x, A.y, A.z), FVector(Bv.x, Bv.y, Bv.z), FVector(Cv.x, Cv.y, Cv.z), bHot ? kBodyHot : kGrey);
 				}
 			}
 			FGeom Marks;
@@ -441,16 +445,28 @@ namespace
 				Text += FString::Printf(TEXT("\nThe point masses together: %.5g %s, centre (green) at (%.4g, %.4g, %.4g) %s"), Total, *UnitName(Units.MassName()),
 					Cg.X / Scale, Cg.Y / Scale, Cg.Z / Scale, *UnitName(Units.LengthName()));
 			}
-			Text += FString::Printf(TEXT("\nEvery solid body of the scene (%d); the one the selected mass hangs on in blue. Red: each mass at its centre, sized by its mass (amber: the selected one). Left-drag orbits, right-drag pans, wheel zooms, Home frames."), Shown.Num());
+			Text += FString::Printf(TEXT("\nEvery solid body of the scene (%d)%s. Red: each mass at its centre, sized by its mass (amber: the selected one). Left-drag orbits, right-drag pans, wheel zooms, Home frames."), Shown.Num(),
+				HotLabel.IsEmpty() ? (Sel.IsValid() ? TEXT("; the selected mass hangs on nothing yet, so no body is highlighted") : TEXT(""))
+				                   : *FString::Printf(TEXT("; HIGHLIGHTED (blue, with its edges): %s, the body the selected mass hangs on"), *HotLabel));
 			if (IsReplica()) Text += TEXT("\nCoordinates here and on the left are the FULL-SCALE aircraft's; the picture shows the replica.");
 			AAerotelicColoredMeshActor* A0 = EnsureActor(0);
 			AAerotelicColoredMeshActor* A1 = EnsureActor(1);
-			if (A0 == nullptr || A1 == nullptr) return;
+			AAerotelicColoredMeshActor* A2 = EnsureActor(2);
+			if (A0 == nullptr || A1 == nullptr || A2 == nullptr) return;
 			A0->SetMesh(BodiesGeom.V, BodiesGeom.T, BodiesGeom.N, BodiesGeom.C);
 			A0->SetEdges(false);
 			A1->SetMesh(Marks.V, Marks.T, Marks.N, Marks.C);
 			A1->SetEdges(false);
-			View->SetShownActors({ A0, A1 });
+			if (HotGeom.V.Num() > 0)
+			{
+				A2->SetMesh(HotGeom.V, HotGeom.T, HotGeom.N, HotGeom.C);
+				A2->SetEdges(true);
+			}
+			else
+			{
+				A2->Clear();
+			}
+			View->SetShownActors({ A0, A1, A2 });
 			if (!bFramed) { View->FrameShown(); bFramed = true; }
 			View->RequestRedraw();
 			if (Caption.IsValid()) Caption->SetText(FText::FromString(Text));
