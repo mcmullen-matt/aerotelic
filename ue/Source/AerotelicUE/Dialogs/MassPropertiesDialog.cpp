@@ -301,7 +301,7 @@ namespace
 			int32 Loose = 0;
 			for (const TSharedPtr<FPointMassRow>& R : Rows) Loose += R->Attach <= 0 ? 1 : 0;
 			Status(FText::FromString(FString::Printf(TEXT("%d point mass%s kept with the project%s"), Rows.Num(), Rows.Num() == 1 ? TEXT("") : TEXT("es"),
-				Loose ? *FString::Printf(TEXT(" (%d hang%s on nothing: they weigh in the report and are left out of the structural analysis)"), Loose, Loose == 1 ? TEXT("s") : TEXT("")) : TEXT(""))));
+				Loose ? *FString::Printf(TEXT(" (%d hang%s on nothing: left out of the report and of the structural analysis until given a body)"), Loose, Loose == 1 ? TEXT("s") : TEXT("")) : TEXT(""))));
 			UpdatePicture();
 		}
 
@@ -629,7 +629,7 @@ void ShowAerotelicMassPropertiesDialog(TFunction<void(const FText&)> Status)
 	const UAerotelicDocumentSubsystem* Doc = UAerotelicDocumentSubsystem::Get();
 	S->Units = Doc != nullptr ? Doc->GetUnits() : aerotelic::UnitSystem{};
 	S->Bodies = AllBodyChoices();
-	S->AttachOptions.Add(MakeShared<FString>(TEXT("nothing (weighs in the report, left out of the structural analysis)")));
+	S->AttachOptions.Add(MakeShared<FString>(TEXT("nothing (left out of the report and the structural analysis)")));
 	for (const FAerotelicBodyChoicePtr& C : S->Bodies) S->AttachOptions.Add(MakeShared<FString>(C->Label));
 	S->LoadRows();
 
@@ -652,7 +652,7 @@ void ShowAerotelicMassPropertiesDialog(TFunction<void(const FText&)> Status)
 				+ SVerticalBox::Slot().AutoHeight().Padding(0, 4, 0, 0)
 				[
 					MakeInfoLabel(LOCTEXT("BodiesHint",
-						"Each body weighs the way its Structure says (right-click it in the Scene tree): its material's density over the volume it encloses, a skin as density x area x thickness with its generated layers, or an asserted mass spread over its surface. One without a setting is reported as left out rather than counted as zero. The POINT MASSES of the next tab are part of the model and are counted too, each as a line of its own, whatever they hang on."))
+						"Each body weighs the way its Structure says (right-click it in the Scene tree): its material's density over the volume it encloses, a skin as density x area x thickness with its generated layers, or an asserted mass spread over its surface. One without a setting is reported as left out rather than counted as zero. Of the POINT MASSES of the next tab, those hung on the chosen bodies (or on an operand of a chosen boolean result) are counted too, each as a line of its own; the rest are not."))
 				])
 		]
 		+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 8)
@@ -723,7 +723,7 @@ void ShowAerotelicMassPropertiesDialog(TFunction<void(const FText&)> Status)
 		+ SScrollBox::Slot()
 		[
 			MakeInfoLabel(LOCTEXT("MassesHint",
-				"A point mass is a concentrated mass that is not part of any body's shells: a battery, a motor, the payload, a camera. It is part of the model, saved with the project (masses: in the file), counted in the report and hung on the structure by the structural analysis. Add one, then click the surface in the picture where its centre sits (the picture shows every solid body of the scene); the body it hangs on is the one you clicked unless you choose another in its list. Edit the centre by hand to move it off the surface (a motor's centre sits ahead of its mount). Mass and inertia (about the mass's own centre; Ixy, Ixz, Iyz the products as integral x y dm; all zero for a point) are as BUILT, in the project's units, not scaled with the model; coordinates are full-scale, like every coordinate in the application. 'Nearest nodes' is how many of the body's grid nodes nearest the centre carry it in the structural analysis (an RBE3-type attachment: the load shared out with the right resultant and moment, the nodes not stiffened; at least three, not in a line). When the body has become an operand of a boolean result that is analysed, the mass hangs on the result's surface at the same place."))
+				"A point mass is a concentrated mass that is not part of any body's shells: a battery, a motor, the payload, a camera. It is part of the model, saved with the project (masses: in the file), counted in the report whenever the body it hangs on is weighed, and hung on the structure by the structural analysis. Add one, then click the surface in the picture where its centre sits (the picture shows every solid body of the scene); the body it hangs on is the one you clicked unless you choose another in its list. Edit the centre by hand to move it off the surface (a motor's centre sits ahead of its mount). Mass and inertia (about the mass's own centre; Ixy, Ixz, Iyz the products as integral x y dm; all zero for a point) are as BUILT, in the project's units, not scaled with the model; coordinates are full-scale, like every coordinate in the application. 'Nearest nodes' is how many of the body's grid nodes nearest the centre carry it in the structural analysis (an RBE3-type attachment: the load shared out with the right resultant and moment, the nodes not stiffened; at least three, not in a line). When the body has become an operand of a boolean result that is analysed, the mass hangs on the result's surface at the same place."))
 		];
 
 	TSharedRef<SWidget> MassesTab =

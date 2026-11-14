@@ -1485,18 +1485,24 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 		Items.Add(Camera);
 		Doc->SetMassItems(Items);
 		Check(Doc->GetMassItems().Num() == 2, "mass items: two on the document");
-		// The report counts them: two more lines, the assembly heavier by
-		// their masses, and the battery's own tensor in the sum.
+		// The report counts the point masses hung on the chosen bodies: the
+		// battery on the sphere is one more line and 1.5 more mass; the
+		// camera, hung on nothing, is not listed (2026-11-14).
 		{
 			FAerotelicBooleanOperand POp;
 			POp.Entity = Primitive;
 			const FAerotelicMassReport Without = ComputeAerotelicMassReport({ POp }, 2e-3, Doc->GetUnits());
 			const FAerotelicMassReport With = ComputeAerotelicMassReport({ POp }, 2e-3, Doc->GetUnits(), &Items);
-			Check(With.PointMasses == 2 && With.Bodies.Num() == Without.Bodies.Num() + 2 && With.IncludedCount == Without.IncludedCount + 2
-				&& FMath::IsNearlyEqual(With.Assembly.mass, Without.Assembly.mass + 1.58, 1e-9),
-				FString::Printf(TEXT("mass report: the point masses are two more lines and 1.58 more mass (%.6g vs %.6g)"), With.Assembly.mass, Without.Assembly.mass));
+			Check(With.PointMasses == 1 && With.Bodies.Num() == Without.Bodies.Num() + 1 && With.IncludedCount == Without.IncludedCount + 1
+				&& FMath::IsNearlyEqual(With.Assembly.mass, Without.Assembly.mass + 1.5, 1e-9),
+				FString::Printf(TEXT("mass report: the battery hung on the sphere is one more line and 1.5 more mass, the loose camera none (%.6g vs %.6g)"), With.Assembly.mass, Without.Assembly.mass));
 			const FString Text = FormatAerotelicMassReport(With, Doc->GetUnits());
-			Check(Text.Contains(TEXT("[point mass] battery")) && Text.Contains(TEXT("2 point masses among them")), "mass report: the point masses are named in the table and counted in the assembly line");
+			Check(Text.Contains(TEXT("[point mass] battery")) && !Text.Contains(TEXT("camera")) && Text.Contains(TEXT("1 point mass among them")), "mass report: the battery is named in the table and counted in the assembly line, the camera is not");
+			// Weighing another body alone leaves the battery out.
+			FAerotelicBooleanOperand FOp;
+			FOp.Entity = Fuselage;
+			const FAerotelicMassReport Other = ComputeAerotelicMassReport({ FOp }, 2e-3, Doc->GetUnits(), &Items);
+			Check(Other.PointMasses == 0, "mass report: a body the battery does not hang on brings no point mass");
 		}
 	}
 

@@ -88,7 +88,6 @@ FAerotelicMassReport ComputeAerotelicMassReport(const TArray<FAerotelicBooleanOp
 	FAerotelicMassReport Report;
 	Report.Tolerance = Tolerance;
 	std::vector<MassProperties> Included;
-	Report.PointMasses = PointMasses ? PointMasses->Num() : 0;
 
 	for (const FAerotelicBooleanOperand& Op : Bodies)
 	{
@@ -220,8 +219,34 @@ FAerotelicMassReport ComputeAerotelicMassReport(const TArray<FAerotelicBooleanOp
 	if (PointMasses != nullptr)
 	{
 		const double Scale = AAerotelicEntityActor::GetModelScale();
+		// Only the point masses hung on the chosen bodies (2026-11-14): an
+		// item hangs on an entity (or its mirror), chosen directly or as an
+		// operand of a chosen boolean result (which inherits it).
+		auto Hangs = [&Bodies](const aerotelic::MassItem& M)
+		{
+			if (M.attach_entity.empty()) return false;
+			const FString Name = UTF8_TO_TCHAR(M.attach_entity.c_str());
+			for (const FAerotelicBooleanOperand& Op : Bodies)
+			{
+				AAerotelicEntityActor* E = Op.Entity.Get();
+				if (E == nullptr) continue;
+				if (E->EntityName == Name && Op.bMirror == M.attach_mirror) return true;
+				// The cast is unchecked: ask the type first.
+				if (E->GetEntityType() != aerotelic::project_yaml::EntityType::Boolean) continue;
+				if (const FAerotelicBooleanModel* B = E->GetModelAs<FAerotelicBooleanModel>())
+				{
+					for (const FAerotelicBooleanOperand& Inner : B->Operands)
+					{
+						if (Inner.Entity.IsValid() && Inner.Entity->EntityName == Name && Inner.bMirror == M.attach_mirror) return true;
+					}
+				}
+			}
+			return false;
+		};
 		for (const aerotelic::MassItem& M : *PointMasses)
 		{
+			if (!Hangs(M)) continue;
+			++Report.PointMasses;
 			FAerotelicMassLine Line;
 			Line.Label = FString::Printf(TEXT("[point mass] %s"), UTF8_TO_TCHAR(M.name.c_str()));
 			Line.Mode = aerotelic::MassMode::Asserted;
@@ -238,10 +263,8 @@ FAerotelicMassReport ComputeAerotelicMassReport(const TArray<FAerotelicBooleanOp
 			                       -M.inertia[3], M.inertia[1], -M.inertia[5],
 			                       -M.inertia[4], -M.inertia[5], M.inertia[2] };
 			Line.bIncluded = true;
-			Line.Note = M.attach_entity.empty()
-				? FString(TEXT("hangs on nothing (left out of the structural analysis)"))
-				: FString::Printf(TEXT("hangs on %s%s%s, %d nodes"), UTF8_TO_TCHAR(M.attach_entity.c_str()), M.attach_mirror ? TEXT(" (mirror)") : TEXT(""),
-					M.attach_body.empty() ? TEXT("") : *(TEXT(" / ") + FString(UTF8_TO_TCHAR(M.attach_body.c_str()))), M.attach_nodes);
+			Line.Note = FString::Printf(TEXT("hangs on %s%s%s, %d nodes"), UTF8_TO_TCHAR(M.attach_entity.c_str()), M.attach_mirror ? TEXT(" (mirror)") : TEXT(""),
+				M.attach_body.empty() ? TEXT("") : *(TEXT(" / ") + FString(UTF8_TO_TCHAR(M.attach_body.c_str()))), M.attach_nodes);
 			Included.push_back(Line.Props);
 			++Report.IncludedCount;
 			Report.Bodies.Add(Line);

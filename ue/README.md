@@ -2670,9 +2670,12 @@ nodes of its body nearest its centre, or -- when that body is not in the
 model but a boolean result built over it is -- on the result's surface at
 the same place (`BooleanHeirs` in the Structural dialog, the nearest of
 the result's bodies); its Masses tab is now a read-only list of the
-project's items with a Reload button. The Document commandlet checks the
-report's lines and the file round trip; the picking and the inheritance
-have not had a live run.
+project's items with a Reload button. The report counts only the point
+masses hung on the bodies chosen to weigh (directly, or as operands of a
+chosen boolean result); one hung on nothing is not listed (Matt,
+2026-11-14). The Document commandlet checks the report's lines, the
+filter and the file round trip; the picking and the inheritance have not
+had a live run.
 
 ### The lifting configuration: trailing edges tagged, blunt edges closed (2026-11-13)
 

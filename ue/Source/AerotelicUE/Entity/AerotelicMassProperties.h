@@ -48,13 +48,14 @@ struct FAerotelicMassReport
 // it in the project's units (a material's SI density is converted to
 // them, since the meshes are in them). A body whose entity has no
 // MassSpec, or no geometry, is listed with the reason and left out of
-// the assembly rather than counted as zero. The POINT MASSES
-// (mass_properties.hpp MassItem; the document's, 2026-11-13) are each a
+// the assembly rather than counted as zero. Of the POINT MASSES
+// (mass_properties.hpp MassItem; the document's, 2026-11-13) those hung
+// on a chosen body -- the entity or its mirror chosen directly, or as an
+// operand of a chosen boolean result, which inherits them -- are each a
 // line of their own and count in the assembly: the mass as typed, the
 // centre at the item's position scaled to the replica (positions are
-// full-scale), the inertia the item's own tensor about that centre --
-// whatever body they hang on and whether or not it is chosen, since a
-// mass is a mass. Null: none.
+// full-scale), the inertia the item's own tensor about that centre. The
+// rest, and one hung on nothing, are not listed (2026-11-14). Null: none.
 FAerotelicMassReport ComputeAerotelicMassReport(const TArray<FAerotelicBooleanOperand>& Bodies, double Tolerance,
 	const aerotelic::UnitSystem& Units, const TArray<aerotelic::MassItem>* PointMasses = nullptr);
 
