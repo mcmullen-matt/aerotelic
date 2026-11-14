@@ -384,10 +384,15 @@ The layout follows the Python/Qt version's main window (`aerotelic/ui/main_windo
 * **Ground**: the GridCube-UE5.8 reference project's grid lattice (thin cube
   instances over a dark base plane, engine basic shapes only) ported in
   `Standalone/AerotelicGridGround`, scaled to model units and refitted
-  whenever the entity list changes: square and symmetric about the origin,
-  from -L to +L in X and Y with L = 1.2 x the scene's largest |X| or |Y|,
-  the lines falling exactly on 0 and +/-L, and the plane sitting at
-  Z = -0.1 L below the origin. It has no collision, so clicks on it still
+  whenever the entity list changes or any entity's placed geometry does
+  (a rebuild, a move, a generated structure; coalesced to the next tick):
+  square and symmetric about the origin, from -L to +L in X and Y with
+  L = 1.2 x the scene's largest |X| or |Y|, the lines falling exactly on
+  0 and +/-L, and the plane sitting at Z = Zmin - 0.1 (Zmax - Zmin), a
+  tenth of the scene's height range under its lowest visible point
+  (Matt, 2026-11-14; it was a fixed -0.1 L below the origin, which a
+  fuselage set below the origin cut through). An empty scene keeps a
+  20 x 20 grid at Z = -0.1 L. It has no collision, so clicks on it still
   clear the selection.
 * **3D view** in the middle: left-drag orbits, right/middle-drag pans, wheel
   zooms, `F` frames the selected entity, `Home` frames everything. Clicking

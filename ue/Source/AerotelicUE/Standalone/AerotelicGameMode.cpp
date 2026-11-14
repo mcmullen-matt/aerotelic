@@ -37,6 +37,10 @@ void AAerotelicGameMode::BeginPlay()
 	{
 		ListChangedHandle = Doc->OnEntityListChanged.AddUObject(this, &AAerotelicGameMode::FitGroundToScene);
 	}
+	// The floor follows the model's height, so it must also follow an
+	// entity moved or re-lofted after the list was last changed, and the
+	// generated structure (its layers count in the visible bounds).
+	GeometryChangedHandle = AAerotelicEntityActor::OnGeometryChanged.AddUObject(this, &AAerotelicGameMode::OnEntityGeometryChanged);
 	OpenProjectFromCommandLine();
 }
 
@@ -45,6 +49,12 @@ void AAerotelicGameMode::EndPlay(const EEndPlayReason::Type EndPlayReason)
 	if (UAerotelicDocumentSubsystem* Doc = UAerotelicDocumentSubsystem::Get())
 	{
 		Doc->OnEntityListChanged.Remove(ListChangedHandle);
+	}
+	AAerotelicEntityActor::OnGeometryChanged.Remove(GeometryChangedHandle);
+	if (GroundFitTick.IsValid())
+	{
+		FTSTicker::GetCoreTicker().RemoveTicker(GroundFitTick);
+		GroundFitTick.Reset();
 	}
 	AerotelicTheme::OnChanged().Remove(ThemeHandle);
 	Super::EndPlay(EndPlayReason);
@@ -87,6 +97,24 @@ void AAerotelicGameMode::FitGroundToScene()
 		}
 	}
 	Ground->FitToContent(Content);
+}
+
+void AAerotelicGameMode::RequestGroundFit()
+{
+	if (GroundFitTick.IsValid())
+	{
+		return; // one is already due
+	}
+	TWeakObjectPtr<AAerotelicGameMode> Weak(this);
+	GroundFitTick = FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda([Weak](float)
+	{
+		if (AAerotelicGameMode* Self = Weak.Get())
+		{
+			Self->GroundFitTick.Reset();
+			Self->FitGroundToScene();
+		}
+		return false;
+	}));
 }
 
 void AAerotelicGameMode::SpawnLighting()

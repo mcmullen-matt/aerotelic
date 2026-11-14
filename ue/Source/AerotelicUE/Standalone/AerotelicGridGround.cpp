@@ -92,9 +92,19 @@ void AAerotelicGridGround::FitToContent(const FBox& Content)
 	CellSize = (float)(Limit / CellsPerHalf);
 	CellsX = 2 * CellsPerHalf;
 	CellsY = CellsX;
-	// The plane sits below the origin by a tenth of the limit, so the model
-	// floats clear of it rather than cutting through the floor.
-	SetActorLocation(FVector(0.0, 0.0, -0.1 * Limit));
+	// The plane sits under the content: at its lowest point less a tenth
+	// of its height range (Matt, 2026-11-14), so the model floats just
+	// clear of the floor whatever its Z -- a fuselage set 0.15 below the
+	// origin or a wing dropped by a move no longer cuts through it. A
+	// scene with no height (a flat plate) puts the plane at its underside;
+	// an empty scene keeps the old tenth of the limit below the origin.
+	double PlaneZ = -0.1 * Limit;
+	if (Content.IsValid)
+	{
+		const double Range = Content.Max.Z - Content.Min.Z;
+		PlaneZ = Content.Min.Z - 0.1 * FMath::Max(Range, 0.0);
+	}
+	SetActorLocation(FVector(0.0, 0.0, PlaneZ));
 	// Lines keep the reference project's proportions: 3% and 2% of a cell.
 	LineWidth = CellSize * 0.03f;
 	LineHeight = CellSize * 0.02f;

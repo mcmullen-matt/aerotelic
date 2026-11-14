@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Containers/Ticker.h"
 #include "GameFramework/GameModeBase.h"
 
 #include "AerotelicGameMode.generated.h"
@@ -26,9 +27,16 @@ private:
 	void SpawnLighting();
 	void SpawnBackdrop();
 	void SpawnGround();
-	// Resizes the grid to the scene's footprint whenever the entity list
-	// changes, so a model of any size lands on a sensibly scaled floor.
+	// Resizes the grid to the scene's footprint and drops its plane under
+	// the scene's lowest point whenever the entity list changes or any
+	// entity's placed geometry does (a rebuild, a move, a structure
+	// generated), so a model of any size or height lands on a sensibly
+	// placed floor.
 	void FitGroundToScene();
+	// Geometry changes come in bursts (one per entity of a rebuilt project,
+	// one per update of a drag): the refit is coalesced to the next tick.
+	void RequestGroundFit();
+	void OnEntityGeometryChanged(class AAerotelicEntityActor* Entity) { RequestGroundFit(); }
 	void OpenProjectFromCommandLine();
 	// The backdrop sphere takes the theme's viewport background.
 	void ApplyThemeToBackdrop();
@@ -40,5 +48,7 @@ private:
 	TObjectPtr<class UMaterialInstanceDynamic> BackdropMID;
 
 	FDelegateHandle ListChangedHandle;
+	FDelegateHandle GeometryChangedHandle;
+	FTSTicker::FDelegateHandle GroundFitTick;
 	FDelegateHandle ThemeHandle;
 };
