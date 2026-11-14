@@ -936,6 +936,27 @@ double WingModel::HingeFraction(const FlapSpec& flap, double eta) const {
 	return PlanLineFraction(flap.eta_root, flap.hinge_root, flap.eta_tip, flap.hinge_tip, eta);
 }
 
+Mat DeflectAboutHinge(const Mat& points, double x_hinge, double y_hinge, double deflection_deg, double blend) {
+	if (points.cols() < 2) throw std::invalid_argument("DeflectAboutHinge: points need two columns");
+	Mat out = points;
+	if (deflection_deg == 0.0) return out;
+	// Trailing edge down is a clockwise turn in (x aft, y up).
+	const double full = -deflection_deg * 3.14159265358979323846 / 180.0;
+	for (int i = 0; i < points.rows(); ++i) {
+		double w = 1.0;
+		if (blend > 0.0) {
+			const double t = std::clamp((points(i, 0) - x_hinge + blend) / (2.0 * blend), 0.0, 1.0);
+			w = t * t * (3.0 - 2.0 * t);
+		}
+		if (w <= 0.0) continue;
+		const double a = w * full, c = std::cos(a), s = std::sin(a);
+		const double dx = points(i, 0) - x_hinge, dy = points(i, 1) - y_hinge;
+		out(i, 0) = x_hinge + c * dx - s * dy;
+		out(i, 1) = y_hinge + s * dx + c * dy;
+	}
+	return out;
+}
+
 std::pair<double, double> WingModel::PocketExtent(const FlapSpec& flap) const {
 	const double semi = planform_->SemiSpan();
 	const double d = semi > 0.0 ? flap.side_gap / semi : 0.0;
@@ -1774,7 +1795,27 @@ std::vector<NamedMesh> WingModel::BuildBodies(double tolerance, std::vector<Wing
 		src.closed_curve = false;
 		src.v_seeds = {0.35, 0.5, 0.65};
 		src.uniform_rings = true;
-		src.section = [&, fi](double s, const std::vector<double>& v) { return planform_->AirfoilCoordsToXyz(s, cut_at(fi, s).flap_loop->Points(v)); };
+		// The deflection (2026-11-14): the loop turned about the station's
+		// hinge centre, positive trailing edge down, clamped to the section's
+		// own limits (where the flap skin would meet the pocket's lips) --
+		// the worst clamp over the stations is noted on the plan.
+		std::shared_ptr<double> clamped_by = std::make_shared<double>(0.0);
+		auto deflection_at = [&, fi, clamped_by](double s) {
+			const FlapCut& c = cut_at(fi, s).cut;
+			const double asked = sorted[fi].deflection_deg;
+			double d = asked;
+			if (c.deflection_down_limit_deg > 0.0 && d > c.deflection_down_limit_deg) d = c.deflection_down_limit_deg;
+			if (c.deflection_up_limit_deg > 0.0 && d < -c.deflection_up_limit_deg) d = -c.deflection_up_limit_deg;
+			*clamped_by = std::max(*clamped_by, std::fabs(asked - d));
+			return d;
+		};
+		src.section = [&, fi, deflection_at](double s, const std::vector<double>& v) {
+			const StationCut& sc = cut_at(fi, s);
+			Mat pts = sc.flap_loop->Points(v);
+			const double d = deflection_at(s);
+			if (d != 0.0) pts = DeflectAboutHinge(pts, sc.cut.x_hinge, sc.cut.y_hinge, d);
+			return planform_->AirfoilCoordsToXyz(s, pts);
+		};
 		src.mirror_v = [&, fi](double s, double v) { return cut_at(fi, s).flap_loop->Mirror(v); };
 		LoftRings fr;
 		out.push_back({f.name, TriangulateLoft(src, opt, nullptr, nullptr, &fr)});
@@ -1784,6 +1825,10 @@ std::vector<NamedMesh> WingModel::BuildBodies(double tolerance, std::vector<Wing
 		plan.rib_material = structure.ribs.material;
 		plan.rib_size = MedianEdge(out.back().mesh);
 		if (!structure_problem.empty()) plan.notes.push_back(structure_problem);
+		if (*clamped_by > 1e-9) {
+			plan.notes.push_back("deflection of " + std::to_string(f.deflection_deg) + " deg clamped by up to " + std::to_string(*clamped_by)
+				+ " deg to the section's limit, where the flap skin meets the pocket's lip");
+		}
 		int rib_no = 0;
 		for (double u : rib_stations) {
 			if (u <= f.eta_root + eps || u >= f.eta_tip - eps) continue;

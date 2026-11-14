@@ -316,7 +316,46 @@ struct FlapSpec {
 	// [eta_root, eta_tip]; the pocket is cut this much wider at each end
 	// (clamped to the root and tip).
 	double side_gap = 0.004;
+
+	// ---- the hinge (2026-11-14) ----
+	// DEFLECTION, degrees, positive TRAILING EDGE DOWN. The flap body is
+	// rotated about its hinge centre in every station's section plane
+	// (SectionLoop's circle centre, so the nose stays concentric with the
+	// cavity and the clearance holds at any angle), clamped to the
+	// section's own limits (FlapCut::deflection_*_limit_deg, where the
+	// flap skin would meet the pocket's lips) with a note on the body's
+	// plan. The panel method's wing network takes the same deflection as a
+	// kink of the sealed section aft of the hinge (wing_panels.hpp).
+	double deflection_deg = 0.0;
+	// How the flap hands its load to the wing in the structural analysis
+	// (tools/structural_fea.py HINGES AND PUSHRODS): this many hinge
+	// brackets spread along the span (each a tie of the flap's nearest node
+	// to the main element's, the hinge rotation free); a control horn
+	// standing `horn_arm` chords below the hinge at the flap's mid-span;
+	// the servo arm `pushrod_forward` chords ahead of the hinge on the main
+	// element, as far below; a pin-ended pushrod of `pushrod_diameter`
+	// (the model's own units, a build figure like a skin thickness) in a
+	// material of the given modulus and density (SI; 4130 steel) between
+	// the two.
+	int hinge_brackets = 2;
+	double horn_arm = 0.04;
+	double pushrod_forward = 0.12;
+	double pushrod_diameter = 0.003;
+	double pushrod_youngs_modulus = 205.0e9;
+	double pushrod_density = 7850.0;
 };
+
+// The points of a section (n, 2) in chord-normalised airfoil coordinates
+// deflected about the hinge centre (x_hinge, y_hinge) by `deflection_deg`,
+// positive trailing edge down (a clockwise turn with x aft and y up). With
+// `blend` zero every point turns: the flap body's own loop, whose arcs are
+// centred on the hinge and so stay put. With `blend` positive -- the aero
+// copy of a SEALED flapped section -- a point turns by the fraction
+// smoothstep((x - x_hinge + blend) / (2 blend)) of the angle, so the main
+// element's skin ahead of the hinge stays, the flap's skin aft of it turns
+// fully and the surface stays continuous over the blend: the slope kink a
+// vortex-lattice method puts at the hinge, smeared over two blends.
+Mat DeflectAboutHinge(const Mat& points, double x_hinge, double y_hinge, double deflection_deg, double blend = 0.0);
 
 // ---------------------------------------------------------------------
 // Internal structure (2026-11-09): spars, ribs and stringers defined IN

@@ -382,6 +382,16 @@ YAML::Node Encode(const WingModelSpec& spec) {
 			fn["hinge_tip"] = f.hinge_tip;
 			fn["gap"] = f.gap;
 			fn["side_gap"] = f.side_gap;
+			// The hinge (2026-11-14): written only when not the defaults, so
+			// an older file reads the same.
+			const FlapSpec d;
+			if (f.deflection_deg != d.deflection_deg) fn["deflection_deg"] = f.deflection_deg;
+			if (f.hinge_brackets != d.hinge_brackets) fn["hinge_brackets"] = f.hinge_brackets;
+			if (f.horn_arm != d.horn_arm) fn["horn_arm"] = f.horn_arm;
+			if (f.pushrod_forward != d.pushrod_forward) fn["pushrod_forward"] = f.pushrod_forward;
+			if (f.pushrod_diameter != d.pushrod_diameter) fn["pushrod_diameter"] = f.pushrod_diameter;
+			if (f.pushrod_youngs_modulus != d.pushrod_youngs_modulus) fn["pushrod_youngs_modulus"] = f.pushrod_youngs_modulus;
+			if (f.pushrod_density != d.pushrod_density) fn["pushrod_density"] = f.pushrod_density;
 			flaps.push_back(fn);
 		}
 		n["flaps"] = flaps;
@@ -407,6 +417,13 @@ WingModelSpec DecodeWingModelSpec(const YAML::Node& node) {
 			if (fn["hinge_tip"]) f.hinge_tip = fn["hinge_tip"].as<double>();
 			if (fn["gap"]) f.gap = fn["gap"].as<double>();
 			if (fn["side_gap"]) f.side_gap = fn["side_gap"].as<double>();
+			if (fn["deflection_deg"]) f.deflection_deg = fn["deflection_deg"].as<double>();
+			if (fn["hinge_brackets"]) f.hinge_brackets = std::max(fn["hinge_brackets"].as<int>(), 1);
+			if (fn["horn_arm"]) f.horn_arm = fn["horn_arm"].as<double>();
+			if (fn["pushrod_forward"]) f.pushrod_forward = fn["pushrod_forward"].as<double>();
+			if (fn["pushrod_diameter"]) f.pushrod_diameter = fn["pushrod_diameter"].as<double>();
+			if (fn["pushrod_youngs_modulus"]) f.pushrod_youngs_modulus = fn["pushrod_youngs_modulus"].as<double>();
+			if (fn["pushrod_density"]) f.pushrod_density = fn["pushrod_density"].as<double>();
 			spec.flaps.push_back(f);
 		}
 	}

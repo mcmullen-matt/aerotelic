@@ -148,6 +148,50 @@ namespace AerotelicStructuralFea
 		TArray<int32> AttachNodes;
 	};
 
+	// ---- HINGES AND PUSHRODS (2026-11-14; the script's HINGES AND PUSHRODS
+	// section) -- how a control surface, a separate body in its gap, hands
+	// its load to the wing. ----
+	//
+	// A HINGE TIE: the slave node's three translations follow the master's
+	// (a LinearMasterSlaveConstraint); its rotations stay free, so the slave
+	// can turn about the master. Two ties along the hinge line make a hinge:
+	// the flap body can turn about the line through them and nothing else.
+	// Both are structural nodes (into FRequest::Nodes).
+	struct FTie
+	{
+		int32 Master = -1;
+		int32 Slave = -1;
+	};
+	// An OFFSET LINK: a new node at At (project units), rigidly offset from
+	// the structural node On -- its translation is On's plus On's rotation
+	// crossed with the offset (three slave rows, six masters), its own
+	// rotation pinned. A control horn standing off the flap's skin, a servo
+	// arm standing off the wing's. Link k is node Nodes + Masses + k.
+	struct FLink
+	{
+		FString Name;
+		int32 On = -1;
+		aerotelic::Vec3 At;
+	};
+	// One end of a bar: a structural node, or an offset link (Link >= 0
+	// takes precedence).
+	struct FBarEnd
+	{
+		int32 Node = -1;
+		int32 Link = -1;
+	};
+	// A BAR: a pin-ended truss (TrussElement3D2N) between two ends, axial
+	// stiffness E A / L and mass rho A L, nothing else -- a pushrod. Area in
+	// m^2, modulus in Pa, density in kg/m^3 (SI, like the materials).
+	struct FBar
+	{
+		FString Name;
+		FBarEnd A, B;
+		double Area = 0.0;
+		double YoungsModulus = 0.0;
+		double Density = 0.0;
+	};
+
 	struct FRequest
 	{
 		// The nodes in PROJECT units; every face below indexes them. Each
@@ -217,6 +261,11 @@ namespace AerotelicStructuralFea
 
 		// --- the mass items hung on the structure (SI; see FMassItem) ---
 		TArray<FMassItem> Masses;
+		// --- the hinge ties, offset links and bars (2026-11-14; see FTie,
+		// FLink, FBar): the load path from a control surface to the wing ---
+		TArray<FTie> Ties;
+		TArray<FLink> Links;
+		TArray<FBar> Bars;
 
 		// --- loads, SI ---
 		// Inertial load factor: the body's own mass under LoadFactor x g
@@ -328,6 +377,23 @@ namespace AerotelicStructuralFea
 			double Force[3] = {0, 0, 0};
 		};
 		TArray<FItem> Items;
+		// The hinges and pushrods (2026-11-14): how many ties and links were
+		// built, the bars' mass, and each bar as solved -- its axial force
+		// (N, positive in tension: E A (du . e) / L from its ends'
+		// displacements), the stress (Pa), its length and mass, its ends (m).
+		int32 Ties = 0, Links = 0;
+		double MassBars = 0.0;
+		struct FBarResult
+		{
+			FString Name;
+			double Force = 0.0;
+			double Stress = 0.0;
+			double Length = 0.0;
+			double Mass = 0.0;
+			double A[3] = {0, 0, 0};
+			double B[3] = {0, 0, 0};
+		};
+		TArray<FBarResult> Bars;
 		// The linear solver that ran ("sparse_lu" or "amgcl"; what "auto" chose).
 		FString LinearSolver;
 		// Mean of u . n over the wetted nodes: negative is inward, which

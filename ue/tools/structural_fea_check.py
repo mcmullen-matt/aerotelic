@@ -678,6 +678,112 @@ def main(argv):
             refused = str(exc)
         failures += not check("no support" in refused, "free flight: no support at all is refused")
 
+        # ------------------------------------------------------------------
+        # HINGES AND PUSHRODS (2026-11-14): a stiff 1 x 0.5 m plate (20 mm)
+        # clamped at x = 0 and, 20 mm aft of its trailing edge, a 2 mm flap
+        # plate 0.48 m long, hinged to it by two bracket ties at the flap's
+        # leading-edge corners (translations follow the main plate's
+        # trailing-edge corners; the flap turns about the line through them)
+        # and held by a 4 mm steel pushrod from a horn 50 mm below the hinge
+        # line at mid-span to a servo arm 50 mm below the main plate 0.22 m
+        # ahead. Under 1 g the ties take no moment about the hinge line, so
+        # the rod alone holds the flap's weight moment: F x 0.05 = W_flap x
+        # 0.24 (the flap's centroid is 0.24 m aft of the hinge), in
+        # compression (the trailing edge drops, the horn swings forward).
+        # Without the rod the flap is a mechanism and the solve is not
+        # balanced.
+        # ------------------------------------------------------------------
+        hg_dir = os.path.join(job_dir, "hinge")
+        os.makedirs(hg_dir)
+        mverts, mtris = plate(1.0, 0.5, 10, 4)
+        fverts, ftris = plate(0.48, 0.5, 5, 4)
+        fverts = fverts + np.array([1.02, 0.0, 0.0])
+        n_main = len(mverts)
+        hverts = np.vstack([mverts, fverts])
+        htris = np.vstack([mtris, ftris + n_main])
+        hregion = np.concatenate([np.ones(len(mtris), dtype=np.int32), 2 * np.ones(len(ftris), dtype=np.int32)])
+        write_mesh(os.path.join(hg_dir, "nodes.bin"), hverts)
+        write_faces(os.path.join(hg_dir, "faces.bin"), htris, hregion)
+        main_te = [10, 4 * 11 + 10]            # (1.0, 0) and (1.0, 0.5)
+        flap_le = [n_main + 0, n_main + 24]    # (1.02, 0) and (1.02, 0.5)
+        flap_le_mid = n_main + 12              # (1.02, 0.25)
+        main_servo = 2 * 11 + 8                # (0.8, 0.25)
+        assert np.allclose(hverts[main_te], [[1.0, 0.0, 0.0], [1.0, 0.5, 0.0]])
+        assert np.allclose(hverts[flap_le], [[1.02, 0.0, 0.0], [1.02, 0.5, 0.0]])
+        assert np.allclose(hverts[flap_le_mid], [1.02, 0.25, 0.0]) and np.allclose(hverts[main_servo], [0.8, 0.25, 0.0])
+        t_main, t_flap = 0.02, 0.002
+        STEEL = {"name": "4130 steel", "density": 7850.0, "youngs_modulus": 205e9, "poisson_ratio": 0.29}
+        rod_area = 0.25 * np.pi * 0.004 ** 2
+        ties = [{"master": main_te[0], "slave": flap_le[0]}, {"master": main_te[1], "slave": flap_le[1]}]
+        links = [{"name": "horn", "on": flap_le_mid, "at": [1.02, 0.25, -0.05]}, {"name": "servo arm", "on": main_servo, "at": [0.8, 0.25, -0.05]}]
+        bars = [{"name": "pushrod", "a": {"link": 0}, "b": {"link": 1}, "area": rod_area, "youngs_modulus": STEEL["youngs_modulus"], "density": STEEL["density"]}]
+
+        def hinge_job(name, with_rod=True, with_ties=True):
+            return {
+                "nodes": "nodes.bin", "faces": "faces.bin", "rib_faces": None,
+                "regions": [{"id": 1, "label": "main plate", "skin": {"material": AL, "thickness": t_main}, "rib": None},
+                            {"id": 2, "label": "flap", "skin": {"material": AL, "thickness": t_flap}, "rib": None}],
+                "supports": [{"axis": "x", "value": "min", "tolerance": 0.0, "bounds": None}],
+                "inertia_relief": None, "masses": [],
+                "ties": ties if with_ties else [], "links": links if with_rod else [], "bars": bars if with_rod else [],
+                "loads": {"load_factor": 1.0, "pressure": 0.0, "pressure_file": None, "point_forces": []},
+                "solver": {"echo_level": 0, "linear_solver": solver, "shell_element": "ShellThinElement3D3N", "modes": 0},
+                "outputs": {"vtk": os.path.join(hg_dir, name + ".vtk"), "result": name + "_result.json"},
+            }
+
+        rh = run(hg_dir, hinge_job("hinged"))
+        m_main = AL["density"] * t_main * 1.0 * 0.5
+        m_flap = AL["density"] * t_flap * 0.48 * 0.5
+        m_rod = STEEL["density"] * rod_area * 0.22
+        w_all = (m_main + m_flap + m_rod) * sf.G0
+        failures += not check(rh["ok"] and rh["ties"] == 2 and rh["links"] == 2 and len(rh["bars"]) == 1 and rh["dofs"] == 6 * (len(hverts) + 2),
+                              "hinge: two ties, two offset links and one bar built; the links are nodes of freedom (%d dof)" % rh["dofs"])
+        failures += not check(abs(rh["mass"] - (m_main + m_flap + m_rod)) < 1e-9 * rh["mass"] and abs(rh["mass_bars"] - m_rod) < 1e-12,
+                              "hinge: the mass counts the rod, rho A L = %.5g kg (total %.5g)" % (m_rod, rh["mass"]))
+        failures += not check(rh["balanced"] and abs(rh["reaction"][2] - w_all) < 1e-6 * w_all and abs(rh["reaction"][0]) < 1e-6 * w_all,
+                              "hinge: the clamp carries the main plate, the flap and the rod (%.6g vs %.6g N)" % (rh["reaction"][2], w_all))
+        rod = rh["bars"][0]
+        f_expect = -(m_flap * sf.G0 * 0.24) / 0.05
+        failures += not check(rod["force"] < 0.0 and abs(rod["force"] / f_expect - 1.0) < 0.02,
+                              "hinge: the pushrod alone holds the flap's weight moment, in compression (%.4g N vs W d / h = %.4g N)" % (rod["force"], f_expect))
+        failures += not check(abs(rod["stress"] - rod["force"] / rod_area) < 1e-6 * abs(rod["stress"]) and abs(rod["length"] - 0.22) < 1e-12 and abs(rod["mass"] - m_rod) < 1e-12,
+                              "hinge: the rod's stress, length and mass are reported (%.4g Pa, %.4g m, %.4g kg)" % (rod["stress"], rod["length"], rod["mass"]))
+        # The ties hold: the flap's leading-edge corners move exactly with
+        # the main plate's trailing-edge corners. The flap's trailing edge
+        # drops far more than the stiff main plate's edge -- mostly the 2 mm
+        # flap plate's own bending from a hinge line held at two corners and
+        # a horn at one node (the rod's 5 micron shortening at the lever
+        # ratio 9.6 is a small part of it) -- and stays finite.
+        _, _, _, pdh, _ = read_vtk(os.path.join(hg_dir, "hinged.vtk"))
+        u = pdh["displacement"]
+        tie_slip = float(np.abs(u[flap_le] - u[main_te]).max())
+        flap_te = [n_main + j * 6 + 5 for j in range(5)]
+        drop_te = float(-u[flap_te, 2].mean())
+        droop_main = float(-u[main_te, 2].mean())
+        shorten = abs(rod["force"]) * 0.22 / (STEEL["youngs_modulus"] * rod_area)
+        failures += not check(tie_slip < 1e-12 * max(drop_te, 1e-12), "hinge: the tied corners of the flap move exactly with the main plate's (slip %.2e m)" % tie_slip)
+        failures += not check(drop_te > 3.0 * droop_main and drop_te < 0.1 and drop_te > shorten * 0.48 / 0.05,
+                              "hinge: the flap's trailing edge drops %.4g m (the rod's %.3g m shortening at the lever ratio 9.6 plus the flap plate's own bending) against the main plate's %.4g" % (drop_te, shorten, droop_main))
+        print("  hinge: rod %.4g N (expected %.4g), reaction %.6g N, flap TE drop %.4g m" % (rod["force"], f_expect, rh["reaction"][2], drop_te))
+        # Without the rod the flap is free to turn: a mechanism, which the
+        # solver either refuses or returns unbalanced.
+        mech = ""
+        try:
+            rn = run(hg_dir, hinge_job("no_rod", with_rod=False))
+            mech = "unbalanced" if not rn["balanced"] or rn["max_displacement"] > 1.0 else "balanced?!"
+        except Exception as exc:  # noqa: BLE001 -- a singular system can surface as any error
+            mech = "refused: %s" % str(exc)[:60]
+        failures += not check(mech != "balanced?!", "hinge: without the pushrod the flap is a mechanism and the solve is %s" % mech)
+        # A tie naming a node the mesh lacks is refused.
+        refused = ""
+        try:
+            bad = hinge_job("bad_tie")
+            bad["ties"] = [{"master": 0, "slave": 10 ** 6}]
+            run(hg_dir, bad)
+        except sf.JobError as exc:
+            refused = str(exc)
+        failures += not check("hinge tie" in refused, "hinge: a tie on a node the mesh does not have is refused")
+
         if keep:
             os.makedirs(keep, exist_ok=True)
             for root_dir, _, files in os.walk(job_dir):

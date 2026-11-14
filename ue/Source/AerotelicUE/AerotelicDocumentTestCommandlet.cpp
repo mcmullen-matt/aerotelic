@@ -1023,6 +1023,178 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 			}
 		}
 
+		// (1b) A FLAP HINGED TO ITS WING (2026-11-14, stage 3): the wing is
+		// given an aileron over 0.6..0.9 of the span, hinged at 0.75 chord
+		// and deflected 10 degrees down, with a 2 mm skin like the main
+		// element. The flap is a separate body in its gap: alone it floats;
+		// hinged -- two bracket ties, a horn and a servo arm as offset links,
+		// a steel pushrod between them -- it is on the main element's load
+		// path. Under 1 g, clamped at the root, the flap's weight moment
+		// about its hinge line is carried by the pushrod alone (the ties act
+		// on the hinge line and take no moment about it), so the rod's force
+		// times its lever equals that moment, to the solver's balance.
+		UE_LOG(LogAerotelicDocumentTest, Display, TEXT("step: structural fea (a flap hinged to its wing)"));
+		if (Wing != nullptr)
+		{
+			std::unique_ptr<aerotelic::ISolidModel> FlapDraft = Doc->CloneEntityModel(Wing);
+			aerotelic::WingModel* FD = FlapDraft ? static_cast<aerotelic::WingModel*>(FlapDraft.get()) : nullptr;
+			const size_t FlapsBefore = FD ? FD->flaps.size() : 0;
+			FString FlapError;
+			bool bApplied = false;
+			if (FD != nullptr)
+			{
+				aerotelic::FlapSpec Aileron;
+				Aileron.name = "Aileron";
+				Aileron.eta_root = 0.6; Aileron.eta_tip = 0.9;
+				Aileron.hinge_root = Aileron.hinge_tip = 0.75;
+				Aileron.deflection_deg = 10.0;
+				Aileron.hinge_brackets = 2;
+				FD->flaps.push_back(Aileron);
+				bApplied = Doc->ApplyEntityModel(Wing, *FlapDraft, FlapError);
+				Doc->FlushPendingRebuilds();
+			}
+			bool bHasBody = false;
+			for (const FAerotelicBody& Body : Wing->GetBodies()) bHasBody = bHasBody || Body.Name == TEXT("Aileron");
+			Check(bApplied && bHasBody, FString::Printf(TEXT("fea (hinge): the wing takes an aileron and builds it as a body of its own (%s)"), bApplied ? TEXT("ok") : *FlapError));
+			if (bApplied && bHasBody)
+			{
+				aerotelic::BodyStructure FlapSkin;
+				FlapSkin.material = Al;
+				FlapSkin.skin_thickness = 0.002;
+				Check(Wing->SetBodyStructure(TEXT("Aileron"), FlapSkin), "fea (hinge): the aileron takes a 2 mm aluminium skin");
+				Doc->FlushPendingRebuilds();
+				AerotelicFeaModelBuilder::FOptions Options;
+				AerotelicFeaModelBuilder::FCache Cache;
+				AerotelicFeaModelBuilder::FBuilt Built;
+				FAerotelicBooleanOperand WOp;
+				WOp.Entity = Wing;
+				const bool bMain = AerotelicFeaModelBuilder::AppendBody(WOp, TEXT("Main"), TEXT("Wing"), 0, Options, Cache, Built);
+				const bool bFlap = AerotelicFeaModelBuilder::AppendBody(WOp, TEXT("Aileron"), TEXT("Wing / Aileron"), 1, Options, Cache, Built);
+				Check(bMain && bFlap, FString::Printf(TEXT("fea (hinge): the main element and the aileron both build as regions (%s)"), *FString::Join(Built.Problems, TEXT("; "))));
+				if (bMain && bFlap)
+				{
+					AerotelicStructuralFea::FRequest Request;
+					Request.Nodes = &Built.Nodes;
+					Request.ShellFaces = Built.ShellFaces;
+					Request.RibFaces = Built.RibFaces;
+					Request.ShellAxes = Built.ShellAxes;
+					Request.RibAxes = Built.RibAxes;
+					Request.Regions = Built.Regions;
+					Request.LengthToSI = Doc->GetUnits().LengthToSI();
+					AerotelicStructuralFea::FSupport Root;
+					Root.Axis = TEXT('y');
+					Root.bAtMin = true;
+					Root.Body = 0;
+					Request.Supports.Add(Root);
+					Request.LoadFactor = 1.0;
+					Request.VtkPath = FPaths::Combine(FPlatformProcess::UserTempDir(), TEXT("aerotelic_document_test_fea_hinge.vtk"));
+					IFileManager::Get().Delete(*Request.VtkPath, false, true, true);
+
+					// Without the hinge the aileron's regions float.
+					AerotelicFeaPreprocess::FModel Loose;
+					FString LooseError;
+					const bool bLoose = AerotelicFeaPreprocess::Build(Request, Loose, LooseError);
+					TSet<int32> FlapRegions;
+					for (const AerotelicStructuralFea::FRegion& Reg : Built.Regions) if (Reg.Body == 1) FlapRegions.Add(Reg.Id);
+					bool bFlapFloats = bLoose && FlapRegions.Num() > 0;
+					for (int32 Id : FlapRegions) bFlapFloats = bFlapFloats && Loose.FloatingRegions.Contains(Id);
+					Check(bFlapFloats, FString::Printf(TEXT("fea (hinge): unhinged, the aileron's %d region(s) have no load path to the root (%d floating)"), FlapRegions.Num(), bLoose ? Loose.FloatingRegions.Num() : -1));
+
+					// Hinged.
+					TArray<AerotelicFeaModelBuilder::FChosenBody> Chosen;
+					{
+						AerotelicFeaModelBuilder::FChosenBody M, F;
+						M.Operand = WOp; M.Role = TEXT("Main"); M.Index = 0;
+						F.Operand = WOp; F.Role = TEXT("Aileron"); F.Index = 1;
+						Chosen.Add(M); Chosen.Add(F);
+					}
+					TArray<FString> HingeNotes;
+					const int32 Hinged = AerotelicFeaModelBuilder::ResolveFlapHinges(Chosen, Built.Nodes, Request.ShellFaces, Request.RibFaces, Request.Regions, Request, HingeNotes);
+					Check(Hinged == 1 && Request.Ties.Num() == 2 && Request.Links.Num() == 2 && Request.Bars.Num() == 1 && Request.Bars[0].A.Link == 0 && Request.Bars[0].B.Link == 1,
+						FString::Printf(TEXT("fea (hinge): two bracket ties, a horn and a servo arm, one pushrod (%s)"), *FString::Join(HingeNotes, TEXT("; "))));
+					bool bTiesSpan = Request.Ties.Num() == 2;
+					for (const AerotelicStructuralFea::FTie& T : Request.Ties)
+					{
+						bool bSlaveOnFlap = false, bMasterOnMain = false;
+						for (const AerotelicStructuralFea::FShellFace& Face : Request.ShellFaces)
+						{
+							const bool bFlapFace = FlapRegions.Contains(Face.Region);
+							for (int32 k = 0; k < 3; ++k)
+							{
+								if (Face.N[k] == T.Slave && bFlapFace) bSlaveOnFlap = true;
+								if (Face.N[k] == T.Master && !bFlapFace) bMasterOnMain = true;
+							}
+						}
+						bTiesSpan = bTiesSpan && bSlaveOnFlap && bMasterOnMain && aerotelic::Length(Built.Nodes[T.Master] - Built.Nodes[T.Slave]) < 0.05 * Wing->GetModelAs<aerotelic::WingModel>()->planform().RootChord();
+					}
+					Check(bTiesSpan, "fea (hinge): each tie joins a node of the aileron's skin to a node of the main element's a gap apart");
+					AerotelicFeaPreprocess::FModel PreH;
+					FString PreHError;
+					const bool bPreH = AerotelicFeaPreprocess::Build(Request, PreH, PreHError);
+					Check(bPreH && PreH.FloatingRegions.Num() == 0 && PreH.FloatingNodes == 0 && PreH.Ties.Num() == 2 && PreH.Links.Num() == 2 && PreH.Bars.Num() == 1 && PreH.Bars[0].Mass > 0.0
+						&& PreH.Dofs == 6ll * (PreH.Nodes + 2) && PreH.Mass > PreH.MassStructure,
+						FString::Printf(TEXT("fea (hinge, pre-processor): hinged, nothing floats; the two links are nodes of freedom and the rod's %.4g kg counts (%d floating region(s), %lld dof on %d nodes; %s)"),
+							bPreH ? PreH.Bars[0].Mass : 0.0, bPreH ? PreH.FloatingRegions.Num() : -1, bPreH ? PreH.Dofs : -1, bPreH ? PreH.Nodes : -1, *PreHError));
+
+					// The solve.
+					AerotelicStructuralFea::FResult RH;
+					FString HingeSolveError;
+					const bool bHinge = AerotelicStructuralFea::Run(Request, RH, HingeSolveError);
+					Check(bHinge, FString::Printf(TEXT("fea (hinge): the wing with its hinged aileron solved (%s)"), bHinge ? *FString::Printf(TEXT("%d nodes, %d dof, %.1f s"), RH.Nodes, RH.Dofs, RH.Seconds) : *HingeSolveError));
+					if (bHinge && bPreH)
+					{
+						Check(RH.bBalanced && RH.Ties == 2 && RH.Links == 2 && RH.Bars.Num() == 1 && RH.Dofs == PreH.Dofs && FMath::IsNearlyEqual(RH.Mass, PreH.Mass, 1e-6 * PreH.Mass) && FMath::IsNearlyEqual(RH.MassBars, PreH.MassOfBars, 1e-9),
+							FString::Printf(TEXT("fea (hinge): balanced (error %.2e); the script built the two ties, two links and one bar the pre-processor counted (mass %.5g vs %.5g kg, rod %.4g kg)"), RH.BalanceError, RH.Mass, bPreH ? PreH.Mass : 0.0, RH.MassBars));
+						const double WeightAll = RH.Mass * 9.80665;
+						Check(FMath::Abs(RH.Reaction[2] - WeightAll) <= 1e-4 * WeightAll, FString::Printf(TEXT("fea (hinge): the root carries the whole weight, aileron and rod included (%.5g vs %.5g N)"), RH.Reaction[2], WeightAll));
+						if (RH.Bars.Num() == 1 && Request.Ties.Num() == 2)
+						{
+							// The aileron's weight moment about the line through the
+							// two tied main-element nodes (its hinge line in the model),
+							// from the same lumping the solver uses: each face a lamina
+							// at its centroid.
+							const double L = Request.LengthToSI;
+							const aerotelic::Vec3 H0 = Built.Nodes[Request.Ties[0].Master] * L, H1 = Built.Nodes[Request.Ties[1].Master] * L;
+							const aerotelic::Vec3 Axis = aerotelic::Normalized(H1 - H0);
+							aerotelic::Vec3 MomentG;
+							auto AddFaces = [&](const TArray<AerotelicStructuralFea::FShellFace>& Faces, bool bSkin)
+							{
+								for (const AerotelicStructuralFea::FShellFace& Face : Faces)
+								{
+									if (!FlapRegions.Contains(Face.Region)) continue;
+									const AerotelicStructuralFea::FRegion* Reg = Request.Regions.FindByPredicate([&Face](const AerotelicStructuralFea::FRegion& X) { return X.Id == Face.Region; });
+									if (Reg == nullptr) continue;
+									const double Areal = bSkin ? Reg->Skin.density * Reg->SkinThickness * L : Reg->Rib.density * Reg->RibThickness * L;
+									const aerotelic::Vec3 A = Built.Nodes[Face.N[0]] * L, B = Built.Nodes[Face.N[1]] * L, C = Built.Nodes[Face.N[2]] * L;
+									const double Mass = Areal * 0.5 * aerotelic::Length(aerotelic::Cross(B - A, C - A));
+									MomentG += aerotelic::Cross((A + B + C) / 3.0 - H0, aerotelic::Vec3{0.0, 0.0, -Mass * 9.80665});
+								}
+							};
+							AddFaces(Request.ShellFaces, true);
+							AddFaces(Request.RibFaces, false);
+							// The rod on the horn: F along horn -> servo (tension positive).
+							const AerotelicStructuralFea::FResult::FBarResult& Rod = RH.Bars[0];
+							const aerotelic::Vec3 Horn{Rod.A[0], Rod.A[1], Rod.A[2]}, Servo{Rod.B[0], Rod.B[1], Rod.B[2]};
+							const aerotelic::Vec3 RodForce = aerotelic::Normalized(Servo - Horn) * Rod.Force;
+							const aerotelic::Vec3 MomentRod = aerotelic::Cross(Horn - H0, RodForce);
+							const double Mg = aerotelic::Dot(MomentG, Axis), Mr = aerotelic::Dot(MomentRod, Axis);
+							Check(FMath::Abs(Mg) > 0.0 && FMath::Abs(Mg + Mr) <= 0.05 * FMath::Abs(Mg),
+								FString::Printf(TEXT("fea (hinge): the pushrod alone holds the aileron's weight moment about its hinge line (rod %.4g N m against %.4g N m of weight; rod force %.4g N, %s)"), Mr, Mg, Rod.Force, Rod.Force < 0.0 ? TEXT("compression") : TEXT("tension")));
+						}
+						IFileManager::Get().Delete(*Request.VtkPath, false, true, true);
+					}
+				}
+			}
+			// The wing as it was: the aileron removed, its structure gone.
+			if (FD != nullptr)
+			{
+				FD->flaps.resize(FlapsBefore);
+				FString RestoreError;
+				Check(Doc->ApplyEntityModel(Wing, *FlapDraft, RestoreError), "fea (hinge): the wing is restored without the aileron");
+				Doc->FlushPendingRebuilds();
+			}
+		}
+
 		// (2) A body with NO skin thickness is refused (2026-11-08: the
 		// analysis models shells only; until then such a body was filled
 		// with solid tetrahedra). The wing, which deliberately carries no

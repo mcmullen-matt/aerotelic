@@ -7,6 +7,7 @@
 
 #include "aerotelic/sdf.hpp"
 #include "aerotelic/section_aero.hpp"
+#include "aerotelic/section_cut.hpp"
 
 namespace aerotelic::panel {
 
@@ -22,6 +23,38 @@ std::vector<Network> WingNetworks(const WingModel& wing, const WingPaneling& pan
 	// set to zero) it is pulled in by the margin.
 	std::vector<double> etas = CosineSpacing(pan.spanwise);
 	for (double& e : etas) e = pan.eta_min + (pan.eta_max - pan.eta_min) * e;
+	// A deflected flap's end stations join the span stations, so the kink of
+	// the section begins and ends where the flap does.
+	bool any_deflected = false;
+	for (const FlapSpec& f : wing.flaps) {
+		if (f.deflection_deg == 0.0) continue;
+		any_deflected = true;
+		for (double e : {f.eta_root, f.eta_tip}) {
+			if (e <= pan.eta_min || e >= pan.eta_max) continue;
+			bool have = false;
+			for (double x : etas) have = have || std::fabs(x - e) < 1e-6;
+			if (!have) etas.push_back(e);
+		}
+	}
+	if (any_deflected) std::sort(etas.begin(), etas.end());
+	// The section at a station kinked by every flap that spans it: the
+	// points aft of the hinge turned about the hinge centre of the flap's
+	// own section cut (so the aero copy and the flap body agree on the
+	// axis), clamped to the section's limits like the body.
+	auto kink = [&](Mat& pts2, double eta, const Airfoil& af) {
+		if (!any_deflected) return;
+		for (const FlapSpec& f : wing.flaps) {
+			if (f.deflection_deg == 0.0 || eta < f.eta_root - 1e-9 || eta > f.eta_tip + 1e-9) continue;
+			const double chord = pf.ChordAt(eta);
+			if (chord <= 0.0) continue;
+			FlapCut cut;
+			try { cut = SolveFlapCut(af, wing.HingeFraction(f, eta), f.gap / chord); } catch (const std::invalid_argument&) { continue; }
+			double d = f.deflection_deg;
+			if (cut.deflection_down_limit_deg > 0.0 && d > cut.deflection_down_limit_deg) d = cut.deflection_down_limit_deg;
+			if (cut.deflection_up_limit_deg > 0.0 && d < -cut.deflection_up_limit_deg) d = -cut.deflection_up_limit_deg;
+			pts2 = DeflectAboutHinge(pts2, cut.x_hinge, cut.y_hinge, d, std::max(pan.hinge_blend, 0.0));
+		}
+	};
 	const double root_chord = std::max(pf.RootChord(), 1e-12);
 	auto pointed = [&](double eta) { return pf.ChordAt(eta) <= std::max(1e-9, pan.collapse_tip_fraction) * root_chord; };
 	const bool collapse_tip = pan.collapse_tip_fraction > 0.0 && pointed(etas.back());
@@ -64,6 +97,7 @@ std::vector<Network> WingNetworks(const WingModel& wing, const WingPaneling& pan
 				Mat closed = CloseTrailingEdge(pts2, 0.7, &gap);
 				if (gap > 1e-9) pts2 = closed;
 			}
+			kink(pts2, etas[j], *af);
 			Mat xyz = pf.AirfoilCoordsToXyz(etas[j], pts2);
 			collapse(xyz, j);
 			const bool pin = pan.pin_root_to_plane && j == 0 && etas[0] == 0.0;
@@ -84,6 +118,7 @@ std::vector<Network> WingNetworks(const WingModel& wing, const WingPaneling& pan
 			Mat up = af->UpperXY(cs), lo = af->LowerXY(cs);
 			Mat mean(body.cols, 2);
 			for (int k = 0; k < body.cols; ++k) { mean(k, 0) = 0.5 * (up(k, 0) + lo(k, 0)); mean(k, 1) = 0.5 * (up(k, 1) + lo(k, 1)); }
+			kink(mean, etas[i], *af);
 			Mat xyz = pf.AirfoilCoordsToXyz(etas[i], mean);
 			collapse(xyz, i);
 			const bool pin = pan.pin_root_to_plane && i == 0 && etas[0] == 0.0;

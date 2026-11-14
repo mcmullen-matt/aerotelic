@@ -85,6 +85,50 @@ int main() {
 		Solution s0 = Solve(WingNetworks(wing, thick, {1.0, 0.0, 0.0}), {1.0, 0.0, 0.0}, opt);
 		Check(std::fabs(s0.lift_from_wake.value_or(1.0)) < 1e-3, F("thick wing at zero incidence: no lift (%.2e)", s0.lift_from_wake.value_or(1.0)));
 
+		// ---- a deflected flap (2026-11-14) ----
+		// The same wing at zero incidence with a quarter-chord flap over
+		// 0.3..0.7 of the span turned 15 degrees down: the section is kinked
+		// aft of the hinge, the flap's end stations join the span stations,
+		// and the wing lifts. Thin-airfoil theory gives the 2-D flap
+		// 2 (pi - theta_h + sin theta_h) = 3.83 per radian at E = 0.25, so
+		// about 1.0 at 15 degrees; over 40% of the area of an aspect-ratio-11
+		// wing a few tenths. Up and down are mirror images on a symmetric
+		// section.
+		{
+			WingModel& flapped = wing; // (not copyable) the flap is removed again below
+			FlapSpec fl;
+			fl.eta_root = 0.3; fl.eta_tip = 0.7; fl.hinge_root = fl.hinge_tip = 0.75; fl.deflection_deg = 15.0;
+			flapped.flaps = {fl};
+			std::vector<Network> nf = WingNetworks(flapped, thick, {1.0, 0.0, 0.0});
+			flapped.flaps.clear();
+			Solution sf = Solve(nf, {1.0, 0.0, 0.0}, opt);
+			const double cl_f = sf.lift_from_wake.value_or(0.0);
+			std::printf("flapped wing (15 deg down, 0.3..0.7 span, hinge 0.75) at zero incidence: C_L %.4f\n", cl_f);
+			Check(nf[0].cols == 13, "flapped wing: the flap's two end stations join the ten cosine stations");
+			Check(cl_f > 0.1 && cl_f < 0.6, F("flapped wing: a 15 degree flap lifts the wing at zero incidence (C_L %.4f, a few tenths)", cl_f));
+			// The trailing-edge corners inside the flap's span sit below those
+			// of the plain wing; outside they coincide.
+			std::vector<Network> n0 = WingNetworks(wing, thick, {1.0, 0.0, 0.0});
+			bool dropped = true, same_outside = true;
+			for (int j = 0; j < nf[0].cols; ++j) {
+				const Vec3 te_f = nf[0].corners[static_cast<size_t>(j)]; // row 0 (TE upper), column j
+				// The plain wing's station with the same eta (its own cosine stations).
+				double best = 1e30; Vec3 te_0{};
+				for (int k = 0; k < n0[0].cols; ++k) { const Vec3 c = n0[0].corners[static_cast<size_t>(k)]; if (std::fabs(c.y - te_f.y) < best) { best = std::fabs(c.y - te_f.y); te_0 = c; } }
+				if (best > 1e-6) continue;
+				const double eta = te_f.y / wing.planform().SemiSpan();
+				const Vec3 dv = te_f - te_0;
+				if (eta > 0.3 + 1e-6 && eta < 0.7 - 1e-6) dropped = dropped && te_f.z < te_0.z - 0.05;
+				else if (eta < 0.3 - 1e-6 || eta > 0.7 + 1e-6) same_outside = same_outside && std::sqrt(Dot(dv, dv)) < 1e-9;
+			}
+			Check(dropped && same_outside, "flapped wing: the trailing edge is lowered inside the flap's span only");
+			fl.deflection_deg = -15.0;
+			flapped.flaps = {fl};
+			Solution su = Solve(WingNetworks(flapped, thick, {1.0, 0.0, 0.0}), {1.0, 0.0, 0.0}, opt);
+			flapped.flaps.clear();
+			Check(std::fabs(su.lift_from_wake.value_or(0.0) + cl_f) < 0.02 * std::fabs(cl_f) + 1e-6, F("flapped wing: 15 degrees up gives the opposite lift (%.4f vs %.4f)", su.lift_from_wake.value_or(0.0), cl_f));
+		}
+
 		// ---- bodies from their lofts ----
 		// A sphere primitive as a source network: 1.5 sin θ again, now through
 		// BodyNetworks and the primitive's own loft (poles as collapsed rows).

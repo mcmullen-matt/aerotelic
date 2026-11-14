@@ -160,8 +160,40 @@ namespace AerotelicFeaPreprocess
 				for (int32 k = 0; k < 3; ++k) OnShell[F.N[k]] = true;
 			}
 			for (bool B : OnShell) Out.ShellNodes += B ? 1 : 0;
-			Out.Dofs = 6ll * (Out.Nodes + Request.Masses.Num());
+			// A mass item and an offset link are a node of freedom each.
+			Out.Dofs = 6ll * (Out.Nodes + Request.Masses.Num() + Request.Links.Num());
 		}
+		// The ties and links as given (the ones naming a node the mesh lacks
+		// are left out: the solver refuses them with the reason).
+		for (const AerotelicStructuralFea::FTie& T : Request.Ties)
+		{
+			if (T.Master < 0 || T.Master >= Out.Nodes || T.Slave < 0 || T.Slave >= Out.Nodes) continue;
+			FModel::FTieView V;
+			V.Master = T.Master; V.Slave = T.Slave;
+			Out.Ties.Add(V);
+		}
+		for (const AerotelicStructuralFea::FLink& K : Request.Links)
+		{
+			FModel::FLinkView V;
+			V.Name = K.Name; V.On = K.On; V.At = ToF(K.At);
+			Out.Links.Add(V);
+		}
+		// Where a bar's end is (project units) and which structural node it
+		// hangs on: the node itself, or the link's node.
+		auto BarEnd = [&](const AerotelicStructuralFea::FBarEnd& E, aerotelic::Vec3& At, int32& OnNode) -> bool
+		{
+			if (E.Link >= 0)
+			{
+				if (E.Link >= Request.Links.Num()) return false;
+				At = Request.Links[E.Link].At;
+				OnNode = Request.Links[E.Link].On;
+				return OnNode >= 0 && OnNode < Out.Nodes;
+			}
+			if (E.Node < 0 || E.Node >= Out.Nodes) return false;
+			At = Nodes[E.Node];
+			OnNode = E.Node;
+			return true;
+		};
 
 		// The mass, its centre (project units) and the inertia tensor about
 		// it (SI), over the shells and the rib shells as uniform laminae on
@@ -226,6 +258,33 @@ namespace AerotelicFeaPreprocess
 			OwnInertia[1] -= Item.Inertia[3]; OwnInertia[3] -= Item.Inertia[3];
 			OwnInertia[2] -= Item.Inertia[4]; OwnInertia[6] -= Item.Inertia[4];
 			OwnInertia[5] -= Item.Inertia[5]; OwnInertia[7] -= Item.Inertia[5];
+		}
+		// The bars as uniform rods of mass rho A L (the script's
+		// rigid_body_properties): first moment at the midpoint, second
+		// moments (m/3)(a a^T + b b^T) + (m/6)(a b^T + b a^T).
+		for (const AerotelicStructuralFea::FBar& Bar : Request.Bars)
+		{
+			aerotelic::Vec3 A, B;
+			int32 OnA = -1, OnB = -1;
+			if (!BarEnd(Bar.A, A, OnA) || !BarEnd(Bar.B, B, OnB)) continue;
+			FModel::FBarView V;
+			V.Name = Bar.Name;
+			V.A = ToF(A); V.B = ToF(B);
+			V.Length = std::sqrt(aerotelic::DistanceSq(A, B)) * L;
+			V.Mass = Bar.Density * Bar.Area * V.Length;
+			Out.Bars.Add(V);
+			if (!(V.Mass > 0.0)) continue;
+			Out.MassOfBars += V.Mass;
+			Mass += V.Mass;
+			First += (A + B) * (0.5 * V.Mass);
+			const aerotelic::Vec3 Pa = A * L, Pb = B * L;
+			for (int32 i = 0; i < 3; ++i)
+			{
+				for (int32 j = 0; j < 3; ++j)
+				{
+					Second[3 * i + j] += (V.Mass / 3.0) * (Pa[i] * Pa[j] + Pb[i] * Pb[j]) + (V.Mass / 6.0) * (Pa[i] * Pb[j] + Pb[i] * Pa[j]);
+				}
+			}
 		}
 		Out.Mass = Mass;
 		Out.MassCentre = Mass > 0.0 ? ToF(First / Mass) : ToF(Out.Bounds.Center());
@@ -335,6 +394,16 @@ namespace AerotelicFeaPreprocess
 			};
 			for (const FFace& F : Out.WettedFaces) { Unite(F.N[0], F.N[1]); Unite(F.N[0], F.N[2]); }
 			for (const FFace& F : Out.RibFaces) { Unite(F.N[0], F.N[1]); Unite(F.N[0], F.N[2]); }
+			// A hinge tie joins its two nodes; a bar joins the nodes its ends
+			// hang on (2026-11-14): a flap tied and pushrodded to the wing is
+			// on the wing's load path.
+			for (const FModel::FTieView& T : Out.Ties) Unite(T.Master, T.Slave);
+			for (const AerotelicStructuralFea::FBar& Bar : Request.Bars)
+			{
+				aerotelic::Vec3 A, B;
+				int32 OnA = -1, OnB = -1;
+				if (BarEnd(Bar.A, A, OnA) && BarEnd(Bar.B, B, OnB)) Unite(OnA, OnB);
+			}
 			TMap<int32, int32> ComponentOfRoot;
 			Out.NodeComponent.SetNum(Out.Nodes);
 			for (int32 n = 0; n < Out.Nodes; ++n)

@@ -136,7 +136,7 @@ namespace AerotelicFeaPreprocess
 		// is not where it was typed: the caption and the Apply status warn.
 		bool SnapIsFar(const FPointLoad& P) const { return MedianEdge > 0.0 && P.SnapDistance > MedianEdge; }
 		FVector PointResultant = FVector::ZeroVector;      // N
-		double Mass = 0.0;              // kg, everything: the shells', the ribs' and the mass items'
+		double Mass = 0.0;              // kg, everything: the shells', the ribs', the mass items' and the bars'
 		double MassStructure = 0.0;     // kg, the shells' and the ribs'
 		double MassOfItems = 0.0;       // kg, the mass items'
 		FVector MassCentre = FVector::ZeroVector;           // project units, mass-weighted, items included
@@ -153,6 +153,33 @@ namespace AerotelicFeaPreprocess
 			FVector AttachCentre = FVector::ZeroVector;  // project units: the attachment nodes' centroid
 		};
 		TArray<FMassItemView> MassItems;
+
+		// ---- the hinges and pushrods (2026-11-14), as the solver gets them:
+		// the ties (joined in the load path: a tied flap is not floating),
+		// the offset links (a node of freedom each: Dofs counts them) and
+		// the bars (their mass rho A L, as uniform rods, in Mass and the
+		// inertia; their ends joined in the load path). ----
+		struct FTieView
+		{
+			int32 Master = -1, Slave = -1;
+		};
+		struct FLinkView
+		{
+			FString Name;
+			int32 On = -1;
+			FVector At = FVector::ZeroVector;   // project units
+		};
+		struct FBarView
+		{
+			FString Name;
+			FVector A = FVector::ZeroVector, B = FVector::ZeroVector;   // project units
+			double Length = 0.0;   // m
+			double Mass = 0.0;     // kg
+		};
+		TArray<FTieView> Ties;
+		TArray<FLinkView> Links;
+		TArray<FBarView> Bars;
+		double MassOfBars = 0.0;   // kg
 
 		// ---- free flight (2026-11-13): the support is one node, and the
 		// loads give the free body a rigid-body motion the inertial field

@@ -99,4 +99,44 @@ namespace AerotelicFeaModelBuilder
 	TArray<int32> AttachmentNodes(const std::vector<aerotelic::Vec3>& Nodes, const TArray<AerotelicStructuralFea::FShellFace>& ShellFaces,
 		const TArray<AerotelicStructuralFea::FShellFace>& RibFaces, const TArray<AerotelicStructuralFea::FRegion>& Regions,
 		int32 BodyIndex, const aerotelic::Vec3& At, int32 Count);
+
+	// ---- THE HINGES AND PUSHRODS of a wing's flaps (2026-11-14) ----
+	//
+	// A flap is a separate body in its gap: without a load path it floats
+	// and is left out. This hangs every chosen flap on its wing's chosen
+	// main element the way the real thing hangs (FlapSpec's hinge figures):
+	//
+	//   - HINGE BRACKETS, `hinge_brackets` of them spread along the flap's
+	//     span: at each, the flap's node nearest the hinge centre (on its
+	//     nose arc) is TIED to the main element's node nearest it (on the
+	//     cavity arc) -- translations equal, rotations free. Two or more
+	//     make a hinge: the flap turns about the line through the tied
+	//     nodes, which lies the nose radius off the section's hinge centre
+	//     (the gap and the arc radius; a few hundredths of the chord).
+	//   - A CONTROL HORN: an offset link standing `horn_arm` chords below
+	//     the hinge centre at the flap's mid-span, turned with the flap's
+	//     deflection, rigid on the flap's nearest node; a SERVO ARM: an
+	//     offset link `pushrod_forward` chords ahead of the hinge, as far
+	//     below, rigid on the main element's nearest node; and a PUSHROD, a
+	//     pin-ended bar of `pushrod_diameter` between them. The rod is what
+	//     holds the flap's hinge moment; its axial force is reported.
+	//
+	// A chosen body is a (operand, body role, picker index) triple; the
+	// index is what FRegion::Body carries. A flap ("<name>", or "<name>
+	// (port)" for the port copy of a symmetric wing) is hinged when its own
+	// entity's main element ("Main") is chosen with the same mirror. Hinge
+	// points come
+	// from the wing's section cuts at the bracket stations, placed by the
+	// actor's transform (the replica) and the operand's mirror. Appends to
+	// Request.Ties / Links / Bars; Notes gets a line per flap hinged, or
+	// why one was not. Returns how many flaps were hinged.
+	struct FChosenBody
+	{
+		FAerotelicBooleanOperand Operand;
+		FString Role;
+		int32 Index = -1;
+	};
+	int32 ResolveFlapHinges(const TArray<FChosenBody>& Chosen, const std::vector<aerotelic::Vec3>& Nodes,
+		const TArray<AerotelicStructuralFea::FShellFace>& ShellFaces, const TArray<AerotelicStructuralFea::FShellFace>& RibFaces,
+		const TArray<AerotelicStructuralFea::FRegion>& Regions, AerotelicStructuralFea::FRequest& Request, TArray<FString>& Notes);
 }

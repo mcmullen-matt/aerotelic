@@ -331,6 +331,7 @@ namespace
 		FModel Model;
 		TArray<FString> Problems;   // left out while meshing
 		TArray<FString> Dropped;    // left out for floating, this derivation
+		TArray<FString> Hinges;     // the flaps hinged to their wings, or why not (2026-11-14)
 	};
 
 	// A solve in flight (2026-11-05): the script runs on a worker thread
@@ -616,6 +617,31 @@ namespace
 			}
 		}
 
+		// The flaps' hinges and pushrods onto the mesh AS IT STANDS (2026-11-14;
+		// after a trim too, like the masses): every chosen flap whose wing's
+		// main element is chosen as well is tied to it at its hinge brackets
+		// and held by its pushrod (AerotelicFeaModelBuilder::ResolveFlapHinges),
+		// so it is on the load path and not dropped as floating.
+		void ResolveHinges(FBuilt& B)
+		{
+			AerotelicStructuralFea::FRequest& Request = B.Request;
+			Request.Ties.Reset();
+			Request.Links.Reset();
+			Request.Bars.Reset();
+			B.Hinges.Reset();
+			TArray<AerotelicFeaModelBuilder::FChosenBody> Chosen;
+			for (const FAerotelicBodyChoicePtr& C : ChosenBodies())
+			{
+				AerotelicFeaModelBuilder::FChosenBody K;
+				K.Operand = C->Operand;
+				K.Role = C->Body;
+				K.Index = Choices.IndexOfByKey(C);
+				Chosen.Add(K);
+			}
+			AerotelicFeaModelBuilder::ResolveFlapHinges(Chosen, B.Nodes, Request.ShellFaces, Request.RibFaces, Request.Regions, Request, B.Hinges);
+			for (const FString& H : B.Hinges) UE_LOG(LogTemp, Log, TEXT("StructuralFea: %s"), *H);
+		}
+
 		// The rows from the document's mass items (Analysis > Mass Properties
 		// edits them): a row per item, the attachment matched to the picker's
 		// row by scene name, mirror and body role (0 when that body is not in
@@ -760,6 +786,7 @@ namespace
 			B.Request.Regions = B.FullRegions;
 			B.Dropped.Reset();
 			ResolveMasses(B);
+			ResolveHinges(B);
 			FString Error;
 			if (!AerotelicFeaPreprocess::Build(B.Request, B.Model, Error))
 			{
@@ -850,13 +877,15 @@ namespace
 					Message(FText::FromString(TEXT("Nothing reaches a support: every chosen body floats free of the support planes.\n") + FString::Join(B.Dropped, TEXT("\n"))));
 					return false;
 				}
-				// The nodes were renumbered: the mass items hang on the new ones.
+				// The nodes were renumbered: the mass items hang on the new ones,
+				// and the hinges tie the new ones.
 				{
 					TArray<FString> KeptNotes;
 					for (const FString& D : B.Dropped) if (!D.StartsWith(TEXT("mass item"))) KeptNotes.Add(D);
 					B.Dropped = KeptNotes;
 				}
 				ResolveMasses(B);
+				ResolveHinges(B);
 				if (!AerotelicFeaPreprocess::Build(B.Request, B.Model, Error))
 				{
 					Status(LOCTEXT("Ready", "Ready"));
@@ -1392,6 +1421,29 @@ namespace
 						Full(M.MedianEdge), *LengthUnit);
 				}
 			}
+			// The hinges and pushrods (2026-11-14): each tie an amber bar from
+			// the flap's node to the main element's, each offset link a thin
+			// amber bar from its node to where it stands, each pushrod a red
+			// bar between its ends.
+			if (M.Ties.Num() > 0 || M.Links.Num() > 0 || M.Bars.Num() > 0 || B.Hinges.Num() > 0)
+			{
+				for (const FModel::FTieView& T : M.Ties)
+				{
+					AddBar(Marks, At(T.Master), At(T.Slave), 0.003 * Diag, kHandle);
+					AddOctahedron(Marks, At(T.Master), 0.006 * Diag, kHandle);
+					AddOctahedron(Marks, At(T.Slave), 0.006 * Diag, kHandle);
+				}
+				for (const FModel::FLinkView& K : M.Links)
+				{
+					if (K.On >= 0 && K.On < M.Nodes) AddBar(Marks, At(K.On), K.At, 0.0015 * Diag, kHandle);
+					AddOctahedron(Marks, K.At, 0.005 * Diag, kHandle);
+				}
+				for (const FModel::FBarView& Bar : M.Bars) AddBar(Marks, Bar.A, Bar.B, 0.004 * Diag, kPointForce);
+				if (!Text.IsEmpty()) Text += TEXT("\n");
+				Text += FString::Printf(TEXT("HINGES: %d bracket tie(s) (amber bars: the flap's node follows the main element's in translation, free to turn), %d offset link(s) (horns and servo arms, amber), %d pushrod(s) (red, pin-ended bars; their axial forces are reported with the result)."),
+					M.Ties.Num(), M.Links.Num(), M.Bars.Num());
+				for (const FString& H : B.Hinges) Text += TEXT("\n  ") + H;
+			}
 			if (M.bFreeFlight)
 			{
 				const FVector Ref = Full(M.Reference), SupportAt = Full(M.SupportAt), Centre = Full(M.MassCentre);
@@ -1604,7 +1656,8 @@ namespace
 			const double L2 = Units.LengthToSI(), S2 = Units.StressToSI(), M2 = Units.MassToSI();
 			LblMesh->SetText(FText::FromString(FString::Printf(TEXT("%s nodes; %s shells%s%s; %s DOF; %s wetted faces; %s"),
 				*Thousands(R.Nodes), *Thousands(R.Shells), R.RibShells > 0 ? *FString::Printf(TEXT(" (%s of them rib shells, unloaded)"), *Thousands(R.RibShells)) : TEXT(""),
-				R.Items.Num() > 0 ? *FString::Printf(TEXT("; %d mass item(s), %.5g %s"), R.Items.Num(), R.MassItems / M2, *UnitName(Units.MassName())) : TEXT(""),
+				*(FString(R.Items.Num() > 0 ? *FString::Printf(TEXT("; %d mass item(s), %.5g %s"), R.Items.Num(), R.MassItems / M2, *UnitName(Units.MassName())) : TEXT(""))
+					+ (R.Ties > 0 || R.Bars.Num() > 0 ? FString::Printf(TEXT("; %d hinge tie(s), %d pushrod(s)"), R.Ties, R.Bars.Num()) : FString())),
 				*Thousands(R.Dofs), *Thousands(R.WettedFaces),
 				R.bFreeFlight ? *FString::Printf(TEXT("free flight, the reference node %d"), R.SupportNode) : *FString::Printf(TEXT("%s nodes on the supports"), *Thousands(R.SupportNodes)))));
 			LblDisp->SetText(FText::FromString(FString::Printf(TEXT("%.4g %s at (%.4g, %.4g, %.4g); mean surface displacement %s (u . n = %.3g %s)"),
@@ -1631,6 +1684,18 @@ namespace
 				}
 				Peaks += FString::Printf(TEXT("%s%s [%s]: %.4g %s%s"), Peaks.IsEmpty() ? TEXT("") : TEXT("\n"), *E.Label, *E.Kind, E.MaxVonMises / S2, *UnitName(Units.StressName()),
 					E.Allowable > 0.0 ? *FString::Printf(TEXT(", margin %+.2f against %.4g"), E.Margin, E.Allowable / S2) : TEXT(" (no allowable set)"));
+			}
+			// The pushrods (2026-11-14): the axial force each carries, tension
+			// positive, and the stress in it (no allowable is set on a rod).
+			for (const AerotelicStructuralFea::FResult::FBarResult& Bar : R.Bars)
+			{
+				Peaks += FString::Printf(TEXT("%s%s [pushrod]: %.4g N %s, %.4g %s over %.4g %s, %.4g %s"), Peaks.IsEmpty() ? TEXT("") : TEXT("\n"), *Bar.Name,
+					FMath::Abs(Bar.Force), Bar.Force >= 0.0 ? TEXT("tension") : TEXT("compression"), FMath::Abs(Bar.Stress) / S2, *UnitName(Units.StressName()),
+					Bar.Length / L2, *UnitName(Units.LengthName()), Bar.Mass / M2, *UnitName(Units.MassName()));
+			}
+			if (R.Ties > 0 && R.Bars.Num() == 0)
+			{
+				Peaks += FString::Printf(TEXT("%s%d hinge tie(s) and NO pushrod: a hinged flap with nothing to hold its rotation; if the balance below is off, that is why"), Peaks.IsEmpty() ? TEXT("") : TEXT("\n"), R.Ties);
 			}
 			LblStress->SetText(FText::FromString(FString::Printf(TEXT("%.4g %s, in region %d"), R.MaxVonMises / S2, *UnitName(Units.StressName()), R.MaxVonMisesRegion)));
 			LblMargins->SetText(FText::FromString(Peaks));

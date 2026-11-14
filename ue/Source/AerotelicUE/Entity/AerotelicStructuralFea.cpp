@@ -331,6 +331,65 @@ namespace AerotelicStructuralFea
 			MassesJson += FString::Printf(TEXT("%s{\"name\": %s, \"mass\": %s, \"at\": [%s, %s, %s], \"inertia\": %s, \"attach\": [%s]}"), i ? TEXT(", ") : TEXT(""),
 				*JsonString(M.Name), *Num(M.Mass), *Num(M.At.x * L), *Num(M.At.y * L), *Num(M.At.z * L), *Inertia, *Attach);
 		}
+		// The hinge ties, offset links and bars (2026-11-14): checked here so
+		// the message names the culprit before the script is started.
+		const int32 NNodes = static_cast<int32>(Request.Nodes->size());
+		FString TiesJson;
+		for (int32 i = 0; i < Request.Ties.Num(); ++i)
+		{
+			const FTie& T = Request.Ties[i];
+			if (T.Master < 0 || T.Master >= NNodes || T.Slave < 0 || T.Slave >= NNodes || T.Master == T.Slave)
+			{
+				OutError = FString::Printf(TEXT("hinge tie %d names nodes the mesh does not have (%d, %d)"), i + 1, T.Master, T.Slave);
+				Cleanup();
+				return false;
+			}
+			TiesJson += FString::Printf(TEXT("%s{\"master\": %d, \"slave\": %d}"), i ? TEXT(", ") : TEXT(""), T.Master, T.Slave);
+		}
+		FString LinksJson;
+		for (int32 i = 0; i < Request.Links.Num(); ++i)
+		{
+			const FLink& K = Request.Links[i];
+			if (K.On < 0 || K.On >= NNodes)
+			{
+				OutError = FString::Printf(TEXT("offset link '%s' stands off a node the mesh does not have (%d)"), *K.Name, K.On);
+				Cleanup();
+				return false;
+			}
+			LinksJson += FString::Printf(TEXT("%s{\"name\": %s, \"on\": %d, \"at\": [%s, %s, %s]}"), i ? TEXT(", ") : TEXT(""), *JsonString(K.Name), K.On, *Num(K.At.x * L), *Num(K.At.y * L), *Num(K.At.z * L));
+		}
+		FString BarsJson;
+		for (int32 i = 0; i < Request.Bars.Num(); ++i)
+		{
+			const FBar& Bar = Request.Bars[i];
+			auto End = [&](const FBarEnd& E, FString& Json) -> bool
+			{
+				if (E.Link >= 0)
+				{
+					if (E.Link >= Request.Links.Num()) return false;
+					Json = FString::Printf(TEXT("{\"link\": %d}"), E.Link);
+					return true;
+				}
+				if (E.Node < 0 || E.Node >= NNodes) return false;
+				Json = FString::Printf(TEXT("{\"node\": %d}"), E.Node);
+				return true;
+			};
+			FString AJson, BJson;
+			if (!End(Bar.A, AJson) || !End(Bar.B, BJson))
+			{
+				OutError = FString::Printf(TEXT("bar '%s' ends on a node or link the model does not have"), *Bar.Name);
+				Cleanup();
+				return false;
+			}
+			if (!(Bar.Area > 0.0) || !(Bar.YoungsModulus > 0.0) || !(Bar.Density > 0.0))
+			{
+				OutError = FString::Printf(TEXT("bar '%s' needs a positive area, modulus and density"), *Bar.Name);
+				Cleanup();
+				return false;
+			}
+			BarsJson += FString::Printf(TEXT("%s{\"name\": %s, \"a\": %s, \"b\": %s, \"area\": %s, \"youngs_modulus\": %s, \"density\": %s}"), i ? TEXT(", ") : TEXT(""),
+				*JsonString(Bar.Name), *AJson, *BJson, *Num(Bar.Area), *Num(Bar.YoungsModulus), *Num(Bar.Density));
+		}
 		const FString ReliefJson = Request.bFreeFlight
 			? (Request.bReferenceGiven
 				? FString::Printf(TEXT("{\"reference\": [%s, %s, %s]}"), *Num(Request.Reference.x * L), *Num(Request.Reference.y * L), *Num(Request.Reference.z * L))
@@ -355,13 +414,13 @@ namespace AerotelicStructuralFea
 		}
 		const FString Job = FString::Printf(
 			TEXT("{\n \"nodes\": \"nodes.bin\",\n \"faces\": %s,\n \"rib_faces\": %s,\n \"axes\": %s,\n \"rib_axes\": %s,\n \"regions\": [%s],\n")
-			TEXT(" \"supports\": [%s],\n \"inertia_relief\": %s,\n \"masses\": [%s],\n")
+			TEXT(" \"supports\": [%s],\n \"inertia_relief\": %s,\n \"masses\": [%s],\n \"ties\": [%s],\n \"links\": [%s],\n \"bars\": [%s],\n")
 			TEXT(" \"loads\": {\"load_factor\": %s, \"pressure\": %s, \"pressure_file\": %s, \"point_forces\": [%s]},\n")
 			TEXT(" \"solver\": {\"echo_level\": 0, \"linear_solver\": %s, \"shell_element\": %s, \"modes\": %d},\n")
 			TEXT(" \"outputs\": {\"vtk\": %s, \"result\": \"result.json\"}\n}\n"),
 			FacesFile.IsEmpty() ? TEXT("null") : *JsonString(FacesFile), RibsFile.IsEmpty() ? TEXT("null") : *JsonString(RibsFile),
 			AxesFile.IsEmpty() ? TEXT("null") : *JsonString(AxesFile), RibAxesFile.IsEmpty() ? TEXT("null") : *JsonString(RibAxesFile), *Regions,
-			*SupportsJson, *ReliefJson, *MassesJson,
+			*SupportsJson, *ReliefJson, *MassesJson, *TiesJson, *LinksJson, *BarsJson,
 			*Num(Request.LoadFactor), *Num(Request.Pressure), PressureFile.IsEmpty() ? TEXT("null") : *JsonString(PressureFile), *PointsJson,
 			*JsonString(Request.LinearSolver.IsEmpty() ? FString(TEXT("auto")) : Request.LinearSolver),
 			*JsonString(Request.ShellElement.IsEmpty() ? FString(TEXT("ShellThinElement3D3N")) : Request.ShellElement),
@@ -438,6 +497,30 @@ namespace AerotelicStructuralFea
 					ReadVec3(*Obj, TEXT("displacement"), I.Displacement);
 					ReadVec3(*Obj, TEXT("force"), I.Force);
 					Out.Items.Add(I);
+				}
+			}
+		}
+		// The hinges and pushrods (2026-11-14).
+		Out.Ties = Int(TEXT("ties"));
+		Out.Links = Int(TEXT("links"));
+		Out.MassBars = Real(TEXT("mass_bars"));
+		{
+			const TArray<TSharedPtr<FJsonValue>>* Bars = nullptr;
+			if (Result->TryGetArrayField(TEXT("bars"), Bars))
+			{
+				for (const TSharedPtr<FJsonValue>& V : *Bars)
+				{
+					const TSharedPtr<FJsonObject>* Obj = nullptr;
+					if (!V.IsValid() || !V->TryGetObject(Obj)) continue;
+					FResult::FBarResult Bar;
+					(*Obj)->TryGetStringField(TEXT("name"), Bar.Name);
+					Bar.Force = NumberOr(*Obj, TEXT("force"));
+					Bar.Stress = NumberOr(*Obj, TEXT("stress"));
+					Bar.Length = NumberOr(*Obj, TEXT("length"));
+					Bar.Mass = NumberOr(*Obj, TEXT("mass"));
+					ReadVec3(*Obj, TEXT("a"), Bar.A);
+					ReadVec3(*Obj, TEXT("b"), Bar.B);
+					Out.Bars.Add(Bar);
 				}
 			}
 		}

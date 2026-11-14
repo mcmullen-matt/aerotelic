@@ -219,9 +219,52 @@ int main() {
 		for (size_t i = 0; same && i < 2; ++i) {
 			const FlapSpec& p = spec.flaps[i];
 			const FlapSpec& q = back.flaps[i];
-			same = p.name == q.name && p.eta_root == q.eta_root && p.eta_tip == q.eta_tip && p.hinge_root == q.hinge_root && p.hinge_tip == q.hinge_tip && p.gap == q.gap && p.side_gap == q.side_gap;
+			same = p.name == q.name && p.eta_root == q.eta_root && p.eta_tip == q.eta_tip && p.hinge_root == q.hinge_root && p.hinge_tip == q.hinge_tip && p.gap == q.gap && p.side_gap == q.side_gap
+				&& p.deflection_deg == q.deflection_deg && p.hinge_brackets == q.hinge_brackets && p.horn_arm == q.horn_arm && p.pushrod_forward == q.pushrod_forward
+				&& p.pushrod_diameter == q.pushrod_diameter && p.pushrod_youngs_modulus == q.pushrod_youngs_modulus && p.pushrod_density == q.pushrod_density;
 		}
 		Check(same, "yaml: flaps survive a round trip");
+		Check(!node["flaps"][0]["deflection_deg"] && !node["flaps"][0]["hinge_brackets"], "yaml: an undeflected flap with the default hinge writes no hinge keys (an older file reads the same)");
+
+		// ---- a DEFLECTED flap (2026-11-14) ----
+		// The flap body turned 15 degrees trailing edge down about its hinge:
+		// still a closed body that clears the main element (the nose is
+		// concentric with the cavity) and keeps its own span; its trailing
+		// edge dropped by about (1 - hinge) chord sin 15 deg; the
+		// undeflected flap's trailing edge sits where it was; the hinge keys
+		// round-trip through the file.
+		{
+			FlapSpec down = outer;
+			down.deflection_deg = 15.0;
+			down.hinge_brackets = 3;
+			down.horn_arm = 0.05;
+			wing.flaps = {down};
+			CheckBodies("deflected flap", wing, tol, v_full, 1);
+			std::vector<NamedMesh> dm = wing.BuildMeshes(tol);
+			wing.flaps = {outer};
+			std::vector<NamedMesh> um = wing.BuildMeshes(tol);
+			auto te_z = [](const NamedMesh& m) { double zx = -1e30, z = 0.0; for (const Vec3& p : m.mesh.vertices) if (p.x > zx) { zx = p.x; z = p.z; } return std::make_pair(zx, z); };
+			const auto [xd, zd] = te_z(dm[1]);
+			const auto [xu, zu] = te_z(um[1]);
+			// The aft-most vertex of a swept wing's flap is at its tip station.
+			const double chord = wing.planform().ChordAt(down.eta_tip);
+			const double drop = (1.0 - wing.HingeFraction(down, down.eta_tip)) * chord * std::sin(15.0 * 3.14159265358979323846 / 180.0);
+			Check(zu - zd > 0.5 * drop && zu - zd < 1.5 * drop && xd < xu, F("deflected flap: the trailing edge dropped %.4f (about (1 - hinge) c sin 15 = %.4f) and moved forward", zu - zd, drop));
+			wing.flaps = {down};
+			YAML::Node dn = Encode(wing.Serialize());
+			const WingModelSpec dback = DecodeWingModelSpec(dn);
+			Check(dn["flaps"][0]["deflection_deg"].as<double>() == 15.0 && dn["flaps"][0]["hinge_brackets"].as<int>() == 3 && dback.flaps.size() == 1 && dback.flaps[0].deflection_deg == 15.0 && dback.flaps[0].horn_arm == 0.05,
+				"yaml: the deflection and the hinge figures are written when set and read back");
+			// Past the section's limit the deflection is clamped and noted.
+			FlapSpec beyond = outer;
+			beyond.deflection_deg = 89.0;
+			wing.flaps = {beyond};
+			wing.BuildMeshes(tol);
+			bool noted = false;
+			for (const BodyStructurePlan& p : wing.LastStructurePlans()) for (const std::string& n : p.notes) noted = noted || n.find("clamped") != std::string::npos;
+			Check(noted, "deflected flap: a deflection past the section's limit is clamped and noted on the flap's plan");
+			wing.flaps = {inner, outer};
+		}
 		wing.flaps.clear();
 		Check(!Encode(wing.Serialize())["flaps"], "yaml: a wing without flaps writes no flaps key");
 		WingModel again(back);

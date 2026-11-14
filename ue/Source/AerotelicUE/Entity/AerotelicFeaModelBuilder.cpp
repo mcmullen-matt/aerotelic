@@ -7,7 +7,10 @@
 
 #include "aerotelic/drape.hpp"
 #include "aerotelic/laminate.hpp"
+#include "aerotelic/mat.hpp"
+#include "aerotelic/section_cut.hpp"
 #include "aerotelic/structure_plan.hpp"
+#include "aerotelic/wing_model.hpp"
 
 #include <cmath>
 #include <limits>
@@ -334,6 +337,156 @@ namespace AerotelicFeaModelBuilder
 		if (!Role.IsEmpty() || Entity == nullptr) return Role;
 		const TArray<FAerotelicBody>& Bodies = Entity->GetBodies();
 		return Bodies.Num() > 0 ? Bodies[0].Name : FString();
+	}
+
+	int32 ResolveFlapHinges(const TArray<FChosenBody>& Chosen, const std::vector<aerotelic::Vec3>& Nodes,
+		const TArray<AerotelicStructuralFea::FShellFace>& ShellFaces, const TArray<AerotelicStructuralFea::FShellFace>& RibFaces,
+		const TArray<AerotelicStructuralFea::FRegion>& Regions, AerotelicStructuralFea::FRequest& Request, TArray<FString>& Notes)
+	{
+		using namespace AerotelicStructuralFea;
+		static const FString kPort = TEXT(" (port)");
+		const double LengthToSI = ProjectLengthToSI();
+		int32 Hinged = 0;
+		for (const FChosenBody& C : Chosen)
+		{
+			AAerotelicEntityActor* Entity = C.Operand.Entity.Get();
+			if (Entity == nullptr || C.Index < 0) continue;
+			const aerotelic::WingModel* W = Entity->GetModelAs<aerotelic::WingModel>();
+			if (W == nullptr) continue;
+			// A flap body's role is the flap's name, or that plus " (port)" for
+			// the port copy of a symmetric wing; the main element is "Main"
+			// either way (a symmetric wing's is one body tip to tip).
+			const bool bPort = C.Role.EndsWith(kPort);
+			const FString FlapName = bPort ? C.Role.LeftChop(kPort.Len()) : C.Role;
+			const aerotelic::FlapSpec* Flap = nullptr;
+			for (const aerotelic::FlapSpec& F : W->flaps) if (UTF8_TO_TCHAR(F.name.c_str()) == FlapName) { Flap = &F; break; }
+			if (Flap == nullptr) continue;
+			const FString MainRole = TEXT("Main");
+			const FChosenBody* Main = nullptr;
+			for (const FChosenBody& D : Chosen)
+			{
+				if (D.Operand.Entity.Get() == Entity && D.Operand.bMirror == C.Operand.bMirror && D.Role == MainRole && D.Index >= 0) { Main = &D; break; }
+			}
+			if (Main == nullptr)
+			{
+				Notes.Add(FString::Printf(TEXT("flap '%s' of %s: its main element (%s) is not chosen, so it has no hinge and floats"), *C.Role, *Entity->EntityName, *MainRole));
+				continue;
+			}
+			// Has either body any node in the model (not refused, not trimmed)?
+			auto HasNodes = [&](int32 Body) { return AttachmentNodes(Nodes, ShellFaces, RibFaces, Regions, Body, aerotelic::Vec3{}, 1).Num() > 0; };
+			if (!HasNodes(C.Index) || !HasNodes(Main->Index))
+			{
+				Notes.Add(FString::Printf(TEXT("flap '%s' of %s: the flap or its main element has no nodes in the model, so no hinge was built"), *C.Role, *Entity->EntityName));
+				continue;
+			}
+
+			// A point of the flap's section at station eta, in airfoil
+			// coordinates, placed: the wing's planform puts it in the model,
+			// the port copy is mirrored in the model's y = 0, the actor
+			// transform places it (the replica), the operand's mirror reflects
+			// it.
+			const FTransform Transform = Entity->GetActorTransform();
+			auto Place = [&](double Eta, double X, double Y) -> aerotelic::Vec3
+			{
+				aerotelic::Mat P = W->planform().AirfoilCoordsToXyz(Eta, aerotelic::Mat::FromRows({{X, Y}}));
+				aerotelic::TriMesh M;
+				M.vertices.push_back(aerotelic::Vec3{P(0, 0), bPort ? -P(0, 1) : P(0, 1), P(0, 2)});
+				AerotelicMeshing::PlaceMesh(M, Transform);
+				if (C.Operand.bMirror) Entity->ReflectMesh(M);
+				return M.vertices[0];
+			};
+			auto Nearest = [&](int32 Body, const aerotelic::Vec3& At) -> int32
+			{
+				const TArray<int32> N = AttachmentNodes(Nodes, ShellFaces, RibFaces, Regions, Body, At, 1);
+				return N.Num() > 0 ? N[0] : -1;
+			};
+			auto CutAt = [&](double Eta, aerotelic::FlapCut& Cut) -> bool
+			{
+				try
+				{
+					const double Chord = W->planform().ChordAt(Eta);
+					if (!(Chord > 0.0)) return false;
+					std::shared_ptr<aerotelic::Airfoil> Af = W->AirfoilAt(Eta);
+					Cut = aerotelic::SolveFlapCut(*Af, W->HingeFraction(*Flap, Eta), Flap->gap / Chord);
+					return true;
+				}
+				catch (const std::exception&) { return false; }
+			};
+
+			// The brackets.
+			const int32 NBrackets = FMath::Max(Flap->hinge_brackets, 1);
+			int32 TiesAdded = 0;
+			TSet<int32> SlavesUsed;
+			for (int32 k = 0; k < NBrackets; ++k)
+			{
+				const double Eta = Flap->eta_root + (k + 0.5) / NBrackets * (Flap->eta_tip - Flap->eta_root);
+				aerotelic::FlapCut Cut;
+				if (!CutAt(Eta, Cut)) continue;
+				const aerotelic::Vec3 Hinge = Place(Eta, Cut.x_hinge, Cut.y_hinge);
+				const int32 Slave = Nearest(C.Index, Hinge);
+				if (Slave < 0 || SlavesUsed.Contains(Slave)) continue;   // a coarse flap: two brackets on one node is one bracket
+				const int32 Master = Nearest(Main->Index, Nodes[Slave]);
+				if (Master < 0 || Master == Slave) continue;
+				FTie T;
+				T.Master = Master; T.Slave = Slave;
+				Request.Ties.Add(T);
+				SlavesUsed.Add(Slave);
+				++TiesAdded;
+			}
+			if (TiesAdded == 0)
+			{
+				Notes.Add(FString::Printf(TEXT("flap '%s' of %s: no hinge bracket could be placed (the section cut failed at every bracket station)"), *C.Role, *Entity->EntityName));
+				continue;
+			}
+
+			// The horn, the servo arm and the pushrod at the flap's mid-span.
+			bool bRod = false;
+			{
+				const double Eta = 0.5 * (Flap->eta_root + Flap->eta_tip);
+				aerotelic::FlapCut Cut;
+				if (CutAt(Eta, Cut) && Flap->horn_arm > 0.0 && Flap->pushrod_forward > 0.0 && Flap->pushrod_diameter > 0.0)
+				{
+					// The horn is on the flap: it turns with the deflection
+					// (clamped like the body's).
+					double D = Flap->deflection_deg;
+					if (Cut.deflection_down_limit_deg > 0.0 && D > Cut.deflection_down_limit_deg) D = Cut.deflection_down_limit_deg;
+					if (Cut.deflection_up_limit_deg > 0.0 && D < -Cut.deflection_up_limit_deg) D = -Cut.deflection_up_limit_deg;
+					const aerotelic::Mat HornXY = aerotelic::DeflectAboutHinge(aerotelic::Mat::FromRows({{Cut.x_hinge, Cut.y_hinge - Flap->horn_arm}}), Cut.x_hinge, Cut.y_hinge, D);
+					const aerotelic::Vec3 Hinge = Place(Eta, Cut.x_hinge, Cut.y_hinge);
+					const aerotelic::Vec3 Horn = Place(Eta, HornXY(0, 0), HornXY(0, 1));
+					const aerotelic::Vec3 Servo = Place(Eta, Cut.x_hinge - Flap->pushrod_forward, Cut.y_hinge - Flap->horn_arm);
+					const int32 OnFlap = Nearest(C.Index, Hinge);
+					const int32 OnMain = Nearest(Main->Index, Servo);
+					if (OnFlap >= 0 && OnMain >= 0 && aerotelic::DistanceSq(Horn, Servo) > 0.0)
+					{
+						FLink HornLink, ServoLink;
+						HornLink.Name = FString::Printf(TEXT("%s horn"), *C.Role);
+						HornLink.On = OnFlap; HornLink.At = Horn;
+						ServoLink.Name = FString::Printf(TEXT("%s servo arm"), *C.Role);
+						ServoLink.On = OnMain; ServoLink.At = Servo;
+						const int32 HornIndex = Request.Links.Add(HornLink);
+						const int32 ServoIndex = Request.Links.Add(ServoLink);
+						FBar Rod;
+						Rod.Name = FString::Printf(TEXT("%s pushrod"), *C.Role);
+						Rod.A.Link = HornIndex;
+						Rod.B.Link = ServoIndex;
+						const double Dia = Flap->pushrod_diameter * LengthToSI;
+						Rod.Area = 0.25 * PI * Dia * Dia;
+						Rod.YoungsModulus = Flap->pushrod_youngs_modulus;
+						Rod.Density = Flap->pushrod_density;
+						Request.Bars.Add(Rod);
+						bRod = true;
+					}
+				}
+			}
+			++Hinged;
+			Notes.Add(FString::Printf(TEXT("flap '%s' of %s hinged to %s: %d bracket tie(s)%s%s"), *C.Role, *Entity->EntityName, *MainRole, TiesAdded,
+				TiesAdded < NBrackets ? *FString::Printf(TEXT(" (%d asked; the flap's grid is too coarse for more)"), NBrackets) : TEXT(""),
+				bRod ? *FString::Printf(TEXT(", a %.4g mm pushrod from a horn %.3g c below the hinge to a servo arm %.3g c ahead of it%s"), Flap->pushrod_diameter * LengthToSI * 1000.0, Flap->horn_arm, Flap->pushrod_forward,
+					Flap->deflection_deg != 0.0 ? *FString::Printf(TEXT(", the flap deflected %.3g deg"), Flap->deflection_deg) : TEXT(""))
+					: TEXT(", NO PUSHROD (a zero horn arm, forward reach or diameter): the flap can turn freely about its hinge, which makes the system singular")));
+		}
+		return Hinged;
 	}
 
 	FString Describe(const FAerotelicBooleanOperand& Op, const FString& Role, const FString& Label, const FOptions& Options, const aerotelic::UnitSystem& Units, bool* bOutOk)

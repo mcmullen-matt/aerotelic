@@ -53,6 +53,15 @@ struct WingPaneling {
 	// condition and the network's image crosses it, which blew the root
 	// column's pressures up to Cp -30 and more.
 	bool pin_root_to_plane = true;
+	// A deflected flap (FlapSpec::deflection_deg, 2026-11-14) reaches the
+	// panel method as a kink of the SEALED section: at every station inside
+	// the flap's span the points aft of the hinge turn about the hinge
+	// centre, the turn blended in over this many chords either side of the
+	// hinge (DeflectAboutHinge), and the flap's end stations are added to
+	// the span stations so the kink starts and stops where the flap does.
+	// The gap and the pocket are not modelled; this is the vortex-lattice
+	// view of a flap, which the thick formulation carries just as well.
+	double hinge_blend = 0.05;
 };
 
 // The body network (semi-span, y >= 0) and its wake; solve them with

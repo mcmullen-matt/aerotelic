@@ -52,6 +52,11 @@ void SFlapListWidget::Construct(const FArguments& InArgs, WingModel* InModel)
 			+ SHorizontalBox::Slot().AutoWidth() [ Header(LOCTEXT("ColHingeTip", "Hinge tip"), kNumWidth) ]
 			+ SHorizontalBox::Slot().AutoWidth() [ Header(LOCTEXT("ColGap", "Gap"), kNumWidth) ]
 			+ SHorizontalBox::Slot().AutoWidth() [ Header(LOCTEXT("ColSideGap", "Side gap"), kNumWidth) ]
+			+ SHorizontalBox::Slot().AutoWidth() [ Header(LOCTEXT("ColDeflection", "Deflection °"), kNumWidth) ]
+			+ SHorizontalBox::Slot().AutoWidth() [ Header(LOCTEXT("ColBrackets", "Brackets"), kNumWidth) ]
+			+ SHorizontalBox::Slot().AutoWidth() [ Header(LOCTEXT("ColHorn", "Horn arm c"), kNumWidth) ]
+			+ SHorizontalBox::Slot().AutoWidth() [ Header(LOCTEXT("ColRodFwd", "Rod fwd c"), kNumWidth) ]
+			+ SHorizontalBox::Slot().AutoWidth() [ Header(LOCTEXT("ColRodDia", "Rod dia"), kNumWidth) ]
 			+ SHorizontalBox::Slot().AutoWidth() [ SNew(SBox).WidthOverride(64) ]
 		]
 
@@ -129,6 +134,30 @@ void SFlapListWidget::RebuildRows()
 			+ SHorizontalBox::Slot().AutoWidth() [ Num(&FlapSpec::hinge_tip, 0.02, 0.98, 0.01, LOCTEXT("HingeTipTip", "Hinge position at the outboard end, as a chord fraction.")) ]
 			+ SHorizontalBox::Slot().AutoWidth() [ Num(&FlapSpec::gap, 0.0, 1.0e9, 0.001, LOCTEXT("GapTip", "Clearance between the flap's nose and the main element's cavity, in model units; constant along the span.")) ]
 			+ SHorizontalBox::Slot().AutoWidth() [ Num(&FlapSpec::side_gap, 0.0, 1.0e9, 0.001, LOCTEXT("SideGapTip", "Spanwise clearance between each end cap of the flap and the main element's pocket face, in model units. The flap keeps its extent; the pocket is cut this much wider at each end.")) ]
+			+ SHorizontalBox::Slot().AutoWidth() [ Num(&FlapSpec::deflection_deg, -90.0, 90.0, 1.0, LOCTEXT("DeflectionTip", "Hinge deflection in degrees, positive trailing edge DOWN. The flap body turns about its hinge centre in every section plane (its nose stays concentric with the cavity), clamped to the section's own limit where the flap skin would meet the pocket's lip; the panel method sees the same deflection as a kink of the sealed section aft of the hinge.")) ]
+			+ SHorizontalBox::Slot().AutoWidth()
+			[
+				SNew(SBox).WidthOverride(kNumWidth).Padding(0, 0, 6, 0)
+				[
+					SNew(SAerotelicNumericEntry)
+					.ToolTipText(LOCTEXT("BracketsTip", "Hinge brackets along the span, for the structural analysis: at each, the flap's nearest node is tied to the main element's (translations only, so the hinge rotation stays free). Two make a hinge."))
+					.Value_Lambda([this, i]() { return i < static_cast<int32>(Model->flaps.size()) ? (double)Model->flaps[i].hinge_brackets : 0.0; })
+					.MinValue(1.0).MaxValue(20.0).Delta(1.0)
+					.LiveUpdate(false)
+					.OnValueCommitted_Lambda([this, i](double V, ETextCommit::Type)
+					{
+						const int32 N = FMath::Max(FMath::RoundToInt32(V), 1);
+						if (i < static_cast<int32>(Model->flaps.size()) && Model->flaps[i].hinge_brackets != N)
+						{
+							Model->flaps[i].hinge_brackets = N;
+							Changed();
+						}
+					})
+				]
+			]
+			+ SHorizontalBox::Slot().AutoWidth() [ Num(&FlapSpec::horn_arm, 0.001, 1.0, 0.01, LOCTEXT("HornTip", "The control horn, as a fraction of the local chord BELOW the hinge at the flap's mid-span; the servo arm stands as far below the main element. The pushrod runs between them.")) ]
+			+ SHorizontalBox::Slot().AutoWidth() [ Num(&FlapSpec::pushrod_forward, 0.01, 1.0, 0.01, LOCTEXT("RodFwdTip", "The servo arm, as a fraction of the local chord AHEAD of the hinge on the main element.")) ]
+			+ SHorizontalBox::Slot().AutoWidth() [ Num(&FlapSpec::pushrod_diameter, 0.0001, 1.0, 0.0005, LOCTEXT("RodDiaTip", "The pushrod's diameter in model units (a build figure, like a skin thickness): a pin-ended steel rod between the horn and the servo arm, what holds the flap in the structural analysis.")) ]
 			+ SHorizontalBox::Slot().AutoWidth()
 			[
 				SNew(SBox).WidthOverride(64)

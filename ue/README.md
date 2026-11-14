@@ -2748,6 +2748,92 @@ noted as buried, the configuration at 0.55. `panel_method_check` (26),
 `panel_p38_check` (26), `mesh_check` unchanged. Not done: a UE smoke run
 of the panel dialog with a free cowl (the standalone target compiles).
 
+### Hinges: the flap deflected in the section, tied and pushrodded in the FEA (2026-11-14)
+
+Stage 3 of the flight-loads plan. A flap had been a body in its gap:
+the panel method never saw it move, and the structural analysis dropped
+it as floating. Now it turns, the aero copy turns with it, and it hangs
+on the wing the way the real one does.
+
+* **Deflection in the parameterisation** (`FlapSpec::deflection_deg`,
+  degrees, positive trailing edge DOWN; the Control Surfaces table's new
+  column). `WingModel::BuildBodies` turns the flap's loop at every station
+  about that station's hinge centre (`FlapCut::x_hinge, y_hinge`, the
+  centre of the nose and cavity arcs, so the nose stays concentric with the
+  pocket and the clearance holds at any angle), clamped to the section's
+  own limits where the flap skin would meet the pocket's lip
+  (`FlapCut::deflection_*_limit_deg`) with a note on the body's plan. The
+  one helper, `DeflectAboutHinge` (wing_model.hpp), is a rotation of
+  chord-normalised points about the hinge with an optional smoothstep
+  blend in x.
+* **The kink in the aero copy.** `WingNetworks` reads the wing's flaps:
+  at every station inside a deflected flap's span the SEALED section's
+  points aft of the hinge turn by the same angle, blended over ±5% chord
+  (`WingPaneling::hinge_blend`) -- the slope discontinuity a vortex-lattice
+  code puts at the hinge, smeared over two blends -- and the flap's end
+  stations join the span stations so the kink starts and stops where the
+  flap does. The gap and pocket are not in the aero model (they are not in
+  anyone's). Thin or thick formulation alike.
+* **Ties, links and bars in the solver** (`tools/structural_fea.py`
+  HINGES AND PUSHRODS). A `tie` is a `LinearMasterSlaveConstraint` of the
+  slave node's three translations on the master's -- rotations free, so
+  two ties make a hinge about the line through them. An offset `link` is
+  a new node rigidly offset from a structural node (u = u_on + θ_on × r:
+  three slave rows on six masters, its own rotation pinned) -- a control
+  horn, a servo arm. A `bar` is a `TrussElement3D2N` with
+  `TrussConstitutiveLaw` (E, A, ρ) between two nodes or links -- a
+  pin-ended pushrod, axial stiffness and mass and nothing else. Its force
+  is E A (Δu·e)/L from the ends' displacements (Kratos's own
+  `AXIAL_FORCE` came back zero on the linear truss), positive in tension;
+  the result carries `bars` (force, stress, length, ends, mass),
+  `ties`, `links`, `mass_bars`. A bar's mass is in the rigid-body
+  properties as a uniform rod, so free flight and the reaction check
+  include it.
+* **The wing's hinge, resolved headless** (`AerotelicFeaModelBuilder::
+  ResolveFlapHinges`): for every chosen flap whose own wing's `Main` body
+  is chosen too, `hinge_brackets` ties spread along the span -- the flap's
+  node nearest the hinge centre (on its nose arc) to the main element's
+  nearest (on the cavity arc), so the model's hinge line runs the nose
+  radius off the section's hinge centre, a few hundredths of the chord --
+  plus a horn link `horn_arm` chords below the hinge at mid-span, turned
+  with the deflection, on the flap's nearest node; a servo-arm link
+  `pushrod_forward` chords ahead of the hinge, as far below, on the main
+  element's nearest node; and a `pushrod_diameter` steel rod between them
+  (E and ρ on the FlapSpec, 4130 by default). All five figures are columns
+  of the Control Surfaces table and keys of the YAML `flaps:` entry,
+  written only when not the defaults. Hinge points come from the section
+  cut at each station through the planform, the actor transform (the
+  replica) and the operand's mirror; a symmetric wing's port flap
+  (`<name> (port)`) hinges to the same `Main`.
+* **The dialog.** `ResolveHinges` runs with `ResolveMasses` before the
+  pre-processor and again after a trim renumbers the nodes, so a hinged
+  flap is on the load path (the pre-processor's union-find unites tie
+  pairs and bar ends; its DOF count adds a node per link; its mass adds
+  the rods). The Support tab draws the ties (amber bars between the tied
+  nodes), the links and the pushrods (red) and lists them with the
+  builder's notes; the result lists each pushrod's force, stress, length
+  and mass under the margins, and warns of a hinged flap with no rod (a
+  mechanism: the reactions will not balance).
+
+**Verified.** `flap_mesh_check` (101): the 15-degree flap is still a
+closed body clearing the main element on its own span, its trailing edge
+dropped and moved forward, the hinge keys round-trip and are absent when
+default, an 89-degree ask is clamped and noted. `wing_panels_check` (42):
+a quarter-chord flap over 0.3..0.7 span at 15 degrees lifts the 0012 wing
+at zero incidence (C_L 0.415 -- thin-airfoil theory's 3.83/rad × 0.26 rad
+over 40% of the area of an AR-11 wing), the trailing edge lowered inside
+the flap's span only, 15 degrees up gives −0.415 exactly. The script's
+check (`structural_fea_check.py`): a stiff plate with a 2 mm flap plate
+hinged at two corners and held by a 4 mm rod -- the rod's force is W d / h
+to four figures (−62.54 N, compression), the clamp carries plate, flap and
+rod, the tied corners move together to 1e-12, without the rod the solve
+is reported unbalanced (18%, displacements 1e11: a mechanism). The
+document commandlet gains a hinged-aileron case (two ties, two links, one
+rod; unhinged the aileron floats, hinged nothing does; the rod alone holds
+the aileron's weight moment about its hinge line to 5%) -- written but not
+yet run: the editor build needs Matt's session closed. Not done: a live
+look at the deflected flap and the Support tab's hinge drawing.
+
 ## The Model menu and the material library (2026-11-07)
 
 **Geometry became Model.** The menu that holds the airfoils, the
@@ -3102,9 +3188,13 @@ back with every field.
   on a plan view). The cut is made in every section plane with no boolean
   operations (`core/src/section_cut.cpp`; the main element stays one closed
   body with a pocket per flap, `TriangulateLoftChain` in `mesh.cpp`); the
-  pocket is the flap's span widened by the side gap at each end. Not yet:
-  dragging the hinge on the plan view, deflection, slats, and a flapped
-  wing's STEP export (still the one-piece wing).
+  pocket is the flap's span widened by the side gap at each end. The flap
+  deflects about its hinge (2026-11-14: the body turned per section, the
+  aero copy kinked, the FEA tying and pushrodding it to the main element;
+  see the Hinges section). Not yet: dragging the hinge on the plan view,
+  slats, a flapped wing's STEP export (still the one-piece wing), the gap
+  flow in the aero model, and hinge brackets at the true hinge centre (the
+  tied nodes lie on the nose and cavity arcs, the nose radius off it).
 * A propeller blade's mesh is trimmed at the hub
   by its span range rather than a box cut (exact without rake). A nacelle
   with chevrons still goes through OCCT. (The lattice limits that stood
