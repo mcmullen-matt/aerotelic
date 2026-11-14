@@ -37,6 +37,7 @@
 #include "Standalone/AerotelicCameraPawn.h"
 #include "Entity/AerotelicStructuralFea.h"
 #include "Entity/AerotelicFeaPreprocess.h"
+#include "Entity/AerotelicAeroLoads.h"
 
 #include "aerotelic/materials.hpp"
 #include "aerotelic/units.hpp"
@@ -332,6 +333,11 @@ namespace
 		TArray<FString> Problems;   // left out while meshing
 		TArray<FString> Dropped;    // left out for floating, this derivation
 		TArray<FString> Hinges;     // the flaps hinged to their wings, or why not (2026-11-14)
+		// The aerodynamic load case applied to the wetted faces, if one is
+		// (stage 4, 2026-11-14), and how its panels landed on them.
+		TSharedPtr<FAerotelicAeroLoadCase> AeroCase;
+		AerotelicAeroLoads::FMapResult AeroMap;
+		TArray<FString> AeroNotes;
 	};
 
 	// A solve in flight (2026-11-05): the script runs on a worker thread
@@ -413,6 +419,13 @@ namespace
 		TArray<TSharedPtr<FMassRow>> MassRows;
 		TSharedPtr<SVerticalBox> MassList;
 		TArray<TSharedPtr<FString>> AttachOptions, SupportModeOptions;
+		// The aerodynamic load cases on the document (the High Order Panel
+		// dialog's Trim tab stores them): "none" then each by name; the one
+		// chosen is mapped onto the wetted faces by Apply (stage 4).
+		TArray<TSharedPtr<FString>> AeroCaseNames;
+		int32 AeroCaseIndex = 0;
+		TSharedPtr<SComboBox<TSharedPtr<FString>>> AeroCaseCombo;
+		FDelegateHandle AeroCasesHandle;
 		// The support mode: 0 clamped at the planes, 1 FREE FLIGHT (inertia
 		// relief: no planes, one reference node, the loads balanced by the
 		// rigid-body inertial field). The reference is the mass centre, or
@@ -642,6 +655,72 @@ namespace
 			for (const FString& H : B.Hinges) UE_LOG(LogTemp, Log, TEXT("StructuralFea: %s"), *H);
 		}
 
+		// The document's aerodynamic load cases into the combo (stage 4): the
+		// chosen one kept by name where it still exists.
+		void RefreshAeroCases()
+		{
+			const FString Before = AeroCaseNames.IsValidIndex(AeroCaseIndex) ? *AeroCaseNames[AeroCaseIndex] : FString();
+			AeroCaseNames.Reset();
+			AeroCaseNames.Add(MakeShared<FString>(TEXT("none")));
+			if (const UAerotelicDocumentSubsystem* Doc = UAerotelicDocumentSubsystem::Get())
+			{
+				for (const TSharedPtr<FAerotelicAeroLoadCase>& C : Doc->GetAeroLoadCases()) if (C.IsValid()) AeroCaseNames.Add(MakeShared<FString>(C->Name));
+			}
+			int32 Index = AeroCaseNames.IndexOfByPredicate([&Before](const TSharedPtr<FString>& N) { return *N == Before; });
+			// A case just stored while "none" was chosen is what the user wants next.
+			if (Index < 0 || (Index == 0 && AeroCaseNames.Num() == 2)) Index = AeroCaseNames.Num() > 1 ? 1 : 0;
+			AeroCaseIndex = Index;
+			if (AeroCaseCombo.IsValid())
+			{
+				AeroCaseCombo->RefreshOptions();
+				AeroCaseCombo->SetSelectedItem(AeroCaseNames[AeroCaseIndex]);
+			}
+		}
+
+		// The chosen load case's pressure onto the request's wetted faces AS
+		// THEY STAND (after the floating trim too, like the masses): q Cp on
+		// the faces of the regions whose body the case paneled -- the
+		// region's entity, or an operand of its boolean result -- added to
+		// the uniform pressure; the rest keep the uniform pressure alone.
+		void ApplyAeroPressure(FBuilt& B)
+		{
+			AerotelicStructuralFea::FRequest& Request = B.Request;
+			Request.PressurePerFace.Reset();
+			B.AeroCase.Reset();
+			B.AeroMap = AerotelicAeroLoads::FMapResult();
+			B.AeroNotes.Reset();
+			if (AeroCaseIndex <= 0 || !AeroCaseNames.IsValidIndex(AeroCaseIndex)) return;
+			const UAerotelicDocumentSubsystem* Doc = UAerotelicDocumentSubsystem::Get();
+			TSharedPtr<FAerotelicAeroLoadCase> Case = Doc != nullptr ? Doc->FindAeroLoadCase(*AeroCaseNames[AeroCaseIndex]) : nullptr;
+			if (!Case.IsValid())
+			{
+				B.AeroNotes.Add(FString::Printf(TEXT("the load case '%s' is gone from the document (New or Open cleared it): no aerodynamic pressure applied"), **AeroCaseNames[AeroCaseIndex]));
+				return;
+			}
+			// Which regions the case covers.
+			TSet<int32> Covered;
+			TArray<FString> Uncovered;
+			for (const AerotelicStructuralFea::FRegion& R : Request.Regions)
+			{
+				AAerotelicEntityActor* E = Choices.IsValidIndex(R.Body) ? Choices[R.Body]->Operand.Entity.Get() : nullptr;
+				bool bCovered = E != nullptr && Case->Entities.Contains(E->EntityName);
+				if (!bCovered && E != nullptr && E->GetEntityType() == EntityType::Boolean)
+				{
+					if (const FAerotelicBooleanModel* M = E->GetModelAs<FAerotelicBooleanModel>())
+						for (const FAerotelicBooleanOperand& Op : M->Operands) bCovered = bCovered || (Op.Entity.IsValid() && Case->Entities.Contains(Op.Entity->EntityName));
+				}
+				if (bCovered) Covered.Add(R.Id);
+				else if (R.HasShells()) Uncovered.Add(R.Label);
+			}
+			AerotelicAeroLoads::MapToFaces(*Case, B.Nodes, Request.ShellFaces, [&Covered](int32 Id) { return Covered.Contains(Id); }, Request.Pressure, Request.LengthToSI, B.AeroMap);
+			Request.PressurePerFace = B.AeroMap.Pressure;
+			B.AeroCase = Case;
+			if (Uncovered.Num() > 0) B.AeroNotes.Add(TEXT("not paneled by the load case, so no air load on: ") + FString::Join(Uncovered, TEXT(", ")));
+			if (B.AeroMap.Stats.unmapped > 0) B.AeroNotes.Add(FString::Printf(TEXT("%s face(s) of the covered bodies lie farther than a tenth of the case's extent from every panel on their side and got no air load"), *Thousands(B.AeroMap.Stats.unmapped)));
+			UE_LOG(LogTemp, Log, TEXT("StructuralFea: load case '%s' mapped onto %d of %d covered faces (%d unmapped; farthest %.4g, mean %.4g); resultant (%.4g, %.4g, %.4g) N"),
+				*Case->Name, B.AeroMap.Stats.mapped, B.AeroMap.FacesCovered, B.AeroMap.Stats.unmapped, B.AeroMap.Stats.max_distance, B.AeroMap.Stats.mean_distance, B.AeroMap.Resultant.X, B.AeroMap.Resultant.Y, B.AeroMap.Resultant.Z);
+		}
+
 		// The rows from the document's mass items (Analysis > Mass Properties
 		// edits them): a row per item, the attachment matched to the picker's
 		// row by scene name, mirror and body role (0 when that body is not in
@@ -787,6 +866,7 @@ namespace
 			B.Dropped.Reset();
 			ResolveMasses(B);
 			ResolveHinges(B);
+			ApplyAeroPressure(B);
 			FString Error;
 			if (!AerotelicFeaPreprocess::Build(B.Request, B.Model, Error))
 			{
@@ -886,6 +966,7 @@ namespace
 				}
 				ResolveMasses(B);
 				ResolveHinges(B);
+				ApplyAeroPressure(B);
 				if (!AerotelicFeaPreprocess::Build(B.Request, B.Model, Error))
 				{
 					Status(LOCTEXT("Ready", "Ready"));
@@ -1237,13 +1318,39 @@ namespace
 						AddArrow(Arrows, M.FaceCentre[i], Dir, 0.025 * Diag * FMath::Abs(P) / M.MaxFacePressure, Radius, kPressure);
 						++Drawn;
 					}
-					Text += FString::Printf(TEXT("Pressure (orange): %.4g %s on every one of the %s wetted faces, %s; resultant (%.4g, %.4g, %.4g) N -- arrows on %s of them, the traction's direction and relative size, not the face force"),
-						B.Request.Pressure / S2, *StressUnit, *Thousands(NFaces), B.Request.Pressure > 0.0 ? TEXT("pressing inward") : TEXT("pulling outward"),
-						M.PressureResultant.X, M.PressureResultant.Y, M.PressureResultant.Z, *Thousands(Drawn));
+					if (B.AeroCase.IsValid())
+					{
+						const FAerotelicAeroLoadCase& A = *B.AeroCase;
+						// The panel method's own resultant in newtons: C_F q S_ref.
+						const aerotelic::Vec3 Fc = A.ForceCoefficient();
+						const double QS = A.DynamicPressure * A.ReferenceArea * Units.LengthToSI() * Units.LengthToSI();
+						const FVector PanelForce(Fc.x * QS, Fc.y * QS, Fc.z * QS);
+						Text += FString::Printf(TEXT("Pressure (orange): the load case '%s' (α = %g°%s, q = %.4g Pa, %d body panels%s) on %s of the %s wetted faces%s%s -- arrows on %s of them, the traction's direction and relative size, not the face force. Resultant (%.4g, %.4g, %.4g) N; the panel method's own, -∮ Cp n dA over its panels, is (%.4g, %.4g, %.4g) N, so the mapping keeps %.1f%% of the lift."),
+							*A.Name, A.AlphaDeg, A.Control.IsEmpty() ? TEXT("") : *FString::Printf(TEXT(", %s at δ = %g°"), *A.Control, A.DeltaDeg), A.DynamicPressure, A.BodyPanels(), A.bTrimmed ? *FString::Printf(TEXT(", trimmed to n = %g at W = %.4g N"), A.LoadFactor, A.Weight) : TEXT(", not trimmed"),
+							*Thousands(B.AeroMap.Stats.mapped), *Thousands(NFaces),
+							B.Request.Pressure != 0.0 ? *FString::Printf(TEXT(", plus %.4g %s uniform on every face"), B.Request.Pressure / S2, *StressUnit) : TEXT(""),
+							B.AeroNotes.Num() ? *(TEXT("; ") + FString::Join(B.AeroNotes, TEXT("; "))) : TEXT(""), *Thousands(Drawn),
+							M.PressureResultant.X, M.PressureResultant.Y, M.PressureResultant.Z,
+							PanelForce.X, PanelForce.Y, PanelForce.Z,
+							FMath::Abs(PanelForce.Z) > 1e-12 ? 100.0 * B.AeroMap.Resultant.Z / PanelForce.Z : 0.0);
+						if (A.bTrimmed && A.Weight > 0.0)
+						{
+							Text += FString::Printf(TEXT("\n  Trim check: the case was trimmed to n W = %.4g N; the mapped faces carry %.4g N vertically (%.3f of it)%s"),
+								A.LoadFactor * A.Weight, B.AeroMap.Resultant.Z, B.AeroMap.Resultant.Z / (A.LoadFactor * A.Weight),
+								M.bFreeFlight ? TEXT(". In free flight the load factor at the mass centre below should read the case's n.") : TEXT("."));
+						}
+					}
+					else
+					{
+						Text += FString::Printf(TEXT("Pressure (orange): %.4g %s on every one of the %s wetted faces, %s; resultant (%.4g, %.4g, %.4g) N -- arrows on %s of them, the traction's direction and relative size, not the face force"),
+							B.Request.Pressure / S2, *StressUnit, *Thousands(NFaces), B.Request.Pressure > 0.0 ? TEXT("pressing inward") : TEXT("pulling outward"),
+							M.PressureResultant.X, M.PressureResultant.Y, M.PressureResultant.Z, *Thousands(Drawn));
+					}
 				}
 				else
 				{
 					Text += TEXT("Pressure: none");
+					if (B.AeroNotes.Num() > 0) Text += TEXT(" (") + FString::Join(B.AeroNotes, TEXT("; ")) + TEXT(")");
 				}
 				if (M.PointLoads.Num() > 0)
 				{
@@ -1700,9 +1807,17 @@ namespace
 			LblStress->SetText(FText::FromString(FString::Printf(TEXT("%.4g %s, in region %d"), R.MaxVonMises / S2, *UnitName(Units.StressName()), R.MaxVonMisesRegion)));
 			LblMargins->SetText(FText::FromString(Peaks));
 			const double WorstError = FMath::Max(R.BalanceError, R.MomentError);
-			const FString Verdict = R.bBalanced
+			FString Verdict = R.bBalanced
 				? FString::Printf(TEXT("Balanced to %.2g%%."), 100.0 * WorstError)
 				: FString::Printf(TEXT("NOT CONVERGED: the reactions miss the applied loads by %.1f%%, so the linear solver (%s) did not converge and the displacements and stresses above mean nothing. Solve again with the direct solver."), 100.0 * WorstError, *R.LinearSolver);
+			if (B.AeroCase.IsValid())
+			{
+				const FAerotelicAeroLoadCase& A = *B.AeroCase;
+				Verdict += FString::Printf(TEXT(" The pressure is the load case '%s' (q %.4g Pa, α %g°%s)%s."), *A.Name, A.DynamicPressure, A.AlphaDeg,
+					A.Control.IsEmpty() ? TEXT("") : *FString::Printf(TEXT(", δ %g°"), A.DeltaDeg),
+					A.bTrimmed && R.bFreeFlight ? *FString::Printf(TEXT(", trimmed to n = %g: the structure feels %.3f g at its mass centre, %s"), A.LoadFactor, R.LoadFactorAtCg,
+						FMath::Abs(R.LoadFactorAtCg - A.LoadFactor) < 0.1 * FMath::Max(FMath::Abs(A.LoadFactor), 0.1) ? TEXT("the two models agree") : TEXT("NOT the trim's figure: the mass flown at differs from this model's, or the mapping lost lift (see the Loads tab)")) : TEXT(""));
+			}
 			if (R.bFreeFlight)
 			{
 				FString Items;
@@ -2021,6 +2136,12 @@ namespace
 				Views[Tab].Reset();
 				Captions[Tab].Reset();
 			}
+			if (AeroCasesHandle.IsValid())
+			{
+				if (UAerotelicDocumentSubsystem* Doc = UAerotelicDocumentSubsystem::Get()) Doc->OnAeroLoadCasesChanged.Remove(AeroCasesHandle);
+				AeroCasesHandle.Reset();
+			}
+			AeroCaseCombo.Reset();
 			Built.Reset();
 			Picker.Reset();
 			PointList.Reset(); SupportList.Reset(); MassList.Reset();
@@ -2079,7 +2200,9 @@ namespace
 		"MESH\n"
 		"The wetted faces of the model -- the bodies' triangles -- coloured by region with their edges drawn, and the rib shells inside in their regions' colours. Where a region has a skin the wetted faces ARE its shell elements. The caption counts nodes, faces and rib shells, the cost, each region's kind, area and mass, and what was left out.\n\n"
 		"LOADS\n"
-		"On the left: the inertial load factor (the model's own mass under that many g along -z; 0 to begin with, so a test load acts alone), a uniform pressure on every wetted face (positive pressing inward), and any number of point forces, each at a point (the corner node nearest it takes the load) with its force in newtons -- add, edit, delete, then Apply. On the right the forces as arrows, each head at its point of application: orange the pressure as the traction on up to ~1500 faces (direction and relative size, not the face force), red each point force at its node, green the inertial load at the centre of mass.\n\n"
+		"On the left: the inertial load factor (the model's own mass under that many g along -z; 0 to begin with, so a test load acts alone), a uniform pressure on every wetted face (positive pressing inward), an AERODYNAMIC load case, and any number of point forces, each at a point (the corner node nearest it takes the load) with its force in newtons -- add, edit, delete, then Apply. On the right the forces as arrows, each head at its point of application: orange the pressure as the traction on up to ~1500 faces (direction and relative size, not the face force), red each point force at its node, green the inertial load at the centre of mass.\n"
+		"THE AERODYNAMIC LOAD CASE (2026-11-14, stage 4 of the flight-loads plan) is a surface pressure field stored by Analysis > High Order Panel from its Trim and Load Case tab: every body panel's centre, outward normal, area and pressure coefficient on each side, placed as the bodies sit, with its dynamic pressure q. Apply puts q Cp on every wetted face of the bodies the case paneled (a boolean result over them counts): each face's centroid takes the inverse-distance mean of the nearest panel on ITS OWN SIDE of the surface and that panel's grid neighbours -- a thin wing's upper and lower skins are nearer each other than the panels are, so distance alone would hand an upper panel's suction to a lower face; the panel's normal against the face's decides -- and a cowl modelled as a two-sided sheet gives its outer faces the upper pressure and its inner faces the lower. Faces of bodies the case did not panel, or farther than a tenth of the case's extent from every panel, get the uniform pressure alone and are counted on the Loads picture. "
+		"The pressures are then the consistent nodal loads of each face, like the uniform pressure. With a TRIMMED case in free flight, the air loads' resultant is n W through the mass centre to the trim's accuracy, so the Loads picture's load factor at the mass centre reads the case's n and the pitch acceleration is small: that is the check that the aerodynamic and structural models describe the same aircraft (the panel grid is coarser than the shells, so the mapped resultant is a few per cent off the panel method's own; the picture prints both). A flap deflected in the trim must be set to the same angle on the model (the wing's Flaps tab) so its structural body sits where the pressures were computed.\n\n"
 		"MASSES (2026-11-13)\n"
 		"The concentrated masses that are not part of any body's shells -- a battery, a motor, the payload, a camera: Nastran's CONM2 on an RBE3. Each has a name, its mass and its inertia tensor about its own centre (Ixx, Iyy, Izz and the products Ixy, Ixz, Iyz as integral x y dm; all zero for a point mass) as BUILT, in the project's units and not scaled with the model; its position, full-scale like every coordinate here; the body it hangs on, from the picker's rows; and how many of that body's nearest nodes carry it (eight to begin with; at least three, not in a line). "
 		"The items are saved with the project (masses: in the file) and Apply keeps them; on the built model each hangs on its body by an RBE3-type constraint: the item's node moves with the weighted mean of its attachment nodes plus the least-squares rotation of that set, so the item's weight and inertial load are shared out to those nodes with the right resultant and moment, and the nodes are not stiffened (a rigid tie would be). An item whose body is not in the model is left out and named. The picture shows each item sized by its mass with bars to its nodes, and the mass centre of everything in green.\n\n"
@@ -2145,6 +2268,17 @@ void ShowAerotelicStructuralFeaDialog(TFunction<void(const FText&)> Status)
 		MakeShared<FString>(TEXT("Clamped at the support planes")),
 		MakeShared<FString>(TEXT("Free flight (inertia relief): one reference node, no planes")) };
 	S->LoadMassRows();
+	// The aerodynamic load cases as they stand, and as they change while
+	// the dialog is open (the panel dialog storing a trim).
+	S->RefreshAeroCases();
+	if (UAerotelicDocumentSubsystem* DocForCases = UAerotelicDocumentSubsystem::Get())
+	{
+		TWeakPtr<FState> WeakS = S;
+		S->AeroCasesHandle = DocForCases->OnAeroLoadCasesChanged.AddLambda([WeakS]()
+		{
+			if (TSharedPtr<FState> P = WeakS.Pin()) P->RefreshAeroCases();
+		});
+	}
 	// One support to start with: y = 0, the root of a mirrored half.
 	S->SupportRows.Add(MakeShared<FSupportRow>());
 
@@ -2286,6 +2420,37 @@ void ShowAerotelicStructuralFeaDialog(TFunction<void(const FText&)> Status)
 		[
 			MakeGroup(LOCTEXT("PressureGroup", "Pressure on every wetted face"),
 				FormRow(LOCTEXT("Pressure", "Pressure:"), Spin(&FState::Pressure, -1e12, 1e12, 100.0, StressSuffix), 110.0f))
+		]
+		+ SScrollBox::Slot().Padding(0, 0, 0, 8)
+		[
+			MakeGroup(LOCTEXT("AeroGroup", "Aerodynamic pressure (a High Order Panel load case)"),
+				SNew(SVerticalBox)
+				+ SVerticalBox::Slot().AutoHeight().Padding(0, 2)
+				[
+					FormRow(LOCTEXT("AeroCase", "Load case:"),
+						SNew(SHorizontalBox)
+						+ SHorizontalBox::Slot().FillWidth(1.0f)
+						[
+							SAssignNew(S->AeroCaseCombo, SComboBox<TSharedPtr<FString>>)
+							.OptionsSource(&S->AeroCaseNames)
+							.InitiallySelectedItem(S->AeroCaseNames.IsValidIndex(S->AeroCaseIndex) ? S->AeroCaseNames[S->AeroCaseIndex] : nullptr)
+							.OnGenerateWidget_Lambda([](TSharedPtr<FString> N) { return SNew(STextBlock).Text(FText::FromString(*N)); })
+							.OnSelectionChanged_Lambda([S](TSharedPtr<FString> N, ESelectInfo::Type)
+							{
+								if (!N.IsValid()) return;
+								const int32 I = S->AeroCaseNames.IndexOfByKey(N);
+								if (I >= 0) S->AeroCaseIndex = I;
+							})
+							[ SNew(STextBlock).Text_Lambda([S]() { return S->AeroCaseNames.IsValidIndex(S->AeroCaseIndex) ? FText::FromString(*S->AeroCaseNames[S->AeroCaseIndex]) : FText::GetEmpty(); }) ]
+						]
+						+ SHorizontalBox::Slot().AutoWidth().Padding(6, 0, 0, 0)
+						[ Button(LOCTEXT("ReloadAero", "Reload"), [S]() { S->RefreshAeroCases(); }) ], 110.0f)
+				]
+				+ SVerticalBox::Slot().AutoHeight().Padding(0, 4, 0, 0)
+				[
+					MakeInfoLabel(LOCTEXT("AeroHint",
+						"The surface pressure of a panel solution stored by Analysis > High Order Panel (its Trim and Load Case tab): q Cp on every shell face of the bodies the case paneled, each face taking the nearest panels on its own side of the surface, added to the uniform pressure above. In free flight with a trimmed case the structure feels the case's load factor at its mass centre: that figure, on the Result and the Loads picture, is the check that the two models agree."))
+				])
 		]
 		+ SScrollBox::Slot().Padding(0, 0, 0, 8)
 		[

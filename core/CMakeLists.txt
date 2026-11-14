@@ -46,6 +46,10 @@ add_library(aerotelic_core STATIC
 	src/panel_method.cpp
 	src/wing_panels.cpp
 	src/panel_loads.cpp
+	# Flight loads, stage 4 (2026-11-14): the rigid trim and the panel
+	# pressures carried onto the structural shells.
+	src/aero_trim.cpp
+	src/aero_loads.cpp
 	src/colormaps.cpp
 	src/nacelle_model.cpp
 	src/lofted_nacelle_model.cpp
@@ -183,6 +187,9 @@ target_link_libraries(wing_panels_check PRIVATE aerotelic_core)
 
 add_executable(panel_loads_check tests/panel_loads_check.cpp)
 target_link_libraries(panel_loads_check PRIVATE aerotelic_core)
+
+add_executable(aero_trim_check tests/aero_trim_check.cpp)
+target_link_libraries(aero_trim_check PRIVATE aerotelic_core)
 
 add_executable(panel_p38_check tests/panel_p38_check.cpp)
 target_link_libraries(panel_p38_check PRIVATE aerotelic_core)

@@ -2850,6 +2850,107 @@ the master-slave constraints' reaction bookkeeping is the suspect (a tie's
 slave node may also carry a link). RealProject 46, Licence 42. Not done: a
 live look at the deflected flap and the Support tab's hinge drawing.
 
+### Trim and the hand-over of the air loads to the FEA (2026-11-14, stage 4)
+
+Stage 4 of the flight-loads plan: the panel solution trimmed to a flight
+condition and its pressures put on the structural shells, closing the loop
+the plan set out to close -- lift equal to n W through the mass centre and
+no moment about it, then those same pressures as the loads of the
+free-flight FEA, whose load factor at the mass centre reads the trim's n
+back as the check that the two models describe the same aircraft.
+
+**The rigid trim** (`core/include/aerotelic/aero_trim.hpp`; the High Order
+Panel dialog's new *Trim and Load Case* tab). A flight condition is a load
+factor n, a speed and a density (SI); the weight is the mass report of the
+chosen bodies with the project's point masses (both halves of a mirrored
+entity), or a mass and mass centre typed full-scale; q = ρ V² / 2 gives
+the lift coefficient required, n W / (q S_ref). The unknowns are the angle
+of attack and the deflection of one flap of a chosen wing (the aftmost by
+default) and the moment is taken about the mass centre
+(`Options::moment_reference`). The method is linear in the stream only to
+first order -- the wake sheds along the stream and a flap kinks the
+section -- so the trim is a Newton step on finite-difference derivatives:
+the base state (the Set-up tab's first angle of attack, the flap's own
+deflection), α stepped 1°, δ stepped 1°, the 2 x 2 solved, then the
+trimmed state solved as the dialog's one solution with its residual printed
+(Trim again from there to tighten). Without a control the lift alone is
+trimmed in α. The flap turns in the wing network only (`WingNetworks`'
+sealed-section kink, the model's `deflection_deg` set for the build and put
+back): the result says what to set on the model so the structural flap
+body sits where the loads were computed. A step asking for |α| > 25° or
+|δ| > 45° is refused as outside a potential flow.
+
+**The load case** (`Entity/AerotelicAeroLoads.h`; the document's
+`AeroLoadCases`, session data cleared by New and Open, not saved). The
+trimmed state -- or any solution shown, at the tab's q -- is stored as
+every body panel's centre, outward normal, area and Cp on each side
+(`aero::PressureSample`; a cowl's mean-surface sheet is two-sided, the
+solver's own rule `type == SourceAnalysis || bc.kind == Potential` for
+one-sided), placed as the bodies sit, with the IMAGE about y = 0 when the
+symmetry plane was on so the whole airframe is covered, and q. The
+samples' own resultant, -Σ Cp n A / S_ref, reproduces the solver's force
+coefficient to a few 1e-5 (the commandlet checks it; not an identity, since
+the solver sums on each panel's flat frame normal and the sample carries
+the curved surface's normal at the control point).
+
+**The mapping** (`core/include/aerotelic/aero_loads.hpp`,
+`aero::MapPressures`): the structural shells are a body's own triangles,
+thousands of them; the panels are a few hundred on a coarser structured
+grid of the same surface. Each face's centroid takes the nearest panel ON
+ITS OWN SIDE -- a thin wing's upper and lower skins are a few per cent of
+the chord apart, closer than the panels are to one another, so distance
+alone handed an upper panel's suction to lower-surface faces near the
+trailing edge; the panel's outward normal against the face's decides, and
+a two-sided sheet gives its upper pressure to faces that look its way and
+its lower to the rest -- then the inverse-distance mean of that panel and
+its grid neighbours (the 3 x 3 block in the same network, same side), so
+the field is continuous across the grid rather than a staircase and
+nothing is interpolated across networks. A uniform grid over the sample
+centres (cells the largest panel's size, expanding shells) keeps it
+linear. Faces farther than a tenth of the case's extent from every
+acceptable panel get nothing and are counted. `aero_trim_check` (18): the
+trim recovers a linear model exactly and refuses a control that acts like
+α; a lat-long sphere's analytic Cp onto a finer triangulation reads rms
+0.10 with 8 x 16 panels and 0.028 with 24 x 48 (the blend across 22° panels
+of a sin² field), every face found; a thin slab's lower faces take the
+lower value when the upper panels are nearer; a two-sided sheet gives each
+side its own; a linear field is reproduced within 0.008 on a 0.05 pitch.
+
+**In the Structural dialog** the Loads tab has an *Aerodynamic pressure*
+group: a combo of the document's cases (refreshed when the panel dialog
+stores one) and Apply maps the chosen case (`ApplyAeroPressure`, run with
+the masses and hinges after every derivation -- the floating trim renumbers
+the faces too) onto the wetted faces of the regions whose body the case
+paneled (the region's entity, or an operand of its boolean result), q Cp
+plus the uniform pressure into `FRequest::PressurePerFace`, the field the
+script already took; uncovered bodies and unmapped faces are named on the
+Loads picture, which also prints the mapped resultant against the panel
+method's own C_F q S and, for a trimmed case, against n W. The Result's
+balance line names the case and, in free flight, compares the load factor
+at the mass centre with the trim's n.
+
+**Checked** (the document commandlet, "aerodynamic load case (stage 4)"):
+the scene's wing trimmed in α alone to C_L = 0.5 (within 0.02 at the
+trimmed state); its panels and image as a load case whose resultant is the
+solver's; mapped onto the wing's own triangles with ≥ 95% of the faces
+covered and the mapped lift within 15% of the half wing's panel lift; and
+the aluminium skin flown free under that pressure with q set so the lift
+is 1.5 W: the reference node reacts nothing, the script's pressure
+resultant is the mapping's to 1e-6, and the skin feels 1.5 g at its mass
+centre within 0.03. The dialogs themselves have not been driven by hand.
+
+**Not done / known limits.** Sideslip is still zero. The trim is a single
+Newton step (run it again to iterate). Only one control: a canard or
+all-moving tail would need its incidence as the unknown, a second control
+a 3 x 3 with a roll or yaw equation. Drag is not trimmed (no thrust yet:
+stage 5), so in free flight the net drag shows up as a small axial
+deceleration. The mapping is piecewise over the panel grid: the pressure
+on a face is the panels', not the splines' continuous distribution, and a
+panel grid much coarser than the shells loses the leading-edge peak (the
+Loads picture says how much lift was kept). A flap deflected in the trim
+is not set on the model automatically; the dialog says what to set. Load
+cases are not saved with the project.
+
 ## The Model menu and the material library (2026-11-07)
 
 **Geometry became Model.** The menu that holds the airfoils, the

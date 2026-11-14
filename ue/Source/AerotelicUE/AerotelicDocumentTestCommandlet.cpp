@@ -27,7 +27,10 @@
 #include "aerotelic/wing_model.hpp"
 #include "aerotelic/wing_panels.hpp"
 #include "aerotelic/panel_loads.hpp"
+#include "aerotelic/aero_trim.hpp"
+#include "aerotelic/aero_loads.hpp"
 #include "aerotelic/colormaps.hpp"
+#include "Entity/AerotelicAeroLoads.h"
 #include "Entity/AerotelicMeshing.h"
 
 #include <Bnd_Box.hxx>
@@ -818,6 +821,188 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 			Request.LoadFactor = 1.0;
 			Request.Pressure = 1.0e5;
 		};
+
+		// STAGE 4 of the flight-loads plan (2026-11-14): the trim, the load
+		// case and the hand-over, minus the two dialogs. The scene's wing is
+		// trimmed in the angle of attack alone to C_L = 0.5 (two solves for
+		// the derivative, one at the trimmed state); its body panels become a
+		// load case whose own resultant is the solver's; the case is mapped
+		// onto the wing's own triangles with nearly every face covered and
+		// most of the lift kept; and the wing's aluminium skin flown in free
+		// flight under that pressure, with q chosen so the mapped lift is 1.5
+		// times the skin's weight, feels 1.5 g at its mass centre and reacts
+		// nothing at the reference node -- the aerodynamic and the
+		// structural model describing the same aircraft.
+		UE_LOG(LogAerotelicDocumentTest, Display, TEXT("step: aerodynamic load case (stage 4)"));
+		if (Wing != nullptr)
+		{
+			try
+			{
+				using namespace aerotelic::panel;
+				aerotelic::WingModel* W = Wing->GetModelAs<aerotelic::WingModel>();
+				const FTransform Transform = Wing->GetActorTransform();
+				const double SRef = W->planform().PlanformArea();
+				const aerotelic::Vec3 Cg{ 0.3 * W->planform().RootChord(), 0.0, 0.0 };
+				struct FSolved { double AlphaDeg; aerotelic::Vec3 Stream, LiftDir; std::vector<Network> Nets; Solution Sol; double CL, Cm; };
+				auto SolveAt = [&](double AlphaDeg)
+				{
+					FSolved S;
+					S.AlphaDeg = AlphaDeg;
+					const double A = AlphaDeg * PI / 180.0;
+					S.Stream = { std::cos(A), 0.0, std::sin(A) };
+					S.LiftDir = { -std::sin(A), 0.0, std::cos(A) };
+					WingPaneling Pan;
+					Pan.chordwise = 8;
+					Pan.spanwise = 6;
+					S.Nets = WingNetworks(*W, Pan, S.Stream);
+					for (Network& N : S.Nets)
+					{
+						aerotelic::TriMesh M;
+						M.vertices = N.corners;
+						AerotelicMeshing::PlaceMesh(M, Transform);
+						N.corners = M.vertices;
+					}
+					Options Opt;
+					Opt.symmetry_y = 0.0;
+					Opt.reference_area = SRef;
+					Opt.moment_reference = Cg;
+					S.Sol = Solve(S.Nets, S.Stream, Opt);
+					S.CL = aerotelic::Dot(S.Sol.force_coefficient, S.LiftDir);
+					S.Cm = S.Sol.moment_coefficient.y / W->planform().RootChord();
+					return S;
+				};
+				const FSolved Base = SolveAt(2.0), Stepped = SolveAt(3.0);
+				const aerotelic::aero::TrimResult Trim = aerotelic::aero::SolveTrimAlpha({ Base.AlphaDeg, 0.0, Base.CL, Base.Cm }, { Stepped.AlphaDeg, 0.0, Stepped.CL, Stepped.Cm }, 0.5);
+				Check(Trim.ok && Trim.alpha_deg > 2.0 && Trim.alpha_deg < 15.0 && Trim.dCL_dalpha > 0.03 && Trim.dCL_dalpha < 0.12,
+					FString::Printf(TEXT("trim: the angle of attack for C_L = 0.5 is %.3f deg by dC_L/dalpha = %.4f per degree (C_L %.4f at 2 deg)"), Trim.alpha_deg, Trim.dCL_dalpha, Base.CL));
+				const FSolved Trimmed = SolveAt(Trim.alpha_deg);
+				Check(FMath::Abs(Trimmed.CL - 0.5) < 0.02, FString::Printf(TEXT("trim: the trimmed state lifts C_L = %.4f against 0.5 asked (the method's nonlinearity over the step)"), Trimmed.CL));
+
+				// The load case: the body panels and their image.
+				TSharedPtr<FAerotelicAeroLoadCase> Case = MakeShared<FAerotelicAeroLoadCase>();
+				Case->Name = TEXT("test trim");
+				Case->DynamicPressure = 100.0;
+				Case->AlphaDeg = Trimmed.AlphaDeg;
+				Case->CL = Trimmed.CL;
+				Case->ReferenceArea = SRef;
+				Case->Stream = Trimmed.Stream;
+				Case->Entities.Add(Wing->EntityName);
+				int32 BodyPanels = 0;
+				const int32 NNets = static_cast<int32>(Trimmed.Sol.networks.size());
+				for (int32 k = 0; k < NNets; ++k)
+				{
+					const NetworkResult& NR = Trimmed.Sol.networks[k];
+					if (NR.type == NetworkType::DoubletWake || NR.type == NetworkType::DoubletWakeConstant) continue;
+					const Network& Net = Trimmed.Nets[k];
+					const bool bOneSided = Net.type == NetworkType::SourceAnalysis || Net.bc.kind == BoundaryCondition::Kind::Potential;
+					for (int32 i = 0; i < NR.panel_rows; ++i)
+					{
+						for (int32 j = 0; j < NR.panel_cols; ++j)
+						{
+							const PanelResult& P = NR.panels[static_cast<size_t>(i) * NR.panel_cols + j];
+							if (!(P.area > 0.0)) continue;
+							++BodyPanels;
+							aerotelic::aero::PressureSample S;
+							S.centre = P.centre; S.normal = P.normal; S.area = P.area;
+							S.cp_upper = P.cp_upper; S.cp_lower = P.cp_lower;
+							S.two_sided = !bOneSided;
+							S.network = k; S.row = i; S.col = j;
+							Case->Samples.push_back(S);
+							aerotelic::aero::PressureSample M = S;
+							M.centre.y = -M.centre.y; M.normal.y = -M.normal.y; M.network = k + NNets;
+							Case->Samples.push_back(M);
+						}
+					}
+				}
+				const aerotelic::Vec3 Fc = Case->ForceCoefficient();
+				Check(BodyPanels > 0 && Case->BodyPanels() == 2 * BodyPanels, FString::Printf(TEXT("load case: %d body panels and their image (%d samples)"), BodyPanels, Case->BodyPanels()));
+				// Not an identity: the solver sums each panel's force on its flat
+				// frame's normal, the sample carries the curved surface's normal
+				// at the control point; a few 1e-5 apart on these panels.
+				Check(FMath::Abs(Fc.z - Trimmed.Sol.force_coefficient.z) < 1e-3 * (1.0 + FMath::Abs(Fc.z)) && FMath::Abs(Fc.x - Trimmed.Sol.force_coefficient.x) < 1e-3 && FMath::Abs(Fc.y) < 1e-12,
+					FString::Printf(TEXT("load case: the samples' own resultant is the solver's force coefficient (%.5f vs %.5f in z)"), Fc.z, Trimmed.Sol.force_coefficient.z));
+
+				// Onto the wing's own triangles (the half the entity is).
+				const std::vector<aerotelic::NamedMesh> Placed = Wing->GetPlacedMeshes(false);
+				Check(Placed.size() >= 1 && Placed[0].mesh.triangles.size() > 0, "load case: the wing has its own placed mesh to load");
+				if (Placed.size() >= 1 && Placed[0].mesh.triangles.size() > 0)
+				{
+					const aerotelic::TriMesh& Surface = Placed[0].mesh;
+					std::vector<aerotelic::Vec3> Nodes = Surface.vertices;
+					TArray<AerotelicStructuralFea::FShellFace> Faces;
+					for (const auto& T : Surface.triangles)
+					{
+						AerotelicStructuralFea::FShellFace F;
+						F.N[0] = T[0]; F.N[1] = T[1]; F.N[2] = T[2];
+						F.Region = 1;
+						Faces.Add(F);
+					}
+					AerotelicAeroLoads::FMapResult Map;
+					AerotelicAeroLoads::MapToFaces(*Case, Nodes, Faces, [](int32) { return true; }, 0.0, 1.0, Map);
+					Check(Map.FacesCovered == Faces.Num() && Map.Stats.mapped >= FMath::CeilToInt32(0.95 * Faces.Num()),
+						FString::Printf(TEXT("mapping: %d of %d wing faces took a panel pressure (farthest %.4f, mean %.4f from its panel)"), Map.Stats.mapped, Faces.Num(), Map.Stats.max_distance, Map.Stats.mean_distance));
+					const aerotelic::Vec3 Resultant{ Map.Resultant.X, Map.Resultant.Y, Map.Resultant.Z };
+					const double LiftMapped = aerotelic::Dot(Resultant, Trimmed.LiftDir);
+					const double LiftPanels = 0.5 * aerotelic::Dot(Fc, Trimmed.LiftDir) * Case->DynamicPressure * SRef; // the half the mesh is
+					Check(LiftMapped > 0.0 && FMath::Abs(LiftMapped / LiftPanels - 1.0) < 0.15,
+						FString::Printf(TEXT("mapping: the faces carry %.4g N of lift against the half wing's %.4g N from the panels (%.1f%%)"), LiftMapped, LiftPanels, 100.0 * LiftMapped / LiftPanels));
+
+					// Free flight under the mapped pressure: q set so the lift is
+					// 1.5 times the aluminium skin's weight.
+					const double Thickness = 0.002;
+					const double Mass = Al.density * Thickness * Surface.SurfaceArea();
+					const double Weight = Mass * 9.80665;
+					Case->DynamicPressure *= 1.5 * Weight / LiftMapped;
+					AerotelicAeroLoads::MapToFaces(*Case, Nodes, Faces, [](int32) { return true; }, 0.0, 1.0, Map);
+					AerotelicStructuralFea::FRequest Request;
+					Request.Nodes = &Nodes;
+					Request.ShellFaces = Faces;
+					AerotelicStructuralFea::FRegion Region;
+					Region.Id = 1;
+					Region.Label = TEXT("wing skin");
+					Region.Skin = Al;
+					Region.SkinThickness = Thickness;
+					Request.Regions.Add(Region);
+					Request.LengthToSI = 1.0;
+					Request.bFreeFlight = true;
+					Request.LoadFactor = 1.0;
+					Request.PressurePerFace = Map.Pressure;
+					Request.VtkPath = FPaths::Combine(FPlatformProcess::UserTempDir(), TEXT("aerotelic_document_test_fea_aero.vtk"));
+					AerotelicStructuralFea::FResult RA;
+					FString AeroError;
+					const bool bAero = AerotelicStructuralFea::Run(Request, RA, AeroError);
+					Check(bAero, FString::Printf(TEXT("fea (aero load case): the wing skin solved in free flight under the panel pressures (%s)"), bAero ? *FString::Printf(TEXT("%d shells, %.1f s"), RA.Shells, RA.Seconds) : *AeroError));
+					if (bAero)
+					{
+						const double Loads = Weight + 1.5 * Weight;
+						Check(RA.bBalanced && FVector(RA.Reaction[0], RA.Reaction[1], RA.Reaction[2]).Size() <= 1e-6 * Loads,
+							FString::Printf(TEXT("fea (aero load case): the reference node reacts nothing (%.2e N against %.4g N of loads)"), FVector(RA.Reaction[0], RA.Reaction[1], RA.Reaction[2]).Size(), Loads));
+						Check(FMath::Abs(RA.LoadFactorAtCg - 1.5) < 0.03, FString::Printf(TEXT("fea (aero load case): the skin feels the lift over its weight, %.4f g at the mass centre against 1.5 asked"), RA.LoadFactorAtCg));
+						Check(FMath::Abs(RA.AppliedPressure[2] - Map.Resultant.Z) <= 1e-6 * FMath::Abs(Map.Resultant.Z),
+							FString::Printf(TEXT("fea (aero load case): the script's pressure resultant is the mapping's (%.6g vs %.6g N)"), RA.AppliedPressure[2], Map.Resultant.Z));
+						Check(RA.MaxVonMises > 0.0 && RA.MaxDisplacement > 0.0 && RA.MaxDisplacement < 0.5, FString::Printf(TEXT("fea (aero load case): a finite, small deflection (%.3g m) and stress (%.3g Pa)"), RA.MaxDisplacement, RA.MaxVonMises));
+						IFileManager::Get().Delete(*Request.VtkPath, false, true, true);
+					}
+				}
+
+				// The document keeps load cases by name and tells its listeners.
+				int32 Fired = 0;
+				FDelegateHandle H = Doc->OnAeroLoadCasesChanged.AddLambda([&Fired]() { ++Fired; });
+				Doc->SetAeroLoadCase(Case);
+				TSharedPtr<FAerotelicAeroLoadCase> Again = MakeShared<FAerotelicAeroLoadCase>(*Case);
+				Again->DynamicPressure = 1.0;
+				Doc->SetAeroLoadCase(Again);
+				Check(Doc->GetAeroLoadCases().Num() == 1 && Doc->FindAeroLoadCase(TEXT("test trim")).IsValid() && Doc->FindAeroLoadCase(TEXT("test trim"))->DynamicPressure == 1.0 && Fired == 2,
+					"load case: the document replaces a case of the same name and fires its delegate each time");
+				Doc->RemoveAeroLoadCase(TEXT("test trim"));
+				Check(Doc->GetAeroLoadCases().Num() == 0 && Fired == 3, "load case: removed by name");
+				Doc->OnAeroLoadCasesChanged.Remove(H);
+			}
+			catch (const std::exception& e)
+			{
+				Check(false, FString::Printf(TEXT("aerodynamic load case threw: %s"), UTF8_TO_TCHAR(e.what())));
+			}
+		}
 
 		// (1) A thin-walled body: the sphere's own triangles (its placed
 		// mesh at tolerance 0 -- its Mesh tab's grid at the viewport's rule,

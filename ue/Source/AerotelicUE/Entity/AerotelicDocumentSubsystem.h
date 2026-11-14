@@ -12,6 +12,7 @@
 
 class AAerotelicEntityActor;
 class UWorld;
+struct FAerotelicAeroLoadCase;
 namespace aerotelic { class Airfoil; struct BodyStructurePlan; }
 
 // Owns the current project: the entity list, the file path and the current
@@ -98,6 +99,19 @@ public:
 	// Structural's Masses tab.
 	const TArray<aerotelic::MassItem>& GetMassItems() const { return MassItems; }
 	void SetMassItems(const TArray<aerotelic::MassItem>& Items) { MassItems = Items; }
+
+	// The AERODYNAMIC LOAD CASES (2026-11-14, stage 4; AerotelicAeroLoads.h):
+	// panel-method pressure fields the High Order Panel dialog stores for
+	// the Structural dialog to apply. Session data: New and Open clear
+	// them, nothing saves them. Set replaces a case of the same name.
+	const TArray<TSharedPtr<FAerotelicAeroLoadCase>>& GetAeroLoadCases() const { return AeroLoadCases; }
+	void SetAeroLoadCase(TSharedPtr<FAerotelicAeroLoadCase> Case);
+	void RemoveAeroLoadCase(const FString& Name);
+	TSharedPtr<FAerotelicAeroLoadCase> FindAeroLoadCase(const FString& Name) const;
+	// Fired after the list changes (a case stored or removed), so an open
+	// Structural dialog can refresh its choice.
+	DECLARE_MULTICAST_DELEGATE(FOnAeroLoadCasesChanged);
+	FOnAeroLoadCasesChanged OnAeroLoadCasesChanged;
 
 	// Every section airfoil on any Wing or Propeller blade in the scene --
 	// the Sections tab's airfoil picker offers these first, matching
@@ -318,6 +332,7 @@ private:
 	aerotelic::UnitSystem Units;
 	double ModelScale = 1.0;
 	TArray<aerotelic::MassItem> MassItems;
+	TArray<TSharedPtr<FAerotelicAeroLoadCase>> AeroLoadCases;
 	FAerotelicSurfaceStyle SurfaceStyle;
 	FAerotelicShadowStyle ShadowStyle;
 	EAerotelicRenderStyle RenderStyle = EAerotelicRenderStyle::Shaded;

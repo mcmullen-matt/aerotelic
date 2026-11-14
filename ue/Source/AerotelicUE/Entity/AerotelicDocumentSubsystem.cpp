@@ -1,5 +1,6 @@
 #include "AerotelicDocumentSubsystem.h"
 #include "Widgets/MessageBox.h"
+#include "AerotelicAeroLoads.h"
 #include "AerotelicEntityActor.h"
 #include "AerotelicBooleanModel.h"
 #include "AerotelicBodyStructure.h"
@@ -133,6 +134,27 @@ namespace
 UAerotelicDocumentSubsystem* UAerotelicDocumentSubsystem::Get()
 {
 	return GEngine ? GEngine->GetEngineSubsystem<UAerotelicDocumentSubsystem>() : nullptr;
+}
+
+void UAerotelicDocumentSubsystem::SetAeroLoadCase(TSharedPtr<FAerotelicAeroLoadCase> Case)
+{
+	if (!Case.IsValid()) return;
+	AeroLoadCases.RemoveAll([&Case](const TSharedPtr<FAerotelicAeroLoadCase>& C) { return !C.IsValid() || C->Name == Case->Name; });
+	AeroLoadCases.Add(Case);
+	OnAeroLoadCasesChanged.Broadcast();
+}
+
+void UAerotelicDocumentSubsystem::RemoveAeroLoadCase(const FString& Name)
+{
+	const int32 Before = AeroLoadCases.Num();
+	AeroLoadCases.RemoveAll([&Name](const TSharedPtr<FAerotelicAeroLoadCase>& C) { return !C.IsValid() || C->Name == Name; });
+	if (AeroLoadCases.Num() != Before) OnAeroLoadCasesChanged.Broadcast();
+}
+
+TSharedPtr<FAerotelicAeroLoadCase> UAerotelicDocumentSubsystem::FindAeroLoadCase(const FString& Name) const
+{
+	for (const TSharedPtr<FAerotelicAeroLoadCase>& C : AeroLoadCases) if (C.IsValid() && C->Name == Name) return C;
+	return nullptr;
 }
 
 void UAerotelicDocumentSubsystem::Initialize(FSubsystemCollectionBase& Collection)
@@ -679,6 +701,11 @@ void UAerotelicDocumentSubsystem::ClearScene()
 	Units = aerotelic::UnitSystem{};
 	ModelScale = 1.0;
 	MassItems.Empty();
+	if (AeroLoadCases.Num() > 0)
+	{
+		AeroLoadCases.Empty();
+		OnAeroLoadCasesChanged.Broadcast();
+	}
 	OnEntityListChanged.Broadcast();
 }
 
@@ -1635,6 +1662,12 @@ bool UAerotelicDocumentSubsystem::OpenProjectPath(const FString& InPath, bool bA
 	// hangs on something listed).
 	MassItems.Empty();
 	for (const MassItem& M : Project.masses) MassItems.Add(M);
+	// The aerodynamic load cases were of the scene that is gone.
+	if (AeroLoadCases.Num() > 0)
+	{
+		AeroLoadCases.Empty();
+		OnAeroLoadCasesChanged.Broadcast();
+	}
 	// The structures with an interior (plane networks behind a skin),
 	// generated over the bodies now in the scene -- the generated geometry
 	// is not saved, only what describes it.

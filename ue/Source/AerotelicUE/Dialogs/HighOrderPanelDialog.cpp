@@ -50,9 +50,13 @@
 // Last: OCCT's Handle() macro vs engine headers.
 #include "aerotelic/wing_panels.hpp"
 #include "aerotelic/panel_loads.hpp"
+#include "aerotelic/aero_trim.hpp"
+#include "aerotelic/aero_loads.hpp"
 #include "aerotelic/colormaps.hpp"
 #include "Entity/AerotelicDocumentSubsystem.h"
 #include "Entity/AerotelicEntityActor.h"
+#include "Entity/AerotelicAeroLoads.h"
+#include "Entity/AerotelicMassProperties.h"
 
 #define LOCTEXT_NAMESPACE "HighOrderPanelDialog"
 
@@ -285,6 +289,12 @@ namespace
 	struct FCase
 	{
 		double AlphaDeg = 0.0, BetaDeg = 0.0;
+		// The control deflection this case was built with (stage 4, the
+		// trim): the flap named, turned DeltaDeg (trailing edge down) in the
+		// wing network's sealed section; empty when the model's own values
+		// were used.
+		FString Control;
+		double DeltaDeg = 0.0;
 		aerotelic::Vec3 Stream, LiftDir, SideDir;
 		std::vector<Network> Nets;
 		TArray<FShare> Shares;
@@ -301,12 +311,46 @@ namespace
 		int32 NBody = 0, NWake = 0;
 	};
 
+	// A control the trim turns: a flap of a chosen wing.
+	struct FTrimControl
+	{
+		TWeakObjectPtr<AAerotelicEntityActor> Wing;
+		int32 Flap = -1;
+		FString Label;   // "<wing> / <flap>"
+	};
+
+	// What a trim needs beyond the cases (stage 4, 2026-11-14): the
+	// flight condition and the two states the derivatives are taken
+	// between. Stage 1 solves the base and the stepped cases; stage 2 the
+	// trimmed state itself, which is then the dialog's one solution.
+	struct FTrimSetup
+	{
+		double LoadFactor = 1.0;
+		double Speed = 0.0, Density = 0.0;      // SI
+		double DynamicPressure = 0.0;           // Pa
+		double Mass = 0.0;                      // kg
+		double Weight = 0.0;                    // N
+		aerotelic::Vec3 MassCentre;             // project units (the replica's)
+		double ReferenceAreaSI = 0.0;           // m^2
+		double CLRequired = 0.0;
+		FTrimControl Control;                   // Flap < 0: the angle of attack alone
+		double Alpha0 = 0.0, Delta0 = 0.0;      // the base state
+		double Step = 1.0;                      // degrees, both derivatives
+		aerotelic::aero::TrimResult Result;
+		TArray<aerotelic::aero::TrimPoint> Points;   // base, alpha step, (delta step), trimmed
+		FString Name;                           // the load case to store
+	};
+
 	struct FJob
 	{
 		TArray<TSharedPtr<FCase>> Cases;
 		aerotelic::panel::Options Options;
 		std::atomic<bool> bCancel{ false };
 		FString Error;
+		// 0: an ordinary solve; 1: a trim's derivative cases; 2: a trim's
+		// trimmed state.
+		int32 TrimStage = 0;
+		TSharedPtr<FTrimSetup> Trim;
 	};
 
 	// The coloured mesh of a case: every non-wake network as its corner grid
@@ -451,6 +495,21 @@ namespace
 		TSharedPtr<SWidgetSwitcher> PolarSwitch;
 		TSharedPtr<SVerticalBox> PolarTable;
 
+		// Trim and structural load case (tab 5; stage 4, 2026-11-14).
+		double TrimLoadFactor = 1.0;
+		double TrimSpeed = 20.0;          // m/s
+		double TrimDensity = 1.225;       // kg/m^3
+		bool bMassOverride = false;
+		double TrimMass = 0.0;            // project mass units, when overridden
+		double TrimCgX = 0.0, TrimCgY = 0.0, TrimCgZ = 0.0;   // full-scale project lengths, when overridden
+		TArray<FTrimControl> TrimControls;   // the flaps of the chosen wings
+		TArray<TSharedPtr<FString>> TrimControlNames;   // "none" then each
+		int32 TrimControlIndex = 0;
+		TSharedPtr<SComboBox<TSharedPtr<FString>>> TrimControlCombo;
+		TSharedPtr<STextBlock> LblMassReport, LblTrim, LblStored;
+		TSharedPtr<SEditableTextBox> CaseNameBox;
+		TSharedPtr<FTrimSetup> LastTrim;   // the trim the current solution came from, if any
+
 		TSharedPtr<SAerotelicTabStrip> Tabs;
 		// -AerotelicPanelSmoke: a developer run that solves at once, steps
 		// through the result tabs saving a screenshot of each to
@@ -573,6 +632,8 @@ namespace
 				LblWarn->SetVisibility(Warn.IsEmpty() ? EVisibility::Collapsed : EVisibility::Visible);
 			}
 			Status(Es.Num() ? FText::FromString(FString::Printf(TEXT("%d bodies chosen for the panel method"), Es.Num())) : LOCTEXT("PickOne", "Choose at least one body."));
+			RefreshTrimControls();
+			UpdateMassLabel();
 		}
 
 		void SetInputError(const FString& Err)
@@ -586,11 +647,19 @@ namespace
 
 		// Panels the chosen bodies for one free stream: the networks and the
 		// entities' shares of them. Throws on a model that will not build.
-		TSharedPtr<FCase> BuildCase(double AlphaDeg, double BetaDeg, bool bSymmetry)
+		// With a Control, that wing's flap is built at DeltaDeg instead of
+		// the model's own deflection (the trim's derivative and trimmed
+		// states); the model is put back as it was.
+		TSharedPtr<FCase> BuildCase(double AlphaDeg, double BetaDeg, bool bSymmetry, const FTrimControl* Control = nullptr, double DeltaDeg = 0.0)
 		{
 			TSharedPtr<FCase> C = MakeShared<FCase>();
 			C->AlphaDeg = AlphaDeg;
 			C->BetaDeg = BetaDeg;
+			if (Control != nullptr && Control->Wing.IsValid() && Control->Flap >= 0)
+			{
+				C->Control = Control->Label;
+				C->DeltaDeg = DeltaDeg;
+			}
 			const double Alpha = AlphaDeg * kPi / 180.0, Beta = BetaDeg * kPi / 180.0;
 			// The flow along +x, tilted towards +z by alpha and towards +y by
 			// beta (unit, world frame). Wind axes: lift normal to the stream in
@@ -638,7 +707,21 @@ namespace
 					Pan.spanwise = FMath::Clamp(W->mesh.spanwise > 0 ? W->mesh.spanwise : FMath::RoundToInt(Spanwise), 1, 200);
 					Pan.wake_length = WakeChords * W->planform().RootChord();
 					Pan.wake_direction = StreamModel; // the wake sheds along the world stream, in the wing's frame
-					Own = aerotelic::panel::WingNetworks(*W, Pan, StreamModel);
+					// The trim's control: this wing's flap at the asked deflection
+					// for the build, the model's own value put back after.
+					const bool bOverride = Control != nullptr && Control->Wing.Get() == E && Control->Flap >= 0 && Control->Flap < static_cast<int32>(W->flaps.size());
+					const double Saved = bOverride ? W->flaps[Control->Flap].deflection_deg : 0.0;
+					if (bOverride) W->flaps[Control->Flap].deflection_deg = DeltaDeg;
+					try
+					{
+						Own = aerotelic::panel::WingNetworks(*W, Pan, StreamModel);
+					}
+					catch (...)
+					{
+						if (bOverride) W->flaps[Control->Flap].deflection_deg = Saved;
+						throw;
+					}
+					if (bOverride) W->flaps[Control->Flap].deflection_deg = Saved;
 					for (Network& N : Own)
 					{
 						N.name = TCHAR_TO_UTF8(*E->EntityName) + std::string(N.name == W->name ? "" : " wake");
@@ -840,7 +923,13 @@ namespace
 			}
 			if (bSymmetry) NewJob->Options.symmetry_y = 0.0;
 			NewJob->Options.reference_area = ReferenceArea > 0.0 ? ReferenceArea : 1.0;
+			LastTrim.Reset();
+			Launch(NewJob);
+		}
 
+		// Runs a job's cases on a worker thread and reports back to OnSolved.
+		void Launch(TSharedPtr<FJob> NewJob)
+		{
 			Job = NewJob;
 			if (SolveButton.IsValid()) SolveButton->SetEnabled(false);
 			Status(FText::FromString(FString::Printf(TEXT("Solving 1 of %d..."), NewJob->Cases.Num())));
@@ -905,6 +994,11 @@ namespace
 				return;
 			}
 			if (Done->bCancel.load()) return;
+			if (Done->TrimStage == 1)
+			{
+				OnTrimDerivatives(Done);
+				return;
+			}
 
 			double Seconds = 0.0, MaxDelta = 0.0;
 			double Lo = 1e9, Hi = -1e9;
@@ -964,7 +1058,352 @@ namespace
 			UpdatePolars();
 			Status(FText::FromString(FString::Printf(TEXT("High order panel: %d solution%s, C_L %.4f to %.4f, Cp %.2f to %.2f, %d unknowns in %.2f s%s"),
 				Cases.Num(), Cases.Num() == 1 ? TEXT("") : TEXT("s"), Cases[0]->CL, Cases.Last()->CL, Lo, Hi, First.Sol.unknowns, Seconds, *Written)));
+			if (Done->TrimStage == 2) FinishTrim(Done);
 			if (bSmoke) RunSmoke();
+		}
+
+		// ---- tab 5: the trim and the structural load case (stage 4, 2026-11-14) ----
+
+		// The flaps of the chosen wings, as the trim's choices; the default
+		// is the aftmost (the elevator of a conventional layout).
+		void RefreshTrimControls()
+		{
+			const FString Before = TrimControlNames.IsValidIndex(TrimControlIndex) ? *TrimControlNames[TrimControlIndex] : FString();
+			TrimControls.Reset();
+			TrimControlNames.Reset();
+			TrimControlNames.Add(MakeShared<FString>(TEXT("none: the angle of attack alone (the moment is not trimmed)")));
+			int32 Aft = -1;
+			double AftX = -1e300;
+			for (AAerotelicEntityActor* E : Chosen())
+			{
+				if (E->GetEntityType() != EntityType::Wing) continue;
+				const aerotelic::WingModel* W = E->GetModelAs<aerotelic::WingModel>();
+				if (W == nullptr) continue;
+				const FBox B = E->GetPlacedBounds(false);
+				for (int32 k = 0; k < static_cast<int32>(W->flaps.size()); ++k)
+				{
+					FTrimControl C;
+					C.Wing = E;
+					C.Flap = k;
+					C.Label = E->EntityName + TEXT(" / ") + UTF8_TO_TCHAR(W->flaps[k].name.c_str());
+					TrimControls.Add(C);
+					TrimControlNames.Add(MakeShared<FString>(C.Label));
+					const double X = B.IsValid ? B.GetCenter().X : 0.0;
+					if (X > AftX) { AftX = X; Aft = TrimControls.Num(); }
+				}
+			}
+			int32 Index = TrimControlNames.IndexOfByPredicate([&Before](const TSharedPtr<FString>& N) { return *N == Before; });
+			if (Index < 0) Index = Aft > 0 ? Aft : 0;
+			TrimControlIndex = Index;
+			if (TrimControlCombo.IsValid())
+			{
+				TrimControlCombo->RefreshOptions();
+				TrimControlCombo->SetSelectedItem(TrimControlNames[TrimControlIndex]);
+			}
+		}
+
+		// The mass and mass centre the trim flies at: the mass report of the
+		// chosen bodies with the project's point masses (both halves of a
+		// mirrored entity), or the override typed on the tab. Mass in kg,
+		// the centre in project units as placed (the replica's).
+		bool TrimMassAndCentre(double& MassKg, aerotelic::Vec3& Centre, FString& Text) const
+		{
+			const double Scale = AAerotelicEntityActor::GetModelScale();
+			if (bMassOverride)
+			{
+				MassKg = TrimMass * Units.MassToSI();
+				Centre = aerotelic::Vec3{ TrimCgX * Scale, TrimCgY * Scale, TrimCgZ * Scale };
+				Text = FString::Printf(TEXT("Mass %.5g %s and mass centre (%.4g, %.4g, %.4g) %s as typed (full-scale)."), TrimMass, UTF8_TO_TCHAR(Units.MassName()), TrimCgX, TrimCgY, TrimCgZ, UTF8_TO_TCHAR(Units.LengthName()));
+				return MassKg > 0.0;
+			}
+			TArray<FAerotelicBooleanOperand> Ops;
+			for (AAerotelicEntityActor* E : Chosen())
+			{
+				FAerotelicBooleanOperand Op;
+				Op.Entity = E;
+				Ops.Add(Op);
+				if (E->IsMirrored())
+				{
+					Op.bMirror = true;
+					Ops.Add(Op);
+				}
+			}
+			const UAerotelicDocumentSubsystem* Doc = UAerotelicDocumentSubsystem::Get();
+			const FAerotelicMassReport Report = ComputeAerotelicMassReport(Ops, 2e-3, Units, Doc != nullptr ? &Doc->GetMassItems() : nullptr);
+			MassKg = Report.Assembly.mass * Units.MassToSI();
+			Centre = Report.Assembly.centre;
+			const aerotelic::Vec3 Full = Centre * (1.0 / Scale);
+			Text = FString::Printf(TEXT("Mass report of the chosen bodies: %d of %d bodies weighed%s, mass %.5g %s = %.5g kg, mass centre (%.4g, %.4g, %.4g) %s%s."),
+				Report.IncludedCount, Report.Bodies.Num(), Report.PointMasses > 0 ? *FString::Printf(TEXT(" with %d point mass(es)"), Report.PointMasses) : TEXT(""),
+				Report.Assembly.mass, UTF8_TO_TCHAR(Units.MassName()), MassKg, Full.x, Full.y, Full.z, UTF8_TO_TCHAR(Units.LengthName()),
+				FMath::IsNearlyEqual(Scale, 1.0) ? TEXT("") : TEXT(" (full-scale)"));
+			for (const FAerotelicMassLine& L : Report.Bodies) if (!L.bIncluded) Text += TEXT("\n  left out: ") + L.Label + TEXT(": ") + L.Note;
+			return MassKg > 0.0;
+		}
+
+		void UpdateMassLabel()
+		{
+			if (!LblMassReport.IsValid()) return;
+			double M = 0.0;
+			aerotelic::Vec3 C;
+			FString Text;
+			TrimMassAndCentre(M, C, Text);
+			LblMassReport->SetText(FText::FromString(Text));
+		}
+
+		// The trim: three solves for the derivatives (two without a
+		// control), the 2 x 2 step, then the trimmed state solved as the
+		// dialog's one solution and stored as a load case.
+		void RunTrim()
+		{
+			if (Job.IsValid())
+			{
+				AerotelicMessageBox(EAppMsgType::Ok, LOCTEXT("Busy", "A solve is still running."), LOCTEXT("Title", "High Order Panel"));
+				return;
+			}
+			if (Chosen().Num() == 0)
+			{
+				AerotelicMessageBox(EAppMsgType::Ok, LOCTEXT("PickOneWarn", "Choose at least one body."), LOCTEXT("Title", "High Order Panel"));
+				return;
+			}
+			TSharedPtr<FTrimSetup> T = MakeShared<FTrimSetup>();
+			T->LoadFactor = TrimLoadFactor;
+			T->Speed = TrimSpeed;
+			T->Density = TrimDensity;
+			T->DynamicPressure = aerotelic::aero::DynamicPressure(TrimDensity, TrimSpeed);
+			FString MassText;
+			if (!TrimMassAndCentre(T->Mass, T->MassCentre, MassText))
+			{
+				SetTrimText(TEXT("No mass to trim for: ") + MassText + TEXT("\nGive the bodies a structure (Scene tree > Structure) or tick the override and type a mass."));
+				return;
+			}
+			if (!(T->DynamicPressure > 0.0))
+			{
+				SetTrimText(TEXT("The speed and the density must be positive."));
+				return;
+			}
+			T->Weight = T->Mass * 9.80665;
+			T->ReferenceAreaSI = (ReferenceArea > 0.0 ? ReferenceArea : 1.0) * Units.AreaToSI();
+			T->CLRequired = aerotelic::aero::RequiredLiftCoefficient(T->LoadFactor, T->Weight, T->DynamicPressure, T->ReferenceAreaSI);
+			if (TrimControlIndex > 0 && TrimControls.IsValidIndex(TrimControlIndex - 1)) T->Control = TrimControls[TrimControlIndex - 1];
+			// The base state: the first angle of attack on the Set-up tab and
+			// the flap's own deflection.
+			TArray<double> Alphas;
+			FString Err;
+			if (!ParseAngleList(AlphaBox->GetText().ToString(), Alphas, Err))
+			{
+				SetTrimText(TEXT("Angle of attack (Set-up tab): ") + Err + TEXT("."));
+				return;
+			}
+			T->Alpha0 = Alphas[0];
+			T->Delta0 = 0.0;
+			if (T->Control.Flap >= 0 && T->Control.Wing.IsValid())
+			{
+				const aerotelic::WingModel* W = T->Control.Wing->GetModelAs<aerotelic::WingModel>();
+				if (W != nullptr && T->Control.Flap < static_cast<int32>(W->flaps.size())) T->Delta0 = W->flaps[T->Control.Flap].deflection_deg;
+			}
+			T->Name = FString::Printf(TEXT("Trim n = %g, V = %g m/s"), T->LoadFactor, T->Speed);
+			if (CaseNameBox.IsValid())
+			{
+				const FString Typed = CaseNameBox->GetText().ToString().TrimStartAndEnd();
+				if (!Typed.IsEmpty()) T->Name = Typed;
+			}
+
+			const bool bSymmetry = SymmetryCheck->IsChecked();
+			bFramed = false;
+			Status(LOCTEXT("PanelingTrim", "Paneling the derivative states..."));
+			TSharedPtr<FJob> NewJob = MakeShared<FJob>();
+			try
+			{
+				const FTrimControl* Ctl = T->Control.Flap >= 0 ? &T->Control : nullptr;
+				NewJob->Cases.Add(BuildCase(T->Alpha0, 0.0, bSymmetry, Ctl, T->Delta0));
+				NewJob->Cases.Add(BuildCase(T->Alpha0 + T->Step, 0.0, bSymmetry, Ctl, T->Delta0));
+				if (Ctl != nullptr) NewJob->Cases.Add(BuildCase(T->Alpha0, 0.0, bSymmetry, Ctl, T->Delta0 + T->Step));
+			}
+			catch (const std::exception& E)
+			{
+				Status(LOCTEXT("Ready", "Ready"));
+				SetTrimText(FString(TEXT("The trim failed to panel the bodies: ")) + UTF8_TO_TCHAR(E.what()));
+				return;
+			}
+			if (bSymmetry) NewJob->Options.symmetry_y = 0.0;
+			NewJob->Options.reference_area = ReferenceArea > 0.0 ? ReferenceArea : 1.0;
+			NewJob->Options.moment_reference = T->MassCentre;
+			NewJob->TrimStage = 1;
+			NewJob->Trim = T;
+			SetTrimText(FString::Printf(TEXT("Solving the base state (α = %g°, δ = %g°) and the stepped states...\n%s\nq = %.4g Pa, W = %.4g N, S_ref = %.4g m², C_L required = n W / (q S) = %.4f."),
+				T->Alpha0, T->Delta0, *MassText, T->DynamicPressure, T->Weight, T->ReferenceAreaSI, T->CLRequired));
+			Launch(NewJob);
+		}
+
+		void SetTrimText(const FString& Text)
+		{
+			if (LblTrim.IsValid()) LblTrim->SetText(FText::FromString(Text));
+		}
+
+		// Stage 1 landed: the derivatives, the step, then the trimmed state.
+		void OnTrimDerivatives(TSharedPtr<FJob> Done)
+		{
+			TSharedPtr<FTrimSetup> T = Done->Trim;
+			if (!T.IsValid()) return;
+			T->Points.Reset();
+			for (TSharedPtr<FCase>& C : Done->Cases)
+			{
+				Derive(*C, ReferenceLength);
+				T->Points.Add({ C->AlphaDeg, C->DeltaDeg, C->CL, C->Cm });
+			}
+			const bool bControl = T->Control.Flap >= 0;
+			T->Result = bControl ? aerotelic::aero::SolveTrim(T->Points[0], T->Points[1], T->Points[2], T->CLRequired)
+				: aerotelic::aero::SolveTrimAlpha(T->Points[0], T->Points[1], T->CLRequired);
+			FString Text = FString::Printf(TEXT("Base α = %g°, δ = %g°: C_L %.4f, C_m(cg) %.4f. dC_L/dα = %.4f, dC_m/dα = %.4f per degree%s."),
+				T->Alpha0, T->Delta0, T->Points[0].CL, T->Points[0].Cm, T->Result.dCL_dalpha, T->Result.dCm_dalpha,
+				bControl ? *FString::Printf(TEXT("; dC_L/dδ = %.4f, dC_m/dδ = %.4f per degree (%s)"), T->Result.dCL_ddelta, T->Result.dCm_ddelta, *T->Control.Label) : TEXT(""));
+			if (!T->Result.ok)
+			{
+				Status(LOCTEXT("Ready", "Ready"));
+				SetTrimText(Text + TEXT("\nNO TRIM: ") + UTF8_TO_TCHAR(T->Result.note.c_str()));
+				return;
+			}
+			if (FMath::Abs(T->Result.alpha_deg) > 25.0 || FMath::Abs(T->Result.delta_deg) > 45.0)
+			{
+				Status(LOCTEXT("Ready", "Ready"));
+				SetTrimText(Text + FString::Printf(TEXT("\nNO TRIM: the step asks for α = %.2f°, δ = %.2f°, outside anything a potential flow describes (|α| < 25°, |δ| < 45°). The condition is too slow or too heavy for these bodies, or the control too small."), T->Result.alpha_deg, T->Result.delta_deg));
+				return;
+			}
+			Text += FString::Printf(TEXT("\nTrim step: α = %.3f°, δ = %.3f°. Solving the trimmed state..."), T->Result.alpha_deg, T->Result.delta_deg);
+			SetTrimText(Text);
+			const bool bSymmetry = Done->Options.symmetry_y.has_value();
+			TSharedPtr<FJob> NewJob = MakeShared<FJob>();
+			try
+			{
+				NewJob->Cases.Add(BuildCase(T->Result.alpha_deg, 0.0, bSymmetry, bControl ? &T->Control : nullptr, T->Result.delta_deg));
+			}
+			catch (const std::exception& E)
+			{
+				Status(LOCTEXT("Ready", "Ready"));
+				SetTrimText(Text + FString(TEXT("\nThe trimmed state failed to panel: ")) + UTF8_TO_TCHAR(E.what()));
+				return;
+			}
+			NewJob->Options = Done->Options;
+			NewJob->TrimStage = 2;
+			NewJob->Trim = T;
+			Launch(NewJob);
+		}
+
+		// Stage 2 landed and is the dialog's solution: the residual, and the
+		// load case stored for the structural analysis.
+		void FinishTrim(TSharedPtr<FJob> Done)
+		{
+			TSharedPtr<FTrimSetup> T = Done->Trim;
+			if (!T.IsValid() || Cases.Num() != 1) return;
+			const FCase& C = *Cases[0];
+			T->Points.Add({ C.AlphaDeg, C.DeltaDeg, C.CL, C.Cm });
+			LastTrim = T;
+			const double Lift = C.CL * T->DynamicPressure * T->ReferenceAreaSI;
+			const double Moment = C.Cm * T->DynamicPressure * T->ReferenceAreaSI * ReferenceLength * Units.LengthToSI();
+			FString Text = FString::Printf(TEXT("TRIMMED at α = %.3f°%s: C_L %.4f against %.4f required (lift %.4g N against n W = %.4g N, %.2f%% off), C_m about the mass centre %.5f (%.4g N m). "),
+				C.AlphaDeg, T->Control.Flap >= 0 ? *FString::Printf(TEXT(", %s at δ = %.3f°"), *T->Control.Label, C.DeltaDeg) : TEXT(" (angle of attack alone; the moment is what it is)"),
+				C.CL, T->CLRequired, Lift, T->LoadFactor * T->Weight, 100.0 * (C.CL / FMath::Max(T->CLRequired, 1e-12) - 1.0), C.Cm, Moment);
+			Text += FString::Printf(TEXT("\nDerivatives per degree: dC_L/dα %.4f, dC_m/dα %.4f%s. "), T->Result.dCL_dalpha, T->Result.dCm_dalpha,
+				T->Control.Flap >= 0 ? *FString::Printf(TEXT(", dC_L/dδ %.4f, dC_m/dδ %.4f"), T->Result.dCL_ddelta, T->Result.dCm_ddelta) : TEXT(""));
+			Text += TEXT("The residual is the method's nonlinearity over the step (the wake sheds along the stream; a flap kinks the section): run Trim again from here to tighten it.");
+			if (T->Control.Flap >= 0)
+			{
+				Text += FString::Printf(TEXT("\nThe model's own %s deflection is still %g°: set it to %.2f° in the wing's Flaps tab so the structural model's flap body sits where the air loads were computed."), *T->Control.Label, T->Delta0, C.DeltaDeg);
+			}
+			TSharedPtr<FAerotelicAeroLoadCase> Case = MakeLoadCase(C, T->Name, T->DynamicPressure, T.Get());
+			if (UAerotelicDocumentSubsystem* Doc = UAerotelicDocumentSubsystem::Get()) Doc->SetAeroLoadCase(Case);
+			const aerotelic::Vec3 Fc = Case->ForceCoefficient();
+			Text += FString::Printf(TEXT("\nStored as the load case '%s': %d body panels, q = %.4g Pa; the panels' own resultant over S_ref is (%.4f, %.4f, %.4f)%s. Analysis > Structural, Loads tab, applies it."),
+				*Case->Name, Case->BodyPanels(), Case->DynamicPressure, Fc.x, Fc.y, Fc.z,
+				C.Shares.Num() && C.Shares[0].bImaged ? TEXT(" with the image about y = 0") : TEXT(""));
+			SetTrimText(Text);
+			if (LblStored.IsValid()) LblStored->SetText(FText::FromString(FString::Printf(TEXT("Stored '%s' (%d panels, q %.4g Pa)."), *Case->Name, Case->BodyPanels(), Case->DynamicPressure)));
+			Status(FText::FromString(FString::Printf(TEXT("Trimmed: α = %.3f°%s, C_L %.4f, C_m %.5f; load case '%s' stored"), C.AlphaDeg,
+				T->Control.Flap >= 0 ? *FString::Printf(TEXT(", δ = %.3f°"), C.DeltaDeg) : TEXT(""), C.CL, C.Cm, *Case->Name)));
+		}
+
+		// A case's body panels as a load case: every non-wake panel with its
+		// pressure (both sides for a sheet), and its image when the plane
+		// was on, so the whole airframe is covered.
+		TSharedPtr<FAerotelicAeroLoadCase> MakeLoadCase(const FCase& C, const FString& Name, double DynamicPressure, const FTrimSetup* Trim) const
+		{
+			TSharedPtr<FAerotelicAeroLoadCase> Case = MakeShared<FAerotelicAeroLoadCase>();
+			Case->Name = Name;
+			Case->DynamicPressure = DynamicPressure;
+			Case->AlphaDeg = C.AlphaDeg;
+			Case->BetaDeg = C.BetaDeg;
+			Case->DeltaDeg = C.DeltaDeg;
+			Case->Control = C.Control;
+			Case->CL = C.CL;
+			Case->Cm = C.Cm;
+			Case->ReferenceArea = ReferenceArea > 0.0 ? ReferenceArea : 1.0;
+			Case->Stream = C.Stream;
+			if (Trim != nullptr)
+			{
+				Case->bTrimmed = true;
+				Case->LoadFactor = Trim->LoadFactor;
+				Case->Weight = Trim->Weight;
+				Case->MassCentre = Trim->MassCentre;
+			}
+			for (const FShare& Sh : C.Shares) Case->Entities.Add(Sh.Name);
+			const bool bImaged = C.Shares.Num() > 0 && C.Shares[0].bImaged;
+			const int32 N = static_cast<int32>(C.Sol.networks.size());
+			for (int32 k = 0; k < N; ++k)
+			{
+				const NetworkResult& NR = C.Sol.networks[k];
+				if (NR.type == NetworkType::DoubletWake || NR.type == NetworkType::DoubletWakeConstant) continue;
+				const Network& Net = C.Nets[k];
+				// The solver's own rule for a one-sided (closed) network.
+				const bool bOneSided = Net.type == NetworkType::SourceAnalysis || Net.bc.kind == aerotelic::panel::BoundaryCondition::Kind::Potential;
+				for (int32 i = 0; i < NR.panel_rows; ++i)
+				{
+					for (int32 j = 0; j < NR.panel_cols; ++j)
+					{
+						const PanelResult& P = NR.panels[static_cast<size_t>(i) * NR.panel_cols + j];
+						if (!(P.area > 0.0)) continue;
+						aerotelic::aero::PressureSample S;
+						S.centre = P.centre;
+						S.normal = P.normal;
+						S.area = P.area;
+						S.cp_upper = P.cp_upper;
+						S.cp_lower = P.cp_lower;
+						S.two_sided = !bOneSided;
+						S.network = k;
+						S.row = i;
+						S.col = j;
+						Case->Samples.push_back(S);
+						if (bImaged)
+						{
+							aerotelic::aero::PressureSample M = S;
+							M.centre.y = -M.centre.y;
+							M.normal.y = -M.normal.y;
+							M.network = k + N;
+							Case->Samples.push_back(M);
+						}
+					}
+				}
+			}
+			return Case;
+		}
+
+		// The solution shown, stored at the tab's dynamic pressure (not a
+		// trim: a sweep's point, or a case flown at a chosen angle).
+		void StoreCurrentCase()
+		{
+			const FCase* C = CurrentCase();
+			if (C == nullptr)
+			{
+				if (LblStored.IsValid()) LblStored->SetText(LOCTEXT("NothingToStore", "Solve first (Set-up tab), or Trim."));
+				return;
+			}
+			const double Q = aerotelic::aero::DynamicPressure(TrimDensity, TrimSpeed);
+			FString Name = CaseNameBox.IsValid() ? CaseNameBox->GetText().ToString().TrimStartAndEnd() : FString();
+			if (Name.IsEmpty()) Name = FString::Printf(TEXT("α = %g°, V = %g m/s"), C->AlphaDeg, TrimSpeed);
+			const bool bThisTrim = LastTrim.IsValid() && Cases.Num() == 1;
+			TSharedPtr<FAerotelicAeroLoadCase> Case = MakeLoadCase(*C, Name, bThisTrim ? LastTrim->DynamicPressure : Q, bThisTrim ? LastTrim.Get() : nullptr);
+			if (UAerotelicDocumentSubsystem* Doc = UAerotelicDocumentSubsystem::Get()) Doc->SetAeroLoadCase(Case);
+			if (LblStored.IsValid()) LblStored->SetText(FText::FromString(FString::Printf(TEXT("Stored '%s' (%d panels, q %.4g Pa, α %g°%s)."), *Case->Name, Case->BodyPanels(), Case->DynamicPressure, C->AlphaDeg, Case->bTrimmed ? TEXT(", trimmed") : TEXT(", not trimmed"))));
 		}
 
 		void Screenshot(const FString& Name)
@@ -1497,6 +1936,7 @@ namespace
 			Picker.Reset(); SymmetryCheck.Reset(); AlphaBox.Reset(); BetaBox.Reset(); PathBox.Reset();
 			LblWarn.Reset(); LblSummary.Reset(); LblInput.Reset(); SolveButton.Reset();
 			View.Reset(); ColorBar.Reset(); LoadPlot.Reset(); Polars.Empty(); PolarSwitch.Reset(); PolarTable.Reset();
+			TrimControlCombo.Reset(); LblMassReport.Reset(); LblTrim.Reset(); LblStored.Reset(); CaseNameBox.Reset(); LastTrim.Reset();
 		}
 	};
 
@@ -1544,7 +1984,12 @@ namespace
 		"With more than one body, the last view, All bodies, is l / q of the whole configuration along the lateral axis y: every body's panels -- wings, fuselages, nacelles, images and reflected copies -- summed into uniform bins, each panel's load spread over the bins it spans, with its own elliptic curve. The arrows step between solutions and between views.\n\n"
 		"FORCES AND MOMENTS\n"
 		"The wind-axis coefficients against the swept angle: lift, induced drag (a potential flow has no friction) and side force; roll about the stream, pitch about the side axis and yaw about the lift axis, about the origin on the reference length. "
-		"With more than one body each chart shows a dashed curve per body and the total in white. With a single solution the values are tabulated instead, one column per body and the total, with the lift from the wake doublet strength.");
+		"With more than one body each chart shows a dashed curve per body and the total in white. With a single solution the values are tabulated instead, one column per body and the total, with the lift from the wake doublet strength.\n\n"
+		"TRIM AND LOAD CASE (2026-11-14)\n"
+		"The rigid trim of the configuration and the hand-over of its pressures to the structural analysis. A flight condition is a load factor n, a speed and a density: the lift to find is n W (W from the mass report of the chosen bodies with the project's point masses, or typed), and q = ρ V² / 2 makes the required lift coefficient n W / (q S_ref). "
+		"The unknowns are the angle of attack and the deflection of one flap (the aftmost by default); the pitching moment is taken about the mass centre. Three solves -- the base state, α stepped 1°, δ stepped 1° -- give the derivatives, the 2 x 2 system gives the step, and a fourth solve at the trimmed state is the solution the other tabs then show, with its residual (the method is linear in the free stream only to first order, as the wake sheds along the stream and the flap kinks the section; Trim again from there to tighten). "
+		"Without a control the lift alone is trimmed in α. The flap turns in the wing network only; the result says what deflection to set on the model so the structural flap body sits where the loads were computed.\n"
+		"The trimmed state is stored as a LOAD CASE on the document: every body panel's centre, outward normal, area and Cp (both sides of a sheet), placed as the bodies sit, with the image about y = 0 when the symmetry plane was on, and q. Any solution shown can be stored the same way at the tab's q. Analysis > Structural, Loads tab, picks a case and loads every shell face of the bodies the case paneled with q Cp -- each face takes the pressure of the nearest panels on its own side of the surface, so a thin wing's lower skin never borrows the upper skin's suction -- and reports the resultant against n W. Cases are session data: New and Open clear them, nothing saves them.");
 }
 
 void ShowAerotelicHighOrderPanelDialog(TFunction<void(const FText&)> Status)
@@ -1749,11 +2194,107 @@ void ShowAerotelicHighOrderPanelDialog(TFunction<void(const FText&)> Status)
 			+ SScrollBox::Slot() [ SAssignNew(S->PolarTable, SVerticalBox) ]
 		];
 
+	// ---- tab 5: the trim and the structural load case ----
+	S->RefreshTrimControls();
+	const FText MassSuffix = FText::FromString(FString(TEXT(" ")) + UTF8_TO_TCHAR(S->Units.MassName()));
+	TSharedRef<SWidget> TrimTab =
+		SNew(SScrollBox)
+		+ SScrollBox::Slot().Padding(0, 0, 0, 8)
+		[
+			MakeGroup(LOCTEXT("ConditionGroup", "Flight condition"),
+				SNew(SVerticalBox)
+				+ SVerticalBox::Slot().AutoHeight().Padding(0, 2) [ FormRow(LOCTEXT("TrimN", "Load factor n:"), Spin(&FState::TrimLoadFactor, -10.0, 20.0, 0.5, FText::FromString(TEXT(" g")))) ]
+				+ SVerticalBox::Slot().AutoHeight().Padding(0, 2) [ FormRow(LOCTEXT("TrimV", "Speed:"), Spin(&FState::TrimSpeed, 0.01, 1000.0, 1.0, FText::FromString(TEXT(" m/s")))) ]
+				+ SVerticalBox::Slot().AutoHeight().Padding(0, 2) [ FormRow(LOCTEXT("TrimRho", "Air density:"), Spin(&FState::TrimDensity, 0.001, 10.0, 0.025, FText::FromString(TEXT(" kg/m³")))) ]
+				+ SVerticalBox::Slot().AutoHeight().Padding(0, 4, 0, 0)
+				[
+					MakeInfoLabel(LOCTEXT("ConditionHint",
+						"The lift the trim must find is n W, with W the weight below; the dynamic pressure q = ρ V² / 2 turns it into the lift coefficient required, n W / (q S_ref), and turns the solution's Cp into pascals for the structural analysis. Speed and density are SI whatever the project's units (sea level: 1.225 kg/m³)."))
+				])
+		]
+		+ SScrollBox::Slot().Padding(0, 0, 0, 8)
+		[
+			MakeGroup(LOCTEXT("MassGroup", "Weight and mass centre"),
+				SNew(SVerticalBox)
+				+ SVerticalBox::Slot().AutoHeight() [ Stat(S->LblMassReport) ]
+				+ SVerticalBox::Slot().AutoHeight().Padding(0, 6, 0, 0)
+				[
+					SNew(SCheckBox)
+					.IsChecked_Lambda([S]() { return S->bMassOverride ? ECheckBoxState::Checked : ECheckBoxState::Unchecked; })
+					.OnCheckStateChanged_Lambda([S](ECheckBoxState St) { S->bMassOverride = St == ECheckBoxState::Checked; S->UpdateMassLabel(); })
+					[ SNew(STextBlock).Text(LOCTEXT("MassOverride", "Override: fly at this mass and mass centre instead (full-scale coordinates)")) ]
+				]
+				+ SVerticalBox::Slot().AutoHeight().Padding(0, 2) [ FormRow(LOCTEXT("TrimMass", "Mass:"), Spin(&FState::TrimMass, 0.0, 1e9, 0.1, MassSuffix)) ]
+				+ SVerticalBox::Slot().AutoHeight().Padding(0, 2)
+				[
+					FormRow(LOCTEXT("TrimCg", "Mass centre x, y, z:"),
+						SNew(SHorizontalBox)
+						+ SHorizontalBox::Slot().FillWidth(1.0f).Padding(0, 0, 4, 0) [ Spin(&FState::TrimCgX, -1e6, 1e6, 0.01, LengthSuffix) ]
+						+ SHorizontalBox::Slot().FillWidth(1.0f).Padding(0, 0, 4, 0) [ Spin(&FState::TrimCgY, -1e6, 1e6, 0.01, LengthSuffix) ]
+						+ SHorizontalBox::Slot().FillWidth(1.0f) [ Spin(&FState::TrimCgZ, -1e6, 1e6, 0.01, LengthSuffix) ])
+				]
+				+ SVerticalBox::Slot().AutoHeight().Padding(0, 4, 0, 0)
+				[
+					MakeInfoLabel(LOCTEXT("MassHint",
+						"By default the mass report of the chosen bodies (Analysis > Mass Properties: each body weighed the way its Structure says, both halves of a mirrored entity, plus the project's point masses hung on them). The pitching moment is taken about this mass centre, so the trim is a real one: lift equal to n W through the mass centre and no moment about it. A body with no structure weighs nothing here; tick the override to type the figures instead."))
+				])
+		]
+		+ SScrollBox::Slot().Padding(0, 0, 0, 8)
+		[
+			MakeGroup(LOCTEXT("ControlGroup", "Control"),
+				SNew(SVerticalBox)
+				+ SVerticalBox::Slot().AutoHeight().Padding(0, 2)
+				[
+					FormRow(LOCTEXT("TrimControl", "Trim the moment with:"),
+						SAssignNew(S->TrimControlCombo, SComboBox<TSharedPtr<FString>>)
+						.OptionsSource(&S->TrimControlNames)
+						.InitiallySelectedItem(S->TrimControlNames.IsValidIndex(S->TrimControlIndex) ? S->TrimControlNames[S->TrimControlIndex] : nullptr)
+						.OnGenerateWidget_Lambda([](TSharedPtr<FString> N) { return SNew(STextBlock).Text(FText::FromString(*N)); })
+						.OnSelectionChanged_Lambda([S](TSharedPtr<FString> N, ESelectInfo::Type)
+						{
+							if (!N.IsValid()) return;
+							const int32 I = S->TrimControlNames.IndexOfByKey(N);
+							if (I >= 0) S->TrimControlIndex = I;
+						})
+						[ SNew(STextBlock).Text_Lambda([S]() { return S->TrimControlNames.IsValidIndex(S->TrimControlIndex) ? FText::FromString(*S->TrimControlNames[S->TrimControlIndex]) : FText::GetEmpty(); }) ])
+				]
+				+ SVerticalBox::Slot().AutoHeight().Padding(0, 4, 0, 0)
+				[
+					MakeInfoLabel(LOCTEXT("ControlHint",
+						"A flap of one of the chosen wings (the aftmost by default: an elevator). Its deflection and the angle of attack are the two unknowns of the trim; the solution is a Newton step on finite-difference derivatives -- the base state (the first angle of attack on the Set-up tab, the flap's own deflection), the angle of attack stepped 1°, the flap stepped 1°, then the trimmed state solved as the dialog's one solution, four solves in all. "
+						"The flap turns in the wing network as a kink of the sealed section; the model's own deflection is not changed, the result says what to set it to. With no control only the lift is trimmed, in the angle of attack."))
+				])
+		]
+		+ SScrollBox::Slot().Padding(0, 0, 0, 8)
+		[
+			MakeGroup(LOCTEXT("TrimResultGroup", "Trim"),
+				SNew(SVerticalBox)
+				+ SVerticalBox::Slot().AutoHeight().HAlign(HAlign_Left) [ Button(LOCTEXT("TrimBtn", "Trim"), [S]() { S->RunTrim(); }) ]
+				+ SVerticalBox::Slot().AutoHeight().Padding(0, 6, 0, 0) [ Stat(S->LblTrim) ])
+		]
+		+ SScrollBox::Slot()
+		[
+			MakeGroup(LOCTEXT("LoadCaseGroup", "Structural load case"),
+				SNew(SVerticalBox)
+				+ SVerticalBox::Slot().AutoHeight().Padding(0, 2)
+				[ FormRow(LOCTEXT("CaseName", "Name (empty: automatic):"), SAssignNew(S->CaseNameBox, SEditableTextBox).Text(FText::GetEmpty())) ]
+				+ SVerticalBox::Slot().AutoHeight().Padding(0, 4, 0, 0).HAlign(HAlign_Left)
+				[ Button(LOCTEXT("StoreBtn", "Store the solution shown as a load case"), [S]() { S->StoreCurrentCase(); }) ]
+				+ SVerticalBox::Slot().AutoHeight().Padding(0, 6, 0, 0) [ Stat(S->LblStored) ]
+				+ SVerticalBox::Slot().AutoHeight().Padding(0, 4, 0, 0)
+				[
+					MakeInfoLabel(LOCTEXT("LoadCaseHint",
+						"A trim stores its trimmed state automatically. The button stores whatever solution the other tabs show (a sweep's point, say) at the speed and density above. A load case is the solution's body panels -- centre, normal, area, Cp on each side -- placed as the bodies sit, with the image when the symmetry plane was on, and q. "
+						"Analysis > Structural, Loads tab, picks a case and puts q Cp on every shell face of the bodies the case paneled (each face takes the nearest panels on its own side of the surface), in free flight the trimmed 1 g case. Load cases live with the session; New and Open clear them."))
+				])
+		];
+
 	TArray<FAerotelicTab> Tabs;
 	Tabs.Add({ LOCTEXT("SetupTab", "Set-up"), SetupTab });
 	Tabs.Add({ LOCTEXT("SurfaceTab", "Surface Pressure"), SurfaceTab });
 	Tabs.Add({ LOCTEXT("LoadsTab", "Span Loading"), LoadsTab });
 	Tabs.Add({ LOCTEXT("PolarsTab", "Forces and Moments"), PolarsTab });
+	Tabs.Add({ LOCTEXT("TrimTab", "Trim and Load Case"), TrimTab });
 	Tabs.Add({ LOCTEXT("HelpTab", "Help"), MakeHelpTab(FText::FromString(kHelp)) });
 
 	Window->SetContent(
