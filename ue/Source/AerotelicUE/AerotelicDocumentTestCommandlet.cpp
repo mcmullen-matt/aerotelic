@@ -1149,12 +1149,14 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 						Check(FMath::Abs(RH.Reaction[2] - WeightAll) <= 1e-4 * WeightAll, FString::Printf(TEXT("fea (hinge): the root carries the whole weight, aileron and rod included (%.5g vs %.5g N)"), RH.Reaction[2], WeightAll));
 						if (RH.Bars.Num() == 1 && Request.Ties.Num() == 2)
 						{
-							// The aileron's weight moment about the line through the
-							// two tied main-element nodes (its hinge line in the model),
+							// The aileron's weight moment about the line through its two
+							// TIED nodes (the slaves: the flap turns about the line through
+							// its own tied nodes, whose translations are the masters'),
 							// from the same lumping the solver uses: each face a lamina
-							// at its centroid.
+							// at its centroid; plus half the rod's weight, which the
+							// truss puts on the horn link rigid on the flap.
 							const double L = Request.LengthToSI;
-							const aerotelic::Vec3 H0 = Built.Nodes[Request.Ties[0].Master] * L, H1 = Built.Nodes[Request.Ties[1].Master] * L;
+							const aerotelic::Vec3 H0 = Built.Nodes[Request.Ties[0].Slave] * L, H1 = Built.Nodes[Request.Ties[1].Slave] * L;
 							const aerotelic::Vec3 Axis = aerotelic::Normalized(H1 - H0);
 							aerotelic::Vec3 MomentG;
 							auto AddFaces = [&](const TArray<AerotelicStructuralFea::FShellFace>& Faces, bool bSkin)
@@ -1175,6 +1177,7 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 							// The rod on the horn: F along horn -> servo (tension positive).
 							const AerotelicStructuralFea::FResult::FBarResult& Rod = RH.Bars[0];
 							const aerotelic::Vec3 Horn{Rod.A[0], Rod.A[1], Rod.A[2]}, Servo{Rod.B[0], Rod.B[1], Rod.B[2]};
+							MomentG += aerotelic::Cross(Horn - H0, aerotelic::Vec3{0.0, 0.0, -0.5 * Rod.Mass * 9.80665});
 							const aerotelic::Vec3 RodForce = aerotelic::Normalized(Servo - Horn) * Rod.Force;
 							const aerotelic::Vec3 MomentRod = aerotelic::Cross(Horn - H0, RodForce);
 							const double Mg = aerotelic::Dot(MomentG, Axis), Mr = aerotelic::Dot(MomentRod, Axis);

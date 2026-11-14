@@ -107,7 +107,11 @@ the same constraint machinery as the mass items:
              flap, a servo arm standing off the wing. Massless; its own
              rotations are pinned.
   ``bars``   [{name, a, b, area, youngs_modulus, density}]: a pin-ended rod
-             (TrussElement3D2N, TrussConstitutiveLaw) between two ends,
+             (TrussLinearElement3D2N, TrussConstitutiveLaw -- the LINEAR
+             truss: the geometrically nonlinear TrussElement3D2N, solved in
+             one step, re-evaluates its residual on the displaced ends and
+             left the reactions short of the loads by the order of the rod's
+             weight on a wing with a 2 mm flap) between two ends,
              each {"node": i} (a structural node) or {"link": k} (an offset
              node): the pushrod from horn to servo arm. Its mass (rho A L)
              counts, lumped by the element's own linear shape functions,
@@ -381,7 +385,7 @@ def write_mdpa(path, nodes, shells, shell_prop, shell_part, support_nodes, loade
     -- and `shell_part` the sub model part each belongs to, Skin_<id> or
     Rib_<id>); a node and a NodalConcentratedElement per mass item after
     them (ids len(nodes) + 1 + k and len(shells) + 1 + k); a node per
-    offset link after those; a TrussElement3D2N per bar after the mass
+    offset link after those; a TrussLinearElement3D2N per bar after the mass
     elements; a point-load condition on every node that carries a nodal
     load (the pressures' consistent loads and the point forces,
     `loaded_nodes`) and a point-moment condition on every mass node; and
@@ -417,7 +421,7 @@ def write_mdpa(path, nodes, shells, shell_prop, shell_part, support_nodes, loade
                 w("%d %d %d\n" % (n_shells + 1 + k, MASS_PROPERTIES_ID, len(nodes) + 1 + k))
             w("End Elements\n\n")
         if bars:
-            w("Begin Elements TrussElement3D2N\n")
+            w("Begin Elements TrussLinearElement3D2N\n")
             for k, bar in enumerate(bars):
                 w("%d %d %d %d\n" % (n_shells + n_masses + 1 + k, BAR_PROPERTIES_BASE + k, bar["a"] + 1, bar["b"] + 1))
             w("End Elements\n\n")

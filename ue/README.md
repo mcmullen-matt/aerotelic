@@ -2780,11 +2780,15 @@ on the wing the way the real one does.
   two ties make a hinge about the line through them. An offset `link` is
   a new node rigidly offset from a structural node (u = u_on + θ_on × r:
   three slave rows on six masters, its own rotation pinned) -- a control
-  horn, a servo arm. A `bar` is a `TrussElement3D2N` with
+  horn, a servo arm. A `bar` is a `TrussLinearElement3D2N` with
   `TrussConstitutiveLaw` (E, A, ρ) between two nodes or links -- a
-  pin-ended pushrod, axial stiffness and mass and nothing else. Its force
-  is E A (Δu·e)/L from the ends' displacements (Kratos's own
-  `AXIAL_FORCE` came back zero on the linear truss), positive in tension;
+  pin-ended pushrod, axial stiffness and mass and nothing else. The
+  LINEAR truss on purpose: the geometrically nonlinear `TrussElement3D2N`
+  solved in one step re-evaluates its residual on the displaced ends (the
+  follower-load story again) and left the wing's root reaction off the
+  weight by the order of the rod's weight. Its force is E A (Δu·e)/L from
+  the ends' displacements (Kratos's own `AXIAL_FORCE` came back zero),
+  positive in tension;
   the result carries `bars` (force, stress, length, ends, mass),
   `ties`, `links`, `mass_bars`. A bar's mass is in the rigid-body
   properties as a uniform rod, so free flight and the reaction check
