@@ -793,6 +793,12 @@ YAML::Node EncodeMassItem(const MassItem& m) {
 		attach["entity"] = m.attach_entity;
 		if (m.attach_mirror) attach["mirror"] = true;
 		if (!m.attach_body.empty()) attach["body"] = m.attach_body;
+		if (m.attach_point) {
+			YAML::Node point;
+			for (double v : *m.attach_point) point.push_back(v);
+			point.SetStyle(YAML::EmitterStyle::Flow);
+			attach["point"] = point;
+		}
 		attach["nodes"] = m.attach_nodes;
 		attach.SetStyle(YAML::EmitterStyle::Flow);
 		n["attach"] = attach;
@@ -819,6 +825,12 @@ MassItem DecodeMassItem(const YAML::Node& node) {
 		if (attach["mirror"]) m.attach_mirror = attach["mirror"].as<bool>();
 		if (attach["body"]) m.attach_body = attach["body"].as<std::string>();
 		if (attach["nodes"]) m.attach_nodes = attach["nodes"].as<int>();
+		if (const YAML::Node point = attach["point"]) {
+			if (!point.IsSequence() || point.size() != 3) throw std::invalid_argument("mass item '" + m.name + "': attach.point must be [x, y, z]");
+			std::array<double, 3> p{};
+			for (int i = 0; i < 3; ++i) p[i] = point[i].as<double>();
+			m.attach_point = p;
+		}
 	}
 	const std::string problem = MassItemProblem(m);
 	if (!problem.empty()) throw std::invalid_argument(problem);

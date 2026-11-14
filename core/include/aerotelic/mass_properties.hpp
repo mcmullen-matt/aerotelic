@@ -22,6 +22,7 @@
 // parallel-axis sum of its parts about the combined centre.
 
 #include <array>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -86,8 +87,17 @@ struct MassItem {
 	bool attach_mirror = false;   // the mirrored half of that entity
 	std::string attach_body;      // the body's role name; empty: the item's first body
 	int attach_nodes = 8;         // how many of the body's nearest nodes carry it (at least 3, not collinear)
+	// Where on that body it hangs: the grid node the user picked, in the
+	// FULL-SCALE frame like the position. The nearest `attach_nodes` nodes
+	// of the body to this point carry the item (so a re-meshed body keeps
+	// its attachment); absent, the item's own position stands in. A body
+	// that becomes an operand of a boolean result hands the point on: the
+	// item hangs on the result's surface there (Analysis > Mass Properties,
+	// 2026-11-13).
+	std::optional<std::array<double, 3>> attach_point;
 
 	bool HasInertia() const { for (double v : inertia) if (v != 0.0) return true; return false; }
+	std::array<double, 3> AttachPoint() const { return attach_point ? *attach_point : position; }
 };
 
 // Why a mass item cannot be used, or "" when it can: a name, a positive

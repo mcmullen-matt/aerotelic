@@ -829,6 +829,7 @@ void CheckMassItemsRoundTrip() {
 	battery.attach_entity = "Fuselage";
 	battery.attach_body = "Main";
 	battery.attach_nodes = 10;
+	battery.attach_point = std::array<double, 3>{0.42, 0.1, -0.2};
 	MassItem camera;
 	camera.name = "camera";
 	camera.mass = 0.08;
@@ -839,9 +840,11 @@ void CheckMassItemsRoundTrip() {
 		"mass items: the battery writes its inertia and its attachment, the mirror flag only when true");
 	Check(!nc["inertia"] && !nc["attach"], "mass items: a point mass on nothing writes neither inertia nor attach");
 	const MassItem bb = DecodeMassItem(nb), cb = DecodeMassItem(nc);
-	Check(bb.name == "battery" && bb.mass == 1.25 && bb.position[2] == -0.05 && bb.inertia[4] == 0.001 && bb.attach_entity == "Fuselage" && bb.attach_body == "Main" && bb.attach_nodes == 10 && !bb.attach_mirror,
-		"mass items: the battery decodes the same");
-	Check(cb.name == "camera" && cb.mass == 0.08 && !cb.HasInertia() && cb.attach_entity.empty() && cb.attach_nodes == 8, "mass items: the camera decodes the same, with the default attachment count");
+	Check(bb.name == "battery" && bb.mass == 1.25 && bb.position[2] == -0.05 && bb.inertia[4] == 0.001 && bb.attach_entity == "Fuselage" && bb.attach_body == "Main" && bb.attach_nodes == 10 && !bb.attach_mirror
+		&& bb.attach_point && (*bb.attach_point)[0] == 0.42 && (*bb.attach_point)[2] == -0.2 && bb.AttachPoint()[1] == 0.1,
+		"mass items: the battery decodes the same, its picked attachment point included");
+	Check(cb.name == "camera" && cb.mass == 0.08 && !cb.HasInertia() && cb.attach_entity.empty() && cb.attach_nodes == 8 && !cb.attach_point && cb.AttachPoint()[0] == 1.1,
+		"mass items: the camera decodes the same, with the default attachment count and its position standing in for the attachment point");
 	MassItem bad = battery;
 	bad.inertia = {1.0, 1.0, 1.0, 5.0, 0.0, 0.0};   // a product larger than the moments: not a tensor
 	Check(!MassItemProblem(bad).empty(), "mass items: an impossible inertia tensor is a problem");

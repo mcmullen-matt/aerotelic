@@ -210,8 +210,9 @@ ProjectBoolean DecodeProjectBoolean(const YAML::Node& node, std::vector<std::str
 // A mass item (mass_properties.hpp MassItem; `masses:` at the top level,
 // 2026-11-13): `{name, mass, position: [x, y, z], inertia: [Ixx, Iyy, Izz,
 // Ixy, Ixz, Iyz] (only when any is set), attach: {entity, mirror (only
-// when true), body (only when set), nodes}}` (attach only when it hangs on
-// something). Decode throws std::invalid_argument on a MassItemProblem.
+// when true), body (only when set), point: [x, y, z] (only when picked),
+// nodes}}` (attach only when it hangs on something). Decode throws
+// std::invalid_argument on a MassItemProblem.
 YAML::Node EncodeMassItem(const MassItem& m);
 MassItem DecodeMassItem(const YAML::Node& node);
 

@@ -445,7 +445,7 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 		// with dashes and the reason), and the assembly row.
 		Check(Doc->GetUnits() == aerotelic::UnitSystem{}, "units: a new project is in metres and kilograms");
 		const FString Text = FormatAerotelicMassReport(Report, Doc->GetUnits());
-		Check(Text.Contains(TEXT("Component")) && Text.Contains(TEXT("Iyz")) && Text.Contains(TEXT("ASSEMBLY (3 bodies)")),
+		Check(Text.Contains(TEXT("Component")) && Text.Contains(TEXT("Iyz")) && Text.Contains(TEXT("ASSEMBLY (3 components)")),
 			"mass: the report is a table with a header and the assembly row");
 		Check(Text.Contains(TEXT("(kg)")) && Text.Contains(TEXT("(kg m^2)")) && Text.Contains(TEXT("Project units: m, kg, s")),
 			"mass: the report names the project's units in its header and columns");
@@ -1476,6 +1476,7 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 		Battery.attach_entity = TCHAR_TO_UTF8(*Primitive->EntityName);
 		Battery.attach_body = Primitive->GetBodies().Num() ? TCHAR_TO_UTF8(*Primitive->GetBodies()[0].Name) : "";
 		Battery.attach_nodes = 10;
+		Battery.attach_point = std::array<double, 3>{ 0.0, 0.0, 1.0 };   // the picked node, on top of the sphere
 		aerotelic::MassItem Camera;
 		Camera.name = "camera";
 		Camera.mass = 0.08;
@@ -1484,6 +1485,19 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 		Items.Add(Camera);
 		Doc->SetMassItems(Items);
 		Check(Doc->GetMassItems().Num() == 2, "mass items: two on the document");
+		// The report counts them: two more lines, the assembly heavier by
+		// their masses, and the battery's own tensor in the sum.
+		{
+			FAerotelicBooleanOperand POp;
+			POp.Entity = Primitive;
+			const FAerotelicMassReport Without = ComputeAerotelicMassReport({ POp }, 2e-3, Doc->GetUnits());
+			const FAerotelicMassReport With = ComputeAerotelicMassReport({ POp }, 2e-3, Doc->GetUnits(), &Items);
+			Check(With.PointMasses == 2 && With.Bodies.Num() == Without.Bodies.Num() + 2 && With.IncludedCount == Without.IncludedCount + 2
+				&& FMath::IsNearlyEqual(With.Assembly.mass, Without.Assembly.mass + 1.58, 1e-9),
+				FString::Printf(TEXT("mass report: the point masses are two more lines and 1.58 more mass (%.6g vs %.6g)"), With.Assembly.mass, Without.Assembly.mass));
+			const FString Text = FormatAerotelicMassReport(With, Doc->GetUnits());
+			Check(Text.Contains(TEXT("[point mass] battery")) && Text.Contains(TEXT("2 point masses among them")), "mass report: the point masses are named in the table and counted in the assembly line");
+		}
 	}
 
 	UE_LOG(LogAerotelicDocumentTest, Display, TEXT("step: save"));
@@ -1511,8 +1525,9 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 	{
 		const TArray<aerotelic::MassItem>& Back = Doc->GetMassItems();
 		Check(Back.Num() == 2 && Back[0].name == "battery" && Back[0].mass == 1.5 && Back[0].position[2] == 0.3 && Back[0].inertia[5] == 0.001 && Back[0].attach_nodes == 10 && !Back[0].attach_entity.empty()
-			&& Back[1].name == "camera" && Back[1].attach_entity.empty() && !Back[1].HasInertia(),
-			FString::Printf(TEXT("mass items: both came back through the file with their attachments (%d items)"), Back.Num()));
+			&& Back[0].attach_point && (*Back[0].attach_point)[2] == 1.0
+			&& Back[1].name == "camera" && Back[1].attach_entity.empty() && !Back[1].HasInertia() && !Back[1].attach_point,
+			FString::Printf(TEXT("mass items: both came back through the file with their attachments and the picked point (%d items)"), Back.Num()));
 		FString Saved;
 		FFileHelper::LoadFileToString(Saved, *TmpPath);
 		Check(Saved.Contains(TEXT("masses:")) && Saved.Contains(TEXT("battery")), "mass items: the project file carries them under masses:");

@@ -280,17 +280,22 @@ namespace
 		double Hi[2] = { 0.0, 0.0 };
 	};
 
-	// A mass item as the user types it (2026-11-13; the document's
-	// aerotelic::MassItem in the dialog's terms): mass and inertia in the
-	// project's units as built, the position full-scale, the attachment a
-	// row of the body picker (0 none, i > 0 the picker's choice i - 1) and
-	// how many of that body's nearest nodes carry it.
+	// A mass item as the document has it (2026-11-13; aerotelic::MassItem,
+	// edited in Analysis > Mass Properties, read-only here): mass and
+	// inertia in the project's units as built, the centre and the picked
+	// attachment point full-scale, the body it hangs on by scene name, the
+	// picker's row for that body (0 none, i > 0 the picker's choice i - 1)
+	// and how many of the body's nearest nodes carry it.
 	struct FMassRow
 	{
 		FString Name = TEXT("mass");
 		double Mass = 1.0;
 		double X = 0.0, Y = 0.0, Z = 0.0;
 		double I[6] = { 0.0, 0.0, 0.0, 0.0, 0.0, 0.0 };   // Ixx, Iyy, Izz, Ixy, Ixz, Iyz
+		FString AttachEntity, AttachBody;
+		bool bAttachMirror = false;
+		bool bHasPoint = false;
+		double PX = 0.0, PY = 0.0, PZ = 0.0;
 		int32 Attach = 0;
 		int32 Nodes = 8;
 	};
@@ -530,11 +535,36 @@ namespace
 			Request.VtkPath = PathBox.IsValid() ? PathBox->GetText().ToString().TrimStartAndEnd() : FString();
 		}
 
+		// The picker's rows that are boolean results built over the entity an
+		// item hangs on (by scene name and mirror), in picker order: where an
+		// item's attachment is INHERITED when its own body is not in the
+		// model but a result fused from it is.
+		TArray<int32> BooleanHeirs(const FMassRow& R) const
+		{
+			TArray<int32> Out;
+			for (int32 i = 0; i < Choices.Num(); ++i)
+			{
+				const FAerotelicBodyChoice& C = *Choices[i];
+				AAerotelicEntityActor* E = C.Operand.Entity.Get();
+				if (E == nullptr || E->GetEntityType() != EntityType::Boolean) continue;
+				const FAerotelicBooleanModel* M = E->GetModelAs<FAerotelicBooleanModel>();
+				if (M == nullptr) continue;
+				for (const FAerotelicBooleanOperand& Op : M->Operands)
+				{
+					if (Op.Entity.IsValid() && Op.Entity->EntityName == R.AttachEntity && Op.bMirror == R.bAttachMirror) { Out.Add(i); break; }
+				}
+			}
+			return Out;
+		}
+
 		// The mass items onto the request's mesh AS IT STANDS (its nodes are
 		// renumbered when floating parts are dropped, so this runs after
-		// that too): each row with an attachment hangs on the nearest nodes
-		// of its body's regions; one whose body is not in the model is left
-		// out and named. Mass and inertia to SI, the position to the replica.
+		// that too): each item hangs on the nodes of its body's regions
+		// nearest its picked point; when that body is not in the model but a
+		// boolean result built over it is, the item hangs on the result's
+		// surface at the same point (the nearest of the result's bodies);
+		// one with no body in the model is left out and named. Mass and
+		// inertia to SI, the points to the replica.
 		void ResolveMasses(FBuilt& B)
 		{
 			AerotelicStructuralFea::FRequest& Request = B.Request;
@@ -548,26 +578,48 @@ namespace
 				Item.Mass = R->Mass * M2;
 				Item.At = aerotelic::Vec3{ R->X * Scale, R->Y * Scale, R->Z * Scale };
 				for (int32 k = 0; k < 6; ++k) Item.Inertia[k] = R->I[k] * M2 * L2 * L2;
-				if (R->Attach <= 0)
+				const aerotelic::Vec3 Point = R->bHasPoint ? aerotelic::Vec3{ R->PX * Scale, R->PY * Scale, R->PZ * Scale } : Item.At;
+				if (R->AttachEntity.IsEmpty())
 				{
-					B.Dropped.Add(FString::Printf(TEXT("mass item '%s' (%.4g %s) hangs on nothing and is left out of the analysis: choose a body on the Masses tab"), *R->Name, R->Mass, *UnitName(Units.MassName())));
+					B.Dropped.Add(FString::Printf(TEXT("mass item '%s' (%.4g %s) hangs on nothing and is left out of the analysis: pick its body in Analysis > Mass Properties"), *R->Name, R->Mass, *UnitName(Units.MassName())));
 					continue;
 				}
-				Item.AttachNodes = AerotelicFeaModelBuilder::AttachmentNodes(B.Nodes, Request.ShellFaces, Request.RibFaces, Request.Regions, R->Attach - 1, Item.At, FMath::Max(R->Nodes, 3));
+				const int32 Count = FMath::Max(R->Nodes, 3);
+				FString Carrier;
+				if (R->Attach > 0)
+				{
+					Item.AttachNodes = AerotelicFeaModelBuilder::AttachmentNodes(B.Nodes, Request.ShellFaces, Request.RibFaces, Request.Regions, R->Attach - 1, Point, Count);
+					Carrier = AttachOptions.IsValidIndex(R->Attach) ? *AttachOptions[R->Attach] : FString::FromInt(R->Attach);
+				}
 				if (Item.AttachNodes.Num() < 3)
 				{
-					const FString Body = AttachOptions.IsValidIndex(R->Attach) ? *AttachOptions[R->Attach] : FString::FromInt(R->Attach);
-					B.Dropped.Add(FString::Printf(TEXT("mass item '%s' (%.4g %s) hangs on %s, which is not in the model (not chosen, refused, or floating): left out"), *R->Name, R->Mass, *UnitName(Units.MassName()), *Body));
+					// Inherited by a boolean result over the body: the heir whose
+					// nodes come nearest the point.
+					double Best = 1e300;
+					for (int32 Heir : BooleanHeirs(*R))
+					{
+						TArray<int32> Nodes = AerotelicFeaModelBuilder::AttachmentNodes(B.Nodes, Request.ShellFaces, Request.RibFaces, Request.Regions, Heir, Point, Count);
+						if (Nodes.Num() < 3) continue;
+						double Near = 1e300;
+						for (int32 N : Nodes) Near = FMath::Min(Near, aerotelic::DistanceSq(B.Nodes[N], Point));
+						if (Near < Best) { Best = Near; Item.AttachNodes = Nodes; Carrier = Choices[Heir]->Label + TEXT(" (inherited from ") + R->AttachEntity + TEXT(")"); }
+					}
+				}
+				if (Item.AttachNodes.Num() < 3)
+				{
+					B.Dropped.Add(FString::Printf(TEXT("mass item '%s' (%.4g %s) hangs on %s%s, which is not in the model (not chosen, refused, or floating), and no boolean result over it is: left out"),
+						*R->Name, R->Mass, *UnitName(Units.MassName()), *R->AttachEntity, R->AttachBody.IsEmpty() ? TEXT("") : *(TEXT(" / ") + R->AttachBody)));
 					continue;
 				}
 				Request.Masses.Add(Item);
+				UE_LOG(LogTemp, Log, TEXT("StructuralFea: mass item '%s' hangs on %s through %d nodes"), *R->Name, *Carrier, Item.AttachNodes.Num());
 			}
 		}
 
-		// The rows from the document's mass items: a row per item, the
-		// attachment matched to the picker's row by scene name, mirror and
-		// body role (an item hung on something not in the picker shows
-		// "none").
+		// The rows from the document's mass items (Analysis > Mass Properties
+		// edits them): a row per item, the attachment matched to the picker's
+		// row by scene name, mirror and body role (0 when that body is not in
+		// the picker: a boolean result over it may still inherit it).
 		void LoadMassRows()
 		{
 			MassRows.Reset();
@@ -581,70 +633,25 @@ namespace
 				Row->X = M.position[0]; Row->Y = M.position[1]; Row->Z = M.position[2];
 				for (int32 k = 0; k < 6; ++k) Row->I[k] = M.inertia[k];
 				Row->Nodes = M.attach_nodes;
+				Row->AttachEntity = UTF8_TO_TCHAR(M.attach_entity.c_str());
+				Row->AttachBody = UTF8_TO_TCHAR(M.attach_body.c_str());
+				Row->bAttachMirror = M.attach_mirror;
+				Row->bHasPoint = M.attach_point.has_value();
+				if (M.attach_point) { Row->PX = (*M.attach_point)[0]; Row->PY = (*M.attach_point)[1]; Row->PZ = (*M.attach_point)[2]; }
 				Row->Attach = 0;
 				if (!M.attach_entity.empty())
 				{
-					const FString EntityName = UTF8_TO_TCHAR(M.attach_entity.c_str());
-					const FString Body = UTF8_TO_TCHAR(M.attach_body.c_str());
 					for (int32 i = 0; i < Choices.Num(); ++i)
 					{
 						const FAerotelicBodyChoice& C = *Choices[i];
-						if (!C.Operand.Entity.IsValid() || C.Operand.Entity->EntityName != EntityName || C.Operand.bMirror != M.attach_mirror) continue;
-						if (!Body.IsEmpty() && C.Body != Body) continue;
+						if (!C.Operand.Entity.IsValid() || C.Operand.Entity->EntityName != Row->AttachEntity || C.Operand.bMirror != M.attach_mirror) continue;
+						if (!Row->AttachBody.IsEmpty() && C.Body != Row->AttachBody) continue;
 						Row->Attach = i + 1;
 						break;
 					}
 				}
 				MassRows.Add(Row);
 			}
-		}
-
-		// The rows back into the document (Apply masses): the attachment as
-		// the chosen row's scene name, mirror and body role.
-		void StoreMassRows()
-		{
-			UAerotelicDocumentSubsystem* Doc = UAerotelicDocumentSubsystem::Get();
-			if (Doc == nullptr) return;
-			TArray<aerotelic::MassItem> Items;
-			for (const TSharedPtr<FMassRow>& R : MassRows)
-			{
-				aerotelic::MassItem M;
-				M.name = TCHAR_TO_UTF8(*R->Name);
-				M.mass = R->Mass;
-				M.position = { R->X, R->Y, R->Z };
-				for (int32 k = 0; k < 6; ++k) M.inertia[k] = R->I[k];
-				M.attach_nodes = FMath::Max(R->Nodes, 3);
-				if (R->Attach > 0 && Choices.IsValidIndex(R->Attach - 1) && Choices[R->Attach - 1]->Operand.Entity.IsValid())
-				{
-					const FAerotelicBodyChoice& C = *Choices[R->Attach - 1];
-					M.attach_entity = TCHAR_TO_UTF8(*C.Operand.Entity->EntityName);
-					M.attach_mirror = C.Operand.bMirror;
-					M.attach_body = TCHAR_TO_UTF8(*C.Body);
-				}
-				Items.Add(M);
-			}
-			Doc->SetMassItems(Items);
-		}
-
-		// Why the rows cannot be used, or empty.
-		FString MassRowsProblem() const
-		{
-			TSet<FString> Names;
-			for (const TSharedPtr<FMassRow>& R : MassRows)
-			{
-				if (R->Name.TrimStartAndEnd().IsEmpty()) return TEXT("a mass item has no name");
-				if (Names.Contains(R->Name)) return FString::Printf(TEXT("two mass items are named '%s'"), *R->Name);
-				Names.Add(R->Name);
-				aerotelic::MassItem M;
-				M.name = TCHAR_TO_UTF8(*R->Name);
-				M.mass = R->Mass;
-				M.position = { R->X, R->Y, R->Z };
-				for (int32 k = 0; k < 6; ++k) M.inertia[k] = R->I[k];
-				M.attach_nodes = R->Nodes;
-				const std::string Problem = aerotelic::MassItemProblem(M);
-				if (!Problem.empty()) return UTF8_TO_TCHAR(Problem.c_str());
-			}
-			return FString();
 		}
 
 		// ---- the model: mesh the chosen bodies once; derive the rest ----
@@ -1757,93 +1764,30 @@ namespace
 			}
 		}
 
-		// Apply on the Masses tab: the rows into the document (they are saved
-		// with the project) and onto the built model.
-		void ApplyMasses()
-		{
-			const FString Problem = MassRowsProblem();
-			if (!Problem.IsEmpty())
-			{
-				Message(FText::FromString(Problem));
-				return;
-			}
-			StoreMassRows();
-			if (Built.IsValid()) ApplyInputs();
-			else Status(FText::FromString(FString::Printf(TEXT("%d mass item(s) kept with the project; Build the model (Set-up tab) to hang them on it."), MassRows.Num())));
-		}
-
+		// The Masses tab's list: the document's items as they stand, read-only
+		// (Analysis > Mass Properties edits them); Reload takes the document's
+		// current items and re-derives.
 		void RebuildMassList()
 		{
 			if (!MassList.IsValid()) return;
 			MassList->ClearChildren();
-			const FText LengthSuffix = FText::FromString(TEXT(" ") + UnitName(Units.LengthName()));
-			const FText MassSuffix = FText::FromString(TEXT(" ") + UnitName(Units.MassName()));
-			const FText InertiaSuffix = FText::FromString(TEXT(" ") + UnitName(Units.MassName()) + TEXT(" ") + UnitName(Units.LengthName()) + TEXT("^2"));
-			TSharedPtr<FState> Self = AsShared();
 			for (int32 i = 0; i < MassRows.Num(); ++i)
 			{
-				TSharedPtr<FMassRow> Row = MassRows[i];
-				auto Triple = [this, Row, &LengthSuffix, &InertiaSuffix](int32 First)
-				{
-					// First 0: the position (X, Y, Z); 3: Ixx, Iyy, Izz; 6: Ixy, Ixz, Iyz.
-					auto Field = [this, Row, First, &LengthSuffix, &InertiaSuffix](int32 k)
-					{
-						auto Get = [Row, First, k]() -> double
-						{
-							if (First == 0) return k == 0 ? Row->X : (k == 1 ? Row->Y : Row->Z);
-							return Row->I[First - 3 + k];
-						};
-						auto Set = [Row, First, k](double V)
-						{
-							if (First == 0) (k == 0 ? Row->X : (k == 1 ? Row->Y : Row->Z)) = V;
-							else Row->I[First - 3 + k] = V;
-						};
-						return NumberField(Get, Set, First == 0 ? 0.1 : 0.01, First == 0 ? LengthSuffix : InertiaSuffix);
-					};
-					return SNew(SHorizontalBox)
-						+ SHorizontalBox::Slot().FillWidth(1).Padding(0, 0, 3, 0) [ Field(0) ]
-						+ SHorizontalBox::Slot().FillWidth(1).Padding(0, 0, 3, 0) [ Field(1) ]
-						+ SHorizontalBox::Slot().FillWidth(1) [ Field(2) ];
-				};
+				const TSharedPtr<FMassRow>& R = MassRows[i];
+				const FString Attach = R->AttachEntity.IsEmpty() ? TEXT("nothing") : R->AttachEntity + (R->bAttachMirror ? TEXT(" (mirror)") : TEXT("")) + (R->AttachBody.IsEmpty() ? TEXT("") : TEXT(" / ") + R->AttachBody)
+					+ (R->bHasPoint ? FString::Printf(TEXT(" at (%.4g, %.4g, %.4g)"), R->PX, R->PY, R->PZ) : FString());
 				MassList->AddSlot().AutoHeight().Padding(0, 0, 0, 6)
 				[
 					SNew(SBorder).Padding(6).BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush")).BorderBackgroundColor(FLinearColor(0.1f, 0.1f, 0.12f))
 					[
-						SNew(SVerticalBox)
-						+ SVerticalBox::Slot().AutoHeight()
-						[
-							SNew(SHorizontalBox)
-							+ SHorizontalBox::Slot().FillWidth(1).VAlign(VAlign_Center) [ SNew(STextBlock).Text(FText::FromString(FString::Printf(TEXT("Mass item %d"), i + 1))).Font(FCoreStyle::GetDefaultFontStyle("Bold", 9)) ]
-							+ SHorizontalBox::Slot().AutoWidth()
-							[ Button(LOCTEXT("Delete", "Delete"), [Self, Row]() { Self->MassRows.Remove(Row); Self->RebuildMassList(); }) ]
-						]
-						+ SVerticalBox::Slot().AutoHeight().Padding(0, 3)
-						[
-							FormRow(LOCTEXT("MassName", "Name:"),
-								SNew(SEditableTextBox).Text_Lambda([Row]() { return FText::FromString(Row->Name); })
-								.OnTextCommitted_Lambda([Row](const FText& T, ETextCommit::Type) { Row->Name = T.ToString().TrimStartAndEnd(); }), 90.0f)
-						]
-						+ SVerticalBox::Slot().AutoHeight().Padding(0, 3) [ FormRow(LOCTEXT("MassMass", "Mass:"), NumberField([Row]() { return Row->Mass; }, [Row](double V) { Row->Mass = FMath::Max(V, 0.0); }, 0.1, MassSuffix, 0.0), 90.0f) ]
-						+ SVerticalBox::Slot().AutoHeight().Padding(0, 3) [ FormRow(IsReplica() ? LOCTEXT("AtFull", "At (full scale):") : LOCTEXT("At", "At:"), Triple(0), 90.0f) ]
-						+ SVerticalBox::Slot().AutoHeight().Padding(0, 3) [ FormRow(LOCTEXT("InertiaDiag", "Ixx, Iyy, Izz:"), Triple(3), 90.0f) ]
-						+ SVerticalBox::Slot().AutoHeight().Padding(0, 3) [ FormRow(LOCTEXT("InertiaOff", "Ixy, Ixz, Iyz:"), Triple(6), 90.0f) ]
-						+ SVerticalBox::Slot().AutoHeight().Padding(0, 3)
-						[
-							FormRow(LOCTEXT("HangsOn", "Hangs on:"),
-								SNew(SComboBox<TSharedPtr<FString>>)
-								.OptionsSource(&Self->AttachOptions)
-								.InitiallySelectedItem(Self->AttachOptions[FMath::Clamp(Row->Attach, 0, Self->AttachOptions.Num() - 1)])
-								.OnGenerateWidget_Lambda([](TSharedPtr<FString> Item) { return SNew(STextBlock).Text(FText::FromString(*Item)); })
-								.OnSelectionChanged_Lambda([Self, Row](TSharedPtr<FString> Item, ESelectInfo::Type)
-								{
-									const int32 I = Self->AttachOptions.IndexOfByKey(Item);
-									if (I != INDEX_NONE) Row->Attach = I;
-								})
-								[ SNew(STextBlock).Text_Lambda([Self, Row]() { return FText::FromString(*Self->AttachOptions[FMath::Clamp(Row->Attach, 0, Self->AttachOptions.Num() - 1)]); }) ], 90.0f)
-						]
-						+ SVerticalBox::Slot().AutoHeight().Padding(0, 3) [ FormRow(LOCTEXT("NearestNodes", "Nearest nodes:"), NumberField([Row]() { return (double)Row->Nodes; }, [Row](double V) { Row->Nodes = FMath::Max(FMath::RoundToInt32(V), 3); }, 1.0, FText::GetEmpty(), 3.0, 200.0), 90.0f) ]
+						SNew(STextBlock).AutoWrapText(true).Text(FText::FromString(FString::Printf(TEXT("%s: %.4g %s at (%.4g, %.4g, %.4g); Ixx %.3g, Iyy %.3g, Izz %.3g, Ixy %.3g, Ixz %.3g, Iyz %.3g; hangs on %s, %d nodes"),
+							*R->Name, R->Mass, *UnitName(Units.MassName()), R->X, R->Y, R->Z, R->I[0], R->I[1], R->I[2], R->I[3], R->I[4], R->I[5], *Attach, R->Nodes)))
 					]
 				];
+			}
+			if (MassRows.Num() == 0)
+			{
+				MassList->AddSlot().AutoHeight() [ SNew(STextBlock).AutoWrapText(true).Text(LOCTEXT("NoMasses", "No point masses on the project. Add them under Analysis > Mass Properties, Point masses tab.")) ];
 			}
 		}
 
@@ -2294,34 +2238,21 @@ void ShowAerotelicStructuralFeaDialog(TFunction<void(const FText&)> Status)
 				"The load factor puts the model's own mass under that many g along -z (0 to begin with, so a test load acts alone; 1 is its weight, a 4 g pull-up a real case). The pressure acts on every wetted face, positive pressing inwards -- the place a pressure field from the potential flow or DUST will plug in. Each point force goes to the corner node nearest its point; the picture warns when that node is more than a mesh edge away. Points are typed in FULL-SCALE coordinates, as the parameterisations are; with a model scale set (Model > Scale) the dialog scales them to the replica. Forces are newtons whatever the project's units or scale. Apply pushes the loads onto the built model and redraws them."))
 		];
 
-	// ---- the masses panel ----
+	// ---- the masses panel: the document's point masses, read-only ----
 	TSharedRef<SWidget> MassesPanel =
 		SNew(SScrollBox)
 		+ SScrollBox::Slot().Padding(0, 0, 0, 8)
 		[
-			MakeGroup(LOCTEXT("MassesGroup", "Mass items"),
+			MakeGroup(LOCTEXT("MassesGroup", "Point masses (Analysis > Mass Properties)"),
 				SNew(SVerticalBox)
 				+ SVerticalBox::Slot().AutoHeight() [ SAssignNew(S->MassList, SVerticalBox) ]
 				+ SVerticalBox::Slot().AutoHeight().HAlign(HAlign_Left)
-				[ Button(LOCTEXT("AddMass", "Add mass item"), [S]()
-				{
-					TSharedPtr<FMassRow> Row = MakeShared<FMassRow>();
-					Row->Name = FString::Printf(TEXT("mass %d"), S->MassRows.Num() + 1);
-					if (S->Built.IsValid())
-					{
-						const FVector C = FState::Full(S->Built->Model.MassCentre);
-						Row->X = C.X; Row->Y = C.Y; Row->Z = C.Z;
-					}
-					S->MassRows.Add(Row);
-					S->RebuildMassList();
-				}) ])
+				[ Button(LOCTEXT("ReloadMasses", "Reload from the project"), [S]() { S->LoadMassRows(); S->RebuildMassList(); if (S->Built.IsValid()) S->ApplyInputs(); }) ])
 		]
-		+ SScrollBox::Slot().Padding(0, 0, 0, 8).HAlign(HAlign_Left)
-		[ Button(LOCTEXT("ApplyMasses", "Apply masses"), [S]() { S->ApplyMasses(); }) ]
 		+ SScrollBox::Slot()
 		[
 			MakeInfoLabel(LOCTEXT("MassesHint",
-				"Concentrated masses that are not part of any body's shells: a battery, a motor, the payload. Mass and inertia (about the item's own centre; the products Ixy, Ixz, Iyz as integral x y dm; zero for a point mass) are the item's as BUILT, in the project's units, not scaled with the model; the position is full-scale, like every coordinate here. Each hangs on one body of the picker through that body's nearest nodes (at least three, not in a line) by an RBE3-type constraint: the item's weight and inertial load are shared out to those nodes with the right resultant and moment, and the nodes are not stiffened. Apply keeps the items with the project (saved under masses:) and hangs them on the built model; an item hung on nothing, or on a body not in the model, is left out and named on the right."))
+				"The project's point masses -- a battery, a motor, the payload -- as defined under Analysis > Mass Properties (Point masses tab), where each is given its mass, its centre, its inertia about that centre and the body and grid node it hangs on, picked with the mouse. Here each is hung on the built model by an RBE3-type constraint on the nodes of its body nearest the picked node (the item's weight and inertial load shared out with the right resultant and moment, the nodes not stiffened). A body that has become an operand of a boolean result hands the mass on: when the body itself is not in the model but the result is, the mass hangs on the result's surface at the same point. One hung on nothing, or on a body with no path into the model, is left out and named on the right. Reload takes the project's items as they now stand."))
 		];
 
 	// ---- the supports panel ----

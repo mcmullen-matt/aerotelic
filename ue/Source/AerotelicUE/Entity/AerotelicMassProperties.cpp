@@ -83,11 +83,12 @@ namespace
 }
 
 FAerotelicMassReport ComputeAerotelicMassReport(const TArray<FAerotelicBooleanOperand>& Bodies, double Tolerance,
-	const aerotelic::UnitSystem& Units)
+	const aerotelic::UnitSystem& Units, const TArray<aerotelic::MassItem>* PointMasses)
 {
 	FAerotelicMassReport Report;
 	Report.Tolerance = Tolerance;
 	std::vector<MassProperties> Included;
+	Report.PointMasses = PointMasses ? PointMasses->Num() : 0;
 
 	for (const FAerotelicBooleanOperand& Op : Bodies)
 	{
@@ -212,6 +213,41 @@ FAerotelicMassReport ComputeAerotelicMassReport(const TArray<FAerotelicBooleanOp
 		}
 	}
 
+	// The point masses: each its own line, at its position scaled to the
+	// replica (every placed mesh above is the replica's), with its own
+	// tensor about that point -- the products as integral x y dm, so the
+	// tensor's off-diagonals are their negatives.
+	if (PointMasses != nullptr)
+	{
+		const double Scale = AAerotelicEntityActor::GetModelScale();
+		for (const aerotelic::MassItem& M : *PointMasses)
+		{
+			FAerotelicMassLine Line;
+			Line.Label = FString::Printf(TEXT("[point mass] %s"), UTF8_TO_TCHAR(M.name.c_str()));
+			Line.Mode = aerotelic::MassMode::Asserted;
+			const std::string Problem = aerotelic::MassItemProblem(M);
+			if (!Problem.empty())
+			{
+				Line.Note = UTF8_TO_TCHAR(Problem.c_str());
+				Report.Bodies.Add(Line);
+				continue;
+			}
+			Line.Props.mass = M.mass;
+			Line.Props.centre = Vec3{ M.position[0] * Scale, M.position[1] * Scale, M.position[2] * Scale };
+			Line.Props.inertia = { M.inertia[0], -M.inertia[3], -M.inertia[4],
+			                       -M.inertia[3], M.inertia[1], -M.inertia[5],
+			                       -M.inertia[4], -M.inertia[5], M.inertia[2] };
+			Line.bIncluded = true;
+			Line.Note = M.attach_entity.empty()
+				? FString(TEXT("hangs on nothing (left out of the structural analysis)"))
+				: FString::Printf(TEXT("hangs on %s%s%s, %d nodes"), UTF8_TO_TCHAR(M.attach_entity.c_str()), M.attach_mirror ? TEXT(" (mirror)") : TEXT(""),
+					M.attach_body.empty() ? TEXT("") : *(TEXT(" / ") + FString(UTF8_TO_TCHAR(M.attach_body.c_str()))), M.attach_nodes);
+			Included.push_back(Line.Props);
+			++Report.IncludedCount;
+			Report.Bodies.Add(Line);
+		}
+	}
+
 	Report.Assembly = aerotelic::CombineMassProperties(Included);
 	return Report;
 }
@@ -239,8 +275,11 @@ FString FormatAerotelicMassReport(const FAerotelicMassReport& Report, const aero
 	Out += Rule(Width);
 	if (Report.IncludedCount > 0)
 	{
-		Out += ValueRow(FString::Printf(TEXT("ASSEMBLY (%d %s)"), Report.IncludedCount, Report.IncludedCount == 1 ? TEXT("body") : TEXT("bodies")),
-			Report.Assembly, FString());
+		// The label column clips at 30 characters: the point-mass count goes
+		// in the note.
+		Out += ValueRow(FString::Printf(TEXT("ASSEMBLY (%d %s)"), Report.IncludedCount, Report.IncludedCount == 1 ? TEXT("component") : TEXT("components")),
+			Report.Assembly,
+			Report.PointMasses > 0 ? FString::Printf(TEXT("%d point mass%s among them"), Report.PointMasses, Report.PointMasses == 1 ? TEXT("") : TEXT("es")) : FString());
 	}
 	else
 	{

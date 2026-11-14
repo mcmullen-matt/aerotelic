@@ -2650,6 +2650,27 @@ the script's) and the sphere in free flight under the pressure (the
 reference node reacts nothing, free fall at g, the membrane stress alone
 with no clamp artefact), and the items through save and reopen.
 
+**Point masses moved to Analysis > Mass Properties (2026-11-13, later).**
+Matt found the Masses tab in the Structural dialog poorly placed and asked
+for the point masses to be defined where masses belong, with the
+attachment picked by mouse, inherited through booleans, and saved. The
+Mass Properties dialog is now modeless with two tabs: *Report* (as it was,
+every point mass a line of its own counted in the assembly) and *Point
+masses* -- cards for name, mass, centre, the six inertia figures about
+the centre and the nearest-node count, and a picture of the chosen bodies
+in which a click (with a card armed by Pick node...) casts a ray at the
+surfaces: the body hit and its triangle's nearest grid vertex become the
+attachment (`MassItem::attach_point`, written as `attach.point`), and a
+new mass's centre the first time. Apply writes the items to the document.
+The structural analysis hangs each item on the nodes of its body nearest
+the picked point, or -- when that body is not in the model but a boolean
+result built over it is -- on the result's surface at the same point
+(`BooleanHeirs` in the Structural dialog, the nearest of the result's
+bodies); its Masses tab is now a read-only list of the project's items
+with a Reload button. The Document commandlet checks the report's lines
+and the file round trip of the picked point; the picking and the
+inheritance have not had a live run.
+
 ### The lifting configuration: trailing edges tagged, blunt edges closed (2026-11-13)
 
 Stage 2 of the flight-loads plan: every body that has a trailing edge

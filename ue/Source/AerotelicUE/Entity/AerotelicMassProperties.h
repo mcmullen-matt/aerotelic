@@ -41,15 +41,22 @@ struct FAerotelicMassReport
 	// The included bodies as one: inertia about the assembly's own centre.
 	aerotelic::MassProperties Assembly;
 	int32 IncludedCount = 0;
+	int32 PointMasses = 0;   // how many point-mass lines (counted in IncludedCount when usable)
 };
 
 // Meshes every body at Tolerance (the STL / boolean tolerance) and weighs
 // it in the project's units (a material's SI density is converted to
 // them, since the meshes are in them). A body whose entity has no
 // MassSpec, or no geometry, is listed with the reason and left out of
-// the assembly rather than counted as zero.
+// the assembly rather than counted as zero. The POINT MASSES
+// (mass_properties.hpp MassItem; the document's, 2026-11-13) are each a
+// line of their own and count in the assembly: the mass as typed, the
+// centre at the item's position scaled to the replica (positions are
+// full-scale), the inertia the item's own tensor about that centre --
+// whatever body they hang on and whether or not it is chosen, since a
+// mass is a mass. Null: none.
 FAerotelicMassReport ComputeAerotelicMassReport(const TArray<FAerotelicBooleanOperand>& Bodies, double Tolerance,
-	const aerotelic::UnitSystem& Units);
+	const aerotelic::UnitSystem& Units, const TArray<aerotelic::MassItem>* PointMasses = nullptr);
 
 // The report as a table in the project's units (which the integrals were
 // done in): one row per component, the assembly under a rule. What the
