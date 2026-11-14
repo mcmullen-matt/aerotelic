@@ -157,6 +157,12 @@ TSharedPtr<FAerotelicAeroLoadCase> UAerotelicDocumentSubsystem::FindAeroLoadCase
 	return nullptr;
 }
 
+void UAerotelicDocumentSubsystem::SetLoadCases(const aerotelic::LoadCasesSpec& Spec)
+{
+	LoadCases = Spec;
+	OnLoadCasesChanged.Broadcast();
+}
+
 void UAerotelicDocumentSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
 	Super::Initialize(Collection);
@@ -706,6 +712,8 @@ void UAerotelicDocumentSubsystem::ClearScene()
 		AeroLoadCases.Empty();
 		OnAeroLoadCasesChanged.Broadcast();
 	}
+	LoadCases = aerotelic::LoadCasesSpec();
+	OnLoadCasesChanged.Broadcast();
 	OnEntityListChanged.Broadcast();
 }
 
@@ -1668,6 +1676,9 @@ bool UAerotelicDocumentSubsystem::OpenProjectPath(const FString& InPath, bool bA
 		AeroLoadCases.Empty();
 		OnAeroLoadCasesChanged.Broadcast();
 	}
+	// The load case definitions, as the file has them.
+	LoadCases = Project.load_cases;
+	OnLoadCasesChanged.Broadcast();
 	// The structures with an interior (plane networks behind a skin),
 	// generated over the bodies now in the scene -- the generated geometry
 	// is not saved, only what describes it.
@@ -1782,6 +1793,8 @@ bool UAerotelicDocumentSubsystem::SaveProjectToPath(const FString& InPath)
 		}
 		Project.masses.push_back(std::move(Out));
 	}
+	// The load case definitions (2026-11-15), as they stand.
+	Project.load_cases = LoadCases;
 
 	try
 	{

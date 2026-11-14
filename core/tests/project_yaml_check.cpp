@@ -877,8 +877,90 @@ void CheckMassItemsRoundTrip() {
 	std::filesystem::remove(path);
 }
 
+// LOAD CASES (2026-11-15): `load_cases:` at the top level -- the V-n
+// envelope, the aero cases and the structural cases -- round trip through
+// the encoder and through a whole file; the validator refuses what cannot
+// be used; a file without the key loads with none.
+void CheckLoadCasesRoundTrip() {
+	LoadCasesSpec spec;
+	spec.vn.cl_max = 1.5; spec.vn.cl_min = -0.9; spec.vn.v_ne = 55.0; spec.vn.n_max = 3.8; spec.vn.n_min = -1.5;
+	spec.vn.weight_auto = false; spec.vn.weight = 150.0;
+	AeroLoadCaseSpec a;
+	a.name = "Pull-up"; a.speed = 30.0; a.density = 1.1; a.load_factor = 3.8;
+	a.control_entity = "HT"; a.control_flap = "Flap 1";
+	a.bodies = {{"Wing", false, "Main"}, {"Wing", true, "Main"}, {"BoolOp 1", false, "Body 1"}};
+	spec.aero.push_back(a);
+	StaticLoadCaseSpec s;
+	s.name = "Bench"; s.load_factor = 1.0; s.pressure = 1.0e5;
+	LoadCaseSupportSpec sup;
+	sup.axis = 'y'; sup.at = "min"; sup.value = 0.0; sup.tolerance = 0.01; sup.bounded = true; sup.lo = {-1.0, 0.0}; sup.hi = {0.5, 0.2};
+	sup.has_of = true; sup.of = {"Wing", false, "Main"};
+	s.supports.push_back(sup);
+	s.point_forces.push_back({{1.0, 2.0, 3.0}, {0.0, 0.0, -500.0}});
+	s.bodies = {{"Wing", false, "Main"}};
+	spec.structural.push_back(s);
+	StaticLoadCaseSpec f;
+	f.name = "Free"; f.free_flight = true; f.reference_given = true; f.reference = {0.3, 0.0, 0.1};
+	spec.structural.push_back(f);
+	Check(LoadCasesProblem(spec).empty(), "load cases: the sample spec is usable");
+	const LoadCasesSpec back = DecodeLoadCases(EncodeLoadCases(spec));
+	std::cout << "load cases: round-tripped through the encoder" << std::endl;
+	Check(back.vn.cl_max == 1.5 && back.vn.n_min == -1.5 && !back.vn.weight_auto && back.vn.weight == 150.0 && back.vn.area_auto, "load cases: the V-n envelope round-trips (weight typed, area auto)");
+	Check(back.aero.size() == 1 && back.aero[0].name == "Pull-up" && back.aero[0].load_factor == 3.8 && back.aero[0].control_entity == "HT" && back.aero[0].control_flap == "Flap 1"
+		&& back.aero[0].bodies.size() == 3 && back.aero[0].bodies[1].mirror && back.aero[0].bodies[2].body == "Body 1", "load cases: an aero case round-trips with its control and bodies");
+	Check(back.structural.size() == 2 && back.structural[0].name == "Bench" && back.structural[0].pressure == 1.0e5 && !back.structural[0].free_flight
+		&& back.structural[0].supports.size() == 1 && back.structural[0].supports[0].at == "min" && back.structural[0].supports[0].bounded && back.structural[0].supports[0].hi[1] == 0.2
+		&& back.structural[0].supports[0].has_of && back.structural[0].supports[0].of.entity == "Wing"
+		&& back.structural[0].point_forces.size() == 1 && back.structural[0].point_forces[0].force[2] == -500.0, "load cases: a clamped structural case round-trips with its patch, body and point force");
+	Check(back.structural[1].free_flight && back.structural[1].reference_given && back.structural[1].reference[0] == 0.3 && back.structural[1].supports.empty(), "load cases: a free-flight case round-trips with its reference");
+	Check(VnDiagramSpec::StallLoadFactor(1.5, 20.0, 1.225, 150.0, 0.5) > 1.22 && VnDiagramSpec::StallLoadFactor(1.5, 20.0, 1.225, 150.0, 0.5) < 1.23
+		&& std::fabs(VnDiagramSpec::StallSpeed(1.5, VnDiagramSpec::StallLoadFactor(1.5, 20.0, 1.225, 150.0, 0.5), 1.225, 150.0, 0.5) - 20.0) < 1e-9,
+		"load cases: the stall boundary and its inverse agree (n = q CL S / W)");
+
+	LoadCasesSpec bad = spec;
+	bad.structural.push_back(s);   // a second "Bench"
+	Check(!LoadCasesProblem(bad).empty(), "load cases: two structural cases with one name are a problem");
+	bad = spec;
+	bad.vn.n_min = 5.0;
+	Check(!LoadCasesProblem(bad).empty(), "load cases: n_min above n_max is a problem");
+	bad = spec;
+	bad.structural[0].supports[0].axis = 'q';
+	Check(!LoadCasesProblem(bad).empty(), "load cases: a support axis other than x, y, z is a problem");
+
+	const std::string path = (std::filesystem::temp_directory_path() / "aerotelic_load_cases_check.yaml").string();
+	{
+		ProjectFile pf;
+		ProjectEntity w;
+		w.name = "Wing";
+		w.type = EntityType::Fuselage;
+		w.model = FuselageModel(FuselageSpec{}).Serialize();
+		pf.entities.push_back(w);
+		pf.load_cases = spec;
+		SaveProjectYaml(pf, path);
+		const ProjectFile pb = LoadProjectYaml(path);
+		Check(pb.load_cases.aero.size() == 1 && pb.load_cases.structural.size() == 2 && pb.load_cases.aero[0].bodies[2].entity == "BoolOp 1", "load cases: a project file carries them under load_cases: (a body not in the file is kept)");
+		ProjectFile none;
+		none.entities.push_back(w);
+		SaveProjectYaml(none, path);
+		const ProjectFile nb = LoadProjectYaml(path);
+		Check(nb.load_cases.IsEmpty() && nb.load_cases.vn.cl_max == 1.4, "load cases: a file without the key loads with none and the default envelope");
+	}
+	std::filesystem::remove(path);
+	std::cout << "load cases: done, " << g_fail << " failure(s) so far" << std::endl;
+}
+
 int main() {
+	std::setvbuf(stdout, nullptr, _IONBF, 0);   // a crash must not swallow what was checked before it
 	CheckLaminateMaterialRoundTrip();
+	try {
+		CheckLoadCasesRoundTrip();
+	} catch (const std::exception& e) {
+		Check(false, std::string("load cases: threw ") + e.what());
+	}
+	// KNOWN (2026-11-15): the dangling-attachment load at the end of this
+	// check dies with a fail-fast (0xC0000409) at HEAD as well as here --
+	// the process ends before RESULT is printed. Not in run_tests.bat; left
+	// for its own investigation. Everything above it has run by then.
 	CheckMassItemsRoundTrip();
 	try {
 		CheckWingRoundTrip();

@@ -1901,6 +1901,37 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 		}
 	}
 
+	// LOAD CASES (2026-11-15): the definitions on the document, saved under
+	// load_cases: and read back; New-like clearing drops them.
+	UE_LOG(LogAerotelicDocumentTest, Display, TEXT("step: load cases"));
+	{
+		aerotelic::LoadCasesSpec Spec;
+		Spec.vn.v_ne = 48.0;
+		Spec.vn.n_max = 3.5;
+		aerotelic::AeroLoadCaseSpec A;
+		A.name = "Pull-up";
+		A.speed = 30.0;
+		A.load_factor = 3.5;
+		A.bodies.push_back({ TCHAR_TO_UTF8(*Wing->EntityName), false, "Main" });
+		Spec.aero.push_back(A);
+		aerotelic::StaticLoadCaseSpec C;
+		C.name = "Bench";
+		C.load_factor = 2.0;
+		C.pressure = 500.0;
+		aerotelic::LoadCaseSupportSpec Sup;
+		Sup.axis = 'z'; Sup.at = "min"; Sup.tolerance = 0.15;
+		Sup.has_of = true; Sup.of = { TCHAR_TO_UTF8(*Primitive->EntityName), false, "" };
+		C.supports.push_back(Sup);
+		C.point_forces.push_back({ { 0.0, 0.0, 1.0 }, { 0.0, 0.0, -100.0 } });
+		C.bodies.push_back({ TCHAR_TO_UTF8(*Primitive->EntityName), false, "" });
+		Spec.structural.push_back(C);
+		int32 Fired = 0;
+		FDelegateHandle H = Doc->OnLoadCasesChanged.AddLambda([&Fired]() { ++Fired; });
+		Doc->SetLoadCases(Spec);
+		Check(Doc->GetLoadCases().aero.size() == 1 && Doc->GetLoadCases().structural.size() == 1 && Fired == 1, "load cases: the document holds the spec and fires its delegate");
+		Doc->OnLoadCasesChanged.Remove(H);
+	}
+
 	UE_LOG(LogAerotelicDocumentTest, Display, TEXT("step: save"));
 	const FString TmpPath = FPaths::Combine(FPlatformProcess::UserTempDir(), TEXT("aerotelic_document_test.yaml"));
 	Check(Doc->SaveProjectToPath(TmpPath), "save succeeded");
@@ -1932,6 +1963,14 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 		FString Saved;
 		FFileHelper::LoadFileToString(Saved, *TmpPath);
 		Check(Saved.Contains(TEXT("masses:")) && Saved.Contains(TEXT("battery")), "mass items: the project file carries them under masses:");
+		// The load cases came back through the file.
+		const aerotelic::LoadCasesSpec& LC = Doc->GetLoadCases();
+		Check(Saved.Contains(TEXT("load_cases:")) && Saved.Contains(TEXT("vn_diagram")) && LC.vn.v_ne == 48.0 && LC.vn.n_max == 3.5
+			&& LC.aero.size() == 1 && LC.aero[0].name == "Pull-up" && LC.aero[0].load_factor == 3.5 && LC.aero[0].bodies.size() == 1 && LC.aero[0].bodies[0].body == "Main"
+			&& LC.structural.size() == 1 && LC.structural[0].name == "Bench" && LC.structural[0].load_factor == 2.0 && LC.structural[0].supports.size() == 1
+			&& LC.structural[0].supports[0].axis == 'z' && LC.structural[0].supports[0].at == "min" && LC.structural[0].supports[0].has_of
+			&& LC.structural[0].point_forces.size() == 1 && LC.structural[0].point_forces[0].force[2] == -100.0,
+			FString::Printf(TEXT("load cases: the V-n envelope, the aero case and the structural case came back through the file (%d aero, %d structural)"), (int32)LC.aero.size(), (int32)LC.structural.size()));
 	}
 	UE_LOG(LogAerotelicDocumentTest, Display, TEXT("step: reopen done"));
 	Check(Doc->GetEntities().Num() == 4, "reopened scene has 3 entities and the boolean result");

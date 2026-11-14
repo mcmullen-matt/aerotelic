@@ -113,6 +113,16 @@ public:
 	DECLARE_MULTICAST_DELEGATE(FOnAeroLoadCasesChanged);
 	FOnAeroLoadCasesChanged OnAeroLoadCasesChanged;
 
+	// The LOAD CASE DEFINITIONS (Model > Load Cases, 2026-11-15;
+	// load_cases.hpp): the V-n envelope, the aero cases and the structural
+	// cases. Saved with the project under `load_cases:`; New clears them,
+	// Open takes the file's. The solved pressure field of an aero case is
+	// the session's (GetAeroLoadCases above, keyed by the case's name).
+	const aerotelic::LoadCasesSpec& GetLoadCases() const { return LoadCases; }
+	void SetLoadCases(const aerotelic::LoadCasesSpec& Spec);
+	DECLARE_MULTICAST_DELEGATE(FOnLoadCasesChanged);
+	FOnLoadCasesChanged OnLoadCasesChanged;
+
 	// Every section airfoil on any Wing or Propeller blade in the scene --
 	// the Sections tab's airfoil picker offers these first, matching
 	// section_panel.py's project_airfoils()/_project_airfoil_source.
@@ -333,6 +343,7 @@ private:
 	double ModelScale = 1.0;
 	TArray<aerotelic::MassItem> MassItems;
 	TArray<TSharedPtr<FAerotelicAeroLoadCase>> AeroLoadCases;
+	aerotelic::LoadCasesSpec LoadCases;
 	FAerotelicSurfaceStyle SurfaceStyle;
 	FAerotelicShadowStyle ShadowStyle;
 	EAerotelicRenderStyle RenderStyle = EAerotelicRenderStyle::Shaded;

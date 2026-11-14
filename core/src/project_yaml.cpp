@@ -855,6 +855,253 @@ MassItem DecodeMassItem(const YAML::Node& node) {
 }
 
 // ===========================================================================
+// Load cases (`load_cases:`, 2026-11-15; load_cases.hpp)
+// ===========================================================================
+
+namespace {
+
+YAML::Node FlowTriple(const std::array<double, 3>& v) {
+	YAML::Node n;
+	for (double x : v) n.push_back(x);
+	n.SetStyle(YAML::EmitterStyle::Flow);
+	return n;
+}
+
+YAML::Node FlowPair(const std::array<double, 2>& v) {
+	YAML::Node n;
+	n.push_back(v[0]);
+	n.push_back(v[1]);
+	n.SetStyle(YAML::EmitterStyle::Flow);
+	return n;
+}
+
+std::array<double, 3> ReadTriple(const YAML::Node& n, const std::string& what) {
+	if (!n || !n.IsSequence() || n.size() != 3) throw std::invalid_argument(what + " must be [x, y, z]");
+	return {n[0].as<double>(), n[1].as<double>(), n[2].as<double>()};
+}
+
+std::array<double, 2> ReadPair(const YAML::Node& n, const std::string& what) {
+	if (!n || !n.IsSequence() || n.size() != 2) throw std::invalid_argument(what + " must be [u, w]");
+	return {n[0].as<double>(), n[1].as<double>()};
+}
+
+YAML::Node EncodeLoadCaseBody(const LoadCaseBody& b) {
+	YAML::Node n;
+	n["entity"] = b.entity;
+	if (b.mirror) n["mirror"] = true;
+	if (!b.body.empty()) n["body"] = b.body;
+	n.SetStyle(YAML::EmitterStyle::Flow);
+	return n;
+}
+
+LoadCaseBody DecodeLoadCaseBody(const YAML::Node& n, const std::string& what) {
+	if (!n || !n.IsMap()) throw std::invalid_argument(what + ": a body must be a mapping {entity, mirror, body}");
+	LoadCaseBody b;
+	if (n["entity"]) b.entity = n["entity"].as<std::string>();
+	if (n["mirror"]) b.mirror = n["mirror"].as<bool>();
+	if (n["body"]) b.body = n["body"].as<std::string>();
+	if (b.entity.empty()) throw std::invalid_argument(what + ": a body must name its entity");
+	return b;
+}
+
+YAML::Node EncodeBodies(const std::vector<LoadCaseBody>& bodies) {
+	YAML::Node n(YAML::NodeType::Sequence);
+	for (const LoadCaseBody& b : bodies) n.push_back(EncodeLoadCaseBody(b));
+	return n;
+}
+
+std::vector<LoadCaseBody> DecodeBodies(const YAML::Node& n, const std::string& what) {
+	std::vector<LoadCaseBody> out;
+	if (!n) return out;
+	if (!n.IsSequence()) throw std::invalid_argument(what + ": bodies must be a sequence");
+	for (const auto& b : n) out.push_back(DecodeLoadCaseBody(b, what));
+	return out;
+}
+
+} // namespace
+
+YAML::Node EncodeLoadCases(const LoadCasesSpec& spec) {
+	YAML::Node root;
+	{
+		const VnDiagramSpec& vn = spec.vn;
+		YAML::Node n;
+		n["cl_max"] = vn.cl_max;
+		n["cl_min"] = vn.cl_min;
+		n["v_ne"] = vn.v_ne;
+		n["n_max"] = vn.n_max;
+		n["n_min"] = vn.n_min;
+		n["density"] = vn.density;
+		if (vn.weight_auto) n["weight"] = std::string("auto"); else n["weight"] = vn.weight;
+		if (vn.area_auto) n["area"] = std::string("auto"); else n["area"] = vn.area;
+		n.SetStyle(YAML::EmitterStyle::Flow);
+		root["vn_diagram"] = n;
+	}
+	YAML::Node aero(YAML::NodeType::Sequence);
+	for (const AeroLoadCaseSpec& c : spec.aero) {
+		YAML::Node n;
+		n["name"] = c.name;
+		n["speed"] = c.speed;
+		n["density"] = c.density;
+		n["load_factor"] = c.load_factor;
+		if (!c.control_entity.empty()) {
+			YAML::Node ctl;
+			ctl["entity"] = c.control_entity;
+			ctl["flap"] = c.control_flap;
+			ctl.SetStyle(YAML::EmitterStyle::Flow);
+			n["control"] = ctl;
+		}
+		n["bodies"] = EncodeBodies(c.bodies);
+		aero.push_back(n);
+	}
+	root["aero"] = aero;
+	YAML::Node structural(YAML::NodeType::Sequence);
+	for (const StaticLoadCaseSpec& c : spec.structural) {
+		YAML::Node n;
+		n["name"] = c.name;
+		n["load_factor"] = c.load_factor;
+		n["pressure"] = c.pressure;
+		YAML::Node support;
+		support["mode"] = std::string(c.free_flight ? "free_flight" : "clamped");
+		if (c.free_flight && c.reference_given) support["reference"] = FlowTriple(c.reference);
+		support.SetStyle(YAML::EmitterStyle::Flow);
+		n["support"] = support;
+		YAML::Node supports(YAML::NodeType::Sequence);
+		for (const LoadCaseSupportSpec& s : c.supports) {
+			YAML::Node sn;
+			sn["axis"] = std::string(1, s.axis);
+			sn["at"] = s.at;
+			sn["value"] = s.value;
+			sn["tolerance"] = s.tolerance;
+			if (s.bounded) {
+				YAML::Node patch;
+				patch["lo"] = FlowPair(s.lo);
+				patch["hi"] = FlowPair(s.hi);
+				patch.SetStyle(YAML::EmitterStyle::Flow);
+				sn["patch"] = patch;
+			}
+			if (s.has_of) sn["of"] = EncodeLoadCaseBody(s.of);
+			sn.SetStyle(YAML::EmitterStyle::Flow);
+			supports.push_back(sn);
+		}
+		n["supports"] = supports;
+		YAML::Node forces(YAML::NodeType::Sequence);
+		for (const LoadCasePointForceSpec& f : c.point_forces) {
+			YAML::Node fn;
+			fn["at"] = FlowTriple(f.at);
+			fn["force"] = FlowTriple(f.force);
+			fn.SetStyle(YAML::EmitterStyle::Flow);
+			forces.push_back(fn);
+		}
+		n["point_forces"] = forces;
+		n["bodies"] = EncodeBodies(c.bodies);
+		structural.push_back(n);
+	}
+	root["structural"] = structural;
+	return root;
+}
+
+LoadCasesSpec DecodeLoadCases(const YAML::Node& node) {
+	LoadCasesSpec spec;
+	if (!node || !node.IsMap()) throw std::invalid_argument("load_cases must be a mapping");
+	if (const YAML::Node vn = node["vn_diagram"]) {
+		if (!vn.IsMap()) throw std::invalid_argument("load_cases.vn_diagram must be a mapping");
+		VnDiagramSpec& d = spec.vn;
+		if (vn["cl_max"]) d.cl_max = vn["cl_max"].as<double>();
+		if (vn["cl_min"]) d.cl_min = vn["cl_min"].as<double>();
+		if (vn["v_ne"]) d.v_ne = vn["v_ne"].as<double>();
+		if (vn["n_max"]) d.n_max = vn["n_max"].as<double>();
+		if (vn["n_min"]) d.n_min = vn["n_min"].as<double>();
+		if (vn["density"]) d.density = vn["density"].as<double>();
+		if (const YAML::Node w = vn["weight"]) {
+			if (w.IsScalar() && w.as<std::string>() == "auto") d.weight_auto = true;
+			else { d.weight_auto = false; d.weight = w.as<double>(); }
+		}
+		if (const YAML::Node a = vn["area"]) {
+			if (a.IsScalar() && a.as<std::string>() == "auto") d.area_auto = true;
+			else { d.area_auto = false; d.area = a.as<double>(); }
+		}
+	}
+	if (const YAML::Node aero = node["aero"]) {
+		if (!aero.IsSequence()) throw std::invalid_argument("load_cases.aero must be a sequence");
+		for (const auto& n : aero) {
+			if (!n.IsMap()) throw std::invalid_argument("an aero load case must be a mapping");
+			AeroLoadCaseSpec c;
+			if (n["name"]) c.name = n["name"].as<std::string>();
+			const std::string what = "aero load case '" + c.name + "'";
+			if (n["speed"]) c.speed = n["speed"].as<double>();
+			if (n["density"]) c.density = n["density"].as<double>();
+			if (n["load_factor"]) c.load_factor = n["load_factor"].as<double>();
+			if (const YAML::Node ctl = n["control"]) {
+				if (!ctl.IsMap()) throw std::invalid_argument(what + ": control must be {entity, flap}");
+				if (ctl["entity"]) c.control_entity = ctl["entity"].as<std::string>();
+				if (ctl["flap"]) c.control_flap = ctl["flap"].as<std::string>();
+			}
+			c.bodies = DecodeBodies(n["bodies"], what);
+			spec.aero.push_back(std::move(c));
+		}
+	}
+	if (const YAML::Node structural = node["structural"]) {
+		if (!structural.IsSequence()) throw std::invalid_argument("load_cases.structural must be a sequence");
+		for (const auto& n : structural) {
+			if (!n.IsMap()) throw std::invalid_argument("a structural load case must be a mapping");
+			StaticLoadCaseSpec c;
+			if (n["name"]) c.name = n["name"].as<std::string>();
+			const std::string what = "structural load case '" + c.name + "'";
+			if (n["load_factor"]) c.load_factor = n["load_factor"].as<double>();
+			if (n["pressure"]) c.pressure = n["pressure"].as<double>();
+			if (const YAML::Node support = n["support"]) {
+				if (!support.IsMap()) throw std::invalid_argument(what + ": support must be {mode, reference}");
+				if (support["mode"]) {
+					const std::string mode = support["mode"].as<std::string>();
+					if (mode == "free_flight") c.free_flight = true;
+					else if (mode == "clamped") c.free_flight = false;
+					else throw std::invalid_argument(what + ": support.mode must be clamped or free_flight");
+				}
+				if (support["reference"]) { c.reference_given = true; c.reference = ReadTriple(support["reference"], what + ": support.reference"); }
+			}
+			if (const YAML::Node supports = n["supports"]) {
+				if (!supports.IsSequence()) throw std::invalid_argument(what + ": supports must be a sequence");
+				for (const auto& sn : supports) {
+					if (!sn.IsMap()) throw std::invalid_argument(what + ": a support must be a mapping");
+					LoadCaseSupportSpec s;
+					if (sn["axis"]) {
+						const std::string a = sn["axis"].as<std::string>();
+						if (a.size() != 1) throw std::invalid_argument(what + ": a support's axis must be x, y or z");
+						s.axis = a[0];
+					}
+					if (sn["at"]) s.at = sn["at"].as<std::string>();
+					if (sn["value"]) s.value = sn["value"].as<double>();
+					if (sn["tolerance"]) s.tolerance = sn["tolerance"].as<double>();
+					if (const YAML::Node patch = sn["patch"]) {
+						if (!patch.IsMap()) throw std::invalid_argument(what + ": a support's patch must be {lo, hi}");
+						s.bounded = true;
+						s.lo = ReadPair(patch["lo"], what + ": patch.lo");
+						s.hi = ReadPair(patch["hi"], what + ": patch.hi");
+					}
+					if (sn["of"]) { s.has_of = true; s.of = DecodeLoadCaseBody(sn["of"], what); }
+					c.supports.push_back(std::move(s));
+				}
+			}
+			if (const YAML::Node forces = n["point_forces"]) {
+				if (!forces.IsSequence()) throw std::invalid_argument(what + ": point_forces must be a sequence");
+				for (const auto& fn : forces) {
+					if (!fn.IsMap()) throw std::invalid_argument(what + ": a point force must be {at, force}");
+					LoadCasePointForceSpec f;
+					f.at = ReadTriple(fn["at"], what + ": a point force's at");
+					f.force = ReadTriple(fn["force"], what + ": a point force's force");
+					c.point_forces.push_back(f);
+				}
+			}
+			c.bodies = DecodeBodies(n["bodies"], what);
+			spec.structural.push_back(std::move(c));
+		}
+	}
+	const std::string problem = LoadCasesProblem(spec);
+	if (!problem.empty()) throw std::invalid_argument(problem);
+	return spec;
+}
+
+// ===========================================================================
 // Bodies (`bodies:` on an entity or a boolean result): display overrides
 // and the structure of each solid body (body_structure.hpp)
 // ===========================================================================
@@ -1320,6 +1567,11 @@ ProjectFile LoadProjectYaml(const std::string& path) {
 			project.masses.push_back(std::move(m));
 		}
 	}
+	// The load cases (2026-11-15). A body named for a case that is not in
+	// the file is kept: the application skips it when the case is built.
+	if (root["load_cases"]) {
+		project.load_cases = DecodeLoadCases(root["load_cases"]);
+	}
 	// The lattice entities of an older file: not decoded (lattices are no
 	// longer supported at all), named so the application can say what it
 	// skipped.
@@ -1365,6 +1617,11 @@ void SaveProjectYaml(const ProjectFile& project, const std::string& path) {
 		YAML::Node masses(YAML::NodeType::Sequence);
 		for (const auto& m : project.masses) masses.push_back(EncodeMassItem(m));
 		root["masses"] = masses;
+	}
+	if (!project.load_cases.IsEmpty()) {
+		const std::string problem = LoadCasesProblem(project.load_cases);
+		if (!problem.empty()) throw std::invalid_argument("load_cases: " + problem);
+		root["load_cases"] = EncodeLoadCases(project.load_cases);
 	}
 	std::ofstream out(path);
 	if (!out) throw std::runtime_error("could not open " + path + " for writing");

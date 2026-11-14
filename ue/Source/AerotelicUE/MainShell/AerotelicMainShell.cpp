@@ -17,6 +17,7 @@
 #include "Dialogs/SectionAeroDialog.h"
 #include "Dialogs/MassPropertiesDialog.h"
 #include "Dialogs/MaterialLibraryDialog.h"
+#include "Dialogs/LoadCasesDialog.h"
 #include "Dialogs/StructuralFeaDialog.h"
 #include "Dialogs/DustDialog.h"
 #include "Dialogs/ThemeDialog.h"
@@ -449,6 +450,7 @@ void SAerotelicMainShell::BindCommands()
 		if (!Result.IsEmpty()) StatusText = Result;
 	}));
 	Commands->MapAction(C.MaterialLibrary, FExecuteAction::CreateLambda([this]() { ShowAerotelicMaterialLibraryDialog([this](const FText& T) { SetStatus(T); }); }));
+	Commands->MapAction(C.LoadCases, FExecuteAction::CreateLambda([this]() { ShowAerotelicLoadCasesDialog([this](const FText& T) { SetStatus(T); }); }));
 
 	// Analysis
 	Commands->MapAction(C.MassProperties, FExecuteAction::CreateLambda([this]() { ShowAerotelicMassPropertiesDialog([this](const FText& T) { SetStatus(T); }); }));
@@ -596,6 +598,10 @@ void SAerotelicMainShell::FillModelMenu(FMenuBuilder& Menu)
 	// own) as a sortable table, a tab to define materials, and the
 	// citations. A body is given one from its Scene tree row.
 	Menu.AddMenuEntry(C.MaterialLibrary);
+	Menu.AddMenuSeparator();
+	// Model > Load Cases (2026-11-15): the V-n diagram's aero cases and the
+	// structural cases the Kratos analysis is run for, saved with the project.
+	Menu.AddMenuEntry(C.LoadCases);
 	Menu.AddMenuSeparator();
 	// Model > Units: length and mass chosen separately, time fixed. A
 	// radio per unit, reading the document each time the menu opens.

@@ -2979,6 +2979,89 @@ a 0.70 hinge: move it to 0.62 or forward) and the Wing's was already
 refused (its front spar ends inside Flap 2's pocket): no ribs or spars are
 built for them until the spars move, which is what the note says.
 
+### Load cases: the V-n diagram, the structural cases, the solver's dialog (2026-11-15)
+
+Matt's redesign of how an analysis is set up: load cases are DEFINED once,
+under **Model > Load Cases**, and saved with the project; **Analysis >
+Structural (Kratos FEA)** only picks one, renders it on the built model and
+solves. Decisions he confirmed: the trim runs from the Load Cases dialog
+(the panel dialog lost its Trim tab); the structural tab shows the full
+built model in its pictures; the definitions are saved; an aero case is
+always free flight; no gust lines.
+
+**The spec** (`core/include/aerotelic/load_cases.hpp`, `load_cases:` in
+the file, `project_yaml_check`): `VnDiagramSpec` (CL_max, CL_min, V_ne,
+n_max, n_min, density; weight and area `auto` or typed, SI),
+`AeroLoadCaseSpec` (name, speed, density, load factor, the control flap by
+entity and flap name, the solid bodies as `{entity, mirror, body}`),
+`StaticLoadCaseSpec` (name, load factor, uniform pressure in the project's
+stress unit, free flight with an optional reference point or support
+planes/patches each with an optional `of` body, point forces, bodies).
+`LoadCasesProblem` refuses nameless or duplicate cases, bad axes and an
+inverted envelope. A body named that is not in the scene is kept and
+skipped when the case is built, so a case outlives a renaming. The
+document holds the spec (`GetLoadCases` / `SetLoadCases`,
+`OnLoadCasesChanged`); New clears, Open takes the file's, Save writes it;
+the solved pressure fields stay session data keyed by case name.
+
+**The engine** (`Dialogs/FeaCaseState.h`): the Kratos dialog's whole
+state -- the body picker, the support and point-force rows, the built
+model, its derivation with the floating trim, the four pictures with the
+patch dragging, the solve -- moved verbatim into a header both dialogs
+instantiate (`AerotelicFeaCase::FState`), inline as it was inside the
+dialog's translation unit. What changed: a fixed body list where there is
+no picker (`ChosenFixed`), the aero pressure field set directly
+(`AeroField`, no combo), and the spec read and written (`LoadStatic`,
+`SaveStatic`, `LoadAero`, with `FindChoice`/`BodyOf` matching bodies by
+scene name, mirror and role). The editing panels and the picture tab are
+builders (`MakeLoadsPanel`, `MakeSupportPanel`, `MakeMassesPanel`,
+`MakePictureTab`, `WirePatchHandles`, `FillOptions`, `DefaultChosen`).
+
+**The trim module** (`Entity/AerotelicAeroTrim.h`): the paneling and the
+trim lifted out of the panel dialog -- `FSetup`, `BuildCase`, `Derive`,
+`MakeLoadCase`, `DefaultReferences`, `DefaultSymmetry`, `Controls`,
+`MassAndCentre`, and `FRunner`, which panels on the game thread, solves on
+a worker (base, α + 1°, δ + 1°, then the trimmed state) and delivers an
+`FOutcome` with the stored load case. The panel dialog uses the same
+functions for its sweeps and keeps its analysis tabs.
+
+**Model > Load Cases** (`Dialogs/LoadCasesDialog.cpp`). *Aero*: the
+envelope's inputs on the left; the V-n plot (`Widgets/VnPlot.h`, an
+SLeafWidget: the positive stall boundary to V_A, n_max to V_ne, down to
+n_min, back along the negative boundary; V_S and V_A marked; the
+boundaries faint beyond the limits; points filled when solved, red when
+outside; click adds a case, press selects, drag moves); below it the
+table, one row per case: name, V, ρ, n, the control combo, a Bodies button
+(a picker popup), Select, Solve, Delete, and the last trim's words. Solve
+runs `FRunner` on the case's bodies (a boolean result panels its lofted
+operands; the mass is the bodies' report) and stores the field; any edit of
+speed, density, load factor, control or bodies clears it. *Structural*:
+the table (name and load factor editable, Select, Delete, Add) over four
+sub-tabs -- Bodies (the picker, rebuilt per case), Loads, Masses, Support
+-- each a picture tab of the engine with its old side panel; Build Model
+builds the selected case's bodies so the pictures are the real model;
+every edit is committed to the document as made (the picker's OnChanged,
+each field's commit, the Apply buttons).
+
+**Analysis > Structural** (`Dialogs/StructuralFeaDialog.cpp`, slimmed):
+a combo of every case ("Aero: ..." / "Structural: ..."), its summary, the
+solver settings, the Result group and the output file; the Mesh, Loads,
+Masses and Support pictures read-only (no side panels, no dragging); Build
+Model, Solve, Cancel. An aero case without a solved field is trimmed first
+by Build Model or Solve (the runner, with the progress line), the field
+stored on the document, and the build or solve continues. The dialog
+follows the document: cases defined while it is open appear on Reload or
+at once through `OnLoadCasesChanged`.
+
+**Checked**: `project_yaml_check` round-trips the spec through the encoder
+and a file; the document commandlet sets a spec, saves, reopens and reads
+it back (Document 332, RealProject 46, Licence 42; the editor build clean
+after the move). The dialogs have not been driven by hand; the V-n plot's mouse
+handling is untested beyond compiling. KNOWN: `project_yaml_check` dies
+with a fail-fast in its mass-items check at HEAD too (the dangling
+attachment load), before RESULT prints; the load-case check was moved
+ahead of it and reports its own line.
+
 ## The Model menu and the material library (2026-11-07)
 
 **Geometry became Model.** The menu that holds the airfoils, the

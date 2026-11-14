@@ -36,6 +36,7 @@ public:
 
 	// Analysis
 	TSharedPtr<FUICommandInfo> MassProperties;
+	TSharedPtr<FUICommandInfo> LoadCases;
 	TSharedPtr<FUICommandInfo> StructuralFea;
 	TSharedPtr<FUICommandInfo> PotentialFlow;
 	TSharedPtr<FUICommandInfo> HighOrderPanel;

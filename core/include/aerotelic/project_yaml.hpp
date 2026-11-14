@@ -30,6 +30,7 @@
 #include "aerotelic/body_structure.hpp"
 #include "aerotelic/feature_tree.hpp"
 #include "aerotelic/fuselage_model.hpp"
+#include "aerotelic/load_cases.hpp"
 #include "aerotelic/mass_properties.hpp"
 #include "aerotelic/units.hpp"
 #include "aerotelic/lofted_nacelle_model.hpp"
@@ -216,6 +217,17 @@ ProjectBoolean DecodeProjectBoolean(const YAML::Node& node, std::vector<std::str
 YAML::Node EncodeMassItem(const MassItem& m);
 MassItem DecodeMassItem(const YAML::Node& node);
 
+// The load cases (load_cases.hpp; `load_cases:` at the top level, 2026-11-15):
+//   vn_diagram: {cl_max, cl_min, v_ne, n_max, n_min, density, weight: auto | <N>, area: auto | <m^2>}
+//   aero: [{name, speed, density, load_factor, control: {entity, flap} (when set), bodies: [{entity, mirror (when true), body (when set)}]}]
+//   structural: [{name, load_factor, pressure, support: {mode: clamped | free_flight, reference: [x, y, z] (when given)},
+//                 supports: [{axis, at, value, tolerance, patch: {lo: [u, w], hi: [u, w]} (when bounded), of: {entity, mirror, body} (when set)}],
+//                 point_forces: [{at: [x, y, z], force: [fx, fy, fz]}], bodies: [...]}]
+// Decode throws std::invalid_argument on a malformed entry or a
+// LoadCasesProblem.
+YAML::Node EncodeLoadCases(const LoadCasesSpec& spec);
+LoadCasesSpec DecodeLoadCases(const YAML::Node& node);
+
 struct ProjectFile {
 	// What every length and mass in the file means (units.hpp). Always
 	// written; absent on load means metres and kilograms.
@@ -235,6 +247,13 @@ struct ProjectFile {
 	// mass_properties.hpp MassItem). Written when there are any; each
 	// `attach.entity` must name an entity or a boolean listed above.
 	std::vector<MassItem> masses;
+	// The load cases (`load_cases:`, 2026-11-15; load_cases.hpp). Written
+	// when there is any case; the V-n envelope's figures go with them. A
+	// case's bodies name entities or booleans listed above by scene name;
+	// a name that is not there is kept (the application skips it when the
+	// case is built) rather than refused, so a case outlives the renaming
+	// of a body.
+	LoadCasesSpec load_cases;
 	// The names of the `lattices:` entries of a file from before 2026-11-08,
 	// NOT decoded: lattices are no longer supported at all (the structure
 	// is shells only -- skins and plane networks), so the loader skips them

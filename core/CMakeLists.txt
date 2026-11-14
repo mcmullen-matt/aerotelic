@@ -50,6 +50,9 @@ add_library(aerotelic_core STATIC
 	# pressures carried onto the structural shells.
 	src/aero_trim.cpp
 	src/aero_loads.cpp
+	# Load cases (2026-11-15): the V-n envelope, the aero and structural
+	# cases the analyses are run for, saved with the project.
+	src/load_cases.cpp
 	src/colormaps.cpp
 	src/nacelle_model.cpp
 	src/lofted_nacelle_model.cpp
