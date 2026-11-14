@@ -2657,19 +2657,22 @@ attachment picked by mouse, inherited through booleans, and saved. The
 Mass Properties dialog is now modeless with two tabs: *Report* (as it was,
 every point mass a line of its own counted in the assembly) and *Point
 masses* -- cards for name, mass, centre, the six inertia figures about
-the centre and the nearest-node count, and a picture of the chosen bodies
-in which a click (with a card armed by Pick node...) casts a ray at the
-surfaces: the body hit and its triangle's nearest grid vertex become the
-attachment (`MassItem::attach_point`, written as `attach.point`), and a
-new mass's centre the first time. Apply writes the items to the document.
-The structural analysis hangs each item on the nodes of its body nearest
-the picked point, or -- when that body is not in the model but a boolean
-result built over it is -- on the result's surface at the same point
-(`BooleanHeirs` in the Structural dialog, the nearest of the result's
-bodies); its Masses tab is now a read-only list of the project's items
-with a Reload button. The Document commandlet checks the report's lines
-and the file round trip of the picked point; the picking and the
-inheritance have not had a live run.
+the centre, the body it hangs on (a list of EVERY solid body of the scene)
+and the nearest-node count, beside a picture of every solid body of the
+scene (the masses are part of the model, not of any one report's choice).
+With a card selected, a click casts a ray at the surfaces and puts the
+mass's centre at the hit (the file keeps the centre; `attach.point` is
+still read for a file that has it); a mass not yet hung on anything hangs
+on the body clicked, one click in all (Matt's second round, 2026-11-14:
+the first version wanted a node picked and then a body). Apply writes the
+items to the document. The structural analysis hangs each item on the
+nodes of its body nearest its centre, or -- when that body is not in the
+model but a boolean result built over it is -- on the result's surface at
+the same place (`BooleanHeirs` in the Structural dialog, the nearest of
+the result's bodies); its Masses tab is now a read-only list of the
+project's items with a Reload button. The Document commandlet checks the
+report's lines and the file round trip; the picking and the inheritance
+have not had a live run.
 
 ### The lifting configuration: trailing edges tagged, blunt edges closed (2026-11-13)
 
