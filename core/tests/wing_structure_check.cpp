@@ -15,6 +15,7 @@
 
 #include "aerotelic/mesh.hpp"
 #include "aerotelic/project_yaml.hpp"
+#include "aerotelic/section_cut.hpp"
 #include "aerotelic/wing_model.hpp"
 
 using namespace aerotelic;
@@ -381,6 +382,30 @@ int main() {
 		threw = false;
 		try { wing.ValidateStructure(); } catch (const std::invalid_argument& e) { threw = std::string(e.what()).find("ends inside") != std::string::npos; }
 		Check(threw, "refused: a spar ending inside a flap's pocket");
+
+		// A spar with its feet ahead of the lips but behind the cavity's
+		// front (2026-11-14, my_drone's tail: rear spar at 0.65, hinge at
+		// 0.70): its web crosses the pocket's air and its chord leaves every
+		// rib's disc, which gave the rib mesher zero-area shells. Refused;
+		// the same spar ahead of the cavity is fine.
+		wing.structure.spars[1].eta_tip = 1.0;
+		{
+			const double eta = 0.5 * (f.eta_root + f.eta_tip);
+			std::shared_ptr<Airfoil> af = wing.AirfoilAt(eta);
+			const double chord = wing.planform().ChordAt(eta);
+			const FlapCut cut = SolveFlapCut(*af, wing.HingeFraction(f, eta), f.gap / chord);
+			const double x_lip = std::min(af->nurbs_curve().Evaluate(cut.t_lower_lip)[0], af->nurbs_curve().Evaluate(cut.t_upper_lip)[0]);
+			const double x_cavity = cut.x_hinge - cut.r_cavity;
+			Check(x_cavity < x_lip - 1e-3, F("the cavity's front (%.4f) is forward of the lips (%.4f): there is a band a web must not stand in", x_cavity, x_lip));
+			wing.structure.spars[1].x_root = wing.structure.spars[1].x_tip = x_cavity + 0.4 * (x_lip - x_cavity);
+			threw = false;
+			try { wing.ValidateStructure(); } catch (const std::invalid_argument& e) { threw = std::string(e.what()).find("cavity") != std::string::npos; }
+			Check(threw, F("refused: a spar at %.4f, ahead of the lips but in the hinge cavity's band", wing.structure.spars[1].x_root));
+			wing.structure.spars[1].x_root = wing.structure.spars[1].x_tip = x_cavity - 0.03;
+			bool ok = true;
+			try { wing.ValidateStructure(); } catch (const std::invalid_argument& e) { ok = false; std::printf("  unexpected: %s\n", e.what()); }
+			Check(ok, F("accepted: the same spar at %.4f, ahead of the cavity", wing.structure.spars[1].x_root));
+		}
 	}
 
 	std::printf("RESULT: %d passed, %d failed\n", g_pass, g_fail);

@@ -648,15 +648,32 @@ namespace AerotelicFeaModelBuilder
 				// The layer's reference direction: its own longest extent (a
 				// rib's chord, a spar's or stringer's span).
 				const std::vector<Vec3> LayerAxes = ReferenceAxes(L.Mesh, nullptr, LongestExtentAxis(L.Mesh));
+				// A triangle of no area is not a shell: the solver refuses the
+				// whole model on the first one (2026-11-14: a spar web through a
+				// flap's hinge cavity gave the rib mesher 604 of them). Such
+				// faces are left out and counted; the layer's mass loses nothing
+				// (they have no area) and the note says where they were.
+				int32 Degenerate = 0;
+				const double AreaEps = 1e-14 * Surface.Bounds().Diagonal() * Surface.Bounds().Diagonal();
 				for (size_t t = 0; t < L.Mesh.triangles.size(); ++t)
 				{
 					const auto& Tri = L.Mesh.triangles[t];
 					AerotelicStructuralFea::FShellFace F;
 					F.N[0] = Map[Tri[0]]; F.N[1] = Map[Tri[1]]; F.N[2] = Map[Tri[2]];
+					if (F.N[0] == F.N[1] || F.N[1] == F.N[2] || F.N[0] == F.N[2]
+						|| 0.5 * aerotelic::Length(aerotelic::Cross(B.Nodes[F.N[1]] - B.Nodes[F.N[0]], B.Nodes[F.N[2]] - B.Nodes[F.N[0]])) <= AreaEps)
+					{
+						++Degenerate;
+						continue;
+					}
 					F.Region = LR.Id;
 					B.RibFaces.Add(F);
 					B.RibAxes.Add(LayerAxes[t]);
 					++Faces;
+				}
+				if (Degenerate > 0)
+				{
+					B.Problems.Add(FString::Printf(TEXT("%s: %d triangle(s) of no area left out of the shells (two corners on one node, or three in a line) -- the layer's mesh is degenerate there; on a wing, a spar whose web runs through a flap's hinge cavity does this"), *LR.Label, Degenerate));
 				}
 			}
 			UE_LOG(LogTemp, Log, TEXT("AerotelicFeaModelBuilder: %s: %d layer(s) joined to the skin: %d faces, %d nodes shared with the skin or earlier layers, %d new"), *Label, Layers.Num(), Faces, Shared, Added);

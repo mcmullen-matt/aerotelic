@@ -1083,11 +1083,22 @@ void WingModel::ValidateStructure() const {
 		}
 	}
 	// A spar or a stringer must end clear of a flap's pocket or run right
-	// through it, and where it runs through it must stay ahead of the lips
-	// (the main element has no skin aft of them there).
+	// through it, and where it runs through it must stay ahead of the
+	// pocket. A stringer is a foot on the skin: ahead of the lips (the main
+	// element has no skin aft of them there). A spar is a WEB, the straight
+	// line between its two feet in every section, and the hinge cavity
+	// bulges forward of the lips (the lips are where the cavity circle meets
+	// the skin, above and below the hinge; the circle's front is at x_hinge -
+	// r_cavity, further forward): a spar with its feet ahead of the lips but
+	// behind the cavity's front has a web that runs through the air of the
+	// pocket, and its chord across every rib leaves the rib's disc. The rib
+	// mesher then embedded a line that left the surface and gmsh piled dozens
+	// of coincident nodes where it crossed the rim -- 604 zero-area rib
+	// shells on my_drone's tail, which Kratos refused (2026-11-14). So a
+	// spar must stay ahead of the cavity's front, not just the lips.
 	for (const FlapSpec& f : flaps) {
 		const auto [lo, hi] = PocketExtent(f);
-		auto check_line = [&](const std::string& what, double er, double xr, double et, double xt) {
+		auto check_line = [&](const std::string& what, bool web, double er, double xr, double et, double xt) {
 			if (et <= lo + 1e-9 || er >= hi - 1e-9) return;
 			if (er > lo + 1e-9 || et < hi - 1e-9) {
 				throw std::invalid_argument(what + " ends inside the pocket of flap '" + f.name + "' (eta " + std::to_string(lo) + " to " + std::to_string(hi) + "): end it outside the pocket or run it through");
@@ -1097,16 +1108,22 @@ void WingModel::ValidateStructure() const {
 				const double chord = planform_->ChordAt(e);
 				const FlapCut cut = SolveFlapCut(*af, HingeFraction(f, e), chord > 0.0 ? f.gap / chord : 0.0);
 				const double x_lip = std::min(af->nurbs_curve().Evaluate(cut.t_lower_lip)[0], af->nurbs_curve().Evaluate(cut.t_upper_lip)[0]);
+				const double x_cavity = cut.x_hinge - cut.r_cavity;
 				const double x = FractionAlong(er, xr, et, xt, e);
 				if (!(x < x_lip - 1e-6)) {
 					char buf[300];
 					std::snprintf(buf, sizeof buf, " runs into the pocket of flap '%s' (chord fraction %.3f at eta %.3f, the lip is at %.3f): move it forward of the flap", f.name.c_str(), x, e, x_lip);
 					throw std::invalid_argument(what + buf);
 				}
+				if (web && !(x < x_cavity - 1e-6)) {
+					char buf[360];
+					std::snprintf(buf, sizeof buf, " runs through the hinge cavity of flap '%s' (chord fraction %.3f at eta %.3f; the cavity reaches forward to %.3f, the lips are at %.3f): its web between the skins would cross the pocket, so move it forward of the cavity", f.name.c_str(), x, e, x_cavity, x_lip);
+					throw std::invalid_argument(what + buf);
+				}
 			}
 		};
-		for (const WingSparSpec& sp : structure.spars) check_line("spar '" + sp.name + "'", sp.eta_root, sp.x_root, sp.eta_tip, sp.x_tip);
-		for (const WingStringerSpec& st : structure.stringers) check_line("stringer '" + st.name + "'", st.eta_root, st.x_root, st.eta_tip, st.x_tip);
+		for (const WingSparSpec& sp : structure.spars) check_line("spar '" + sp.name + "'", true, sp.eta_root, sp.x_root, sp.eta_tip, sp.x_tip);
+		for (const WingStringerSpec& st : structure.stringers) check_line("stringer '" + st.name + "'", false, st.eta_root, st.x_root, st.eta_tip, st.x_tip);
 	}
 }
 

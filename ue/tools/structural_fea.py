@@ -1474,6 +1474,20 @@ def run_job(job_dir):
     n_area = face_normals_area(nodes, faces) if len(faces) else np.zeros((0, 3))
     face_area = np.linalg.norm(n_area, axis=1)
     rib_area = np.linalg.norm(face_normals_area(nodes, rib_faces), axis=1) if len(rib_faces) else np.zeros(0)
+    # A shell of no area cannot be an element: Kratos's Check refuses it
+    # with "Element N has non-positive size", one line per thread, and the
+    # solve dies at Initialize. Say which faces and how many instead
+    # (2026-11-14: 604 rib faces with two corners on one node, from a spar
+    # web that ran through a flap's hinge cavity).
+    def _degenerate(f, area):
+        if not len(f):
+            return 0
+        same = (f[:, 0] == f[:, 1]) | (f[:, 1] == f[:, 2]) | (f[:, 0] == f[:, 2])
+        return int((same | (area <= 0.0)).sum())
+    bad_skin, bad_rib = _degenerate(faces, face_area), _degenerate(rib_faces, rib_area)
+    if bad_skin or bad_rib:
+        raise JobError("%d skin face(s) and %d rib face(s) have no area (two corners on one node, or three in a line): the solver refuses them. "
+                       "They come from the model builder's layers; see the Mesh tab's notes." % (bad_skin, bad_rib))
     present_faces = sorted(set(int(v) for v in np.unique(region_of_face))) if len(region_of_face) else []
     present_ribs = sorted(set(int(v) for v in np.unique(rib_region))) if len(rib_region) else []
     log("  mesh read: %d nodes, %d skin faces, %d rib faces; regions %s"

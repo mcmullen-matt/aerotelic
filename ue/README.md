@@ -2951,6 +2951,34 @@ Loads picture says how much lift was kept). A flap deflected in the trim
 is not set on the model automatically; the dialog says what to set. Load
 cases are not saved with the project.
 
+### Zero-area rib shells: a spar web in the hinge cavity (2026-11-14, evening)
+
+Matt's FEA of my_drone's fused airframe (BoolOp 1) died in Kratos's Check
+with "Element N has non-positive size" on every thread. The viewport had
+been warning all along: `Detected 1208 degenerate triangles with non-unique
+vertex indices` on the tail's structure mesh, which the boolean result
+inherited. Traced with `wing_mesh_probe --job HT` (it writes the rib_gmsh
+job of a wing's main element) and a probe of `rib_gmsh.py`'s own output:
+604 rib faces with two corners on one node (x 2 for the port half), all on
+the rear spar's chord at 0.65 of the chord, where gmsh had piled 45
+coincident nodes. The HT's hinge is at 0.70 and a NACA 0012's cavity circle
+there reaches forward to 0.645: the spar's feet were on the skin ahead of
+the lips (0.662), so the validator's lip test passed, but the straight web
+between the feet ran through the air of the pocket and its chord left every
+rib's disc. gmsh embeds a line only on the surface it is given; a line that
+leaves it comes back as a pile of nodes at the crossing. Three layers of
+fix: the validator refuses a spar between the cavity's front and the lips
+("runs through the hinge cavity ... move it forward of the cavity";
+`wing_structure_check` 69); `rib_gmsh.py` skips a chord that leaves its
+disc (shapely, 32 samples) and drops any merged face with two corners on
+one node, both noted; and the model builder leaves out triangles of no
+area with a note on the Mesh tab, while `structural_fea.py` refuses a
+model that still has one with a readable message instead of Kratos's. In
+my_drone this refuses the VT's and HT's structures (rear spar 0.65 against
+a 0.70 hinge: move it to 0.62 or forward) and the Wing's was already
+refused (its front spar ends inside Flap 2's pocket): no ribs or spars are
+built for them until the spars move, which is what the note says.
+
 ## The Model menu and the material library (2026-11-07)
 
 **Geometry became Model.** The menu that holds the airfoils, the

@@ -405,6 +405,38 @@ def chords_of_disc(chords, disc):
     return [c for c in chords if c[0] in rim and c[1] in rim]
 
 
+def chord_leaves_disc(verts, disc, va, vb, normal):
+    """Whether the straight chord a-b runs outside the disc (through a
+    hole, or outside the outer loop) anywhere along its length. gmsh embeds
+    a line only on the surface it is given: a chord that leaves the disc
+    came back (2026-11-14, a spar web through a flap's hinge cavity) as
+    dozens of coincident nodes where it crossed the rim and hundreds of
+    zero-area triangles. Sampled at 32 interior points against the disc's
+    polygon (shapely), with a tolerance of a millionth of the chord so a
+    chord along a rim edge is not a leaver."""
+    try:
+        from shapely.geometry import Polygon, Point
+    except ImportError:
+        return False   # without shapely the check is skipped; the degenerate-face filter below still holds
+    _, u, v = plane_basis(normal)
+    a, b = verts[va], verts[vb]
+    length = float(np.linalg.norm(b - a))
+    if length <= 0.0:
+        return True
+    def flat(loop):
+        p = verts[np.array(loop)]
+        return list(zip((p @ u).tolist(), (p @ v).tolist()))
+    poly = Polygon(flat(disc[0]), [flat(h) for h in disc[1:]])
+    if not poly.is_valid:
+        poly = poly.buffer(0.0)
+    tol = 1e-6 * length
+    for t in np.linspace(0.0, 1.0, 34)[1:-1]:
+        p = a + (b - a) * t
+        if not poly.buffer(tol).covers(Point(float(p @ u), float(p @ v))):
+            return True
+    return False
+
+
 # ---------------------------------------------------------------------------
 # The bands (a rib of limited height)
 # ---------------------------------------------------------------------------
@@ -728,10 +760,21 @@ def run_job(job_dir):
         gmsh.option.setNumber("Mesh.MeshSizeMax", rib_size)
         # Every disc of every rib: (rib index, disc index, disc).
         jobs = [(i, di, disc) for i in range(len(ribs)) for di, disc in enumerate(discs_by_rib[i])]
+        chords_skipped = 0
         for i, di, disc in jobs:
             r = ribs[i]
             pieces = len(discs_by_rib[i])
-            coords, rim, chord_nodes, tris = mesh_rib_disc("rib_%d_%d" % (i, di), allv, disc, with_stations(chords_of_disc(chords.get(i, []), disc)), inner.get((i, di), []), rib_size)
+            # A chord that leaves the disc is not embedded (see
+            # chord_leaves_disc); the rib is meshed without it and the note
+            # names it.
+            disc_chords = []
+            for va, vb, n in chords_of_disc(chords.get(i, []), disc):
+                if chord_leaves_disc(allv, disc, va, vb, r["normal"]):
+                    chords_skipped += 1
+                    rib_notes.append("rib %d: the chord between vertices %d and %d leaves the rib's section (a spar web through a flap's hinge cavity?); not embedded, the web will not share this rib's nodes" % (int(r["id"]), va, vb))
+                    continue
+                disc_chords.append((va, vb, n))
+            coords, rim, chord_nodes, tris = mesh_rib_disc("rib_%d_%d" % (i, di), allv, disc, with_stations(disc_chords), inner.get((i, di), []), rib_size)
             if not len(tris):
                 rib_notes.append("rib %d: gmsh meshed no triangle into its disc%s" % (int(r["id"]), (" (piece %d of %d)" % (di + 1, pieces)) if pieces > 1 else ""))
                 continue
@@ -760,10 +803,21 @@ def run_job(job_dir):
                 if key is not None:
                     shared[key] = row
             mapped = np.array([[row_of_scratch[int(v)] for v in row] for row in tris], dtype=np.int64).reshape(-1, 3)
+            # Two scratch nodes at one position merge into one row; a
+            # triangle that used both has no area and would stop the
+            # solver. Dropped and counted.
+            if len(mapped):
+                distinct = (mapped[:, 0] != mapped[:, 1]) & (mapped[:, 1] != mapped[:, 2]) & (mapped[:, 0] != mapped[:, 2])
+                collapsed = int((keep & ~distinct).sum())
+                if collapsed:
+                    rib_notes.append("rib %d: %d triangle(s) collapsed onto one node when gmsh's coincident nodes were merged; dropped" % (int(r["id"]), collapsed))
+                keep &= distinct
             rib_rows.append(mapped[keep])
             rib_ids.append(np.full(int(keep.sum()), int(r["id"]), dtype=np.int32))
     finally:
         gmsh.finalize()
+    if chords_skipped:
+        log("  %d chord(s) left the rib sections and were not embedded" % chords_skipped)
 
     rib_faces = np.concatenate(rib_rows).astype(np.int64) if rib_rows else np.zeros((0, 3), dtype=np.int64)
     rib_id = np.concatenate(rib_ids) if rib_ids else np.zeros(0, dtype=np.int32)
