@@ -3062,6 +3062,124 @@ with a fail-fast in its mass-items check at HEAD too (the dangling
 attachment load), before RESULT prints; the load-case check was moved
 ahead of it and reports its own line.
 
+### The panel method on the body triangulation (2026-11-15)
+
+Matt's requirement, after the my_drone T-tail came out asymmetric: "the
+triangulation shown in the renderer is what is used for all analyses".
+Two defects started it. The higher-order code (Johnson's networks) ignored
+`WingModel::symmetric` -- a tip-to-tip wing was paneled as its starboard
+half with a free root edge, the plane off because the placed minimum y was
+not 0 -- and a centreline fin was unsupported either way (its wake in y = 0
+through the tailplane root gave Cp of -800; with the plane on the solve
+threw). Behind both: the networks were a private grid, booleans were
+refused, and overlapping operands were paneled separately with their
+buried panels. He agreed to six recommendations and said go.
+
+**The solver** (`core/include/aerotelic/tri_panel.hpp`,
+`src/tri_panel.cpp`): constant-strength source and doublet on every
+triangle of a closed body, the Dirichlet (interior-potential) form of
+Morino -- zero perturbation potential just inside every panel, sources
+prescribed as -(n·V∞), the doublet strengths (the outer potential) solved
+for (Katz & Plotkin ch. 12). Influence of a flat triangle in closed form:
+the signed solid angle by Van Oosterom & Strackee's triangle formula,
+2 atan2(-R₁·(R₂×R₃), |R₁||R₂||R₃| + ...), positive on the +n side, and the
+source integral ∫dS/r = Σ ρ_k ln((r₁+r₂+d)/(r₁+r₂-d)) - |h||Ω| (Hess &
+Smith); panels beyond 8 radii take the point source and dipole. A body
+names its TRAILING-EDGE POLYLINES; every mesh edge on one with a triangle
+each side sheds a flat wake strip along the stream of strength
+μ_upper - μ_lower, folded into the two panels' columns (the strip's corners
+(b, a, a+Ld, b+Ld) so its normal is d × dl, the upper panel the one facing
+that way); an edge with one triangle (a fin cut at the plane) or whose wake
+would run into another body (the buried-edge rule) sheds nothing. With
+`symmetry_y` every panel's and wake's image is added to its own column, a
+body straddling the plane is cut there (`mesh_cut.hpp`) and its y < 0 side
+dropped, and triangles lying in the plane (a half wing's root cap) are
+left out. The surface velocity is the free stream's tangential part plus
+the surface gradient of μ, fitted by weighted least squares over the
+neighbours across edges and vertices that face within 60° (so the other
+side of a sharp trailing edge is left out); Cp = 1 - |V|²/V∞²; forces
+-ΣCp n A with the images. Direct LU to 1500 unknowns, restarted GMRES on
+the Jacobi-scaled system beyond (the Dirichlet matrix has -1/2 on the
+diagonal and converges in a few dozen iterations: 6000 unknowns in 0.5 s
+against 19 s by LU), refused past 20,000 with a message that says to
+coarsen the Mesh tab. Also here: `EdgesOnPolylines`, `ComputeMeshStats`
+(count, edge lengths, worst aspect = longest edge over shortest altitude,
+slivers, closed, outward), `TrianglesNear` (the proximity warning),
+`CutSection` with a panel mask and `BinnedLoads` for the loading plots.
+
+**The aero copy** (`WingModel::BuildAeroMesh`): a wing with flaps is
+paneled as ONE sealed body on the same stations as `BuildMeshes` (tip to
+tip when symmetric, the derived root section and root bay included), every
+deflected flap entering as the kink of the sealed section about its hinge
+(`DeflectAboutHinge`, blended over 5% of chord, clamped to the section's
+limits), the flap's end stations seeded -- the vortex-lattice view of a
+flap, since no potential solver can see a 4 mm slot through panels larger
+than the slot. Without flaps the aero copy is `BuildMeshes()`' own "Main",
+the very triangles the viewport shows. Its trailing edge is handed over as
+the ring's seam VERTICES, not a sampled curve: a flap's end makes the
+trailing edge step from one station to the next, and a polyline sampled on
+its own missed the two sloped edges there, which shed no wake and cost a
+third of the lift (0.276 against 0.397 once they shed).
+`panel::LoftTrailingEdgePolylines` does the same for a tagged loft.
+
+**The trim module** (`Entity/AerotelicAeroTrim.h`, rewritten): `BuildCase`
+collects every chosen entity's aero bodies -- a wing's aero copy, every
+other lofted entity's own placed triangles (`GetPlacedMeshes` at tolerance
+0, the Mesh tab's grid) with the trailing edge its loft tags, a boolean
+result as its operands' aero copies (recursively), the reflected copy of a
+mirrored entity when the plane is off -- then FUSES every group of bodies
+whose bounds overlap through the mesh boolean into one closed surface, so
+nothing of one body lies inside another; the fused triangles are handed
+back to their entities by the nearest original surface (`MeshSdf`), which is
+how each entity keeps its own force breakdown and span loading
+(`FShare::Mask`). A fuse the boolean refuses leaves the bodies separate
+with a warning. The case carries a MESH REPORT: per body the triangle
+count, edge lengths, worst aspect, slivers, closedness; what was fused; a
+warning for anything left overlapping within a panel of something else.
+`DefaultSymmetry` now also turns the plane on for a symmetric wing.
+`MakeLoadCase` hands every panel to the structure as its own sample (one
+"network" per panel, so the structural face that IS the triangle takes its
+value exactly). `ShowAeroMeshInViewport` puts the bodies that will be
+solved into the main 3D view, grey, flat, with their edges, until hidden.
+`FRunner` is unchanged in shape; its report begins with the mesh report and
+ends with the solver's statistics.
+
+**The dialog** (Analysis > Panel Method; the file keeps its name): the
+picker takes boolean results; the "Paneling" group is gone and a "The mesh
+that will be solved" group reads the report, warns, and has the switch
+that shows the mesh in the 3D view and a button to rebuild the report; a
+Fuse switch (off panels the bodies separately, buried panels and all, for
+comparison). The surface tab paints every panel as a flat facet of its own
+Cp with the edges drawn (a checkbox in the colour-bar popup turns them
+off), so the mesh is in plain sight. The span loading cuts a wing's own
+triangles of the fused surface (a tip-to-tip wing shows both halves, an
+imaged one its image); "All bodies" bins every panel. The polars' per-body
+columns are the entities' shares. The help was rewritten.
+
+**Checked**: `tri_panel_check` 27/27 -- the sphere Cp = 1 - 9/4 sin²θ to
+0.083 worst and 0.016 mean on 2688 panels, μ = x/2, no net force, GMRES
+equal to LU to 1e-9; the half wing with its image gives C_L 0.361 from the
+wake and 0.366 from the pressures against the higher-order code's 0.374
+and lifting line's 0.349, and EXACTLY the same wake lift as the symmetric
+wing built tip to tip without a plane; the section cuts integrate to the
+lift; the flapped aero copy lifts 0.397 at zero incidence against the
+higher-order code's 0.413 (thin-airfoil estimate 0.25-0.35), converges to
+0.373 on twice the grid, mirrors for the opposite deflection, and every
+trailing-edge edge sheds. On my_drone (a probe, not committed): the five
+bodies paneled SEPARATELY blow up exactly as the theory says (Cp -2968 on
+the boom buried in the fuselage), FUSED they solve to Cp -3.7..1 in 0.4 s
+on 6322 triangles with a perfectly symmetric pressure field. The document
+commandlet's stage-4 step runs on the new module.
+
+**Known limits**: a thin cowl wall under the Dirichlet formulation is
+ill-conditioned when its panels are larger than the wall (refine the cowl);
+the fuse of overlapping bodies happens on the aero copies, so the aero
+surface near a flap differs from the structural bodies' (sealed against
+gapped) and the pressures there land on the structural faces by nearest
+centre as before; sideslip needs the plane off; constant panels want two to
+four times the count of the curved higher-order panels for the same
+accuracy, which the Mesh tab controls.
+
 ## The Model menu and the material library (2026-11-07)
 
 **Geometry became Model.** The menu that holds the airfoils, the

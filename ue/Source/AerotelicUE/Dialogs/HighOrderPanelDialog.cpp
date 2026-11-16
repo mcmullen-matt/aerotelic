@@ -47,7 +47,6 @@
 #include <vector>
 
 // Last: OCCT's Handle() macro vs engine headers.
-#include "aerotelic/panel_loads.hpp"
 #include "aerotelic/colormaps.hpp"
 #include "Entity/AerotelicAeroTrim.h"
 #include "Entity/AerotelicDocumentSubsystem.h"
@@ -58,13 +57,9 @@
 namespace
 {
 	using aerotelic::project_yaml::EntityType;
-	using aerotelic::panel::Network;
-	using aerotelic::panel::NetworkResult;
-	using aerotelic::panel::NetworkType;
-	using aerotelic::panel::PanelResult;
-	using aerotelic::panel::Solution;
-	// The paneling, the cases and their derivation live in the shared
-	// module (2026-11-15): Model > Load Cases trims with the same code.
+	namespace tripanel = aerotelic::tripanel;
+	// The meshing, the cases and their derivation live in the shared module
+	// (2026-11-15): Model > Load Cases trims with the same code.
 	using AerotelicAeroTrim::FCase;
 	using AerotelicAeroTrim::FShare;
 	using AerotelicAeroTrim::FCoefs;
@@ -148,48 +143,41 @@ namespace
 		return true;
 	}
 
-	// The panels of every network as quads with their results, legacy VTK
+	// The panels of every body as triangles with their results, legacy VTK
 	// polydata in SI lengths (as the Kratos route's file is), so a viewer
 	// can colour the bodies by Cp.
-	bool WritePanelsVtk(const FString& Path, const std::vector<Network>& Nets, const Solution& Sol, double LengthToSI, FString& OutError)
+	bool WritePanelsVtk(const FString& Path, const FCase& C, double LengthToSI, FString& OutError)
 	{
 		FString S;
-		S += TEXT("# vtk DataFile Version 3.0\nAerotelic high order panel method: panels, doublet/source strength, pressure coefficient\nASCII\nDATASET POLYDATA\n");
-		int32 NPanels = 0;
-		for (const NetworkResult& NR : Sol.networks) NPanels += static_cast<int32>(NR.panels.size());
-		S += FString::Printf(TEXT("POINTS %d double\n"), 4 * NPanels);
-		for (size_t k = 0; k < Sol.networks.size(); ++k)
+		S += TEXT("# vtk DataFile Version 3.0\nAerotelic panel method on triangles: panels, doublet/source strength, pressure coefficient\nASCII\nDATASET POLYDATA\n");
+		int32 NPoints = 0, NPanels = 0;
+		for (const tripanel::BodyResult& B : C.Sol.bodies) { NPoints += static_cast<int32>(B.mesh.vertices.size()); NPanels += static_cast<int32>(B.mesh.triangles.size()); }
+		S += FString::Printf(TEXT("POINTS %d double\n"), NPoints);
+		for (const tripanel::BodyResult& B : C.Sol.bodies)
+			for (const aerotelic::Vec3& P : B.mesh.vertices) S += FString::Printf(TEXT("%.9g %.9g %.9g\n"), P.x * LengthToSI, P.y * LengthToSI, P.z * LengthToSI);
+		S += FString::Printf(TEXT("POLYGONS %d %d\n"), NPanels, 4 * NPanels);
+		int32 Base = 0;
+		for (const tripanel::BodyResult& B : C.Sol.bodies)
 		{
-			const Network& Net = Nets[k];
-			const NetworkResult& NR = Sol.networks[k];
-			for (int32 i = 0; i < NR.panel_rows; ++i)
-			{
-				for (int32 j = 0; j < NR.panel_cols; ++j)
-				{
-					const aerotelic::Vec3 C[4] = { Net.Corner(i + 1, j + 1), Net.Corner(i + 1, j + 2), Net.Corner(i + 2, j + 2), Net.Corner(i + 2, j + 1) };
-					for (const aerotelic::Vec3& P : C) S += FString::Printf(TEXT("%.9g %.9g %.9g\n"), P.x * LengthToSI, P.y * LengthToSI, P.z * LengthToSI);
-				}
-			}
+			for (const auto& T : B.mesh.triangles) S += FString::Printf(TEXT("3 %d %d %d\n"), Base + T[0], Base + T[1], Base + T[2]);
+			Base += static_cast<int32>(B.mesh.vertices.size());
 		}
-		S += FString::Printf(TEXT("POLYGONS %d %d\n"), NPanels, 5 * NPanels);
-		for (int32 p = 0; p < NPanels; ++p) S += FString::Printf(TEXT("4 %d %d %d %d\n"), 4 * p, 4 * p + 1, 4 * p + 2, 4 * p + 3);
 		S += FString::Printf(TEXT("CELL_DATA %d\n"), NPanels);
-		auto Field = [&](const TCHAR* Name, TFunction<double(const PanelResult&)> Get)
+		auto Field = [&](const TCHAR* Name, TFunction<double(const tripanel::PanelResult&)> Get)
 		{
 			S += FString::Printf(TEXT("SCALARS %s double 1\nLOOKUP_TABLE default\n"), Name);
-			for (const NetworkResult& NR : Sol.networks)
-				for (const PanelResult& P : NR.panels) S += FString::Printf(TEXT("%.9g\n"), Get(P));
+			for (const tripanel::BodyResult& B : C.Sol.bodies)
+				for (const tripanel::PanelResult& P : B.panels) S += FString::Printf(TEXT("%.9g\n"), Get(P));
 		};
-		Field(TEXT("Cp"), [](const PanelResult& P) { return P.cp_upper; });
-		Field(TEXT("doublet"), [](const PanelResult& P) { return P.mu; });
-		Field(TEXT("source"), [](const PanelResult& P) { return P.sigma; });
-		Field(TEXT("curvature_delta"), [](const PanelResult& P) { return P.delta; });
-		S += TEXT("SCALARS network int 1\nLOOKUP_TABLE default\n");
-		for (size_t k = 0; k < Sol.networks.size(); ++k)
-			for (size_t p = 0; p < Sol.networks[k].panels.size(); ++p) S += FString::Printf(TEXT("%d\n"), static_cast<int32>(k));
-		S += TEXT("VECTORS velocity_upper double\n");
-		for (const NetworkResult& NR : Sol.networks)
-			for (const PanelResult& P : NR.panels) S += FString::Printf(TEXT("%.9g %.9g %.9g\n"), P.v_upper.x, P.v_upper.y, P.v_upper.z);
+		Field(TEXT("Cp"), [](const tripanel::PanelResult& P) { return P.cp; });
+		Field(TEXT("doublet"), [](const tripanel::PanelResult& P) { return P.mu; });
+		Field(TEXT("source"), [](const tripanel::PanelResult& P) { return P.sigma; });
+		S += TEXT("SCALARS body int 1\nLOOKUP_TABLE default\n");
+		for (size_t k = 0; k < C.Sol.bodies.size(); ++k)
+			for (size_t p = 0; p < C.Sol.bodies[k].panels.size(); ++p) S += FString::Printf(TEXT("%d\n"), static_cast<int32>(k));
+		S += TEXT("VECTORS velocity double\n");
+		for (const tripanel::BodyResult& B : C.Sol.bodies)
+			for (const tripanel::PanelResult& P : B.panels) S += FString::Printf(TEXT("%.9g %.9g %.9g\n"), P.velocity.x, P.velocity.y, P.velocity.z);
 		if (!FFileHelper::SaveStringToFile(S, *Path))
 		{
 			OutError = TEXT("Could not write ") + Path;
@@ -201,14 +189,15 @@ namespace
 	struct FJob
 	{
 		TArray<TSharedPtr<FCase>> Cases;
-		aerotelic::panel::Options Options;
+		tripanel::Options Options;
 		std::atomic<bool> bCancel{ false };
 		FString Error;
 	};
 
-	// The coloured mesh of a case: every non-wake network as its corner grid
-	// with the panel pressures averaged onto the corners, both windings of
-	// every quad (the engine's two-sided convention, as the bodies are drawn).
+	// The coloured mesh of a case: every panel as its own flat facet (three
+	// vertices, both windings -- the engine's two-sided convention, as the
+	// bodies are drawn) carrying its own Cp, and the image when the solve
+	// had the plane. Flat facets show the panels as the panels they are.
 	struct FCpMesh
 	{
 		TArray<FVector> Vertices;
@@ -220,45 +209,24 @@ namespace
 	FCpMesh BuildCpMesh(const FCase& C)
 	{
 		FCpMesh M;
-		for (size_t k = 0; k < C.Sol.networks.size(); ++k)
+		for (const tripanel::BodyResult& B : C.Sol.bodies)
 		{
-			const NetworkResult& NR = C.Sol.networks[k];
-			const Network& Net = C.Nets[k];
-			if (NR.type == NetworkType::DoubletWake || NR.type == NetworkType::DoubletWakeConstant) continue;
-			const int32 Rows = NR.panel_rows, Cols = NR.panel_cols;
-			if (Rows <= 0 || Cols <= 0 || Net.rows != Rows + 1 || Net.cols != Cols + 1) continue;
-			const int32 Base = M.Vertices.Num();
-			for (int32 I = 0; I <= Rows; ++I)
+			for (size_t t = 0; t < B.mesh.triangles.size(); ++t)
 			{
-				for (int32 J = 0; J <= Cols; ++J)
+				const tripanel::PanelResult& P = B.panels[t];
+				const auto& T = B.mesh.triangles[t];
+				for (int32 Side = 0; Side < (C.bImagedSolve ? 2 : 1); ++Side)
 				{
-					double CpSum = 0.0;
-					FVector NSum = FVector::ZeroVector;
-					int32 Count = 0;
-					for (int32 i = I - 1; i <= I; ++i)
+					const int32 Base = M.Vertices.Num();
+					for (int32 k = 0; k < 3; ++k)
 					{
-						for (int32 j = J - 1; j <= J; ++j)
-						{
-							if (i < 0 || j < 0 || i >= Rows || j >= Cols) continue;
-							const PanelResult& P = NR.panels[static_cast<size_t>(i) * Cols + j];
-							CpSum += P.cp_upper;
-							NSum += FVector(P.normal.x, P.normal.y, P.normal.z);
-							++Count;
-						}
+						aerotelic::Vec3 V = B.mesh.vertices[T[k]];
+						if (Side == 1) V.y = -V.y;
+						M.Vertices.Add(FVector(V.x, V.y, V.z));
+						M.Normals.Add(FVector(P.normal.x, Side == 1 ? -P.normal.y : P.normal.y, P.normal.z));
+						M.Cp.Add(P.cp);
 					}
-					const aerotelic::Vec3 Q = Net.Corner(I + 1, J + 1);
-					M.Vertices.Add(FVector(Q.x, Q.y, Q.z));
-					M.Normals.Add(NSum.GetSafeNormal());
-					M.Cp.Add(Count > 0 ? CpSum / Count : 0.0);
-				}
-			}
-			auto Idx = [&](int32 I, int32 J) { return Base + I * (Cols + 1) + J; };
-			for (int32 i = 0; i < Rows; ++i)
-			{
-				for (int32 j = 0; j < Cols; ++j)
-				{
-					const int32 A = Idx(i, j), B = Idx(i, j + 1), Cc = Idx(i + 1, j + 1), D = Idx(i + 1, j);
-					M.Triangles.Append({ A, B, Cc, A, Cc, D, A, Cc, B, A, D, Cc });
+					M.Triangles.Append({ Base, Base + 1, Base + 2, Base, Base + 2, Base + 1 });
 				}
 			}
 		}
@@ -279,26 +247,6 @@ namespace
 		return Out;
 	}
 
-	// The reflection of a network result in y = 0, for the strips of the
-	// other half of an imaged wing.
-	NetworkResult ReflectedResult(const NetworkResult& R)
-	{
-		NetworkResult M = R;
-		for (PanelResult& P : M.panels)
-		{
-			P.centre.y = -P.centre.y;
-			P.normal.y = -P.normal.y;
-		}
-		return M;
-	}
-
-	Network ReflectedNetwork(const Network& N)
-	{
-		Network M = N;
-		for (aerotelic::Vec3& P : M.corners) P.y = -P.y;
-		return M;
-	}
-
 	// ---- the dialog's state: owned by its widgets (the window is modeless) ----
 
 	struct FState : public TSharedFromThis<FState>
@@ -309,14 +257,16 @@ namespace
 
 		// Inputs (tab 1).
 		TSharedPtr<SAerotelicBodyPicker> Picker;
-		TSharedPtr<SCheckBox> SymmetryCheck;
+		TSharedPtr<SCheckBox> SymmetryCheck, FuseCheck, ShowMeshCheck;
 		bool bSymmetryTouched = false;
-		double Chordwise = 12.0, Spanwise = 10.0, WakeChords = 20.0;
-		double Along = 16.0, Around = 12.0;
+		double WakeChords = 20.0;
 		double ReferenceArea = 1.0, ReferenceLength = 1.0;
 		TSharedPtr<SEditableTextBox> AlphaBox, BetaBox, PathBox;
-		TSharedPtr<STextBlock> LblWarn, LblSummary, LblInput;
+		TSharedPtr<STextBlock> LblWarn, LblMesh, LblSummary, LblInput;
 		TSharedPtr<SButton> SolveButton;
+		// The mesh as it would be solved, built on every change of the bodies
+		// (the mesh report and the viewport copy read it).
+		TSharedPtr<FCase> MeshCase;
 
 		// Results.
 		TArray<TSharedPtr<FCase>> Cases;
@@ -332,6 +282,7 @@ namespace
 		double CpLo = -1.0, CpHi = 1.0;
 		bool bRangeAuto = true;
 		bool bFramed = false;
+		bool bEdges = true;
 		FCpMesh Mesh; // of the current case
 		TSharedRef<TArray<TSharedPtr<FString>>> MapNames = MakeShared<TArray<TSharedPtr<FString>>>();
 
@@ -359,14 +310,14 @@ namespace
 			return Out;
 		}
 
-		// The paneling as the tab has it, for the shared module.
+		// The set-up as the tab has it, for the shared module.
 		AerotelicAeroTrim::FSetup Setup() const
 		{
 			AerotelicAeroTrim::FSetup S;
 			for (AAerotelicEntityActor* E : Chosen()) S.Entities.Add(E);
 			S.bSymmetry = SymmetryCheck.IsValid() && SymmetryCheck->IsChecked();
-			S.Chordwise = Chordwise; S.Spanwise = Spanwise; S.WakeChords = WakeChords;
-			S.Along = Along; S.Around = Around;
+			S.bFuse = !FuseCheck.IsValid() || FuseCheck->IsChecked();
+			S.WakeChords = WakeChords;
 			S.ReferenceArea = ReferenceArea; S.ReferenceLength = ReferenceLength;
 			return S;
 		}
@@ -384,8 +335,8 @@ namespace
 			const FCase* C = CurrentCase();
 			if (C == nullptr) return Out;
 			for (int32 i = 0; i < C->Shares.Num(); ++i)
-				if (C->Shares[i].bWing) Out.Add({ i, C->Shares[i].Name });
-			if (C->Shares.Num() > 1) Out.Add({ -1, TEXT("All bodies") });
+				if (C->Shares[i].bWing && !C->Shares[i].bMirrorCopy) Out.Add({ i, C->Shares[i].Name });
+			if (C->Shares.Num() > 1 || Out.Num() == 0) Out.Add({ -1, TEXT("All bodies") });
 			return Out;
 		}
 
@@ -396,31 +347,52 @@ namespace
 			return FText::FromString(FString::Printf(TEXT("α = %g°, β = %g°  (%d of %d)"), C->AlphaDeg, C->BetaDeg, Current + 1, Cases.Num()));
 		}
 
+		// The mesh the solver would take, and its report; the viewport copy
+		// follows when the box is ticked.
+		void RefreshMesh()
+		{
+			MeshCase.Reset();
+			const AerotelicAeroTrim::FSetup S = Setup();
+			FString Text;
+			if (S.LiveEntities().Num() == 0)
+			{
+				Text = TEXT("Choose at least one body.");
+			}
+			else
+			{
+				try
+				{
+					MeshCase = AerotelicAeroTrim::BuildCase(S, 0.0, 0.0);
+					Text = MeshCase->MeshReport;
+					for (const FString& N : MeshCase->Notes) Text += TEXT("\n") + N;
+					for (const FString& Sk : MeshCase->Skipped) Text += TEXT("\n") + Sk + TEXT(": skipped (no mesh)");
+				}
+				catch (const std::exception& E)
+				{
+					Text = FString(TEXT("The aero mesh could not be built: ")) + UTF8_TO_TCHAR(E.what());
+				}
+			}
+			if (LblMesh.IsValid()) LblMesh->SetText(FText::FromString(Text));
+			if (LblWarn.IsValid())
+			{
+				FString Warn;
+				if (MeshCase.IsValid()) for (const FString& W : MeshCase->Warnings) Warn += (Warn.IsEmpty() ? TEXT("") : TEXT("\n")) + W;
+				LblWarn->SetText(FText::FromString(Warn));
+				LblWarn->SetVisibility(Warn.IsEmpty() ? EVisibility::Collapsed : EVisibility::Visible);
+			}
+			if (ShowMeshCheck.IsValid() && ShowMeshCheck->IsChecked())
+			{
+				if (MeshCase.IsValid()) AerotelicAeroTrim::ShowAeroMeshInViewport(*MeshCase);
+				else AerotelicAeroTrim::HideAeroMeshInViewport();
+			}
+		}
+
 		void Refresh()
 		{
 			TArray<AAerotelicEntityActor*> Es = Chosen();
 			AerotelicAeroTrim::DefaultReferences(Es, ReferenceArea, ReferenceLength);
 			if (!bSymmetryTouched && SymmetryCheck.IsValid()) SymmetryCheck->SetIsChecked(AerotelicAeroTrim::DefaultSymmetry(Es) ? ECheckBoxState::Checked : ECheckBoxState::Unchecked);
-			// A panel method wants bodies that do not penetrate each other; a
-			// wing root buried in a fuselage still solves, but the panels inside
-			// the other body are not a surface the flow sees. Say so when the
-			// bounds overlap.
-			FString Warn;
-			for (int32 a = 0; a < Es.Num(); ++a)
-			{
-				for (int32 b = a + 1; b < Es.Num(); ++b)
-				{
-					const FBox A = Es[a]->GetPlacedBounds(false), B = Es[b]->GetPlacedBounds(false);
-					if (A.IsValid && B.IsValid && A.Intersect(B))
-						Warn += FString::Printf(TEXT("%s%s and %s"), Warn.IsEmpty() ? TEXT("") : TEXT("; "), *Es[a]->EntityName, *Es[b]->EntityName);
-				}
-			}
-			if (LblWarn.IsValid())
-			{
-				LblWarn->SetText(Warn.IsEmpty() ? FText::GetEmpty()
-					: FText::FromString(TEXT("Bounds overlap: ") + Warn + TEXT(". Bodies that penetrate each other solve, but the panels of one inside the other are not a wetted surface: pressures near the junction are not to be trusted.")));
-				LblWarn->SetVisibility(Warn.IsEmpty() ? EVisibility::Collapsed : EVisibility::Visible);
-			}
+			RefreshMesh();
 			Status(Es.Num() ? FText::FromString(FString::Printf(TEXT("%d bodies chosen for the panel method"), Es.Num())) : LOCTEXT("PickOne", "Choose at least one body."));
 		}
 
@@ -437,13 +409,13 @@ namespace
 		{
 			if (Job.IsValid())
 			{
-				AerotelicMessageBox(EAppMsgType::Ok, LOCTEXT("Busy", "A solve is still running."), LOCTEXT("Title", "High Order Panel"));
+				AerotelicMessageBox(EAppMsgType::Ok, LOCTEXT("Busy", "A solve is still running."), LOCTEXT("Title", "Panel Method"));
 				return;
 			}
 			TArray<AAerotelicEntityActor*> Es = Chosen();
 			if (Es.Num() == 0)
 			{
-				AerotelicMessageBox(EAppMsgType::Ok, LOCTEXT("PickOneWarn", "Choose at least one body."), LOCTEXT("Title", "High Order Panel"));
+				AerotelicMessageBox(EAppMsgType::Ok, LOCTEXT("PickOneWarn", "Choose at least one body."), LOCTEXT("Title", "Panel Method"));
 				return;
 			}
 			bFramed = false;
@@ -464,19 +436,19 @@ namespace
 				SetInputError(TEXT("Give a comma separated list for the angle of attack OR for the sideslip, not both: the solutions are a sweep of one angle at a fixed value of the other, not every combination of the two."));
 				return;
 			}
+			const AerotelicAeroTrim::FSetup S = Setup();
 			for (double B : Betas)
 			{
-				if (B != 0.0)
+				if (B != 0.0 && S.bSymmetry)
 				{
-					SetInputError(TEXT("Sideslip is not supported yet: the symmetry plane and the mirrored loads assume a free stream in the plane of symmetry. Enter 0."));
+					SetInputError(TEXT("Sideslip needs the symmetry plane off: the image assumes a free stream in the plane of symmetry."));
 					return;
 				}
 			}
 			SetInputError(FString());
 			bSweepAlpha = Betas.Num() <= 1;
-			const AerotelicAeroTrim::FSetup S = Setup();
 
-			Status(LOCTEXT("Paneling", "Paneling the bodies..."));
+			Status(LOCTEXT("Meshing", "Building the aero mesh..."));
 			TSharedPtr<FJob> NewJob = MakeShared<FJob>();
 			try
 			{
@@ -492,7 +464,7 @@ namespace
 			catch (const std::exception& E)
 			{
 				Status(LOCTEXT("Ready", "Ready"));
-				AerotelicMessageBox(EAppMsgType::Ok, FText::FromString(FString(TEXT("The analysis failed:\n")) + UTF8_TO_TCHAR(E.what())), LOCTEXT("Failed", "High Order Panel Failed"));
+				AerotelicMessageBox(EAppMsgType::Ok, FText::FromString(FString(TEXT("The analysis failed:\n")) + UTF8_TO_TCHAR(E.what())), LOCTEXT("Failed", "Panel Method Failed"));
 				return;
 			}
 			NewJob->Options = AerotelicAeroTrim::SolveOptions(S);
@@ -504,7 +476,7 @@ namespace
 		{
 			Job = NewJob;
 			if (SolveButton.IsValid()) SolveButton->SetEnabled(false);
-			Status(FText::FromString(FString::Printf(TEXT("Solving 1 of %d..."), NewJob->Cases.Num())));
+			Status(FText::FromString(FString::Printf(TEXT("Solving 1 of %d (%d panels)..."), NewJob->Cases.Num(), NewJob->Cases[0]->Triangles)));
 			TWeakPtr<FState> Weak = AsShared();
 			auto Work = [NewJob, Weak]()
 			{
@@ -515,8 +487,7 @@ namespace
 					TSharedPtr<FCase> C = NewJob->Cases[i];
 					try
 					{
-						C->Sol = aerotelic::panel::Solve(C->Nets, C->Stream, NewJob->Options);
-						C->bSolved = true;
+						AerotelicAeroTrim::SolveCaseNow(*C, NewJob->Options);
 					}
 					catch (const std::exception& E)
 					{
@@ -555,22 +526,22 @@ namespace
 			if (!Done->Error.IsEmpty())
 			{
 				Status(LOCTEXT("Ready", "Ready"));
-				AerotelicMessageBox(EAppMsgType::Ok, FText::FromString(TEXT("The analysis failed:\n") + Done->Error), LOCTEXT("Failed", "High Order Panel Failed"));
+				AerotelicMessageBox(EAppMsgType::Ok, FText::FromString(TEXT("The analysis failed:\n") + Done->Error), LOCTEXT("Failed", "Panel Method Failed"));
 				return;
 			}
 			if (Done->bCancel.load()) return;
 
-			double Seconds = 0.0, MaxDelta = 0.0;
+			double Seconds = 0.0;
 			double Lo = 1e9, Hi = -1e9;
 			for (TSharedPtr<FCase>& C : Done->Cases)
 			{
 				AerotelicAeroTrim::Derive(*C, ReferenceLength);
 				Seconds += C->Sol.seconds_influence + C->Sol.seconds_solve;
-				MaxDelta = FMath::Max(MaxDelta, C->Sol.max_delta);
 				Lo = FMath::Min(Lo, C->CpMin);
 				Hi = FMath::Max(Hi, C->CpMax);
-				UE_LOG(LogTemp, Log, TEXT("High order panel: alpha %g beta %g: C_L %.4f (wake %.4f), C_D %.4f, C_m %.4f, Cp %.3f..%.3f, %d unknowns, pivot ratio %.2e, max delta %.3f, %.2f s"),
-					C->AlphaDeg, C->BetaDeg, C->CL, C->Sol.lift_from_wake.value_or(0.0), C->CD, C->Cm, C->CpMin, C->CpMax, C->Sol.unknowns, C->Sol.pivot_ratio, C->Sol.max_delta, C->Sol.seconds_influence + C->Sol.seconds_solve);
+				UE_LOG(LogTemp, Log, TEXT("Panel method: alpha %g beta %g: C_L %.4f (wake %.4f), C_D %.4f, C_m %.4f, Cp %.3f..%.3f, %d unknowns, %s, %.2f s"),
+					C->AlphaDeg, C->BetaDeg, C->CL, C->Sol.lift_from_wake.value_or(0.0), C->CD, C->Cm, C->CpMin, C->CpMax, C->Sol.unknowns,
+					C->Sol.direct ? TEXT("LU") : *FString::Printf(TEXT("GMRES %d it"), C->Sol.iterations), C->Sol.seconds_influence + C->Sol.seconds_solve);
 			}
 			Cases = Done->Cases;
 			Current = 0;
@@ -582,12 +553,14 @@ namespace
 			}
 
 			const FCase& First = *Cases[0];
-			FString Summary = FString::Printf(TEXT("%d solution%s: %d body panels + %d wake, %d unknowns%s; panel curvature %.3f%s; %.2f s in all."),
+			FString Summary = FString::Printf(TEXT("%d solution%s: %d panels + %d wake strips, %d unknowns%s; %s; %.2f s in all.\n"),
 				Cases.Num(), Cases.Num() == 1 ? TEXT("") : TEXT("s"), First.NBody, First.NWake, First.Sol.unknowns,
-				Done->Options.symmetry_y ? TEXT(", with the image about y = 0") : TEXT(", no symmetry plane"),
-				MaxDelta, MaxDelta > 0.066 ? TEXT(" (the method wants under 0.066: refine the paneling)") : TEXT(""), Seconds);
-			for (const FString& Sk : First.Skipped) Summary += FString::Printf(TEXT("\n%s: skipped (no loft to panel)"), *Sk);
+				Done->Options.symmetry_y ? TEXT(" (the y >= 0 half, the image standing in for the rest)") : TEXT(", no symmetry plane"),
+				First.Sol.direct ? TEXT("direct solve") : *FString::Printf(TEXT("GMRES, %d iterations, residual %.1e"), First.Sol.iterations, First.Sol.residual), Seconds);
+			Summary += TEXT("Aero mesh:\n") + First.MeshReport;
+			for (const FString& Sk : First.Skipped) Summary += FString::Printf(TEXT("\n%s: skipped (no mesh)"), *Sk);
 			for (const FString& N : First.Notes) Summary += TEXT("\n") + N;
+			for (const std::string& N : First.Sol.notes) Summary += TEXT("\n") + FString(UTF8_TO_TCHAR(N.c_str()));
 
 			// The solution files, one per case.
 			const FString Path = PathBox->GetText().ToString().TrimStartAndEnd();
@@ -605,8 +578,8 @@ namespace
 						CasePath = FString::Printf(TEXT("%s_%s%g%s"), *Base, bSweepAlpha ? TEXT("aoa") : TEXT("beta"), bSweepAlpha ? C->AlphaDeg : C->BetaDeg, *Ext);
 					}
 					FString WErr;
-					if (WritePanelsVtk(CasePath, C->Nets, C->Sol, Units.LengthToSI(), WErr)) ++NWritten;
-					else AerotelicMessageBox(EAppMsgType::Ok, FText::FromString(WErr), LOCTEXT("Title", "High Order Panel"));
+					if (WritePanelsVtk(CasePath, *C, Units.LengthToSI(), WErr)) ++NWritten;
+					else AerotelicMessageBox(EAppMsgType::Ok, FText::FromString(WErr), LOCTEXT("Title", "Panel Method"));
 				}
 				if (NWritten > 0) Written = FString::Printf(TEXT(" -> %d file%s beside %s"), NWritten, NWritten == 1 ? TEXT("") : TEXT("s"), *FPaths::GetCleanFilename(Path));
 				Summary += TEXT("\nSolution files written: ") + FString::FromInt(NWritten) + TEXT(".");
@@ -616,7 +589,7 @@ namespace
 			UpdateSurface(true);
 			UpdateLoads();
 			UpdatePolars();
-			Status(FText::FromString(FString::Printf(TEXT("High order panel: %d solution%s, C_L %.4f to %.4f, Cp %.2f to %.2f, %d unknowns in %.2f s%s"),
+			Status(FText::FromString(FString::Printf(TEXT("Panel method: %d solution%s, C_L %.4f to %.4f, Cp %.2f to %.2f, %d unknowns in %.2f s%s"),
 				Cases.Num(), Cases.Num() == 1 ? TEXT("") : TEXT("s"), Cases[0]->CL, Cases.Last()->CL, Lo, Hi, First.Sol.unknowns, Seconds, *Written)));
 			if (bSmoke) RunSmoke();
 		}
@@ -629,7 +602,7 @@ namespace
 			FIntVector Size;
 			if (!FSlateApplication::Get().TakeScreenshot(W.ToSharedRef(), Pixels, Size) || Pixels.Num() == 0)
 			{
-				UE_LOG(LogTemp, Warning, TEXT("HighOrderPanel smoke: screenshot %s failed"), *Name);
+				UE_LOG(LogTemp, Warning, TEXT("PanelMethod smoke: screenshot %s failed"), *Name);
 				return;
 			}
 			for (FColor& C : Pixels) C.A = 255;
@@ -637,7 +610,7 @@ namespace
 			FImageUtils::PNGCompressImageArray(Size.X, Size.Y, Pixels, Png);
 			const FString Path = FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("Screenshots"), Name);
 			FFileHelper::SaveArrayToFile(Png, *Path);
-			UE_LOG(LogTemp, Log, TEXT("HighOrderPanel smoke: wrote %s (%d x %d)"), *Path, Size.X, Size.Y);
+			UE_LOG(LogTemp, Log, TEXT("PanelMethod smoke: wrote %s (%d x %d)"), *Path, Size.X, Size.Y);
 		}
 
 		void RunSmoke()
@@ -665,7 +638,7 @@ namespace
 				if (S->MeshActor.IsValid() && S->MeshActor->GetMesh() != nullptr)
 				{
 					UMaterialInterface* M = S->MeshActor->GetMesh()->GetMaterial(0);
-					UE_LOG(LogTemp, Log, TEXT("HighOrderPanel smoke: surface material %s, base %s, %d vertices; shader compiler %s, %d jobs remaining; mesh at %s"),
+					UE_LOG(LogTemp, Log, TEXT("PanelMethod smoke: surface material %s, base %s, %d vertices; shader compiler %s, %d jobs remaining; mesh at %s"),
 						*GetNameSafe(M), M ? *GetNameSafe(M->GetBaseMaterial()) : TEXT("-"), S->Mesh.Vertices.Num(),
 						GShaderCompilingManager != nullptr && GShaderCompilingManager->IsCompiling() ? TEXT("BUSY") : TEXT("idle"),
 						GShaderCompilingManager != nullptr ? GShaderCompilingManager->GetNumRemainingJobs() : -1,
@@ -689,7 +662,7 @@ namespace
 						TSharedPtr<FState> S = Weak.Pin();
 						if (!S.IsValid()) return;
 						S->Screenshot(TEXT("panel_smoke_polars.png"));
-						UE_LOG(LogTemp, Log, TEXT("HighOrderPanel smoke: done, quitting"));
+						UE_LOG(LogTemp, Log, TEXT("PanelMethod smoke: done, quitting"));
 						FPlatformMisc::RequestExit(false);
 					});
 				});
@@ -727,10 +700,11 @@ namespace
 				const TArray<FColor> Colors = ColorsFor(Mesh, *Map, CpLo, CpHi);
 				if (bSmoke && Mesh.Cp.Num() > 0)
 				{
-					UE_LOG(LogTemp, Log, TEXT("HighOrderPanel smoke: Cp mesh %d vertices, Cp %.3f .. %.3f mapped on %.3f .. %.3f with %s; colour[0] %s, colour[mid] %s"),
+					UE_LOG(LogTemp, Log, TEXT("PanelMethod smoke: Cp mesh %d vertices, Cp %.3f .. %.3f mapped on %.3f .. %.3f with %s; colour[0] %s, colour[mid] %s"),
 						Mesh.Cp.Num(), Mesh.Cp[0], Mesh.Cp[Mesh.Cp.Num() / 2], CpLo, CpHi, UTF8_TO_TCHAR(Map->name.c_str()), *Colors[0].ToString(), *Colors[Colors.Num() / 2].ToString());
 				}
 				MeshActor->SetMesh(Mesh.Vertices, Mesh.Triangles, Mesh.Normals, Colors);
+				MeshActor->SetEdges(bEdges);
 				if (!bFramed)
 				{
 					View->FrameShown();
@@ -740,6 +714,7 @@ namespace
 			else
 			{
 				MeshActor->SetColors(ColorsFor(Mesh, *Map, CpLo, CpHi));
+				MeshActor->SetEdges(bEdges);
 			}
 			View->RequestRedraw();
 		}
@@ -815,6 +790,12 @@ namespace
 								})
 								[ SNew(STextBlock).Text_Lambda([Self]() { return FText::FromString(UTF8_TO_TCHAR(Self->Map->name.c_str())); }) ], 110.0f)
 						]
+						+ SVerticalBox::Slot().AutoHeight().Padding(0, 4)
+						[
+							SNew(SCheckBox).IsChecked_Lambda([Self]() { return Self->bEdges ? ECheckBoxState::Checked : ECheckBoxState::Unchecked; })
+							.OnCheckStateChanged_Lambda([Self](ECheckBoxState S) { Self->bEdges = S == ECheckBoxState::Checked; Self->UpdateSurface(false); })
+							[ SNew(STextBlock).Text(LOCTEXT("Edges", "Draw the panels' edges")) ]
+						]
 						+ SVerticalBox::Slot().AutoHeight().Padding(0, 6, 0, 0).HAlign(HAlign_Left)
 						[ Button(LOCTEXT("AutoRange", "Auto range (all solutions)"), [Self]() { Self->AutoRange(); }) ]
 						+ SVerticalBox::Slot().AutoHeight().Padding(0, 6, 0, 0)
@@ -834,7 +815,7 @@ namespace
 			if (C == nullptr || Views.Num() == 0)
 			{
 				LoadPlot->SetSeries({});
-				LoadPlot->SetMessage(C == nullptr ? LOCTEXT("NoSolution", "Solve first (Set-up tab).") : LOCTEXT("NoWing", "No wing among the bodies: the span loading is a wing's."));
+				LoadPlot->SetMessage(C == nullptr ? LOCTEXT("NoSolution", "Solve first (Set-up tab).") : LOCTEXT("NoWing", "No body to sum."));
 				LoadPlot->SetTitle(LOCTEXT("LoadTitle", "Span loading"));
 				return;
 			}
@@ -852,65 +833,58 @@ namespace
 				if (bWing)
 				{
 					const FShare& Sh = C->Shares[LoadView.Share];
+					if (Sh.Body < 0 || Sh.Body >= static_cast<int32>(C->Sol.bodies.size())) throw std::runtime_error("the wing has no solved body");
+					const tripanel::BodyResult& BR = C->Sol.bodies[Sh.Body];
 					const aerotelic::Vec3 Axis{ Sh.SpanAxis.X, Sh.SpanAxis.Y, Sh.SpanAxis.Z };
 					LoadDir = aerotelic::Normalized(aerotelic::Cross(C->Stream, Axis));
 					bSideLoad = FMath::Abs(Sh.SpanAxis.Z) > 0.9;
-					auto CutNetwork = [&](const Network& Net, const NetworkResult& NR, const FVector& Root, const FVector& Tip)
+					const double SRoot = FVector::DotProduct(Sh.RootPoint, Sh.SpanAxis), STip = FVector::DotProduct(Sh.TipPoint, Sh.SpanAxis);
+					const int32 NCuts = Sh.CutChords.Num() - 1;
+					auto Cut = [&](bool bMirror)
 					{
-						const double SRoot = FVector::DotProduct(Root, Sh.SpanAxis), STip = FVector::DotProduct(Tip, Sh.SpanAxis);
-						const int32 NCuts = Sh.CutChords.Num() - 1;
+						// A mirrored cut: the image half (the plane on) or the port
+						// half of a wing built tip to tip, both at the reflected station.
 						for (int32 k = 0; k <= NCuts; ++k)
 						{
 							const double S = SRoot + (STip - SRoot) * k / NCuts;
-							const aerotelic::panel::SectionCut Cut = aerotelic::panel::CutSection(Net, NR, Axis, S);
-							if (!Cut.found) continue;
-							Points.Add({ S, S, S, aerotelic::Dot(Cut.force_per_span, LoadDir), Sh.CutChords[k] });
+							const double SAt = bMirror ? -S : S;
+							const tripanel::SectionCut Sc = tripanel::CutSection(BR, Axis, SAt, false, &Sh.Mask);
+							if (!Sc.found) continue;
+							Points.Add({ SAt, SAt, SAt, aerotelic::Dot(Sc.force_per_span, LoadDir), Sh.CutChords[k] });
 						}
 					};
-					auto Reflect = [](const FVector& P) { return FVector(P.X, -P.Y, P.Z); };
-					for (int32 k = Sh.First; k < Sh.First + Sh.Count; ++k)
+					Cut(false);
+					if (Sh.bTipToTip && FMath::Abs(Sh.SpanAxis.Y) > 0.9) Cut(true);
+					else if (Sh.bImaged && FMath::Abs(Sh.SpanAxis.Y) > 0.9)
 					{
-						const NetworkResult& NR = C->Sol.networks[k];
-						if (NR.type != NetworkType::DoubletAnalysis) continue; // the wakes
-						const bool bOwn = k < Sh.First + Sh.OwnCount;
-						CutNetwork(C->Nets[k], NR, bOwn ? Sh.RootPoint : Reflect(Sh.RootPoint), bOwn ? Sh.TipPoint : Reflect(Sh.TipPoint));
-						if (Sh.bImaged && bOwn) CutNetwork(ReflectedNetwork(C->Nets[k]), ReflectedResult(NR), Reflect(Sh.RootPoint), Reflect(Sh.TipPoint));
+						// The image: the same body reflected, cut at the reflected station.
+						for (int32 k = 0; k <= NCuts; ++k)
+						{
+							const double S = SRoot + (STip - SRoot) * k / NCuts;
+							const tripanel::SectionCut Sc = tripanel::CutSection(BR, Axis, -S, true, &Sh.Mask);
+							if (!Sc.found) continue;
+							Points.Add({ -S, -S, -S, aerotelic::Dot(Sc.force_per_span, LoadDir), Sh.CutChords[k] });
+						}
 					}
 				}
 				else
 				{
 					LoadDir = C->LiftDir;
-					std::vector<aerotelic::panel::LoadSource> Sources;
 					double Lo = 1e300, Hi = -1e300;
-					auto Extent = [&](const Network& N, bool bReflect)
+					for (const tripanel::BodyResult& BR : C->Sol.bodies)
 					{
-						for (const aerotelic::Vec3& P : N.corners)
+						for (const aerotelic::Vec3& P : BR.mesh.vertices)
 						{
-							const double Y = bReflect ? -P.y : P.y;
-							Lo = FMath::Min(Lo, Y);
-							Hi = FMath::Max(Hi, Y);
-						}
-					};
-					for (const FShare& Sh : C->Shares)
-					{
-						for (int32 k = Sh.First; k < Sh.First + Sh.Count; ++k)
-						{
-							const NetworkResult& NR = C->Sol.networks[k];
-							if (NR.type == NetworkType::DoubletWake || NR.type == NetworkType::DoubletWakeConstant) continue;
-							Sources.push_back({ &C->Nets[k], &NR, false });
-							Extent(C->Nets[k], false);
-							if (Sh.bImaged && k < Sh.First + Sh.OwnCount)
-							{
-								Sources.push_back({ &C->Nets[k], &NR, true });
-								Extent(C->Nets[k], true);
-							}
+							Lo = FMath::Min(Lo, P.y);
+							Hi = FMath::Max(Hi, P.y);
+							if (C->bImagedSolve) { Lo = FMath::Min(Lo, -P.y); Hi = FMath::Max(Hi, -P.y); }
 						}
 					}
-					if (Sources.empty() || !(Hi > Lo)) throw std::runtime_error("no body panels to sum");
-					const int32 NBins = FMath::Clamp(2 * FMath::RoundToInt(Spanwise), 16, 400);
+					if (!(Hi > Lo)) throw std::runtime_error("no body panels to sum");
+					const int32 NBins = 40;
 					std::vector<double> Edges;
 					for (int32 b = 0; b <= NBins; ++b) Edges.push_back(Lo + (Hi - Lo) * b / NBins);
-					const std::vector<aerotelic::Vec3> Bins = aerotelic::panel::BinnedLoads(Sources, aerotelic::Vec3{ 0.0, 1.0, 0.0 }, Edges);
+					const std::vector<aerotelic::Vec3> Bins = tripanel::BinnedLoads(C->Sol, aerotelic::Vec3{ 0.0, 1.0, 0.0 }, Edges, C->bImagedSolve);
 					for (int32 b = 0; b < NBins; ++b) Points.Add({ 0.5 * (Edges[b] + Edges[b + 1]), Edges[b], Edges[b + 1], aerotelic::Dot(Bins[b], LoadDir) / (Edges[b + 1] - Edges[b]), 0.0 });
 				}
 			}
@@ -923,7 +897,7 @@ namespace
 			if (Points.Num() == 0)
 			{
 				LoadPlot->SetSeries({});
-				LoadPlot->SetMessage(LOCTEXT("NoStrips", "No lifting network for this wing."));
+				LoadPlot->SetMessage(LOCTEXT("NoStrips", "No section of this body crossed by the cuts."));
 				return;
 			}
 			Points.Sort([](const FPoint& A, const FPoint& B) { return A.S < B.S; });
@@ -954,7 +928,8 @@ namespace
 			for (int32 i = 0; i <= 100; ++i)
 			{
 				const double S = S0 - Half + (2.0 * Half) * i / 100.0;
-				Elliptic.Points.Add(FVector2D((S - S0) / Half, aerotelic::panel::EllipticLoad(TotalForce, S0, Half, S)));
+				const double X = (S - S0) / Half;
+				Elliptic.Points.Add(FVector2D(X, 4.0 * TotalForce / (3.14159265358979323846 * 2.0 * Half) * std::sqrt(FMath::Max(0.0, 1.0 - X * X))));
 			}
 			Series.Add(Elliptic);
 			if (bWing)
@@ -1020,7 +995,7 @@ namespace
 				PolarTable->AddSlot().AutoHeight().Padding(0, 0, 0, 8)
 				[
 					SNew(STextBlock).Text(FText::FromString(FString::Printf(TEXT("One solution, α = %g°, β = %g°. Wind axes: lift normal to the stream in the plane of symmetry, drag along it, side force along the third axis; moments about the origin on the reference length %.4g %s, roll about the stream, pitch about the side axis, yaw about the lift axis.%s"), C.AlphaDeg, C.BetaDeg, ReferenceLength, UTF8_TO_TCHAR(Units.LengthName()),
-						bMany ? TEXT(" One column per body (a mirrored body with both halves) and the total of them all.") : TEXT("")))).AutoWrapText(true)
+						bMany ? TEXT(" One column per body (its own triangles of a fused surface; a mirrored body with both halves) and the total of them all.") : TEXT("")))).AutoWrapText(true)
 				];
 				const float LabelW = 220.0f, CellW = 110.0f;
 				auto Cell = [&](const FString& Text, bool bBold)
@@ -1050,7 +1025,7 @@ namespace
 				if (C.Sol.lift_from_wake)
 				{
 					PolarTable->AddSlot().AutoHeight().Padding(0, 8, 0, 0)
-					[ MakeInfoLabel(FText::FromString(FString::Printf(TEXT("C_L from the wake doublet strength (the exact circulation of the solution): %.5f. The pressure-integrated total above leans on the panel splines and reads a little high when the paneling is sparse."), *C.Sol.lift_from_wake))) ];
+					[ MakeInfoLabel(FText::FromString(FString::Printf(TEXT("C_L from the wake doublet strength (the circulation of every shed edge, Kutta-Joukowski): %.5f. The pressure-integrated total above depends on the surface gradient of the doublet strength fitted over neighbouring panels; the two agree to a few per cent on a sound mesh."), *C.Sol.lift_from_wake))) ];
 				}
 				PolarSwitch->SetActiveWidgetIndex(1);
 				return;
@@ -1101,10 +1076,12 @@ namespace
 			}
 			if (MeshActor.IsValid()) MeshActor->Destroy();
 			MeshActor.Reset();
+			AerotelicAeroTrim::HideAeroMeshInViewport();
+			MeshCase.Reset();
 			Cases.Empty();
 			Mesh = FCpMesh();
-			Picker.Reset(); SymmetryCheck.Reset(); AlphaBox.Reset(); BetaBox.Reset(); PathBox.Reset();
-			LblWarn.Reset(); LblSummary.Reset(); LblInput.Reset(); SolveButton.Reset();
+			Picker.Reset(); SymmetryCheck.Reset(); FuseCheck.Reset(); ShowMeshCheck.Reset(); AlphaBox.Reset(); BetaBox.Reset(); PathBox.Reset();
+			LblWarn.Reset(); LblMesh.Reset(); LblSummary.Reset(); LblInput.Reset(); SolveButton.Reset();
 			View.Reset(); ColorBar.Reset(); LoadPlot.Reset(); Polars.Empty(); PolarSwitch.Reset(); PolarTable.Reset();
 		}
 	};
@@ -1137,25 +1114,30 @@ namespace
 	}
 
 	const TCHAR* kHelp = TEXT(
-		"HIGH ORDER PANEL METHOD\n\n"
-		"The incompressible potential flow about the lofted bodies of the scene, by the higher-order panel method of Johnson (NASA CR-3079): curved panels carrying linear sources and quadratic doublets, the Kutta condition at the trailing edge and a wake shed along the free stream. "
-		"A potential flow is similar at every speed and density, so nothing dimensional is asked for: Cp = 1 - (V/V∞)² and the coefficients are C_F = -∮ Cp n dA / S_ref.\n\n"
+		"PANEL METHOD ON THE BODY TRIANGULATION\n\n"
+		"The incompressible potential flow about the chosen bodies, solved on the very triangles the viewport draws and the structural analysis is built on: constant-strength sources and doublets on every triangle in the interior-potential (Dirichlet) formulation of Morino, "
+		"the sources prescribed by the free stream and the doublet strengths -- the outer surface potential -- solved for; a wake shed along the stream from every trailing edge the bodies tag (a wing's, a cowl rim's), its strength the circulation of that section (the Kutta condition); the image of everything about y = 0 when the symmetry plane is on. "
+		"Cp = 1 - (V/V∞)², the surface velocity being the free stream's tangential part plus the surface gradient of the doublet strength, and the coefficients are C_F = -∮ Cp n dA / S_ref. A potential flow is similar at every speed and density, so nothing dimensional is asked for.\n\n"
+		"THE MESH IS THE ANALYSIS\n"
+		"What you see is what is solved. Each body comes in on its own grid -- the Mesh tab of its design panel sets the stations and the points round a section; refinement off gives a clean structured grid of the size you choose. A wing with flaps is paneled as its AERO COPY: the sealed one-piece wing on the same stations, every deflected flap entering as a kink of the section about its hinge (the vortex-lattice view of a flap: a potential solver cannot see a 4 mm slot through panels larger than the slot). "
+		"Without flaps the aero copy is the wing's own body. A boolean result is paneled as its operands' aero copies. Bodies whose bounds overlap are FUSED into one closed surface by the mesh boolean before anything is solved, so nothing of one body lies inside another -- a wing root inside a fuselage, a tailplane on a fin -- which a panel method cannot tolerate (panels inside another body are not a wetted surface). "
+		"The mesh report on the Set-up tab lists every body's triangle count, edge lengths, worst aspect ratio and closedness, what was fused, and warns of anything left overlapping; tick the box to see the mesh with its edges in the main 3D view. A dense solve is comfortable to a few thousand panels and runs by GMRES beyond; coarsen the grids on the Mesh tabs for a quick look, refine them for the answer.\n\n"
 		"SET-UP\n"
-		"Choose the bodies, the paneling, the angles and the references, then Solve. The angle of attack and the angle of sideslip each take one value or a comma separated list, but only one of them may be a list: the solutions are a sweep of that angle with the other fixed. "
-		"Sideslip is held at zero for now. The solves run in the background, one per angle; the dialog stays usable.\n\n"
+		"Choose the bodies, the angles and the references, then Solve. The angle of attack and the angle of sideslip each take one value or a comma separated list, but only one of them may be a list: the solutions are a sweep of that angle with the other fixed. Sideslip needs the symmetry plane off. The solves run in the background, one per angle; the dialog stays usable.\n\n"
 		"SURFACE PRESSURE\n"
-		"The bodies coloured by the pressure coefficient on their outer side, lit from the eye -- a key light along the line of sight and fills from either side, above and below -- so no side of a body is in shadow whichever way it is turned. "
-		"Left-drag orbits, right- or middle-drag pans, the wheel zooms, Home frames the bodies. "
-		"Click the colour bar to set the minimum, the maximum and the colour map; the range defaults to the 2nd to 98th percentile of the pressures of every solution together (so a junction buried in another body does not swamp the scale). The arrows step between solutions.\n\n"
+		"The panels coloured by the pressure coefficient, flat per panel with their edges drawn (so the mesh is in plain sight), lit from the eye. Left-drag orbits, right- or middle-drag pans, the wheel zooms, Home frames the bodies. "
+		"Click the colour bar to set the minimum, the maximum, the colour map and the edges; the range defaults to the 2nd to 98th percentile of the pressures of every solution together. The arrows step between solutions.\n\n"
 		"SPAN LOADING\n"
-		"For a wing, on the left axis: the lift per unit span over the dynamic pressure, l / q (a length in the project's units), against the span fraction. The wing is cut by a plane normal to its span every 5% of the semi-span; the pressure on the section's closed outline is integrated along it, resolved normal to the stream and to the span axis (the wing's own, so a fin shows its side load) -- the force per unit span itself, no strip and no width, zero where the chord has vanished. "
-		"The elliptic distribution of the same integral is dashed beside it: the two enclose the same total lift, and the elliptic one is the loading of least induced drag for it. On the right axis: the section lift coefficient cl, the same load on the chord the planform defines at that station (the geometry queried, not the twisted section's projection) -- how hard each section works, to be read against the airfoil's stall. With the symmetry plane on, the image half is drawn as well. "
-		"With more than one body, the last view, All bodies, is l / q of the whole configuration along the lateral axis y: every body's panels -- wings, fuselages, nacelles, images and reflected copies -- summed into uniform bins, each panel's load spread over the bins it spans, with its own elliptic curve. The arrows step between solutions and between views.\n\n"
+		"For a wing, on the left axis: the lift per unit span over the dynamic pressure, l / q (a length in the project's units), against the span fraction. The wing's own triangles (its share of a fused surface) are cut by a plane normal to its span every 5% of the semi-span; the pressure on the section's outline is integrated along it, resolved normal to the stream and to the span axis -- the force per unit span itself, no strip and no width. "
+		"The elliptic distribution of the same integral is dashed beside it. On the right axis: the section lift coefficient cl on the planform's chord at that station. A wing built tip to tip shows both halves; with the symmetry plane on, the image half is drawn as well. "
+		"The last view, All bodies, is l / q of the whole configuration along y: every panel's load spread over uniform bins.\n\n"
 		"FORCES AND MOMENTS\n"
 		"The wind-axis coefficients against the swept angle: lift, induced drag (a potential flow has no friction) and side force; roll about the stream, pitch about the side axis and yaw about the lift axis, about the origin on the reference length. "
-		"With more than one body each chart shows a dashed curve per body and the total in white. With a single solution the values are tabulated instead, one column per body and the total, with the lift from the wake doublet strength.\n\n"
+		"With more than one body each chart shows a dashed curve per body -- its own triangles of a fused surface -- and the total in white. With a single solution the values are tabulated instead, with the lift from the wake circulation beside the pressure-integrated total: the two agree to a few per cent on a sound mesh, and drift apart on a poor one.\n\n"
 		"TRIM AND STRUCTURAL LOADS\n"
-		"Trimming the configuration to a flight condition (lift n W through the mass centre, no moment about it, by the angle of attack and one flap) and handing its pressures to the structural analysis is done under Model > Load Cases (2026-11-15): an aero load case there is a point of the V-n diagram, solved with this same panel method and stored for Analysis > Structural. This dialog is the analysis view: sweeps, pressures, loadings and polars.");
+		"Trimming the configuration to a flight condition and handing its pressures to the structural analysis is done under Model > Load Cases: an aero load case there is a point of the V-n diagram, solved with this same method on this same mesh and stored for Analysis > Structural, where every panel's pressure lands on the structural face it is. This dialog is the analysis view: sweeps, pressures, loadings and polars.\n\n"
+		"THE HIGHER-ORDER CODE\n"
+		"Until 2026-11-15 this dialog ran Johnson's higher-order method (NASA CR-3079) on curved quadrilateral networks built from the sections. It stays in the core as the validation reference (tri_panel_check runs the two side by side on a wing); it could not take a boolean result, paneled overlapping bodies separately with buried panels, and ignored a symmetric wing's port half.");
 }
 
 void ShowAerotelicHighOrderPanelDialog(TFunction<void(const FText&)> Status)
@@ -1164,14 +1146,14 @@ void ShowAerotelicHighOrderPanelDialog(TFunction<void(const FText&)> Status)
 	if (Choices.Num() == 0)
 	{
 		AerotelicMessageBox(EAppMsgType::Ok,
-			LOCTEXT("NoBody", "No lofted body in the scene. The high order panel method runs on wings, fuselages, nacelles and primitives (boolean results and lattices are meshes with no sections to panel)."),
-			LOCTEXT("Title", "High Order Panel"));
+			LOCTEXT("NoBody", "No solid body in the scene. The panel method runs on wings, fuselages, nacelles, primitives and boolean results over them."),
+			LOCTEXT("Title", "Panel Method"));
 		return;
 	}
 
 	const FVector2D Size(820, 940);
 	TSharedRef<SWindow> Window = SNew(SWindow)
-		.Title(LOCTEXT("Title", "High Order Panel"))
+		.Title(LOCTEXT("Title", "Panel Method"))
 		.ClientSize(Size)
 		.SupportsMaximize(true)
 		.SupportsMinimize(true);
@@ -1221,36 +1203,53 @@ void ShowAerotelicHighOrderPanelDialog(TFunction<void(const FText&)> Status)
 				+ SVerticalBox::Slot().AutoHeight().Padding(0, 6, 0, 0)
 				[
 					SAssignNew(S->SymmetryCheck, SCheckBox)
-					.OnCheckStateChanged_Lambda([S](ECheckBoxState) { S->bSymmetryTouched = true; })
-					[ SNew(STextBlock).Text(LOCTEXT("Symmetry", "Symmetry plane at y = 0  (every body solved with its image; a body on the centreline is cut there)")) ]
+					.OnCheckStateChanged_Lambda([S](ECheckBoxState) { S->bSymmetryTouched = true; S->RefreshMesh(); })
+					[ SNew(STextBlock).Text(LOCTEXT("Symmetry", "Symmetry plane at y = 0  (every panel solved with its image; a body on the centreline is cut there)")) ]
 				]
+				+ SVerticalBox::Slot().AutoHeight().Padding(0, 4, 0, 0)
+				[
+					SAssignNew(S->FuseCheck, SCheckBox).IsChecked(ECheckBoxState::Checked)
+					.OnCheckStateChanged_Lambda([S](ECheckBoxState) { S->RefreshMesh(); })
+					[ SNew(STextBlock).Text(LOCTEXT("Fuse", "Fuse bodies that overlap into one surface before solving  (off: panel them separately, buried panels and all)")) ]
+				]
+				+ SVerticalBox::Slot().AutoHeight().Padding(0, 4, 0, 0)
+				[
+					MakeInfoLabel(LOCTEXT("BodiesHint",
+						"Every solid body of the scene can be paneled: a wing as its sealed aero copy with a wake from its trailing edge, a fuselage, nacelle or primitive as its own closed triangles (a tagged trailing edge sheds a wake too), a boolean result as its operands' aero copies. "
+						"A mirrored entity appears once: with the symmetry plane on, its image stands in for the other half; off, the reflected copy is paneled as well. The plane defaults on when something is mirrored, a wing is symmetric, or a wing root sits on y = 0."))
+				])
+		]
+		+ SScrollBox::Slot().Padding(0, 0, 0, 8)
+		[
+			MakeGroup(LOCTEXT("MeshGroup", "The mesh that will be solved"),
+				SNew(SVerticalBox)
+				+ SVerticalBox::Slot().AutoHeight() [ Stat(S->LblMesh) ]
 				+ SVerticalBox::Slot().AutoHeight().Padding(0, 4, 0, 0)
 				[
 					SAssignNew(S->LblWarn, STextBlock).AutoWrapText(true).Visibility(EVisibility::Collapsed)
 					.ColorAndOpacity(FSlateColor(FLinearColor(1.0f, 0.75f, 0.3f)))
 				]
+				+ SVerticalBox::Slot().AutoHeight().Padding(0, 6, 0, 0)
+				[
+					SNew(SHorizontalBox)
+					+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
+					[
+						SAssignNew(S->ShowMeshCheck, SCheckBox)
+						.OnCheckStateChanged_Lambda([S](ECheckBoxState State)
+						{
+							if (State == ECheckBoxState::Checked && S->MeshCase.IsValid()) AerotelicAeroTrim::ShowAeroMeshInViewport(*S->MeshCase);
+							else AerotelicAeroTrim::HideAeroMeshInViewport();
+						})
+						[ SNew(STextBlock).Text(LOCTEXT("ShowMesh", "Show this mesh in the 3D view, edges drawn (the aero copy over the scene's bodies)")) ]
+					]
+					+ SHorizontalBox::Slot().AutoWidth().Padding(12, 0, 0, 0).VAlign(VAlign_Center)
+					[ Button(LOCTEXT("Recheck", "Rebuild the mesh report"), [S]() { S->RefreshMesh(); }) ]
+				]
 				+ SVerticalBox::Slot().AutoHeight().Padding(0, 4, 0, 0)
 				[
-					MakeInfoLabel(LOCTEXT("BodiesHint",
-						"Every lofted solid in the scene can be paneled: a wing as a lifting doublet network with a wake shed from its trailing edge, a fuselage, nacelle or primitive as a closed source network built from its sections. "
-						"A mirrored entity appears once: with the symmetry plane on, its image stands in for the other half; off, the reflected copy is paneled as well. The plane defaults on when something is mirrored or a wing root sits on y = 0."))
-				])
-		]
-		+ SScrollBox::Slot().Padding(0, 0, 0, 8)
-		[
-			MakeGroup(LOCTEXT("PanelingGroup", "Paneling"),
-				SNew(SVerticalBox)
-				+ SVerticalBox::Slot().AutoHeight().Padding(0, 2) [ FormRow(LOCTEXT("Chordwise", "Wing: chordwise per surface (Mesh tab at 0):"), Spin(&FState::Chordwise, 2, 200, 1, FText::GetEmpty())) ]
-				+ SVerticalBox::Slot().AutoHeight().Padding(0, 2) [ FormRow(LOCTEXT("Spanwise", "Wing: spanwise panels (Mesh tab at 0):"), Spin(&FState::Spanwise, 1, 200, 1, FText::GetEmpty())) ]
-				+ SVerticalBox::Slot().AutoHeight().Padding(0, 2) [ FormRow(LOCTEXT("Wake", "Wing: wake length, root chords:"), Spin(&FState::WakeChords, 1, 1000, 5, FText::GetEmpty())) ]
-				+ SVerticalBox::Slot().AutoHeight().Padding(0, 2) [ FormRow(LOCTEXT("Along", "Bodies: panels along (Mesh tab at 0):"), Spin(&FState::Along, 1, 400, 1, FText::GetEmpty())) ]
-				+ SVerticalBox::Slot().AutoHeight().Padding(0, 2) [ FormRow(LOCTEXT("Around", "Bodies: panels round (Mesh tab at 0):"), Spin(&FState::Around, 3, 400, 1, FText::GetEmpty())) ]
-				+ SVerticalBox::Slot().AutoHeight().Padding(0, 4, 0, 0)
-				[
-					MakeInfoLabel(LOCTEXT("PanelingHint",
-						"Curved panels carrying linear sources and quadratic doublets, after Johnson (NASA CR-3079). A wing's sections are paneled round as a closed surface, the interior potential held at zero and the sources prescribed, with a wake shed from the trailing edge along the free stream, which is what carries the lift. "
-						"Cosine spacing both ways; a tip whose chord has all but vanished is collapsed to a point. "
-						"Bodies: the panel counts are added to each loft's own stations and section corners, so the total runs higher than the product."))
+					MakeInfoLabel(LOCTEXT("MeshHint",
+						"The triangles are each body's own -- the Mesh tab of its design panel sets the grid (stations, points round a section, refinement). A wing with flaps is its sealed aero copy on the same stations, the trim's flap kinked about its hinge; without flaps it is the body you see. "
+						"Overlapping bodies are fused into one closed surface first (the mesh boolean), so no panel lies inside another body. Aspect ratio is the longest edge over the shortest altitude: 1.15 for an equilateral triangle, hundreds for a needle. A dense solve is comfortable to a few thousand panels; GMRES takes over beyond."))
 				])
 		]
 		+ SScrollBox::Slot().Padding(0, 0, 0, 8)
@@ -1260,7 +1259,7 @@ void ShowAerotelicHighOrderPanelDialog(TFunction<void(const FText&)> Status)
 				+ SVerticalBox::Slot().AutoHeight().Padding(0, 2)
 				[ FormRow(LOCTEXT("Aoa", "Angle of attack, deg:"), SAssignNew(S->AlphaBox, SEditableTextBox).Text(FText::FromString(TEXT("4"))).ToolTipText(LOCTEXT("AoaTip", "One angle, or a comma separated list: 0, 2, 4, 6"))) ]
 				+ SVerticalBox::Slot().AutoHeight().Padding(0, 2)
-				[ FormRow(LOCTEXT("Aos", "Angle of sideslip, deg:"), SAssignNew(S->BetaBox, SEditableTextBox).Text(FText::FromString(TEXT("0"))).ToolTipText(LOCTEXT("AosTip", "Zero for now; a list here with a single angle of attack would sweep the sideslip"))) ]
+				[ FormRow(LOCTEXT("Aos", "Angle of sideslip, deg:"), SAssignNew(S->BetaBox, SEditableTextBox).Text(FText::FromString(TEXT("0"))).ToolTipText(LOCTEXT("AosTip", "Needs the symmetry plane off; a list here with a single angle of attack sweeps the sideslip"))) ]
 				+ SVerticalBox::Slot().AutoHeight().Padding(0, 2)
 				[
 					SAssignNew(S->LblInput, STextBlock).AutoWrapText(true).Visibility(EVisibility::Collapsed)
@@ -1268,6 +1267,7 @@ void ShowAerotelicHighOrderPanelDialog(TFunction<void(const FText&)> Status)
 				]
 				+ SVerticalBox::Slot().AutoHeight().Padding(0, 2) [ FormRow(LOCTEXT("Area", "Reference area S_ref:"), Spin(&FState::ReferenceArea, 1e-12, 1e12, 1.0, AreaSuffix)) ]
 				+ SVerticalBox::Slot().AutoHeight().Padding(0, 2) [ FormRow(LOCTEXT("Length", "Reference length (moments):"), Spin(&FState::ReferenceLength, 1e-12, 1e12, 0.1, LengthSuffix)) ]
+				+ SVerticalBox::Slot().AutoHeight().Padding(0, 2) [ FormRow(LOCTEXT("Wake", "Wake length, reference lengths:"), Spin(&FState::WakeChords, 1, 1000, 5, FText::GetEmpty())) ]
 				+ SVerticalBox::Slot().AutoHeight().Padding(0, 4, 0, 0)
 				[
 					MakeInfoLabel(LOCTEXT("FlowHint",
@@ -1279,7 +1279,7 @@ void ShowAerotelicHighOrderPanelDialog(TFunction<void(const FText&)> Status)
 		]
 		+ SScrollBox::Slot().Padding(0, 0, 0, 8)
 		[
-			MakeGroup(LOCTEXT("Output", "Solution file (panels with Cp, doublet and source strength; one per angle; leave empty to skip)"),
+			MakeGroup(LOCTEXT("Output", "Solution file (triangles with Cp, doublet and source strength; one per angle; leave empty to skip)"),
 				SNew(SHorizontalBox)
 				+ SHorizontalBox::Slot().FillWidth(1.0f).VAlign(VAlign_Center)
 				[ SAssignNew(S->PathBox, SEditableTextBox).Text(FText::FromString(DefaultSolutionPath())) ]
@@ -1313,7 +1313,7 @@ void ShowAerotelicHighOrderPanelDialog(TFunction<void(const FText&)> Status)
 			+ SOverlay::Slot().HAlign(HAlign_Left).VAlign(VAlign_Top).Padding(8)
 			[
 				SNew(STextBlock).ColorAndOpacity(FLinearColor(0.85f, 0.85f, 0.85f, 0.9f))
-				.Text_Lambda([S]() { return S->Cases.Num() ? LOCTEXT("ViewHint", "Left-drag orbits, right-drag pans, wheel zooms, Home frames. Click the colour bar for the range and map.") : LOCTEXT("ViewEmpty", "Solve first (Set-up tab); the bodies appear here coloured by Cp."); })
+				.Text_Lambda([S]() { return S->Cases.Num() ? LOCTEXT("ViewHint", "Left-drag orbits, right-drag pans, wheel zooms, Home frames. Click the colour bar for the range, map and edges.") : LOCTEXT("ViewEmpty", "Solve first (Set-up tab); the panels appear here coloured by Cp, edges drawn."); })
 			]
 		];
 
@@ -1330,7 +1330,7 @@ void ShowAerotelicHighOrderPanelDialog(TFunction<void(const FText&)> Status)
 				[S]()
 				{
 					const TArray<FState::FLoadView> V = S->LoadViews();
-					if (V.Num() == 0) return LOCTEXT("NoWingShort", "no wing");
+					if (V.Num() == 0) return LOCTEXT("NoWingShort", "no body");
 					const int32 i = FMath::Clamp(S->CurrentLoadView, 0, V.Num() - 1);
 					return FText::FromString(FString::Printf(TEXT("%s  (%d of %d)"), *V[i].Name, i + 1, V.Num()));
 				},
@@ -1338,7 +1338,7 @@ void ShowAerotelicHighOrderPanelDialog(TFunction<void(const FText&)> Status)
 				{
 					const int32 N = S->LoadViews().Num();
 					if (N == 0) return;
-					S->CurrentLoadView = FMath::Clamp(S->CurrentLoadView + Delta, 0, N - 1);
+					S->CurrentLoadView = (S->CurrentLoadView + Delta + N) % N;
 					S->UpdateLoads();
 				},
 				[S]() { return S->LoadViews().Num() > 1; })
@@ -1391,7 +1391,7 @@ void ShowAerotelicHighOrderPanelDialog(TFunction<void(const FText&)> Status)
 	S->Refresh();
 	S->UpdateLoads();
 	S->UpdatePolars();
-	Status(LOCTEXT("Pick", "Choose the bodies, the paneling and the angles, then Solve."));
+	Status(LOCTEXT("Pick", "Choose the bodies and the angles, check the mesh, then Solve."));
 	ShowAerotelicDialogWindow(Window, Size);
 
 	if (FParse::Param(FCommandLine::Get(), TEXT("AerotelicPanelSmoke")))
@@ -1399,8 +1399,6 @@ void ShowAerotelicHighOrderPanelDialog(TFunction<void(const FText&)> Status)
 		S->bSmoke = true;
 		S->AlphaBox->SetText(FText::FromString(TEXT("0, 4")));
 		S->PathBox->SetText(FText::GetEmpty());
-		FParse::Value(FCommandLine::Get(), TEXT("AerotelicPanelChordwise="), S->Chordwise);
-		FParse::Value(FCommandLine::Get(), TEXT("AerotelicPanelSpanwise="), S->Spanwise);
 		S->Solve();
 	}
 }

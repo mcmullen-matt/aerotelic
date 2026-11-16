@@ -1,17 +1,25 @@
 #include "AerotelicAeroTrim.h"
 
 #include "Async/Async.h"
+#include "Engine/World.h"
 
 #include "AerotelicMeshing.h"
+#include "Standalone/AerotelicColoredMeshActor.h"
+#include "Standalone/AerotelicCameraPawn.h"
 
+#include <algorithm>
 #include <cmath>
 #include <functional>
+#include <memory>
 #include <string>
 
 // Last: OCCT's Handle() macro vs engine headers.
+#include "aerotelic/mesh_boolean.hpp"
+#include "aerotelic/sdf.hpp"
 #include "aerotelic/wing_panels.hpp"
 #include "AerotelicDocumentSubsystem.h"
 #include "AerotelicEntityActor.h"
+#include "AerotelicBooleanModel.h"
 #include "AerotelicAeroLoads.h"
 #include "AerotelicMassProperties.h"
 
@@ -21,47 +29,97 @@ namespace AerotelicAeroTrim
 	{
 		constexpr double kPi = 3.14159265358979323846;
 
-		// The corners of a network placed as the entity sits (project units).
-		void PlaceNetwork(Network& N, const FTransform& Transform)
+		// The points of a polyline placed as the entity sits (project units),
+		// reflected when asked.
+		std::vector<aerotelic::Vec3> PlacePoints(const std::vector<aerotelic::Vec3>& Points, const FTransform& Transform, const AAerotelicEntityActor* Reflect)
 		{
 			aerotelic::TriMesh M;
-			M.vertices = N.corners;
+			M.vertices = Points;
 			AerotelicMeshing::PlaceMesh(M, Transform);
-			N.corners = M.vertices;
-		}
-
-		// The reflection of a network in y = 0, facing the same way: a
-		// reflection reverses the panel normals, so they are flipped back.
-		Network MirroredNetwork(const Network& N)
-		{
-			Network M = N;
-			M.name = N.name + " (mirror)";
-			for (aerotelic::Vec3& P : M.corners) P.y = -P.y;
-			aerotelic::panel::FlipNormals(M);
-			return M;
-		}
-
-		// A model's loft with its section function placed into the world.
-		aerotelic::NamedLoft PlacedLoft(const aerotelic::NamedLoft& Loft, const FTransform& Transform)
-		{
-			aerotelic::NamedLoft Out = Loft;
-			std::function<aerotelic::Mat(double, const std::vector<double>&)> Section = Loft.source.section;
-			Out.source.section = [Section, Transform](double u, const std::vector<double>& v)
+			if (Reflect != nullptr)
 			{
-				aerotelic::Mat Pts = Section(u, v);
-				aerotelic::TriMesh M;
-				for (int i = 0; i < Pts.rows(); ++i) M.vertices.push_back({ Pts(i, 0), Pts(i, 1), Pts(i, 2) });
-				AerotelicMeshing::PlaceMesh(M, Transform);
-				for (int i = 0; i < Pts.rows(); ++i) { Pts(i, 0) = M.vertices[i].x; Pts(i, 1) = M.vertices[i].y; Pts(i, 2) = M.vertices[i].z; }
-				return Pts;
-			};
+				for (aerotelic::Vec3& P : M.vertices)
+				{
+					const FVector R = Reflect->ReflectPoint(FVector(P.x, P.y, P.z));
+					P = { R.X, R.Y, R.Z };
+				}
+			}
+			return M.vertices;
+		}
+
+		// One entity's (or copy's) aero body before any fusing.
+		struct FPiece
+		{
+			FShare Share;
+			tripanel::Body Body;
+			aerotelic::Box3 Bounds;
+		};
+
+		// The panelable entities an entity stands for: itself, or a boolean's
+		// operands (recursively), each with whether it is the reflected copy.
+		struct FLeaf { AAerotelicEntityActor* Entity = nullptr; bool bMirror = false; };
+		void Leaves(AAerotelicEntityActor* E, bool bMirror, TArray<FLeaf>& Out, int32 Depth = 0)
+		{
+			if (E == nullptr || E->GetModel() == nullptr || Depth > 8) return;
+			if (E->GetEntityType() == EntityType::Boolean)
+			{
+				const FAerotelicBooleanModel* M = E->GetModelAs<FAerotelicBooleanModel>();
+				if (M == nullptr) return;
+				for (const FAerotelicBooleanOperand& Op : M->Operands)
+				{
+					if (!Op.Entity.IsValid()) continue;
+					Leaves(Op.Entity.Get(), bMirror != Op.bMirror, Out, Depth + 1);
+				}
+				return;
+			}
+			if (!IsPanelable(E->GetEntityType())) return;
+			for (const FLeaf& L : Out) if (L.Entity == E && L.bMirror == bMirror) return;
+			Out.Add({ E, bMirror });
+		}
+
+		// The leaves of a set of entities: every chosen entity, the operands
+		// of a chosen boolean, and the reflected copy of a mirrored one when
+		// the plane is off.
+		TArray<FLeaf> AllLeaves(const TArray<AAerotelicEntityActor*>& Entities, bool bSymmetry)
+		{
+			TArray<FLeaf> Out;
+			for (AAerotelicEntityActor* E : Entities)
+			{
+				Leaves(E, false, Out);
+				if (E->IsMirrored() && !bSymmetry) Leaves(E, true, Out);
+			}
 			return Out;
 		}
+
+		aerotelic::Box3 BoundsOf(const aerotelic::TriMesh& M)
+		{
+			aerotelic::Box3 B;
+			for (const aerotelic::Vec3& V : M.vertices) B.Add(V);
+			return B;
+		}
+
+		bool Overlap(const aerotelic::Box3& A, const aerotelic::Box3& B, double Margin)
+		{
+			if (A.IsEmpty() || B.IsEmpty()) return false;
+			return A.min.x <= B.max.x + Margin && B.min.x <= A.max.x + Margin
+				&& A.min.y <= B.max.y + Margin && B.min.y <= A.max.y + Margin
+				&& A.min.z <= B.max.z + Margin && B.min.z <= A.max.z + Margin;
+		}
+
+		FString Thousands(int64 N)
+		{
+			FString S = FString::Printf(TEXT("%lld"), N);
+			for (int32 i = S.Len() - 3; i > 0; i -= 3) S.InsertAt(i, TEXT(","));
+			return S;
+		}
+
+		// The aero mesh in the main view: one actor per body, grey, edged.
+		TArray<TWeakObjectPtr<AAerotelicColoredMeshActor>> GAeroMeshActors;
 	}
 
 	bool IsPanelable(EntityType T)
 	{
-		return T == EntityType::Wing || T == EntityType::Fuselage || T == EntityType::Nacelle || T == EntityType::LoftedNacelle || T == EntityType::Primitive;
+		return T == EntityType::Wing || T == EntityType::Fuselage || T == EntityType::Nacelle || T == EntityType::LoftedNacelle || T == EntityType::Primitive || T == EntityType::Boolean;
 	}
 
 	TArray<AAerotelicEntityActor*> FSetup::LiveEntities() const
@@ -87,8 +145,9 @@ namespace AerotelicAeroTrim
 	{
 		double Area = 0.0, Length = 0.0;
 		FBox FirstBody(ForceInit);
-		for (AAerotelicEntityActor* E : Entities)
+		for (const FLeaf& L : AllLeaves(Entities, true))
 		{
+			AAerotelicEntityActor* E = L.Entity;
 			if (E->GetEntityType() == EntityType::Wing)
 			{
 				try
@@ -117,13 +176,27 @@ namespace AerotelicAeroTrim
 
 	bool DefaultSymmetry(const TArray<AAerotelicEntityActor*>& Entities)
 	{
-		for (AAerotelicEntityActor* E : Entities)
+		for (const FLeaf& L : AllLeaves(Entities, true))
 		{
+			AAerotelicEntityActor* E = L.Entity;
 			if (E->IsMirrored()) return true;
 			if (E->GetEntityType() == EntityType::Wing)
 			{
-				const FBox B = E->GetPlacedBounds(false);
-				if (B.IsValid && FMath::Abs(B.Min.Y) < 1e-6 * FMath::Max(B.GetSize().GetMax(), 1.0)) return true;
+				const aerotelic::WingModel* W = E->GetModelAs<aerotelic::WingModel>();
+				if (W == nullptr) continue;
+				if (W->symmetric) return true;
+				// The root on the plane: the placed root quarter-chord point (the
+				// bounds would miss it -- a dihedral at the root tilts the root
+				// section through the plane by its thickness).
+				try
+				{
+					aerotelic::Mat Q = W->planform().AirfoilCoordsToXyz(0.0, aerotelic::Mat::FromRows({ { 0.25, 0.0 } }));
+					const std::vector<aerotelic::Vec3> Root = PlacePoints({ { Q(0, 0), Q(0, 1), Q(0, 2) } }, E->GetActorTransform(), nullptr);
+					const FBox B = E->GetPlacedBounds(false);
+					const double Size = B.IsValid ? FMath::Max(B.GetSize().GetMax(), 1.0) : 1.0;
+					if (!Root.empty() && FMath::Abs(Root[0].y) < 1e-6 * Size) return true;
+				}
+				catch (const std::exception&) {}
 			}
 		}
 		return false;
@@ -134,8 +207,9 @@ namespace AerotelicAeroTrim
 		TArray<FControl> Out;
 		OutDefault = -1;
 		double AftX = -1e300;
-		for (AAerotelicEntityActor* E : Entities)
+		for (const FLeaf& L : AllLeaves(Entities, true))
 		{
+			AAerotelicEntityActor* E = L.Entity;
 			if (E->GetEntityType() != EntityType::Wing) continue;
 			const aerotelic::WingModel* W = E->GetModelAs<aerotelic::WingModel>();
 			if (W == nullptr) continue;
@@ -182,6 +256,8 @@ namespace AerotelicAeroTrim
 		return OutMassKg > 0.0;
 	}
 
+	// ---- the case ----
+
 	TSharedPtr<FCase> BuildCase(const FSetup& Setup, double AlphaDeg, double BetaDeg, const FControl* Control, double DeltaDeg)
 	{
 		TSharedPtr<FCase> C = MakeShared<FCase>();
@@ -196,49 +272,32 @@ namespace AerotelicAeroTrim
 		C->Stream = { std::cos(Alpha) * std::cos(Beta), std::sin(Beta), std::sin(Alpha) * std::cos(Beta) };
 		C->LiftDir = { -std::sin(Alpha), 0.0, std::cos(Alpha) };
 		C->SideDir = aerotelic::Cross(C->LiftDir, C->Stream);
-		const aerotelic::Vec3 Stream = C->Stream;
 		const bool bSymmetry = Setup.bSymmetry;
+		const double Scale = AAerotelicEntityActor::GetModelScale();
 
-		const TArray<AAerotelicEntityActor*> ChosenEntities = Setup.LiveEntities();
-		std::vector<std::vector<aerotelic::NamedMesh>> PlacedMeshes;
-		for (AAerotelicEntityActor* E : ChosenEntities)
+		// ---- the pieces: one aero body per leaf (or per body of a leaf) ----
+		TArray<FPiece> Pieces;
+		for (const FLeaf& L : AllLeaves(Setup.LiveEntities(), bSymmetry))
 		{
-			std::vector<aerotelic::NamedMesh> Mine = E->GetPlacedMeshes(false);
-			if (E->IsMirrored()) for (aerotelic::NamedMesh& M : E->GetPlacedMeshes(true)) Mine.push_back(std::move(M));
-			PlacedMeshes.push_back(std::move(Mine));
-		}
-		std::vector<std::string> Notes;
-
-		for (int32 Index = 0; Index < ChosenEntities.Num(); ++Index)
-		{
-			AAerotelicEntityActor* E = ChosenEntities[Index];
+			AAerotelicEntityActor* E = L.Entity;
 			const FTransform Transform = E->GetActorTransform();
-			const FVector DirModel = Transform.InverseTransformVectorNoScale(FVector(Stream.x, Stream.y, Stream.z));
-			const aerotelic::Vec3 StreamModel{ DirModel.X, DirModel.Y, DirModel.Z };
-			FShare Share;
-			Share.Name = E->EntityName;
-			Share.First = static_cast<int32>(C->Nets.size());
-			Share.bImaged = bSymmetry;
-			std::vector<Network> Own;
+			const AAerotelicEntityActor* Reflect = L.bMirror ? E : nullptr;
+			const FString Name = E->EntityName + (L.bMirror ? TEXT(" (mirror)") : TEXT(""));
 			if (E->GetEntityType() == EntityType::Wing)
 			{
-				Share.bWing = true;
-				Share.SpanAxis = Transform.TransformVectorNoScale(FVector(0, 1, 0)).GetSafeNormal();
 				aerotelic::WingModel* W = E->GetModelAs<aerotelic::WingModel>();
-				for (int32 k = 0; k <= kLoadCuts; ++k) Share.CutChords.Add(W->planform().ChordAt(static_cast<double>(k) / kLoadCuts) * Transform.GetScale3D().X);
-				aerotelic::panel::WingPaneling Pan;
-				Pan.chordwise = FMath::Clamp(W->mesh.chordwise > 0 ? W->mesh.chordwise : FMath::RoundToInt(Setup.Chordwise), 2, 200);
-				Pan.spanwise = FMath::Clamp(W->mesh.spanwise > 0 ? W->mesh.spanwise : FMath::RoundToInt(Setup.Spanwise), 1, 200);
-				Pan.wake_length = Setup.WakeChords * W->planform().RootChord();
-				Pan.wake_direction = StreamModel;
+				if (W == nullptr) { C->Skipped.Add(Name); continue; }
 				// The trim's control: this wing's flap at the asked deflection
 				// for the build, the model's own value put back after.
 				const bool bOverride = Control != nullptr && Control->Wing.Get() == E && Control->Flap >= 0 && Control->Flap < static_cast<int32>(W->flaps.size());
 				const double Saved = bOverride ? W->flaps[Control->Flap].deflection_deg : 0.0;
 				if (bOverride) W->flaps[Control->Flap].deflection_deg = DeltaDeg;
+				aerotelic::NamedMesh Aero;
+				std::vector<std::vector<aerotelic::Vec3>> Te;
+				std::vector<std::string> Notes;
 				try
 				{
-					Own = aerotelic::panel::WingNetworks(*W, Pan, StreamModel);
+					Aero = W->BuildAeroMesh(E->DisplayTolerance(), &Te, &Notes);
 				}
 				catch (...)
 				{
@@ -246,73 +305,223 @@ namespace AerotelicAeroTrim
 					throw;
 				}
 				if (bOverride) W->flaps[Control->Flap].deflection_deg = Saved;
-				for (Network& N : Own)
+				for (const std::string& N : Notes) C->Notes.Add(Name + TEXT(": ") + UTF8_TO_TCHAR(N.c_str()));
+				FPiece P;
+				P.Share.Name = Name;
+				P.Share.bWing = true;
+				P.Share.bTipToTip = W->symmetric;
+				P.Share.bMirrorCopy = L.bMirror;
+				P.Body.name = TCHAR_TO_UTF8(*Name);
+				P.Body.mesh = Aero.mesh;
+				AerotelicMeshing::PlaceMesh(P.Body.mesh, Transform);
+				if (Reflect != nullptr) Reflect->ReflectMesh(P.Body.mesh);
+				for (const std::vector<aerotelic::Vec3>& Line : Te) P.Body.trailing_edges.push_back(PlacePoints(Line, Transform, Reflect));
+				// The span axis and the quarter-chord root and tip, for the loading cuts.
+				FVector Axis = Transform.TransformVectorNoScale(FVector(0, 1, 0)).GetSafeNormal();
+				std::vector<aerotelic::Vec3> Ends;
+				for (double Eta : { 0.0, 1.0 })
 				{
-					N.name = TCHAR_TO_UTF8(*E->EntityName) + std::string(N.name == W->name ? "" : " wake");
-					PlaceNetwork(N, Transform);
-					if (N.prescribed_source) N.prescribed_source = [Stream](const aerotelic::Vec3&, const aerotelic::Vec3& Nrm) { return -aerotelic::Dot(Stream, Nrm); };
+					aerotelic::Mat Q = W->planform().AirfoilCoordsToXyz(Eta, aerotelic::Mat::FromRows({ { 0.25, 0.0 } }));
+					Ends.push_back({ Q(0, 0), Q(0, 1), Q(0, 2) });
 				}
-				{
-					const Network& Body = Own[0];
-					FVector Root = FVector::ZeroVector, Tip = FVector::ZeroVector;
-					for (int32 I = 1; I <= Body.rows; ++I)
-					{
-						const aerotelic::Vec3 R = Body.Corner(I, 1), T = Body.Corner(I, Body.cols);
-						Root += FVector(R.x, R.y, R.z);
-						Tip += FVector(T.x, T.y, T.z);
-					}
-					Share.RootPoint = Root / Body.rows;
-					Share.TipPoint = Tip / Body.rows;
-				}
+				Ends = PlacePoints(Ends, Transform, Reflect);
+				if (Reflect != nullptr) Axis = (Reflect->ReflectPoint(Axis) - Reflect->ReflectPoint(FVector::ZeroVector)).GetSafeNormal();
+				P.Share.SpanAxis = Axis;
+				P.Share.RootPoint = FVector(Ends[0].x, Ends[0].y, Ends[0].z);
+				P.Share.TipPoint = FVector(Ends[1].x, Ends[1].y, Ends[1].z);
+				for (int32 k = 0; k <= kLoadCuts; ++k) P.Share.CutChords.Add(W->planform().ChordAt(static_cast<double>(k) / kLoadCuts) * Scale);
+				P.Share.Triangles = static_cast<int32>(P.Body.mesh.triangles.size());
+				P.Bounds = BoundsOf(P.Body.mesh);
+				Pieces.Add(MoveTemp(P));
 			}
 			else
 			{
-				std::vector<aerotelic::NamedLoft> Lofts = E->GetModel()->BuildLofts();
-				if (Lofts.empty())
+				std::vector<aerotelic::NamedMesh> Meshes = E->GetPlacedMeshes(L.bMirror);
+				if (Meshes.empty()) { C->Skipped.Add(Name); continue; }
+				std::vector<aerotelic::NamedLoft> Lofts;
+				try { Lofts = E->GetModel()->BuildLofts(); } catch (const std::exception&) {}
+				for (size_t b = 0; b < Meshes.size(); ++b)
 				{
-					C->Skipped.Add(E->EntityName);
-					continue;
-				}
-				const aerotelic::MeshSpec& Grid = E->GetModel()->mesh;
-				aerotelic::panel::BodyPaneling BP;
-				BP.along = FMath::Clamp(Grid.stations > 0 ? Grid.stations : FMath::RoundToInt(Setup.Along), 1, 400);
-				BP.around = FMath::Clamp(Grid.around > 0 ? Grid.around : FMath::RoundToInt(Setup.Around), 3, 400);
-				if (bSymmetry && !E->IsMirrored()) BP.half_plane_y = 0.0;
-				BP.wake_direction = Stream;
-				BP.notes = &Notes;
-				for (int32 k = 0; k < static_cast<int32>(PlacedMeshes.size()); ++k)
-				{
-					if (k == Index) continue;
-					for (const aerotelic::NamedMesh& M : PlacedMeshes[k]) BP.other_bodies.push_back(&M.mesh);
-				}
-				for (const aerotelic::NamedLoft& L : Lofts)
-				{
-					const FString Name = Lofts.size() == 1 ? E->EntityName : E->EntityName + TEXT("/") + UTF8_TO_TCHAR(L.name.c_str());
-					for (Network& N : aerotelic::panel::LoftNetworks(PlacedLoft(L, Transform), TCHAR_TO_UTF8(*Name), BP, Stream)) Own.push_back(std::move(N));
+					if (Meshes[b].mesh.triangles.empty()) continue;
+					FPiece P;
+					P.Share.Name = Meshes.size() == 1 ? Name : Name + TEXT(" / ") + UTF8_TO_TCHAR(Meshes[b].name.c_str());
+					P.Share.bMirrorCopy = L.bMirror;
+					P.Body.name = TCHAR_TO_UTF8(*P.Share.Name);
+					P.Body.mesh = Meshes[b].mesh;
+					// The trailing edge the loft of the same name tags (one loft:
+					// the body's).
+					for (const aerotelic::NamedLoft& Lf : Lofts)
+					{
+						if (Lofts.size() > 1 && Lf.name != Meshes[b].name) continue;
+						for (const std::vector<aerotelic::Vec3>& Line : aerotelic::panel::LoftTrailingEdgePolylines(Lf)) P.Body.trailing_edges.push_back(PlacePoints(Line, Transform, Reflect));
+					}
+					P.Share.Triangles = static_cast<int32>(P.Body.mesh.triangles.size());
+					P.Bounds = BoundsOf(P.Body.mesh);
+					Pieces.Add(MoveTemp(P));
 				}
 			}
-			Share.OwnCount = static_cast<int32>(Own.size());
-			if (E->IsMirrored() && !bSymmetry)
-			{
-				const size_t N0 = Own.size();
-				for (size_t k = 0; k < N0; ++k) Own.push_back(MirroredNetwork(Own[k]));
-			}
-			for (Network& N : Own) C->Nets.push_back(std::move(N));
-			Share.Count = static_cast<int32>(C->Nets.size()) - Share.First;
-			C->Shares.Add(Share);
 		}
-		for (const std::string& N : Notes) C->Notes.Add(UTF8_TO_TCHAR(N.c_str()));
-		if (C->Nets.empty()) throw std::runtime_error("none of the chosen bodies has a loft to panel");
+		if (Pieces.Num() == 0) throw std::runtime_error("none of the chosen bodies has a mesh to panel");
+
+		// ---- the mesh check ----
+		aerotelic::Box3 All;
+		for (const FPiece& P : Pieces) All.Add(P.Bounds);
+		const double Diag = FMath::Max(All.Diagonal(), 1e-300);
+		TArray<tripanel::MeshStats> Stats;
+		for (FPiece& P : Pieces)
+		{
+			tripanel::MeshStats S = tripanel::ComputeMeshStats(P.Body.mesh);
+			if (!S.closed) C->Warnings.Add(P.Share.Name + TEXT(": the mesh is not a closed surface"));
+			else if (!S.outward) C->Warnings.Add(P.Share.Name + TEXT(": the mesh faces inward"));
+			P.Body.trailing_edge_tolerance = 1e-6 * Diag;
+			Stats.Add(S);
+		}
+
+		// ---- fusing: bodies whose bounds overlap, by the mesh boolean ----
+		TArray<int32> Group;
+		for (int32 i = 0; i < Pieces.Num(); ++i) Group.Add(i);
+		auto Root = [&Group](int32 i) { while (Group[i] != i) i = Group[i]; return i; };
+		if (Setup.bFuse)
+		{
+			for (int32 a = 0; a < Pieces.Num(); ++a)
+				for (int32 b = a + 1; b < Pieces.Num(); ++b)
+					if (Overlap(Pieces[a].Bounds, Pieces[b].Bounds, 0.0)) Group[Root(b)] = Root(a);
+		}
+		TMap<int32, TArray<int32>> Groups;
+		for (int32 i = 0; i < Pieces.Num(); ++i) Groups.FindOrAdd(Root(i)).Add(i);
+		TArray<int32> GroupOrder;
+		Groups.GetKeys(GroupOrder);
+		GroupOrder.Sort();
+		for (int32 g : GroupOrder)
+		{
+			TArray<int32>& Members = Groups[g];
+			Members.Sort();
+			if (Members.Num() == 1)
+			{
+				FPiece& P = Pieces[Members[0]];
+				P.Share.Body = static_cast<int32>(C->Bodies.size());
+				C->Owner.push_back(std::vector<int32>(P.Body.mesh.triangles.size(), C->Shares.Num()));
+				C->Shares.Add(P.Share);
+				C->Bodies.push_back(P.Body);
+				continue;
+			}
+			// Fold the fuse; a refused contact leaves the members separate.
+			aerotelic::TriMesh Fused = Pieces[Members[0]].Body.mesh;
+			FString Label = Pieces[Members[0]].Share.Name;
+			bool bOk = true;
+			FString Why;
+			for (int32 k = 1; k < Members.Num() && bOk; ++k)
+			{
+				try
+				{
+					Fused = aerotelic::MeshBoolean(Fused, Pieces[Members[k]].Body.mesh, aerotelic::MeshBooleanOp::Fuse);
+					Label += TEXT(" + ") + Pieces[Members[k]].Share.Name;
+				}
+				catch (const std::exception& E)
+				{
+					bOk = false;
+					Why = FString::Printf(TEXT("%s with %s: %s"), *Label, *Pieces[Members[k]].Share.Name, UTF8_TO_TCHAR(E.what()));
+				}
+			}
+			if (!bOk || Fused.triangles.empty())
+			{
+				C->Warnings.Add(TEXT("could not fuse ") + Why + TEXT(" -- these bodies are paneled separately, so the panels of one inside another are not a wetted surface and the pressures near their junction are not to be trusted"));
+				for (int32 m : Members)
+				{
+					FPiece& P = Pieces[m];
+					P.Share.Body = static_cast<int32>(C->Bodies.size());
+					C->Owner.push_back(std::vector<int32>(P.Body.mesh.triangles.size(), C->Shares.Num()));
+					C->Shares.Add(P.Share);
+					C->Bodies.push_back(P.Body);
+				}
+				continue;
+			}
+			// Who owns each fused triangle: the member whose surface its
+			// centroid lies on (the pieces of a cut triangle lie on the
+			// original surface too).
+			std::vector<std::unique_ptr<aerotelic::MeshSdf>> Sdfs;
+			for (int32 m : Members) Sdfs.push_back(std::make_unique<aerotelic::MeshSdf>(Pieces[m].Body.mesh));
+			const int32 FirstShare = C->Shares.Num();
+			std::vector<int32> Owner(Fused.triangles.size(), FirstShare);
+			for (size_t t = 0; t < Fused.triangles.size(); ++t)
+			{
+				const auto& Tr = Fused.triangles[t];
+				const aerotelic::Vec3 Cc = (Fused.vertices[Tr[0]] + Fused.vertices[Tr[1]] + Fused.vertices[Tr[2]]) * (1.0 / 3.0);
+				double Best = 1e300;
+				int32 Who = 0;
+				for (int32 k = 0; k < Members.Num(); ++k)
+				{
+					const double D = FMath::Abs(Sdfs[k]->Distance(Cc));
+					if (D < Best) { Best = D; Who = k; }
+				}
+				Owner[t] = FirstShare + Who;
+			}
+			tripanel::Body Body;
+			Body.name = TCHAR_TO_UTF8(*Label);
+			Body.mesh = MoveTemp(Fused);
+			Body.trailing_edge_tolerance = 1e-6 * Diag;
+			for (int32 m : Members)
+			{
+				FPiece& P = Pieces[m];
+				for (const auto& Line : P.Body.trailing_edges) Body.trailing_edges.push_back(Line);
+				P.Share.Body = static_cast<int32>(C->Bodies.size());
+				C->Shares.Add(P.Share);
+			}
+			C->FusedGroups.Add(FString::Printf(TEXT("%s (%s triangles)"), *Label, *Thousands(static_cast<int64>(Body.mesh.triangles.size()))));
+			C->Owner.push_back(MoveTemp(Owner));
+			C->Bodies.push_back(MoveTemp(Body));
+		}
+
+		// ---- the report ----
+		C->Triangles = 0;
+		for (const tripanel::Body& B : C->Bodies) C->Triangles += static_cast<int32>(B.mesh.triangles.size());
+		FString R;
+		const UAerotelicDocumentSubsystem* Doc = UAerotelicDocumentSubsystem::Get();
+		const FString LengthUnit = Doc != nullptr ? UTF8_TO_TCHAR(Doc->GetUnits().LengthName()) : TEXT("");
+		for (int32 i = 0; i < Pieces.Num(); ++i)
+		{
+			const tripanel::MeshStats& S = Stats[i];
+			R += FString::Printf(TEXT("%s: %s triangles, edges %.4g to %.4g (median %.4g) %s, worst aspect %.0f%s%s%s\n"),
+				*Pieces[i].Share.Name, *Thousands(S.triangles), S.min_edge, S.max_edge, S.median_edge, *LengthUnit, S.worst_aspect,
+				S.slivers > 0 ? *FString::Printf(TEXT(" (%d slivers over 20)"), S.slivers) : TEXT(""),
+				S.closed ? TEXT("") : TEXT(", NOT CLOSED"), S.closed && !S.outward ? TEXT(", INWARD") : TEXT(""));
+		}
+		for (const FString& G : C->FusedGroups) R += TEXT("Fused into one surface: ") + G + TEXT("\n");
+		// Bodies left separate that come within a panel of each other.
+		for (int32 a = 0; a < Pieces.Num(); ++a)
+		{
+			for (int32 b = a + 1; b < Pieces.Num(); ++b)
+			{
+				if (Pieces[a].Share.Body == Pieces[b].Share.Body) continue;
+				const double Near = FMath::Max(Stats[a].median_edge, Stats[b].median_edge);
+				if (!Overlap(Pieces[a].Bounds, Pieces[b].Bounds, Near)) continue;
+				const int32 N = tripanel::TrianglesNear(Pieces[a].Body.mesh, Pieces[b].Body.mesh, Near);
+				if (N > 0) C->Warnings.Add(FString::Printf(TEXT("%d triangle(s) of %s lie within a panel of %s, which is paneled separately: their pressures are not to be trusted"), N, *Pieces[a].Share.Name, *Pieces[b].Share.Name));
+			}
+		}
+		R += FString::Printf(TEXT("%s panels in all%s"), *Thousands(C->Triangles), bSymmetry ? TEXT(" before the cut at the symmetry plane (the image stands in for y < 0)") : TEXT(""));
+		for (const FString& W : C->Warnings) R += TEXT("\nWARNING: ") + W;
+		C->MeshReport = R;
 		return C;
 	}
 
-	aerotelic::panel::Options SolveOptions(const FSetup& Setup, const aerotelic::Vec3* MomentReference)
+	tripanel::Options SolveOptions(const FSetup& Setup, const aerotelic::Vec3* MomentReference)
 	{
-		aerotelic::panel::Options Opt;
+		tripanel::Options Opt;
 		if (Setup.bSymmetry) Opt.symmetry_y = 0.0;
 		Opt.reference_area = Setup.ReferenceArea > 0.0 ? Setup.ReferenceArea : 1.0;
+		Opt.wake_length = Setup.WakeChords * (Setup.ReferenceLength > 0.0 ? Setup.ReferenceLength : 1.0);
 		if (MomentReference != nullptr) Opt.moment_reference = *MomentReference;
 		return Opt;
+	}
+
+	void SolveCaseNow(FCase& C, const tripanel::Options& Options)
+	{
+		C.MomentReference = Options.moment_reference;
+		C.bImagedSolve = Options.symmetry_y.has_value();
+		C.ReferenceAreaSolved = Options.reference_area > 0.0 ? Options.reference_area : 1.0;
+		C.Sol = tripanel::Solve(C.Bodies, C.Stream, Options);
+		C.bSolved = true;
 	}
 
 	void Derive(FCase& C, double RefLength)
@@ -331,30 +540,63 @@ namespace AerotelicAeroTrim
 		};
 		const FCoefs Total = WindAxes(C.Sol.force_coefficient, C.Sol.moment_coefficient);
 		C.CL = Total.CL; C.CD = Total.CD; C.CY = Total.CY; C.Cl = Total.Cl; C.Cm = Total.Cm; C.Cn = Total.Cn;
+		// The shares' masks over the solved bodies' panels (the cut at the
+		// plane re-indexed them: BodyResult::parent leads back).
+		for (int32 s = 0; s < C.Shares.Num(); ++s)
+		{
+			FShare& Sh = C.Shares[s];
+			Sh.Mask.clear();
+			if (Sh.Body < 0 || Sh.Body >= static_cast<int32>(C.Sol.bodies.size())) continue;
+			const tripanel::BodyResult& BR = C.Sol.bodies[Sh.Body];
+			Sh.Mask.assign(BR.panels.size(), 0);
+			const std::vector<int32>& Owner = C.Owner[Sh.Body];
+			for (size_t t = 0; t < BR.panels.size(); ++t)
+			{
+				const int Parent = t < BR.parent.size() ? BR.parent[t] : static_cast<int>(t);
+				if (Parent >= 0 && Parent < static_cast<int>(Owner.size()) && Owner[Parent] == s) Sh.Mask[t] = 1;
+			}
+		}
+		// Per share: its panels' force and moment, with the image when the
+		// solve had the plane.
 		C.ByBody.Reset();
-		for (const FShare& Sh : C.Shares)
+		for (FShare& Sh : C.Shares)
 		{
 			aerotelic::Vec3 F{ 0, 0, 0 }, M{ 0, 0, 0 };
-			for (int32 k = Sh.First; k < Sh.First + Sh.Count; ++k)
+			if (Sh.Body >= 0 && Sh.Body < static_cast<int32>(C.Sol.bodies.size()))
 			{
-				F += C.Sol.networks[k].force_coefficient;
-				M += C.Sol.networks[k].moment_coefficient;
+				const tripanel::BodyResult& BR = C.Sol.bodies[Sh.Body];
+				for (size_t t = 0; t < BR.panels.size(); ++t)
+				{
+					if (!Sh.Mask.empty() && !Sh.Mask[t]) continue;
+					const tripanel::PanelResult& P = BR.panels[t];
+					if (!(P.area > 0.0)) continue;
+					const aerotelic::Vec3 f = P.normal * (-P.cp * P.area);
+					F += f;
+					M += aerotelic::Cross(P.centre - C.MomentReference, f);
+					if (C.bImagedSolve)
+					{
+						const aerotelic::Vec3 fi{ f.x, -f.y, f.z };
+						const aerotelic::Vec3 ci{ P.centre.x, -P.centre.y, P.centre.z };
+						F += fi;
+						M += aerotelic::Cross(ci - C.MomentReference, fi);
+					}
+				}
 			}
-			C.ByBody.Add(WindAxes(F, M));
+			Sh.bImaged = C.bImagedSolve;
+			const double S = C.ReferenceAreaSolved > 0.0 ? C.ReferenceAreaSolved : 1.0;
+			C.ByBody.Add(WindAxes(F * (1.0 / S), M * (1.0 / S)));
 		}
 		C.CpMin = 1.0;
 		C.CpMax = -1e9;
 		C.NBody = 0;
-		C.NWake = 0;
+		C.NWake = static_cast<int32>(C.Sol.wakes.size());
 		TArray<double> Cps;
-		for (size_t k = 0; k < C.Sol.networks.size(); ++k)
+		for (const tripanel::BodyResult& BR : C.Sol.bodies)
 		{
-			const NetworkResult& NR = C.Sol.networks[k];
-			const bool bWake = NR.type == NetworkType::DoubletWake || NR.type == NetworkType::DoubletWakeConstant;
-			if (bWake) { C.NWake += static_cast<int32>(NR.panels.size()); continue; }
-			for (const PanelResult& P : NR.panels)
+			for (const tripanel::PanelResult& P : BR.panels)
 			{
-				if (FMath::IsFinite(P.cp_upper)) Cps.Add(P.cp_upper);
+				if (!(P.area > 0.0)) continue;
+				if (FMath::IsFinite(P.cp)) Cps.Add(P.cp);
 				++C.NBody;
 			}
 		}
@@ -386,44 +628,102 @@ namespace AerotelicAeroTrim
 			Case->Weight = Outcome->Weight;
 			Case->MassCentre = Trim->MassCentre;
 		}
-		for (const FShare& Sh : C.Shares) Case->Entities.Add(Sh.Name);
-		const bool bImaged = C.Shares.Num() > 0 && C.Shares[0].bImaged;
-		const int32 N = static_cast<int32>(C.Sol.networks.size());
-		for (int32 k = 0; k < N; ++k)
+		for (const FShare& Sh : C.Shares)
 		{
-			const NetworkResult& NR = C.Sol.networks[k];
-			if (NR.type == NetworkType::DoubletWake || NR.type == NetworkType::DoubletWakeConstant) continue;
-			const Network& Net = C.Nets[k];
-			const bool bOneSided = Net.type == NetworkType::SourceAnalysis || Net.bc.kind == aerotelic::panel::BoundaryCondition::Kind::Potential;
-			for (int32 i = 0; i < NR.panel_rows; ++i)
+			// The entity's name (a mirrored copy counts for its entity).
+			FString N = Sh.Name;
+			N.RemoveFromEnd(TEXT(" (mirror)"));
+			int32 Slash = INDEX_NONE;
+			if (N.FindChar(TEXT('/'), Slash) && Slash > 1) N = N.Left(Slash - 1);
+			Case->Entities.AddUnique(N);
+		}
+		int32 Network = 0;
+		for (const tripanel::BodyResult& BR : C.Sol.bodies)
+		{
+			for (const tripanel::PanelResult& P : BR.panels)
 			{
-				for (int32 j = 0; j < NR.panel_cols; ++j)
+				if (!(P.area > 0.0)) continue;
+				aerotelic::aero::PressureSample S;
+				S.centre = P.centre;
+				S.normal = P.normal;
+				S.area = P.area;
+				S.cp_upper = P.cp;
+				S.cp_lower = P.cp;
+				S.two_sided = false;
+				// Every panel its own network: a triangle has no grid
+				// neighbours to average with, and a face of the structure that
+				// IS this triangle takes its value exactly.
+				S.network = Network++;
+				S.row = 0;
+				S.col = 0;
+				Case->Samples.push_back(S);
+				if (C.bImagedSolve)
 				{
-					const PanelResult& P = NR.panels[static_cast<size_t>(i) * NR.panel_cols + j];
-					if (!(P.area > 0.0)) continue;
-					aerotelic::aero::PressureSample S;
-					S.centre = P.centre;
-					S.normal = P.normal;
-					S.area = P.area;
-					S.cp_upper = P.cp_upper;
-					S.cp_lower = P.cp_lower;
-					S.two_sided = !bOneSided;
-					S.network = k;
-					S.row = i;
-					S.col = j;
-					Case->Samples.push_back(S);
-					if (bImaged)
-					{
-						aerotelic::aero::PressureSample M = S;
-						M.centre.y = -M.centre.y;
-						M.normal.y = -M.normal.y;
-						M.network = k + N;
-						Case->Samples.push_back(M);
-					}
+					aerotelic::aero::PressureSample M = S;
+					M.centre.y = -M.centre.y;
+					M.normal.y = -M.normal.y;
+					M.network = Network++;
+					Case->Samples.push_back(M);
 				}
 			}
 		}
 		return Case;
+	}
+
+	// ---- the aero mesh in the main view ----
+
+	void HideAeroMeshInViewport()
+	{
+		for (TWeakObjectPtr<AAerotelicColoredMeshActor>& A : GAeroMeshActors) if (A.IsValid()) A->Destroy();
+		GAeroMeshActors.Reset();
+	}
+
+	bool IsAeroMeshShown()
+	{
+		for (const TWeakObjectPtr<AAerotelicColoredMeshActor>& A : GAeroMeshActors) if (A.IsValid()) return true;
+		return false;
+	}
+
+	void ShowAeroMeshInViewport(const FCase& C)
+	{
+		HideAeroMeshInViewport();
+		AAerotelicCameraPawn* Pawn = AAerotelicCameraPawn::FindInGameWorld();
+		UWorld* World = Pawn != nullptr ? Pawn->GetWorld() : nullptr;
+		if (World == nullptr) return;
+		const FColor Grey = AAerotelicColoredMeshActor::VertexColorFromSRGB(0.78f, 0.80f, 0.84f);
+		for (const tripanel::Body& B : C.Bodies)
+		{
+			TArray<FVector> Vertices;
+			TArray<int32> Triangles;
+			TArray<FVector> Normals;
+			TArray<FColor> Colors;
+			// Flat faces: three vertices per triangle, both windings, so the
+			// panels show as the facets they are.
+			for (const auto& T : B.mesh.triangles)
+			{
+				const aerotelic::Vec3& A = B.mesh.vertices[T[0]];
+				const aerotelic::Vec3& Bv = B.mesh.vertices[T[1]];
+				const aerotelic::Vec3& Cv = B.mesh.vertices[T[2]];
+				const aerotelic::Vec3 N = aerotelic::Normalized(aerotelic::Cross(Bv - A, Cv - A));
+				const int32 Base = Vertices.Num();
+				for (const aerotelic::Vec3* P : { &A, &Bv, &Cv })
+				{
+					Vertices.Add(FVector(P->x, P->y, P->z));
+					Normals.Add(FVector(N.x, N.y, N.z));
+					Colors.Add(Grey);
+				}
+				Triangles.Append({ Base, Base + 1, Base + 2, Base, Base + 2, Base + 1 });
+			}
+			if (Vertices.Num() == 0) continue;
+			FActorSpawnParameters Params;
+			Params.ObjectFlags |= RF_Transient;
+			AAerotelicColoredMeshActor* Actor = World->SpawnActor<AAerotelicColoredMeshActor>(FVector::ZeroVector, FRotator::ZeroRotator, Params);
+			if (Actor == nullptr) continue;
+			Actor->SetMesh(Vertices, Triangles, Normals, Colors);
+			Actor->SetEdges(true, FLinearColor(0.05f, 0.05f, 0.08f));
+			Actor->SetVisibleInCapturesOnly(false);
+			GAeroMeshActors.Add(Actor);
+		}
 	}
 
 	// ---- the runner ----
@@ -449,7 +749,7 @@ namespace AerotelicAeroTrim
 		Outcome.ReferenceAreaSI = (Setup.ReferenceArea > 0.0 ? Setup.ReferenceArea : 1.0) * Units.AreaToSI();
 		Outcome.CLRequired = aerotelic::aero::RequiredLiftCoefficient(Condition.LoadFactor, Outcome.Weight, Outcome.DynamicPressure, Outcome.ReferenceAreaSI);
 
-		if (OnStatus) OnStatus(FText::FromString(FString::Printf(TEXT("Trim '%s': paneling the base and stepped states (α = %g°, δ = %g°; C_L required %.4f)..."), *Condition.Name, Condition.Alpha0, Condition.Delta0, Outcome.CLRequired)));
+		if (OnStatus) OnStatus(FText::FromString(FString::Printf(TEXT("Trim '%s': building the aero mesh for the base and stepped states (α = %g°, δ = %g°; C_L required %.4f)..."), *Condition.Name, Condition.Alpha0, Condition.Delta0, Outcome.CLRequired)));
 		TArray<TSharedPtr<FCase>> Cases;
 		try
 		{
@@ -460,10 +760,11 @@ namespace AerotelicAeroTrim
 		}
 		catch (const std::exception& E)
 		{
-			Finish(false, FString(TEXT("the bodies could not be paneled: ")) + UTF8_TO_TCHAR(E.what()));
+			Finish(false, FString(TEXT("the bodies could not be meshed for the panel method: ")) + UTF8_TO_TCHAR(E.what()));
 			return;
 		}
 		Outcome.Derivatives = Cases;
+		Outcome.Report = TEXT("Aero mesh:\n") + Cases[0]->MeshReport;
 		TWeakPtr<FRunner> Weak = AsShared();
 		SolveCases(Cases, SolveOptions(Setup, &Condition.MassCentre), [Weak](bool bOk, const FString& Why)
 		{
@@ -479,13 +780,10 @@ namespace AerotelicAeroTrim
 		bCancel = true;
 	}
 
-	void FRunner::SolveCases(TArray<TSharedPtr<FCase>> Cases, const aerotelic::panel::Options& Options, TFunction<void(bool, const FString&)> Then)
+	void FRunner::SolveCases(TArray<TSharedPtr<FCase>> Cases, const tripanel::Options& Options, TFunction<void(bool, const FString&)> Then)
 	{
 		TWeakPtr<FRunner> Weak = AsShared();
 		const int32 Gen = Generation;
-		TSharedRef<std::atomic<bool>> CancelFlag = MakeShared<std::atomic<bool>>(false);
-		// The runner's flag is read on the worker through this copy, so a
-		// runner released mid-solve is not touched.
 		Async(EAsyncExecution::Thread, [Cases, Options, Then, Weak, Gen]()
 		{
 			FString Error;
@@ -499,8 +797,7 @@ namespace AerotelicAeroTrim
 				TSharedPtr<FCase> C = Cases[i];
 				try
 				{
-					C->Sol = aerotelic::panel::Solve(C->Nets, C->Stream, Options);
-					C->bSolved = true;
+					SolveCaseNow(*C, Options);
 				}
 				catch (const std::exception& E)
 				{
@@ -529,7 +826,8 @@ namespace AerotelicAeroTrim
 		const bool bControl = Condition.Control.IsSet();
 		Outcome.Result = bControl ? aerotelic::aero::SolveTrim(Points[0], Points[1], Points[2], Outcome.CLRequired)
 			: aerotelic::aero::SolveTrimAlpha(Points[0], Points[1], Outcome.CLRequired);
-		FString Text = FString::Printf(TEXT("Base α = %g°, δ = %g°: C_L %.4f, C_m(cg) %.4f. dC_L/dα = %.4f, dC_m/dα = %.4f per degree%s."),
+		FString Text = Outcome.Report;
+		Text += FString::Printf(TEXT("\nBase α = %g°, δ = %g°: C_L %.4f, C_m(cg) %.4f. dC_L/dα = %.4f, dC_m/dα = %.4f per degree%s."),
 			Condition.Alpha0, Condition.Delta0, Points[0].CL, Points[0].Cm, Outcome.Result.dCL_dalpha, Outcome.Result.dCm_dalpha,
 			bControl ? *FString::Printf(TEXT("; dC_L/dδ = %.4f, dC_m/dδ = %.4f per degree (%s)"), Outcome.Result.dCL_ddelta, Outcome.Result.dCm_ddelta, *Condition.Control.Label) : TEXT(""));
 		if (!Outcome.Result.ok)
@@ -551,7 +849,7 @@ namespace AerotelicAeroTrim
 		}
 		catch (const std::exception& E)
 		{
-			Finish(false, Text + FString(TEXT("\nThe trimmed state failed to panel: ")) + UTF8_TO_TCHAR(E.what()));
+			Finish(false, Text + FString(TEXT("\nThe trimmed state failed to mesh: ")) + UTF8_TO_TCHAR(E.what()));
 			return;
 		}
 		Outcome.Trimmed = Cases[0];
@@ -566,9 +864,11 @@ namespace AerotelicAeroTrim
 			const FOutcome& O = Self->Outcome;
 			const double Lift = C.CL * O.DynamicPressure * O.ReferenceAreaSI;
 			FString Text = Self->Outcome.Report;
-			Text += FString::Printf(TEXT("\nTRIMMED at α = %.3f°%s: C_L %.4f against %.4f required (lift %.4g N against n W = %.4g N, %.2f%% off), C_m about the mass centre %.5f."),
+			Text += FString::Printf(TEXT("\nTRIMMED at α = %.3f°%s: C_L %.4f against %.4f required (lift %.4g N against n W = %.4g N, %.2f%% off), C_m about the mass centre %.5f; C_L from the wake circulation %.4f."),
 				C.AlphaDeg, Self->Condition.Control.IsSet() ? *FString::Printf(TEXT(", %s at δ = %.3f°"), *Self->Condition.Control.Label, C.DeltaDeg) : TEXT(" (angle of attack alone; the moment is what it is)"),
-				C.CL, O.CLRequired, Lift, Self->Condition.LoadFactor * O.Weight, 100.0 * (C.CL / FMath::Max(O.CLRequired, 1e-12) - 1.0), C.Cm);
+				C.CL, O.CLRequired, Lift, Self->Condition.LoadFactor * O.Weight, 100.0 * (C.CL / FMath::Max(O.CLRequired, 1e-12) - 1.0), C.Cm, C.Sol.lift_from_wake.value_or(0.0));
+			Text += FString::Printf(TEXT("\nSolve: %s unknowns, %s, %.2f s."), *Thousands(C.Sol.unknowns), C.Sol.direct ? TEXT("direct") : *FString::Printf(TEXT("GMRES %d iterations, residual %.1e"), C.Sol.iterations, C.Sol.residual), C.Sol.seconds_influence + C.Sol.seconds_solve);
+			for (const std::string& N : C.Sol.notes) Text += TEXT("\n") + FString(UTF8_TO_TCHAR(N.c_str()));
 			Text += TEXT("\nThe residual is the method's nonlinearity over the step (the wake sheds along the stream; a flap kinks the section): trim again from here to tighten it.");
 			if (Self->Condition.Control.IsSet())
 			{
@@ -576,9 +876,9 @@ namespace AerotelicAeroTrim
 			}
 			Self->Outcome.Case = MakeLoadCase(C, Self->Setup, Self->Condition.Name, O.DynamicPressure, &Self->Condition, &Self->Outcome);
 			const aerotelic::Vec3 Fc = Self->Outcome.Case->ForceCoefficient();
-			Text += FString::Printf(TEXT("\nLoad case '%s': %d body panels, q = %.4g Pa; the panels' own resultant over S_ref is (%.4f, %.4f, %.4f)%s."),
+			Text += FString::Printf(TEXT("\nLoad case '%s': %d panels, q = %.4g Pa; the panels' own resultant over S_ref is (%.4f, %.4f, %.4f)%s."),
 				*Self->Outcome.Case->Name, Self->Outcome.Case->BodyPanels(), Self->Outcome.Case->DynamicPressure, Fc.x, Fc.y, Fc.z,
-				C.Shares.Num() && C.Shares[0].bImaged ? TEXT(" with the image about y = 0") : TEXT(""));
+				C.bImagedSolve ? TEXT(" with the image about y = 0") : TEXT(""));
 			Self->Outcome.Report = Text;
 			Self->Finish(true, FString());
 		});

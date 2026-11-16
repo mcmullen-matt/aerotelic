@@ -515,6 +515,31 @@ std::vector<Network> LoftNetworks(const NamedLoft& loft, const std::string& name
 	return out;
 }
 
+std::vector<std::vector<Vec3>> LoftTrailingEdgePolylines(const NamedLoft& loft, int samples) {
+	std::vector<std::vector<Vec3>> out;
+	const LoftTrailingEdge& tag = loft.trailing_edge;
+	const LoftSource& src = loft.source;
+	if (!tag.IsSet() || !src.section) return out;
+	if (tag.kind == LoftTrailingEdge::Kind::UStation) {
+		std::vector<double> vs = GridParameters(0.0, 1.0, std::max(samples, 8), src.v_seeds);
+		Mat p = src.section(tag.u, vs);
+		std::vector<Vec3> ring;
+		for (int i = 0; i < p.rows(); ++i) ring.push_back({p(i, 0), p(i, 1), p(i, 2)});
+		if (!ring.empty() && Distance(ring.front(), ring.back()) > 0.0) ring.push_back(ring.front());
+		out.push_back(std::move(ring));
+		return out;
+	}
+	std::vector<double> us = GridParameters(src.u_min, src.u_max, std::max(samples, 8), src.u_seeds);
+	std::vector<Vec3> line;
+	for (double u : us) {
+		Mat p = src.section(u, {0.0, 1.0});
+		if (p.rows() < 2) continue;
+		line.push_back({0.5 * (p(0, 0) + p(1, 0)), 0.5 * (p(0, 1) + p(1, 1)), 0.5 * (p(0, 2) + p(1, 2))});
+	}
+	out.push_back(std::move(line));
+	return out;
+}
+
 bool TrailingEdgeBuried(const std::vector<Vec3>& trailing_edge, const Vec3& direction, double probe, double tolerance,
 	const std::vector<const TriMesh*>& bodies, double fraction) {
 	if (trailing_edge.empty() || bodies.empty()) return false;

@@ -46,6 +46,9 @@ add_library(aerotelic_core STATIC
 	src/panel_method.cpp
 	src/wing_panels.cpp
 	src/panel_loads.cpp
+	# The panel method on the body triangulation (2026-11-15): constant
+	# source/doublet triangles, the mesh every other analysis uses.
+	src/tri_panel.cpp
 	# Flight loads, stage 4 (2026-11-14): the rigid trim and the panel
 	# pressures carried onto the structural shells.
 	src/aero_trim.cpp
@@ -201,6 +204,8 @@ add_executable(panel_scratch tests/panel_scratch.cpp)
 target_link_libraries(panel_scratch PRIVATE aerotelic_core)
 add_executable(panel_p38_config_check tests/panel_p38_config_check.cpp)
 target_link_libraries(panel_p38_config_check PRIVATE aerotelic_core)
+add_executable(tri_panel_check tests/tri_panel_check.cpp)
+target_link_libraries(tri_panel_check PRIVATE aerotelic_core)
 
 add_executable(nacelle_fixture_check tests/nacelle_fixture_check.cpp)
 target_link_libraries(nacelle_fixture_check PRIVATE aerotelic_core)

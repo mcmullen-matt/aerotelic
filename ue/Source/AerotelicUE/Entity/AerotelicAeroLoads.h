@@ -10,18 +10,20 @@
 #include "AerotelicStructuralFea.h"
 
 // An AERODYNAMIC LOAD CASE (stage 4 of the flight-loads plan, 2026-11-14):
-// the surface pressure of one high order panel solution, kept on the
-// document for the structural analysis to pick up -- the bridge from
-// Analysis > High Order Panel (which makes them: its Trim tab) to Analysis
-// > Structural (which applies them: the Loads tab's aerodynamic pressure).
+// the surface pressure of one panel solution, kept on the document for the
+// structural analysis to pick up -- the bridge from Model > Load Cases
+// (whose trim makes them) to Analysis > Structural (which applies them: the
+// Loads tab's aerodynamic pressure).
 //
-// What is kept is the panel field itself -- every body panel's centre,
-// outward normal, area and pressure coefficient, placed in the world as the
-// bodies sit (project units, the replica's when a model scale is set) --
-// with the dynamic pressure that turns Cp into pascals, so the structural
-// shells can be loaded whatever grid they are built on later. A solution
-// with the symmetry plane carries only the y >= 0 half; the case holds the
-// image too, so the whole airframe is covered.
+// What is kept is the panel field itself -- every panel's centre, outward
+// normal, area and pressure coefficient, placed in the world as the bodies
+// sit (project units, the replica's when a model scale is set) -- with the
+// dynamic pressure that turns Cp into pascals. Since 2026-11-15 the panels
+// are the bodies' own triangles (tri_panel.hpp), so a structural face that
+// is one of them takes its pressure exactly; a face of another grid takes
+// the nearest panel's on its own side. A solution with the symmetry plane
+// carries only the y >= 0 half; the case holds the image too, so the whole
+// airframe is covered.
 //
 // Session data: cleared with the scene, not saved (a trimmed case is a few
 // seconds to redo from the panel dialog, and its panel field would double

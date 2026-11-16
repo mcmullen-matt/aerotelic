@@ -23,6 +23,7 @@
 #include <TColgp_Array1OfPnt.hxx>
 #include <gp_Pnt.hxx>
 
+#include "aerotelic/section_aero.hpp"
 #include "aerotelic/section_cut.hpp"
 
 namespace aerotelic {
@@ -1871,6 +1872,201 @@ std::vector<NamedMesh> WingModel::BuildBodies(double tolerance, std::vector<Wing
 			for (WingRibPlan& rib : plan.ribs) { rib.eta = -rib.eta; rib.name += " (port)"; }
 			plans.push_back(std::move(plan));
 		}
+	}
+	return out;
+}
+
+// ---------------------------------------------------------------------
+// The aero copy
+// ---------------------------------------------------------------------
+
+NamedMesh WingModel::BuildAeroMesh(double tolerance, std::vector<std::vector<Vec3>>* trailing_edges, std::vector<std::string>* notes, double hinge_blend) const {
+	if (user_sections_.empty()) throw std::invalid_argument("No airfoil sections provided to the wing loft");
+	RequirePositiveChord();
+	if (trailing_edges) trailing_edges->clear();
+	const double semi = planform_->SemiSpan();
+
+	// One blended airfoil per station, and per deflected flap its section cut.
+	std::map<double, std::shared_ptr<Airfoil>> airfoils;
+	auto airfoil_at = [&](double s) -> const std::shared_ptr<Airfoil>& {
+		double key = RoundKey(s);
+		auto it = airfoils.find(key);
+		if (it == airfoils.end()) it = airfoils.emplace(key, AirfoilAt(s)).first;
+		return it->second;
+	};
+	std::vector<FlapSpec> deflected;
+	for (const FlapSpec& f : flaps) if (f.deflection_deg != 0.0) deflected.push_back(f);
+	std::map<std::pair<int, double>, FlapCut> cuts;
+	std::shared_ptr<double> clamped_by = std::make_shared<double>(0.0);
+	auto cut_at = [&](int fi, double s) -> const FlapCut* {
+		auto key = std::make_pair(fi, RoundKey(s));
+		auto it = cuts.find(key);
+		if (it != cuts.end()) return &it->second;
+		const FlapSpec& f = deflected[fi];
+		const double chord = planform_->ChordAt(s);
+		if (!(chord > 0.0)) return nullptr;
+		FlapCut c;
+		try {
+			c = SolveFlapCut(*airfoil_at(s), HingeFraction(f, s), f.gap / chord);
+		} catch (const std::invalid_argument&) {
+			return nullptr;
+		}
+		return &cuts.emplace(key, c).first->second;
+	};
+	// The sealed section at a station, in airfoil coordinates: closed if
+	// blunt, kinked by every deflected flap that spans it.
+	auto section2d = [&](double s, const std::vector<double>& v) {
+		Mat pts2 = airfoil_at(s)->nurbs_curve().Evaluate(v);
+		if (v.size() >= 2) {
+			double gap = 0.0;
+			Mat closed = CloseTrailingEdge(pts2, 0.7, &gap);
+			if (gap > 1e-9) pts2 = closed;
+		}
+		for (size_t fi = 0; fi < deflected.size(); ++fi) {
+			const FlapSpec& f = deflected[fi];
+			if (s < f.eta_root - 1e-9 || s > f.eta_tip + 1e-9) continue;
+			const FlapCut* c = cut_at(static_cast<int>(fi), s);
+			if (c == nullptr) continue;
+			double d = f.deflection_deg;
+			if (c->deflection_down_limit_deg > 0.0 && d > c->deflection_down_limit_deg) d = c->deflection_down_limit_deg;
+			if (c->deflection_up_limit_deg > 0.0 && d < -c->deflection_up_limit_deg) d = -c->deflection_up_limit_deg;
+			*clamped_by = std::max(*clamped_by, std::fabs(f.deflection_deg - d));
+			pts2 = DeflectAboutHinge(pts2, c->x_hinge, c->y_hinge, d, std::max(hinge_blend, 0.0));
+		}
+		return pts2;
+	};
+
+	// Without flaps the viewport's own body is the aero copy.
+	NamedMesh out;
+	out.name = "Main";
+	if (flaps.empty()) {
+		std::vector<NamedMesh> bodies = BuildMeshes(tolerance);
+		if (bodies.empty()) throw std::runtime_error("the wing has no body to copy for the aero model");
+		out.mesh = bodies[0].mesh;
+	} else {
+		// The stations: the loft's own, the deflected flaps' ends, the root
+		// bay's end on a symmetric wing with dihedral at the root.
+		std::vector<double> seeds = {0.0, 1.0};
+		for (double s : LoftStations(60, tolerance)) if (s > 0.0 && s < 1.0) seeds.push_back(s);
+		for (const FlapSpec& f : deflected) for (double e : {f.eta_root, f.eta_tip}) if (e > 1e-9 && e < 1.0 - 1e-9) seeds.push_back(e);
+		double bay_end = 0.0;
+		if (symmetric) {
+			const Mat af0 = airfoil_at(0.0)->nurbs_curve().Sample(64);
+			auto min_y = [&](double s) {
+				Mat p = planform_->AirfoilCoordsToXyz(s, af0);
+				double y = std::numeric_limits<double>::infinity();
+				for (int i = 0; i < p.rows(); ++i) y = std::min(y, p(i, 1));
+				return y;
+			};
+			if (min_y(0.0) < -1e-12 * std::max(semi, 1.0)) {
+				constexpr int kScan = 2000;
+				bay_end = 1.0;
+				for (int i = 1; i <= kScan; ++i) {
+					const double s = static_cast<double>(i) / kScan;
+					if (min_y(s) >= std::max(tolerance, 1e-12)) { bay_end = s; break; }
+				}
+				seeds.push_back(bay_end);
+				if (notes) notes->push_back("symmetric wing with dihedral at the root: the aero copy's root bay runs to eta " + std::to_string(bay_end) + " from the derived section in the symmetry plane");
+			}
+		}
+		std::sort(seeds.begin(), seeds.end());
+		{
+			std::vector<double> merged;
+			for (double s : seeds) if (merged.empty() || s - merged.back() > 1e-9) merged.push_back(s);
+			seeds = merged;
+		}
+		LoftSource src;
+		src.u_min = 0.0;
+		src.u_max = 1.0;
+		src.u_seeds = seeds;
+		src.closed_curve = false;
+		src.uniform_rings = true;
+		auto plain = [&](double s, const std::vector<double>& v) { return planform_->AirfoilCoordsToXyz(s, section2d(s, v)); };
+		const double b = bay_end;
+		src.section = [plain, b](double s, const std::vector<double>& v) {
+			if (b <= 0.0 || s >= b) return plain(s, v);
+			// The root bay: the derived section (y dropped to 0) ruled to the
+			// section at the bay's end.
+			Mat a = plain(0.0, v);
+			for (int i = 0; i < a.rows(); ++i) a(i, 1) = 0.0;
+			const double w = std::clamp(s / b, 0.0, 1.0);
+			if (w <= 0.0) return a;
+			Mat e = plain(b, v);
+			Mat o(a.rows(), 3);
+			for (int i = 0; i < a.rows(); ++i) for (int j = 0; j < 3; ++j) o(i, j) = (1.0 - w) * a(i, j) + w * e(i, j);
+			return o;
+		};
+		src.mirror_v = [&](double s, double v) { return airfoil_at(s)->MirrorParameter(v); };
+		if (symmetric) src.cap_start = false;
+		LoftOptions base;
+		base.min_v = 24;
+		LoftRings rings;
+		out.mesh = TriangulateLoft(src, mesh.Apply(base, tolerance), nullptr, nullptr, &rings);
+		// The trailing edge IS the seam vertex (v = 0) of every ring: the
+		// mesh's own points, so every edge between two of them lies on the
+		// polyline exactly -- a flap's end makes the trailing edge step from
+		// one station to the next, and a polyline sampled on its own would
+		// miss the sloped edge between them.
+		if (trailing_edges) {
+			std::vector<Vec3> line;
+			for (size_t i = 0; i < rings.rings.size(); ++i) {
+				if (rings.rings[i].empty()) continue;
+				line.push_back(out.mesh.vertices[rings.rings[i][0]]);
+			}
+			if (symmetric) for (Vec3& q : line) if (std::fabs(q.y) <= 1e-9 * std::max(semi, 1.0)) q.y = 0.0;
+			if (symmetric) {
+				std::vector<Vec3> port;
+				for (const Vec3& q : line) port.push_back({q.x, -q.y, q.z});
+				trailing_edges->push_back(port);
+			}
+			trailing_edges->push_back(line);
+		}
+		if (symmetric) {
+			// The port half: the reflection, the ring in the plane shared.
+			TriMesh& m = out.mesh;
+			const double eps_y = 1e-9 * std::max(semi, 1.0);
+			for (Vec3& v : m.vertices) if (std::fabs(v.y) <= eps_y) v.y = 0.0;
+			const int n0 = static_cast<int>(m.vertices.size());
+			std::vector<int> port(n0);
+			std::vector<Vec3> added;
+			for (int i = 0; i < n0; ++i) {
+				if (m.vertices[i].y == 0.0) { port[i] = i; continue; }
+				port[i] = n0 + static_cast<int>(added.size());
+				Vec3 r = m.vertices[i];
+				r.y = -r.y;
+				added.push_back(r);
+			}
+			m.vertices.insert(m.vertices.end(), added.begin(), added.end());
+			const size_t nt = m.triangles.size();
+			for (size_t t = 0; t < nt; ++t) {
+				const std::array<int, 3> tr = m.triangles[t];
+				if (port[tr[0]] == tr[0] && port[tr[1]] == tr[1] && port[tr[2]] == tr[2]) continue;
+				m.triangles.push_back({port[tr[0]], port[tr[2]], port[tr[1]]});
+			}
+		}
+		if (*clamped_by > 1e-9 && notes) {
+			notes->push_back("the aero copy's flap deflection is clamped by up to " + std::to_string(*clamped_by) + " deg to the section's limit, where the flap skin meets the pocket's lip");
+		}
+	}
+
+	// Without flaps the trailing edge is the planform's, sampled finely: the
+	// sealed section's seam point at each station (a blunt section closed).
+	if (trailing_edges && trailing_edges->empty()) {
+		std::vector<Vec3> line;
+		for (int i = 0; i <= 400; ++i) {
+			const double s = i / 400.0;
+			Mat p2 = section2d(s, {0.0, 1.0});
+			Mat p = planform_->AirfoilCoordsToXyz(s, p2);
+			Vec3 q{0.5 * (p(0, 0) + p(1, 0)), 0.5 * (p(0, 1) + p(1, 1)), 0.5 * (p(0, 2) + p(1, 2))};
+			if (symmetric && std::fabs(q.y) <= 1e-9 * std::max(semi, 1.0)) q.y = 0.0;
+			line.push_back(q);
+		}
+		if (symmetric) {
+			std::vector<Vec3> port;
+			for (const Vec3& q : line) port.push_back({q.x, -q.y, q.z});
+			trailing_edges->push_back(port);
+		}
+		trailing_edges->push_back(line);
 	}
 	return out;
 }

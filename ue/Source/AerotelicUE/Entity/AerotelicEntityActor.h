@@ -535,9 +535,13 @@ private:
 	// and every move or rescale.
 	void ApplyEdgeOffset();
 	void ShowBoxFallback(const TopoDS_Shape& Shape);
+public:
 	// The chordal tolerance the viewport builds the model's meshes at:
-	// relative to the body's own size, as the OCCT deflection was.
+	// relative to the body's own size, as the OCCT deflection was. Public
+	// since 2026-11-15: the panel method builds a wing's aero copy at the
+	// same tolerance, so the aero mesh is the viewport's.
 	double DisplayTolerance() const;
+private:
 	// Tessellates Shape into Target (surface material) and EdgeTarget
 	// (wireframe material), one section per top-level solid. Returns the
 	// role names of the sections written, empty if there was nothing to

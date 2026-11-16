@@ -147,6 +147,13 @@ Network LoftNetwork(const NamedLoft& loft, const std::string& name, const BodyPa
 // (half_plane_y) gets no wake: its ring is an arc, not a section.
 std::vector<Network> LoftNetworks(const NamedLoft& loft, const std::string& name, const BodyPaneling& paneling, const Vec3& free_stream);
 
+// The trailing edge of a tagged loft as polylines in the loft's own
+// coordinates (2026-11-15, for the panel method on triangles): VSeam --
+// the seam point (the mean of the section's two ends) at `samples`
+// stations plus the loft's seeds; UStation -- the ring at the tagged
+// station, closed (its first point repeated). Empty without a tag.
+std::vector<std::vector<Vec3>> LoftTrailingEdgePolylines(const NamedLoft& loft, int samples = 200);
+
 // All of a model's lofts (ISolidModel::BuildLofts) as networks named
 // "<name>/<body>" (or `name` alone for a single body), through
 // LoftNetworks -- with their wakes where tagged. Empty for a model

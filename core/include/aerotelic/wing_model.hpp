@@ -581,6 +581,22 @@ public:
 	// with a pocket per flap) followed by the flaps, each by its name.
 	std::vector<NamedMesh> BuildMeshes(double tolerance) const override;
 
+	// The AERO COPY (2026-11-15): the wing as ONE sealed body for the panel
+	// method on triangles (tri_panel.hpp) -- no pocket, no flap body, no
+	// gap -- lofted on the same stations as BuildMeshes (tip to tip when
+	// symmetric, the derived root section and root bay included), every
+	// flap with a non-zero deflection entering as the KINK of the sealed
+	// section about its hinge centre (DeflectAboutHinge, blended over
+	// `hinge_blend` chords either side of the hinge, clamped to the
+	// section's limits like the flap body), with the flap's end stations
+	// seeded so the kink starts and stops where the flap does. This is the
+	// vortex-lattice view of a flap: a potential solver cannot see a 4 mm
+	// slot with panels larger than the slot. `trailing_edges` receives the
+	// trailing edge as polylines (model coordinates, one per half) for the
+	// wake; `notes` any deflection clamp. WITHOUT flaps the aero copy is
+	// BuildMeshes()' own "Main" -- the very triangles the viewport shows.
+	NamedMesh BuildAeroMesh(double tolerance, std::vector<std::vector<Vec3>>* trailing_edges = nullptr, std::vector<std::string>* notes = nullptr, double hinge_blend = 0.05) const;
+
 	// Sorted curve parameters to loft through: the user's sections, root,
 	// tip, chord-law breakpoints, crease brackets, and error-driven
 	// refinement up to n_span stations. Exposed (not just build_solid()'s

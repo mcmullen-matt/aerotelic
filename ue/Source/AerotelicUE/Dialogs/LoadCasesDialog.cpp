@@ -246,6 +246,50 @@ namespace
 			return 0;
 		}
 
+		// The set-up the panel method runs an aero case with: its panelable
+		// entities (a boolean result's operands), the plane, the references.
+		bool SetupFor(const aerotelic::AeroLoadCaseSpec& A, AerotelicAeroTrim::FSetup& Setup, TArray<AAerotelicEntityActor*>& Panelable) const
+		{
+			Panelable = EntitiesOf(A.bodies, true);
+			if (Panelable.Num() == 0) return false;
+			for (AAerotelicEntityActor* E : Panelable) Setup.Entities.Add(E);
+			Setup.bSymmetry = AerotelicAeroTrim::DefaultSymmetry(Panelable);
+			AerotelicAeroTrim::DefaultReferences(Panelable, Setup.ReferenceArea, Setup.ReferenceLength);
+			return true;
+		}
+
+		// The mesh the panel method would solve for one aero case, shown in
+		// the main 3D view with its edges, its report in the case's status
+		// line: the user's check of what is analysed (2026-11-15).
+		void ShowAeroMesh(int32 Index)
+		{
+			if (Index < 0 || Index >= static_cast<int32>(Spec.aero.size())) return;
+			const aerotelic::AeroLoadCaseSpec A = Spec.aero[Index];
+			const FString Name = UTF8_TO_TCHAR(A.name.c_str());
+			AerotelicAeroTrim::FSetup Setup;
+			TArray<AAerotelicEntityActor*> Panelable;
+			if (!SetupFor(A, Setup, Panelable))
+			{
+				AeroStatus.Add(Name, TEXT("no body of the case can be paneled: choose a wing, fuselage, nacelle, primitive or a boolean result over them"));
+				RebuildAeroList();
+				return;
+			}
+			try
+			{
+				TSharedPtr<AerotelicAeroTrim::FCase> C = AerotelicAeroTrim::BuildCase(Setup, 0.0, 0.0);
+				AerotelicAeroTrim::ShowAeroMeshInViewport(*C);
+				FString Text = TEXT("aero mesh (shown in the 3D view): ") + C->MeshReport.Replace(TEXT("\n"), TEXT(" | "));
+				for (const FString& N : C->Notes) Text += TEXT(" | ") + N;
+				AeroStatus.Add(Name, Text);
+				Status(FText::FromString(FString::Printf(TEXT("Aero mesh of '%s' in the 3D view: %d triangles%s. Hide mesh takes it away."), *Name, C->Triangles, Setup.bSymmetry ? TEXT(", the y >= 0 half solved with its image") : TEXT(""))));
+			}
+			catch (const std::exception& E)
+			{
+				AeroStatus.Add(Name, FString(TEXT("the aero mesh could not be built: ")) + UTF8_TO_TCHAR(E.what()));
+			}
+			RebuildAeroList();
+		}
+
 		// The trim of one aero case: panels the case's bodies, trims to its
 		// condition, stores the pressure field on the document.
 		void SolveAero(int32 Index)
@@ -254,17 +298,14 @@ namespace
 			const aerotelic::AeroLoadCaseSpec A = Spec.aero[Index];
 			const FString Name = UTF8_TO_TCHAR(A.name.c_str());
 			if (TSharedPtr<AerotelicAeroTrim::FRunner>* R = Runners.Find(Name)) if (R->IsValid() && (*R)->IsRunning()) { Status(LOCTEXT("TrimBusy", "That case's trim is still running.")); return; }
-			const TArray<AAerotelicEntityActor*> Panelable = EntitiesOf(A.bodies, true);
-			if (Panelable.Num() == 0)
+			AerotelicAeroTrim::FSetup Setup;
+			TArray<AAerotelicEntityActor*> Panelable;
+			if (!SetupFor(A, Setup, Panelable))
 			{
 				AeroStatus.Add(Name, TEXT("no body of the case can be paneled: choose a wing, fuselage, nacelle, primitive or a boolean result over them"));
 				RebuildAeroList();
 				return;
 			}
-			AerotelicAeroTrim::FSetup Setup;
-			for (AAerotelicEntityActor* E : Panelable) Setup.Entities.Add(E);
-			Setup.bSymmetry = AerotelicAeroTrim::DefaultSymmetry(Panelable);
-			AerotelicAeroTrim::DefaultReferences(Panelable, Setup.ReferenceArea, Setup.ReferenceLength);
 			AerotelicAeroTrim::FCondition Cond;
 			Cond.Name = Name;
 			Cond.LoadFactor = A.load_factor;
@@ -300,8 +341,12 @@ namespace
 					{
 						if (UAerotelicDocumentSubsystem* Doc = UAerotelicDocumentSubsystem::Get()) Doc->SetAeroLoadCase(O.Case);
 						const AerotelicAeroTrim::FCase& C = *O.Trimmed;
-						D->AeroStatus.Add(Name, FString::Printf(TEXT("solved: α = %.2f°%s, C_L %.4f (%.4f required), C_m %.4f, q = %.4g Pa, %d panels"), C.AlphaDeg,
-							C.Control.IsEmpty() ? TEXT("") : *FString::Printf(TEXT(", δ = %.2f°"), C.DeltaDeg), C.CL, O.CLRequired, C.Cm, O.DynamicPressure, O.Case->BodyPanels()));
+						FString Solved = FString::Printf(TEXT("solved: α = %.2f°%s, C_L %.4f (%.4f required; wake %.4f), C_m %.4f, q = %.4g Pa; %d panels on %d triangles%s, %s in %.1f s. Mesh: %s"), C.AlphaDeg,
+							C.Control.IsEmpty() ? TEXT("") : *FString::Printf(TEXT(", δ = %.2f°"), C.DeltaDeg), C.CL, O.CLRequired, C.Sol.lift_from_wake.value_or(0.0), C.Cm, O.DynamicPressure, O.Case->BodyPanels(), C.Triangles,
+							C.bImagedSolve ? TEXT(" (the y >= 0 half with its image)") : TEXT(""), C.Sol.direct ? TEXT("direct") : *FString::Printf(TEXT("GMRES %d it"), C.Sol.iterations), C.Sol.seconds_influence + C.Sol.seconds_solve,
+							*C.MeshReport.Replace(TEXT("\n"), TEXT(" | ")));
+						for (const FString& W : C.Warnings) Solved += TEXT(" | WARNING: ") + W;
+						D->AeroStatus.Add(Name, Solved);
 						D->Status(FText::FromString(FString::Printf(TEXT("Aero case '%s' trimmed and stored."), *Name)));
 					}
 					else
@@ -332,7 +377,7 @@ namespace
 						+ SVerticalBox::Slot().AutoHeight()
 						[ SAssignNew(Picker, SAerotelicBodyPicker).Choices(Choices).InitiallyChosen(Fea->ChoicesFor(Spec.aero[Index].bodies)).ListHeight(160.0f) ]
 						+ SVerticalBox::Slot().AutoHeight().Padding(0, 6, 0, 0)
-						[ MakeInfoLabel(LOCTEXT("AeroBodiesHint", "The bodies the case flies: the structural model, and what the panel method panels (a boolean result panels its lofted operands). Close the popup to keep the choice; the case's pressures are then solved again.")) ]
+						[ MakeInfoLabel(LOCTEXT("AeroBodiesHint", "The bodies the case flies: the structural model, and what the panel method panels on their own triangles (a wing as its sealed aero copy, a boolean result as its operands' aero copies, overlapping bodies fused into one surface first). Close the popup to keep the choice; the case's pressures are then solved again.")) ]
 					]
 				];
 			TSharedPtr<IMenu> Menu = FSlateApplication::Get().PushMenu(Anchor, FWidgetPath(), Content.ToSharedRef(), FSlateApplication::Get().GetCursorPos(), FPopupTransitionEffect(FPopupTransitionEffect::ContextMenu));
@@ -455,6 +500,7 @@ namespace
 							[
 								SNew(SHorizontalBox)
 								+ SHorizontalBox::Slot().AutoWidth().Padding(0, 0, 3, 0) [ Button(LOCTEXT("Select", "Select"), [Self, i]() { Self->AeroSelected = i; Self->RebuildAeroList(); Self->RefreshEnvelope(); }) ]
+								+ SHorizontalBox::Slot().AutoWidth().Padding(0, 0, 3, 0) [ Button(LOCTEXT("MeshCase", "Mesh"), [Self, i]() { Self->ShowAeroMesh(i); }) ]
 								+ SHorizontalBox::Slot().AutoWidth().Padding(0, 0, 3, 0) [ Button(LOCTEXT("SolveCase", "Solve"), [Self, i]() { Self->SolveAero(i); }) ]
 								+ SHorizontalBox::Slot().AutoWidth() [ Button(LOCTEXT("Delete", "Delete"), [Self, i]() { Self->DeleteAeroCase(i); }) ]
 							]
@@ -647,6 +693,7 @@ namespace
 			SaveCurrentStatic();
 			for (auto& Pair : Runners) if (Pair.Value.IsValid()) Pair.Value->Cancel();
 			Runners.Empty();
+			AerotelicAeroTrim::HideAeroMeshInViewport();
 			if (UAerotelicDocumentSubsystem* Doc = UAerotelicDocumentSubsystem::Get())
 			{
 				if (FieldsHandle.IsValid()) Doc->OnAeroLoadCasesChanged.Remove(FieldsHandle);
@@ -756,7 +803,7 @@ void ShowAerotelicLoadCasesDialog(TFunction<void(const FText&)> Status)
 		+ SScrollBox::Slot()
 		[
 			MakeInfoLabel(LOCTEXT("AeroHint",
-				"Click inside the envelope to add a load case there; press a point to select it, drag to move it. The table below edits each case; Solve trims it with the panel method and stores its pressures for the structural analysis. Speeds, densities, weight and area are SI."))
+				"Click inside the envelope to add a load case there; press a point to select it, drag to move it. The table below edits each case; Mesh shows the triangles the panel method will solve in the 3D view with their statistics (each body's own grid, overlapping bodies fused into one surface); Solve trims the case with the panel method on that mesh and stores its pressures for the structural analysis. Speeds, densities, weight and area are SI."))
 		];
 
 	TSharedRef<SWidget> AeroTab =
@@ -775,13 +822,15 @@ void ShowAerotelicLoadCasesDialog(TFunction<void(const FText&)> Status)
 				[ Button(LOCTEXT("AddAtVA", "Add at V_A, n_max"), [D]() { const double VA = D->Plot.IsValid() ? D->Plot->ManoeuvreSpeed() : 0.0; D->AddAeroCase(VA > 0.0 ? FMath::Min(VA, D->Spec.vn.v_ne) : 0.7 * D->Spec.vn.v_ne, D->Spec.vn.n_max); }) ]
 				+ SHorizontalBox::Slot().AutoWidth().Padding(0, 0, 6, 0)
 				[ Button(LOCTEXT("AddCruise", "Add cruise (n = 1)"), [D]() { D->AddAeroCase(0.6 * D->Spec.vn.v_ne, 1.0); }) ]
-				+ SHorizontalBox::Slot().AutoWidth()
+				+ SHorizontalBox::Slot().AutoWidth().Padding(0, 0, 6, 0)
 				[ Button(LOCTEXT("SolveAll", "Solve every unsolved case"), [D]()
 				{
 					const UAerotelicDocumentSubsystem* Doc2 = UAerotelicDocumentSubsystem::Get();
 					for (int32 i = 0; i < static_cast<int32>(D->Spec.aero.size()); ++i)
 						if (Doc2 == nullptr || !Doc2->FindAeroLoadCase(UTF8_TO_TCHAR(D->Spec.aero[i].name.c_str())).IsValid()) D->SolveAero(i);
 				}) ]
+				+ SHorizontalBox::Slot().AutoWidth()
+				[ Button(LOCTEXT("HideMesh", "Hide mesh"), [D]() { AerotelicAeroTrim::HideAeroMeshInViewport(); D->Status(LOCTEXT("MeshHidden", "The aero mesh is out of the 3D view.")); }) ]
 			]
 			+ SVerticalBox::Slot().FillHeight(0.45f)
 			[
@@ -802,12 +851,12 @@ void ShowAerotelicLoadCasesDialog(TFunction<void(const FText&)> Status)
 	// ---- tab 2: structural ----
 	TArray<FAerotelicTab> SubTabs;
 	SubTabs.Add({ LOCTEXT("BodiesSub", "Bodies"), SNew(SScrollBox) + SScrollBox::Slot() [ SAssignNew(D->BodiesBox, SBox) ] });
+	// The Mesh picture (2026-11-15): the shells the case is built on, with
+	// their edges -- what is analysed, in plain sight before anything is solved.
+	SubTabs.Add({ LOCTEXT("MeshSub", "Mesh"), MakePictureTab(S, TabMesh, LOCTEXT("MeshEmpty", "Build Model to see the shells the case is built on: the wetted faces by region with their edges and the rib, spar and stringer shells inside -- the triangles every analysis uses."), nullptr) });
 	SubTabs.Add({ LOCTEXT("LoadsSub", "Loads"), MakePictureTab(S, TabLoads, LOCTEXT("LoadsEmpty", "Build Model to see the loads as vectors on the mesh: the pressure on the wetted faces, each point force at its node, the inertial load at the centre of mass."), MakeLoadsPanel(S)) });
 	SubTabs.Add({ LOCTEXT("MassesSub", "Masses"), MakePictureTab(S, TabMasses, LOCTEXT("MassesEmpty", "Build Model to see the mass items hung on it, each with bars to the nodes that carry it, and the mass centre of everything."), MakeMassesPanel(S)) });
 	SubTabs.Add({ LOCTEXT("SupportSub", "Support"), MakePictureTab(S, TabSupport, LOCTEXT("SupportEmpty", "Build Model to see the constraints: a marker on every node the supports fix, each plane with its patch handles (drag them), and what reaches no support -- or, in free flight, the one reference node."), MakeSupportPanel(S)) });
-	// The Mesh picture has no tab of its own here; its view is still made so
-	// the engine's UpdatePictures finds it.
-	TSharedRef<SWidget> HiddenMesh = MakePictureTab(S, TabMesh, FText::GetEmpty(), nullptr);
 	WirePatchHandles(S);
 
 	TSharedRef<SWidget> StaticTab =
@@ -822,13 +871,12 @@ void ShowAerotelicLoadCasesDialog(TFunction<void(const FText&)> Status)
 				[
 					SNew(SHorizontalBox)
 					+ SHorizontalBox::Slot().AutoWidth().Padding(0, 0, 6, 0) [ Button(LOCTEXT("AddStatic", "Add case"), [D]() { D->AddStatic(); }) ]
-					+ SHorizontalBox::Slot().AutoWidth().Padding(0, 0, 6, 0) [ SAssignNew(S->BuildButton, SButton).Text(LOCTEXT("BuildBtn", "Build Model")).HAlign(HAlign_Center).OnClicked_Lambda([D]() { D->SaveCurrentStatic(); if (D->Fea->BuildModel() && D->StaticTabs.IsValid()) D->StaticTabs->SetActiveTab(3); return FReply::Handled(); }) ]
+					+ SHorizontalBox::Slot().AutoWidth().Padding(0, 0, 6, 0) [ SAssignNew(S->BuildButton, SButton).Text(LOCTEXT("BuildBtn", "Build Model")).HAlign(HAlign_Center).OnClicked_Lambda([D]() { D->SaveCurrentStatic(); if (D->Fea->BuildModel() && D->StaticTabs.IsValid()) D->StaticTabs->SetActiveTab(1); return FReply::Handled(); }) ]
 					+ SHorizontalBox::Slot().FillWidth(1.0f).VAlign(VAlign_Center) [ SAssignNew(D->LblStatic, STextBlock).AutoWrapText(true).ColorAndOpacity(FSlateColor(FLinearColor(0.85f, 0.85f, 0.85f))) ]
 				])
 		]
 		+ SVerticalBox::Slot().FillHeight(1.0f)
-		[ SAssignNew(D->StaticTabs, SAerotelicTabStrip, SubTabs) ]
-		+ SVerticalBox::Slot().AutoHeight() [ SNew(SBox).HeightOverride(0).Visibility(EVisibility::Collapsed) [ HiddenMesh ] ];
+		[ SAssignNew(D->StaticTabs, SAerotelicTabStrip, SubTabs) ];
 
 	TArray<FAerotelicTab> Tabs;
 	Tabs.Add({ LOCTEXT("AeroTab", "Aero (V-n diagram)"), AeroTab });

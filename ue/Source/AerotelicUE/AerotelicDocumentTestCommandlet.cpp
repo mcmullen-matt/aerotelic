@@ -27,6 +27,8 @@
 #include "aerotelic/wing_model.hpp"
 #include "aerotelic/wing_panels.hpp"
 #include "aerotelic/panel_loads.hpp"
+#include "aerotelic/tri_panel.hpp"
+#include "Entity/AerotelicAeroTrim.h"
 #include "aerotelic/aero_trim.hpp"
 #include "aerotelic/aero_loads.hpp"
 #include "aerotelic/colormaps.hpp"
@@ -838,89 +840,58 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 		{
 			try
 			{
-				using namespace aerotelic::panel;
+				// The panel method on the wing's own triangles (2026-11-15): the
+				// shared module builds the aero copy (no flaps here, so it IS the
+				// body the viewport shows); the plane drops the root cap and
+				// images the half.
 				aerotelic::WingModel* W = Wing->GetModelAs<aerotelic::WingModel>();
-				const FTransform Transform = Wing->GetActorTransform();
 				const double SRef = W->planform().PlanformArea();
 				const aerotelic::Vec3 Cg{ 0.3 * W->planform().RootChord(), 0.0, 0.0 };
-				struct FSolved { double AlphaDeg; aerotelic::Vec3 Stream, LiftDir; std::vector<Network> Nets; Solution Sol; double CL, Cm; };
+				AerotelicAeroTrim::FSetup Setup;
+				Setup.Entities.Add(Wing);
+				Setup.bSymmetry = true;
+				Setup.ReferenceArea = SRef;
+				Setup.ReferenceLength = W->planform().RootChord();
+				// Whether the plane would default on depends on where the scene's
+				// earlier steps left the wing; reported, not asserted.
+				UE_LOG(LogAerotelicDocumentTest, Display, TEXT("panel method: DefaultSymmetry for the scene's wing is %s"), AerotelicAeroTrim::DefaultSymmetry({ Wing }) ? TEXT("on") : TEXT("off"));
+				struct FSolved { double AlphaDeg; aerotelic::Vec3 Stream, LiftDir; TSharedPtr<AerotelicAeroTrim::FCase> Case; double CL, Cm; };
 				auto SolveAt = [&](double AlphaDeg)
 				{
 					FSolved S;
 					S.AlphaDeg = AlphaDeg;
-					const double A = AlphaDeg * PI / 180.0;
-					S.Stream = { std::cos(A), 0.0, std::sin(A) };
-					S.LiftDir = { -std::sin(A), 0.0, std::cos(A) };
-					WingPaneling Pan;
-					Pan.chordwise = 8;
-					Pan.spanwise = 6;
-					S.Nets = WingNetworks(*W, Pan, S.Stream);
-					for (Network& N : S.Nets)
-					{
-						aerotelic::TriMesh M;
-						M.vertices = N.corners;
-						AerotelicMeshing::PlaceMesh(M, Transform);
-						N.corners = M.vertices;
-					}
-					Options Opt;
-					Opt.symmetry_y = 0.0;
-					Opt.reference_area = SRef;
-					Opt.moment_reference = Cg;
-					S.Sol = Solve(S.Nets, S.Stream, Opt);
-					S.CL = aerotelic::Dot(S.Sol.force_coefficient, S.LiftDir);
-					S.Cm = S.Sol.moment_coefficient.y / W->planform().RootChord();
+					S.Case = AerotelicAeroTrim::BuildCase(Setup, AlphaDeg, 0.0);
+					S.Stream = S.Case->Stream;
+					S.LiftDir = S.Case->LiftDir;
+					AerotelicAeroTrim::SolveCaseNow(*S.Case, AerotelicAeroTrim::SolveOptions(Setup, &Cg));
+					AerotelicAeroTrim::Derive(*S.Case, Setup.ReferenceLength);
+					S.CL = S.Case->CL;
+					S.Cm = S.Case->Cm;
 					return S;
 				};
 				const FSolved Base = SolveAt(2.0), Stepped = SolveAt(3.0);
+				Check(Base.Case->Shares.Num() == 1 && Base.Case->Sol.bodies.size() == 1 && Base.Case->Sol.bodies[0].wake_edges > 0,
+					FString::Printf(TEXT("panel method: one body of %d triangles (%s at the plane, %d in it dropped), %d trailing-edge edges shedding a wake"), Base.Case->Triangles, Base.Case->Sol.bodies[0].cut_at_plane ? TEXT("cut") : TEXT("not cut"), Base.Case->Sol.bodies[0].dropped_in_plane, Base.Case->Sol.bodies[0].wake_edges));
+				Check(!Base.Case->MeshReport.IsEmpty() && Base.Case->Warnings.Num() == 0, FString::Printf(TEXT("panel method: the mesh report reads, no warning (%s)"), *Base.Case->MeshReport.Replace(TEXT("\n"), TEXT(" | "))));
+				Check(Base.Case->Sol.lift_from_wake.has_value() && FMath::Abs(Base.CL / Base.Case->Sol.lift_from_wake.value_or(1.0) - 1.0) < 0.15,
+					FString::Printf(TEXT("panel method: lift from the pressures %.4f agrees with the wake circulation %.4f"), Base.CL, Base.Case->Sol.lift_from_wake.value_or(0.0)));
 				const aerotelic::aero::TrimResult Trim = aerotelic::aero::SolveTrimAlpha({ Base.AlphaDeg, 0.0, Base.CL, Base.Cm }, { Stepped.AlphaDeg, 0.0, Stepped.CL, Stepped.Cm }, 0.5);
 				Check(Trim.ok && Trim.alpha_deg > 2.0 && Trim.alpha_deg < 15.0 && Trim.dCL_dalpha > 0.03 && Trim.dCL_dalpha < 0.12,
 					FString::Printf(TEXT("trim: the angle of attack for C_L = 0.5 is %.3f deg by dC_L/dalpha = %.4f per degree (C_L %.4f at 2 deg)"), Trim.alpha_deg, Trim.dCL_dalpha, Base.CL));
 				const FSolved Trimmed = SolveAt(Trim.alpha_deg);
 				Check(FMath::Abs(Trimmed.CL - 0.5) < 0.02, FString::Printf(TEXT("trim: the trimmed state lifts C_L = %.4f against 0.5 asked (the method's nonlinearity over the step)"), Trimmed.CL));
 
-				// The load case: the body panels and their image.
-				TSharedPtr<FAerotelicAeroLoadCase> Case = MakeShared<FAerotelicAeroLoadCase>();
-				Case->Name = TEXT("test trim");
-				Case->DynamicPressure = 100.0;
-				Case->AlphaDeg = Trimmed.AlphaDeg;
-				Case->CL = Trimmed.CL;
-				Case->ReferenceArea = SRef;
-				Case->Stream = Trimmed.Stream;
-				Case->Entities.Add(Wing->EntityName);
+				// The load case: the panels and their image.
+				TSharedPtr<FAerotelicAeroLoadCase> Case = AerotelicAeroTrim::MakeLoadCase(*Trimmed.Case, Setup, TEXT("test trim"), 100.0, nullptr, nullptr);
 				int32 BodyPanels = 0;
-				const int32 NNets = static_cast<int32>(Trimmed.Sol.networks.size());
-				for (int32 k = 0; k < NNets; ++k)
-				{
-					const NetworkResult& NR = Trimmed.Sol.networks[k];
-					if (NR.type == NetworkType::DoubletWake || NR.type == NetworkType::DoubletWakeConstant) continue;
-					const Network& Net = Trimmed.Nets[k];
-					const bool bOneSided = Net.type == NetworkType::SourceAnalysis || Net.bc.kind == BoundaryCondition::Kind::Potential;
-					for (int32 i = 0; i < NR.panel_rows; ++i)
-					{
-						for (int32 j = 0; j < NR.panel_cols; ++j)
-						{
-							const PanelResult& P = NR.panels[static_cast<size_t>(i) * NR.panel_cols + j];
-							if (!(P.area > 0.0)) continue;
-							++BodyPanels;
-							aerotelic::aero::PressureSample S;
-							S.centre = P.centre; S.normal = P.normal; S.area = P.area;
-							S.cp_upper = P.cp_upper; S.cp_lower = P.cp_lower;
-							S.two_sided = !bOneSided;
-							S.network = k; S.row = i; S.col = j;
-							Case->Samples.push_back(S);
-							aerotelic::aero::PressureSample M = S;
-							M.centre.y = -M.centre.y; M.normal.y = -M.normal.y; M.network = k + NNets;
-							Case->Samples.push_back(M);
-						}
-					}
-				}
+				for (const aerotelic::tripanel::PanelResult& P : Trimmed.Case->Sol.bodies[0].panels) if (P.area > 0.0) ++BodyPanels;
 				const aerotelic::Vec3 Fc = Case->ForceCoefficient();
-				Check(BodyPanels > 0 && Case->BodyPanels() == 2 * BodyPanels, FString::Printf(TEXT("load case: %d body panels and their image (%d samples)"), BodyPanels, Case->BodyPanels()));
-				// Not an identity: the solver sums each panel's force on its flat
-				// frame's normal, the sample carries the curved surface's normal
-				// at the control point; a few 1e-5 apart on these panels.
-				Check(FMath::Abs(Fc.z - Trimmed.Sol.force_coefficient.z) < 1e-3 * (1.0 + FMath::Abs(Fc.z)) && FMath::Abs(Fc.x - Trimmed.Sol.force_coefficient.x) < 1e-3 && FMath::Abs(Fc.y) < 1e-12,
-					FString::Printf(TEXT("load case: the samples' own resultant is the solver's force coefficient (%.5f vs %.5f in z)"), Fc.z, Trimmed.Sol.force_coefficient.z));
+				Check(BodyPanels > 0 && Case->BodyPanels() == 2 * BodyPanels && Case->Entities.Num() == 1 && Case->Entities[0] == Wing->EntityName,
+					FString::Printf(TEXT("load case: %d body panels and their image (%d samples) for '%s'"), BodyPanels, Case->BodyPanels(), *Wing->EntityName));
+				// An identity now: the sample IS the triangle, flat, with the force
+				// the solver summed.
+				Check(FMath::Abs(Fc.z - Trimmed.Case->Sol.force_coefficient.z) < 1e-9 * (1.0 + FMath::Abs(Fc.z)) && FMath::Abs(Fc.x - Trimmed.Case->Sol.force_coefficient.x) < 1e-9 && FMath::Abs(Fc.y) < 1e-12,
+					FString::Printf(TEXT("load case: the samples' own resultant is the solver's force coefficient (%.6f vs %.6f in z)"), Fc.z, Trimmed.Case->Sol.force_coefficient.z));
 
 				// Onto the wing's own triangles (the half the entity is).
 				const std::vector<aerotelic::NamedMesh> Placed = Wing->GetPlacedMeshes(false);

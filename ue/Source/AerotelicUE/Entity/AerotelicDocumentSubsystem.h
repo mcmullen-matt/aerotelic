@@ -101,7 +101,7 @@ public:
 	void SetMassItems(const TArray<aerotelic::MassItem>& Items) { MassItems = Items; }
 
 	// The AERODYNAMIC LOAD CASES (2026-11-14, stage 4; AerotelicAeroLoads.h):
-	// panel-method pressure fields the High Order Panel dialog stores for
+	// panel-method pressure fields the Load Cases trim stores for
 	// the Structural dialog to apply. Session data: New and Open clear
 	// them, nothing saves them. Set replaces a case of the same name.
 	const TArray<TSharedPtr<FAerotelicAeroLoadCase>>& GetAeroLoadCases() const { return AeroLoadCases; }

@@ -148,18 +148,18 @@ TSharedRef<SWidget> MakeMeshTab(ISolidModel* Model, EntityType Type, FSimpleDele
 		SNew(SVerticalBox)
 		+ SVerticalBox::Slot().AutoHeight()
 		[ CountRow(S, LOCTEXT("Stations", "Panels along the body:"), [S]() -> int& { return S->Spec().stations; }, 400, Lofted,
-			LOCTEXT("StationsTip", "Uniform intervals along the loft, on top of its own sections, chord-law breakpoints and ends: the stations the triangulation starts from and the rows of the panel method's network. 0: the model's own minimum (2 to 8 by kind) and whatever the refinement adds."), Auto) ]
+			LOCTEXT("StationsTip", "Uniform intervals along the loft, on top of its own sections, chord-law breakpoints and ends: the stations the triangulation starts from. 0: the model's own minimum (2 to 8 by kind) and whatever the refinement adds."), Auto) ]
 		+ SVerticalBox::Slot().AutoHeight()
 		[ CountRow(S, LOCTEXT("Around", "Panels round a section:"), [S]() -> int& { return S->Spec().around; }, 400, Lofted,
-			LOCTEXT("AroundTip", "Uniform intervals round each section, on top of its corners: the points of every ring and the columns of the panel method's network. 0: the model's own minimum (12 to 24 by kind) and whatever the refinement adds."), Auto) ]
+			LOCTEXT("AroundTip", "Uniform intervals round each section, on top of its corners: the points of every ring. 0: the model's own minimum (12 to 24 by kind) and whatever the refinement adds."), Auto) ]
 		+ SVerticalBox::Slot().AutoHeight()
 		[ Row(LOCTEXT("Refine", "Refine to tolerance:"),
 			SNew(SCheckBox)
 			.IsChecked_Lambda([S]() { return S->Spec().refine ? ECheckBoxState::Checked : ECheckBoxState::Unchecked; })
 			.OnCheckStateChanged_Lambda([S](ECheckBoxState State) { S->Spec().refine = State == ECheckBoxState::Checked; S->Changed(); }),
 			Lofted,
-			LOCTEXT("RefineTip", "On: points and stations are added wherever a straight chord misses the curve by more than the tolerance, and strips much longer than their rings' spacing are split (the viewport's rule). Off: the grid above is used as it stands -- the panel method's quads split in two, so the FEA shells, the wetted faces and the panels are ONE grid."),
-			LOCTEXT("RefineNote", "off = the grid as it stands, shared with the panel method")) ]
+			LOCTEXT("RefineTip", "On: points and stations are added wherever a straight chord misses the curve by more than the tolerance, and strips much longer than their rings' spacing are split (the viewport's rule). Off: the grid above is used as it stands -- a clean structured grid whose triangles are the FEA's shells, the wetted faces and the panel method's panels alike."),
+			LOCTEXT("RefineNote", "off = the grid as it stands")) ]
 		+ SVerticalBox::Slot().AutoHeight()
 		[ RealRow(S, LOCTEXT("Tolerance", "Tolerance:"), [S]() -> double& { return S->Spec().tolerance; }, 0.0, 1e9, 0.0005, Lofted,
 			LOCTEXT("ToleranceTip", "The chordal sag the refinement allows, in the project's length unit. 0: automatic, 0.15% of the body's diagonal (the viewport's)."), Auto) ]
@@ -167,18 +167,10 @@ TSharedRef<SWidget> MakeMeshTab(ISolidModel* Model, EntityType Type, FSimpleDele
 		[ RealRow(S, LOCTEXT("MaxAspect", "Longest strip, times spacing:"), [S]() -> double& { return S->Spec().max_aspect; }, -1.0, 1e3, 1.0, Lofted,
 			LOCTEXT("MaxAspectTip", "A strip between two stations longer than this times its rings' point spacing is split: no needle triangles into an apex or a knife edge, which a tetrahedral mesh cannot conform to. 0: the default, 6. -1: off."), LOCTEXT("AspectNote", "0 = 6, -1 = off")) ]);
 
-	// ---- the panel method's counts for a wing ----
-	TSharedRef<SWidget> PanelGroup = MakeGroup(LOCTEXT("PanelGroup", "Panel method (wing)"),
-		SNew(SVerticalBox)
-		.Visibility(WingLike)
-		+ SVerticalBox::Slot().AutoHeight()
-		[ CountRow(S, LOCTEXT("Chordwise", "Panels per surface, chordwise:"), [S]() -> int& { return S->Spec().chordwise; }, 200, WingLike,
-			LOCTEXT("ChordwiseTip", "The high-order panel method's panels along the upper and along the lower surface, cosine-spaced. 0: the Panel Method dialog's figure."), LOCTEXT("AutoDialog", "0 = the dialog's")) ]
-		+ SVerticalBox::Slot().AutoHeight()
-		[ CountRow(S, LOCTEXT("Spanwise", "Panels over the semi-span:"), [S]() -> int& { return S->Spec().spanwise; }, 200, WingLike,
-			LOCTEXT("SpanwiseTip", "The high-order panel method's panels along the span, cosine-spaced. 0: the Panel Method dialog's figure."), LOCTEXT("AutoDialog", "0 = the dialog's")) ]
-		+ SVerticalBox::Slot().AutoHeight().Padding(0, 4, 0, 0)
-		[ MakeInfoLabel(LOCTEXT("WingNote", "A wing's panel networks are laid on its planform (cosine-spaced), not on the triangulation above; the two grids do not coincide yet.")) ]);
+	// (The wing's own panel-method counts, chordwise and spanwise, left the
+	// tab on 2026-11-15: the panel method runs on the triangles above. The
+	// fields stay in MeshSpec for the higher-order reference code.)
+	(void)WingLike;
 
 	// ---- a box's cells ----
 	TSharedRef<SWidget> BoxGroup = MakeGroup(LOCTEXT("BoxGroup", "Cells"),
@@ -213,9 +205,8 @@ TSharedRef<SWidget> MakeMeshTab(ISolidModel* Model, EntityType Type, FSimpleDele
 		[
 			SNew(SVerticalBox)
 			+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 6)
-			[ MakeInfoLabel(LOCTEXT("Intro", "The density of this body's grid. One grid serves the viewport, the structural analysis (a shell on every triangle; the tetrahedra bounded by them), the flow solvers' wetted surface and, through the same counts, the panel method. Saved with the entity. Apply to rebuild.")) ]
+			[ MakeInfoLabel(LOCTEXT("Intro", "The density of this body's grid. ONE grid serves everything: the viewport, the structural analysis (a shell on every triangle), the flow solvers' wetted surface and the panel method (a wing with flaps as its sealed aero copy on the same stations). Saved with the entity. Apply to rebuild.")) ]
 			+ SVerticalBox::Slot().AutoHeight() [ GridGroup ]
-			+ SVerticalBox::Slot().AutoHeight().Padding(0, 6, 0, 0) [ PanelGroup ]
 			+ SVerticalBox::Slot().AutoHeight() [ BoxGroup ]
 			+ SVerticalBox::Slot().AutoHeight() [ CylinderGroup ]
 			+ SVerticalBox::Slot().AutoHeight().Padding(0, 10, 0, 0) [ S->CountLabel.ToSharedRef() ]
@@ -230,19 +221,15 @@ TSharedRef<SWidget> MakeMeshTab(ISolidModel* Model, EntityType Type, FSimpleDele
 FText MeshTabHelpText(EntityType Type)
 {
 	FString Text = TEXT("MESH TAB\n")
-		TEXT("The density of the body's grid, saved with it. One grid serves everything: the viewport, the structural analysis (a shell on every triangle, or tetrahedra bounded by them), the flow solvers' wetted surface and, through the same counts, the panel method. ")
+		TEXT("The density of the body's grid, saved with it. ONE grid serves everything: the viewport, the structural analysis (a shell on every triangle), the flow solvers' wetted surface and the panel method, which since 2026-11-15 solves on these very triangles (a wing with flaps as its sealed aero copy on the same stations). What you see is what is analysed. ")
 		TEXT("Every field at 0 is automatic -- what the model did before the tab existed.\n");
 	if (Type == EntityType::Primitive)
 	{
 		Text += TEXT("A box has cells along X, Y and Z (automatic: cells about as long as its shortest side -- a 1 x 10 x 1 bar is 1 x 10 x 1 cells; the single cell of old was 12 triangles, which no analysis could use). ")
 			TEXT("A cylinder has points round the axis, cells along it and rings on each cap. A sphere is a loft like the bodies below.\n");
 	}
-	Text += TEXT("A lofted body: Panels along and Panels round are uniform intervals on top of the loft's own sections and corners -- the stations and ring points the triangulation starts from and, with the same numbers, the rows and columns of the panel method's network. ")
-		TEXT("Refine to tolerance adds points and stations wherever a straight chord misses the curve by more than the tolerance (automatic: 0.15% of the body's diagonal) and splits strips longer than the aspect limit times their rings' spacing; switched off, the grid stands as given and the triangles are the panel method's quads split in two -- the FEA and the flow then share one grid exactly.");
-	if (Type == EntityType::Wing || Type == EntityType::Propeller)
-	{
-		Text += TEXT("\nA wing's panel-method counts (chordwise per surface, spanwise) are set here too; its networks are laid on the planform, cosine-spaced, and do not yet coincide with the triangulation.");
-	}
+	Text += TEXT("A lofted body: Panels along and Panels round are uniform intervals on top of the loft's own sections and corners -- the stations and ring points the triangulation starts from. ")
+		TEXT("Refine to tolerance adds points and stations wherever a straight chord misses the curve by more than the tolerance (automatic: 0.15% of the body's diagonal) and splits strips longer than the aspect limit times their rings' spacing; switched off, the grid stands as given: a clean structured grid of the size you choose, which is what the panel method likes (a dense solve is comfortable to a few thousand panels; the Panel Method dialog's mesh report says what you have).");
 	return FText::FromString(Text);
 }
 
