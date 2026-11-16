@@ -1914,13 +1914,36 @@ NamedMesh WingModel::BuildAeroMesh(double tolerance, std::vector<std::vector<Vec
 		return &cuts.emplace(key, c).first->second;
 	};
 	// The sealed section at a station, in airfoil coordinates: closed if
-	// blunt, kinked by every deflected flap that spans it.
+	// blunt, kinked by every deflected flap that spans it. The closure is
+	// decided POINT BY POINT from the point's own parameter and chord
+	// position (the XFOIL-style blend over the last 30% of the chord, the
+	// two ends meeting at the gap's midpoint), never from the first and last
+	// points of the set asked for: the loft's refinement evaluates the
+	// section at partial parameter sets, and CloseTrailingEdge, which takes
+	// the ends of whatever contour it is handed, welded arbitrary probe
+	// points together and sent the refinement to its caps (the my_drone fin:
+	// 484,616 triangles and a three-minute freeze, 2026-11-16).
+	std::map<double, std::array<double, 4>> gaps; // per station: e0x, e0y, gx, gy
+	auto gap_at = [&](double s) -> const std::array<double, 4>& {
+		const double key = RoundKey(s);
+		auto it = gaps.find(key);
+		if (it != gaps.end()) return it->second;
+		const std::vector<double> e0 = airfoil_at(s)->nurbs_curve().Evaluate(0.0), e1 = airfoil_at(s)->nurbs_curve().Evaluate(1.0);
+		return gaps.emplace(key, std::array<double, 4>{e0[0], e0[1], e1[0] - e0[0], e1[1] - e0[1]}).first->second;
+	};
 	auto section2d = [&](double s, const std::vector<double>& v) {
-		Mat pts2 = airfoil_at(s)->nurbs_curve().Evaluate(v);
-		if (v.size() >= 2) {
-			double gap = 0.0;
-			Mat closed = CloseTrailingEdge(pts2, 0.7, &gap);
-			if (gap > 1e-9) pts2 = closed;
+		const std::shared_ptr<Airfoil>& af = airfoil_at(s);
+		Mat pts2 = af->nurbs_curve().Evaluate(v);
+		const std::array<double, 4>& g = gap_at(s);
+		if (std::hypot(g[2], g[3]) > 1e-9) {
+			const double t_le = af->LeadingEdgeParameter();
+			for (int i = 0; i < pts2.rows() && i < static_cast<int>(v.size()); ++i) {
+				const double f = std::clamp((pts2(i, 0) - 0.7) / 0.3, 0.0, 1.0);
+				if (f <= 0.0) continue;
+				const double w = (v[i] <= t_le ? 0.5 : -0.5) * f * f; // lower up, upper down
+				pts2(i, 0) += w * g[2];
+				pts2(i, 1) += w * g[3];
+			}
 		}
 		for (size_t fi = 0; fi < deflected.size(); ++fi) {
 			const FlapSpec& f = deflected[fi];
@@ -2001,7 +2024,13 @@ NamedMesh WingModel::BuildAeroMesh(double tolerance, std::vector<std::vector<Vec
 		LoftOptions base;
 		base.min_v = 24;
 		LoftRings rings;
-		out.mesh = TriangulateLoft(src, mesh.Apply(base, tolerance), nullptr, nullptr, &rings);
+		LoftStats stats;
+		out.mesh = TriangulateLoft(src, mesh.Apply(base, tolerance), &stats, nullptr, &rings);
+		if (stats.u_capped || stats.v_capped) {
+			throw std::runtime_error("the aero copy of '" + name + "' did not converge: the loft's refinement ran to its cap of " + std::to_string(stats.n_stations)
+				+ " stations and " + std::to_string(stats.n_ring_points) + " points round the section (" + std::to_string(out.mesh.triangles.size())
+				+ " triangles). Switch the refinement off on its Mesh tab and set the grid by hand, or loosen the tolerance");
+		}
 		// The trailing edge IS the seam vertex (v = 0) of every ring: the
 		// mesh's own points, so every edge between two of them lies on the
 		// polyline exactly -- a flap's end makes the trailing edge step from

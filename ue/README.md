@@ -3171,6 +3171,29 @@ the boom buried in the fuselage), FUSED they solve to Cp -3.7..1 in 0.4 s
 on 6322 triangles with a perfectly symmetric pressure field. The document
 commandlet's stage-4 step runs on the new module.
 
+**The first live run hung (2026-11-16)**: Matt ran the Panel Method on
+my_drone's BoolOp 1 and the application froze. The log showed nothing from
+the panel code; a headless replay of `BuildCase`'s pipeline stage by stage
+found the fin's aero copy at the viewport tolerance coming out as 484,616
+triangles with 325,799 slivers after 161 s, on the game thread. The
+sealed section was closed with `CloseTrailingEdge`, which takes the FIRST
+AND LAST points of whatever contour it is handed as the trailing-edge ends
+and welds them together; the loft's refinement evaluates the section at
+partial parameter sets while probing a blended station (the fin's NACA
+0006 root blending into 0012), so arbitrary probe points were welded,
+the chordal test never converged, and the loft ran to its caps of 400
+stations by 1200 points. The closure is now decided point by point from
+the point's own parameter and chord position (the same quadratic blend
+over the last 30% of the chord), `BuildAeroMesh` throws if the loft hits
+a cap rather than return the runaway, and `tri_panel_check` has the fin
+as a regression (430 triangles in 0.02 s). The same replay showed the
+mesh boolean refusing the fin against the boom -- a fin-root vertex lying
+exactly on the plane of the boom's end cap, an exact degenerate contact --
+so `BuildCase` retries a refused fuse once with the second body nudged by
+a millionth of the configuration along an oblique direction, and notes
+it; my_drone then fuses into one surface of 6,940 triangles and solves
+in 0.2 s.
+
 **Known limits**: a thin cowl wall under the Dirichlet formulation is
 ill-conditioned when its panels are larger than the wall (refine the cowl);
 the fuse of overlapping bodies happens on the aero copies, so the aero

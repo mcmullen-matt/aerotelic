@@ -318,6 +318,30 @@ int main() {
 				wing.flaps.clear();
 				NamedMesh plain = wing.BuildAeroMesh(0.01, &te_f);
 				Check(plain.mesh.triangles.size() == meshes[0].mesh.triangles.size() && plain.mesh.vertices.size() == meshes[0].mesh.vertices.size(), "aero copy without flaps: the viewport's own body");
+
+				// A fin like my_drone's: NACA 0006 at the root blending into 0012,
+				// a flap at rest, a fine tolerance with the refinement ON. The
+				// blend makes the loft probe the section at partial parameter
+				// sets; closing the trailing edge from the ends of whatever set
+				// was handed over welded probe points together and the refinement
+				// ran to its caps (484,616 triangles, 161 s, 2026-11-16).
+				{
+					PlanformSpec fs;
+					fs.semi_span = 0.4; fs.root_chord = 0.8; fs.tip_chord = 0.2; fs.sweep_angle = 30.0;
+					WingModel fin(fs, "Fin");
+					fin.AddSection(Airfoil::Naca4("0006"), 0.0);
+					fin.AddSection(Airfoil::Naca4("0012"), 0.2);
+					fin.AddSection(Airfoil::Naca4("0012"), 1.0);
+					FlapSpec rudder;
+					rudder.eta_root = 0.07; rudder.eta_tip = 0.95; rudder.hinge_root = 0.9; rudder.hinge_tip = 0.7;
+					fin.flaps = {rudder};
+					auto t1 = std::chrono::steady_clock::now();
+					NamedMesh fa = fin.BuildAeroMesh(0.00135);
+					const double fsecs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t1).count();
+					MeshStats fst = ComputeMeshStats(fa.mesh);
+					std::printf("fin aero copy (0006 -> 0012 blend, flap at rest, tol 0.00135): %d triangles, worst aspect %.0f, %.2f s\n", fst.triangles, fst.worst_aspect, fsecs);
+					Check(fst.closed && fst.triangles < 20000 && fsecs < 20.0, F("fin aero copy: the refinement converges (%.0f triangles in %.2f s)", fst.triangles, fsecs));
+				}
 			}
 
 			// Section cuts integrate to the lift (trapezoid over the semi-span).

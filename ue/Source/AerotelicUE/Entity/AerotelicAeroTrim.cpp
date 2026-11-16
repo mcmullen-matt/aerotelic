@@ -115,6 +115,12 @@ namespace AerotelicAeroTrim
 
 		// The aero mesh in the main view: one actor per body, grey, edged.
 		TArray<TWeakObjectPtr<AAerotelicColoredMeshActor>> GAeroMeshActors;
+
+		FString LengthUnitName()
+		{
+			const UAerotelicDocumentSubsystem* Doc = UAerotelicDocumentSubsystem::Get();
+			return Doc != nullptr ? FString(UTF8_TO_TCHAR(Doc->GetUnits().LengthName())) : FString();
+		}
 	}
 
 	bool IsPanelable(EntityType T)
@@ -405,7 +411,13 @@ namespace AerotelicAeroTrim
 				C->Bodies.push_back(P.Body);
 				continue;
 			}
-			// Fold the fuse; a refused contact leaves the members separate.
+			// Fold the fuse. The boolean refuses an EXACT degenerate contact (a
+			// vertex of one body on a face of the other -- a fin root ending
+			// on the plane of a boom's end cap, 2026-11-16); the second body
+			// is then tried again nudged by a millionth of the configuration
+			// along an oblique direction, which no modelled surface lies along,
+			// and the nudge is noted. A fuse that still fails leaves the
+			// members separate.
 			aerotelic::TriMesh Fused = Pieces[Members[0]].Body.mesh;
 			FString Label = Pieces[Members[0]].Share.Name;
 			bool bOk = true;
@@ -416,6 +428,24 @@ namespace AerotelicAeroTrim
 				{
 					Fused = aerotelic::MeshBoolean(Fused, Pieces[Members[k]].Body.mesh, aerotelic::MeshBooleanOp::Fuse);
 					Label += TEXT(" + ") + Pieces[Members[k]].Share.Name;
+				}
+				catch (const aerotelic::MeshBooleanError& E)
+				{
+					const double Eps = 1e-6 * Diag;
+					const aerotelic::Vec3 Shift{ Eps * 0.5773502692, Eps * 0.5773502692, Eps * 0.5773502692 };
+					try
+					{
+						aerotelic::TriMesh Nudged = Pieces[Members[k]].Body.mesh;
+						Nudged.Translate(Shift);
+						Fused = aerotelic::MeshBoolean(Fused, Nudged, aerotelic::MeshBooleanOp::Fuse);
+						Label += TEXT(" + ") + Pieces[Members[k]].Share.Name;
+						C->Notes.Add(FString::Printf(TEXT("%s touched %s exactly (%s) and was fused nudged by %.2g %s"), *Pieces[Members[k]].Share.Name, *Label, UTF8_TO_TCHAR(E.what()), Eps, *LengthUnitName()));
+					}
+					catch (const std::exception& E2)
+					{
+						bOk = false;
+						Why = FString::Printf(TEXT("%s with %s: %s"), *Label, *Pieces[Members[k]].Share.Name, UTF8_TO_TCHAR(E2.what()));
+					}
 				}
 				catch (const std::exception& E)
 				{
