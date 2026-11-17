@@ -39,6 +39,24 @@
 // plane (or a patch of one) whose nodes are clamped.
 namespace AerotelicStructuralFea
 {
+	// THE SOLVER (2026-11-17): the same request runs on Kratos
+	// (tools/structural_fea.py in the WingDesigner environment, the
+	// original) or on TACS, the Toolkit for the Analysis of Composite
+	// Structures (tools/structural_fea_tacs.py through pyTACS, in a Linux
+	// environment under WSL -- TACS has no Windows build). The job directory
+	// is identical; the dialog is shared (Analysis > Structural (Kratos
+	// FEA) and Analysis > TACS (FEA) > Structural Analysis); any case can
+	// be solved on both and compared. TACS is the one with the ADJOINT:
+	// its result carries the gradients of the mass and of each component's
+	// failure index with respect to the thicknesses (FResult::Sensitivities).
+	enum class EBackend : uint8
+	{
+		Kratos = 0,
+		Tacs = 1,
+	};
+	const TCHAR* BackendName(EBackend Backend);      // "Kratos FEA" / "TACS"
+	const TCHAR* BackendKey(EBackend Backend);       // "kratos" / "tacs" (the job's solver.backend)
+
 	// "auto" takes the direct solver (Eigen's SparseLU, one thread) up to
 	// this many degrees of freedom and amgcl beyond -- the script's
 	// AUTO_DIRECT_DOFS, mirrored so the dialog can say before a solve what
@@ -194,6 +212,8 @@ namespace AerotelicStructuralFea
 
 	struct FRequest
 	{
+		// Which solver runs the job (see EBackend).
+		EBackend Backend = EBackend::Kratos;
 		// The nodes in PROJECT units; every face below indexes them. Each
 		// node is a shell node (six degrees of freedom). Must outlive the
 		// call.
@@ -410,11 +430,44 @@ namespace AerotelicStructuralFea
 
 		double Seconds = 0.0, SecondsSolve = 0.0, SecondsModes = 0.0;
 		FString VtkPath;
+
+		// Which solver ran ("kratos" / "tacs") and its version where known.
+		FString Backend;
+		FString SolverVersion;
+		// THE ADJOINT (TACS, 2026-11-17): the thickness design variables --
+		// one per isotropic component, a region's skin or its ribs -- and
+		// each function the adjoint was run for with its gradient over
+		// them: "mass" (kg per metre of thickness) and "ks_failure" per
+		// component (the KS aggregate of the failure index, von Mises over
+		// the allowable, ~ its peak: 1 is failure; per metre). Empty from
+		// Kratos, or when no variable exists (laminates have none yet).
+		struct FDesignVariable
+		{
+			FString Component;    // the component's label ("<region> skin" / "<region> ribs")
+			int32 Region = 0;
+			FString Kind;         // "skin" / "rib"
+			double Thickness = 0.0;   // m, as analysed
+		};
+		struct FSensitivity
+		{
+			FString Function;     // "mass" / "ks_failure"
+			FString Component;    // for ks_failure: whose
+			int32 Region = 0;
+			double Value = 0.0;
+			TArray<double> Gradient;   // d Function / d thickness, one per DesignVariables entry
+		};
+		TArray<FDesignVariable> DesignVariables;
+		TArray<FSensitivity> Sensitivities;
 	};
 
-	// tools/structural_fea.py under the project (staged with the packaged
-	// build). Empty if missing.
-	FString FindScript();
+	// The backend's script under the project's tools (staged with the
+	// packaged build): structural_fea.py or structural_fea_tacs.py. Empty
+	// if missing.
+	FString FindScript(EBackend Backend = EBackend::Kratos);
+	// Whether the backend can run here: its script and its interpreter
+	// (Kratos: the WingDesigner environment; TACS: the WSL environment,
+	// AerotelicMeshLib::FindTacsInterpreter). False with the reason.
+	bool IsAvailable(EBackend Backend, FString& OutWhy);
 
 	// Runs the analysis. False with the reason on failure (no interpreter,
 	// no Kratos, nothing to analyse, a material without stiffness, a region

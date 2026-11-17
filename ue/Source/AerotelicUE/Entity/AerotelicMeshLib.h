@@ -35,6 +35,33 @@ namespace AerotelicMeshLib
 	// Empty if none exists.
 	FString FindPython();
 
+	// An interpreter a backend runs in (2026-11-17): a Windows python.exe,
+	// or a Linux python inside the Windows Subsystem for Linux -- TACS has
+	// no Windows build, so Analysis > TACS (FEA) runs its script through
+	// wsl.exe -d <Distro> -e <Python> with the job directory's path mapped
+	// to /mnt/<drive>/... (ToWslPath). Distro empty = WSL's default
+	// distribution; bWsl false = a native python.exe.
+	struct FInterpreter
+	{
+		FString Python;
+		FString Distro;
+		bool bWsl = false;
+		bool IsValid() const { return !Python.IsEmpty(); }
+		// "wsl:<distro>:<python>" or the python.exe path, for messages.
+		FString Describe() const;
+	};
+
+	// The TACS environment's interpreter: AEROTELIC_TACS_PYTHON if set --
+	// "wsl:<distro>:/path/to/python" (distro may be empty for the default),
+	// or a Windows python.exe that has tacs -- else the default WSL
+	// distribution's ~/micromamba/envs/tacs/bin/python (or miniforge3 /
+	// miniconda3 / mambaforge), found by asking WSL once and remembered;
+	// bRefresh asks again (Check Installation). Invalid if none.
+	FInterpreter FindTacsInterpreter(bool bRefresh = false);
+
+	// C:\Users\x\y -> /mnt/c/Users/x/y (relative paths are made full first).
+	FString ToWslPath(const FString& WindowsPath);
+
 	// What a caller may watch while a job runs (2026-11-05): every complete
 	// line the script prints, as it prints it, on the thread RunJob is
 	// called on (a worker thread when the dialog solves asynchronously);
@@ -53,6 +80,9 @@ namespace AerotelicMeshLib
 	// the script exits (or Progress->bCancel is set): callers that must
 	// stay responsive run it on a worker thread and watch Progress.
 	bool RunJob(const FString& Script, const FString& Dir, TSharedPtr<FJsonObject>& OutResult, FString& OutError, FJobProgress* Progress = nullptr);
+	// The same in a given interpreter (a WSL one maps the script and the
+	// job directory to /mnt paths and runs python -u for live output).
+	bool RunJob(const FInterpreter& Interpreter, const FString& Script, const FString& Dir, TSharedPtr<FJsonObject>& OutResult, FString& OutError, FJobProgress* Progress = nullptr);
 
 	// The .tri files: "AEROTRI1", uint32 vertex and triangle counts, float64
 	// xyz per vertex, int32 abc per triangle (exposed for tests).

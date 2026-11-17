@@ -178,8 +178,15 @@ public class AerotelicUE : ModuleRules
 		// and the skin/core tetrahedral mesh, went with those features on
 		// 2026-11-08; tools/structure_meshlib.py, the MeshLib hollowing, went
 		// that night when offset surfaces were dropped altogether.)
+		//   structural_fea_tacs.py  Analysis -> TACS (FEA): the same job on TACS
+		//                         through pyTACS, run inside WSL (2026-11-17);
+		//                         imports structural_fea.py;
+		//   tacs_check.py         Analysis -> TACS (FEA) -> Check Installation
+		//                         (imports structural_fea_check.py's plate, which
+		//                         imports potential_flow_check.py).
 		string[] ToolScripts = {
 			"rib_gmsh.py", "gmsh_common.py", "potential_flow.py", "structural_fea.py",
+			"structural_fea_tacs.py", "tacs_check.py", "structural_fea_check.py", "potential_flow_check.py",
 		};
 		foreach (string Script in ToolScripts) {
 			string ScriptPath = Path.GetFullPath(Path.Combine(ModuleDirectory, "..", "..", "tools", Script));

@@ -38,6 +38,10 @@ public:
 	TSharedPtr<FUICommandInfo> MassProperties;
 	TSharedPtr<FUICommandInfo> LoadCases;
 	TSharedPtr<FUICommandInfo> StructuralFea;
+	// Analysis > TACS (FEA) (2026-11-17): the same structural analysis on
+	// TACS, and the check that TACS is installed.
+	TSharedPtr<FUICommandInfo> StructuralTacs;
+	TSharedPtr<FUICommandInfo> TacsCheck;
 	TSharedPtr<FUICommandInfo> PotentialFlow;
 	TSharedPtr<FUICommandInfo> HighOrderPanel;
 	TSharedPtr<FUICommandInfo> DustVpm;

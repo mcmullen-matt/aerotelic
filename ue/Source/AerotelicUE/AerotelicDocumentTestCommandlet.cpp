@@ -1734,6 +1734,107 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 				}
 
 			}
+			// The same box beam on TACS (Analysis > TACS (FEA), 2026-11-17):
+			// the second solver on the identical job, inside WSL. Skipped
+			// when the TACS environment is not here. Its first-order shear
+			// deformation triangle lands within a few percent of Timoshenko
+			// (and of Kratos's Kirchhoff triangle); the reactions balance;
+			// the adjoint's d mass / d t is rho A exactly, and the failure
+			// index falls with thickness.
+			UE_LOG(LogAerotelicDocumentTest, Display, TEXT("step: structural fea on TACS"));
+			{
+				FString Why;
+				if (!AerotelicStructuralFea::IsAvailable(AerotelicStructuralFea::EBackend::Tacs, Why))
+				{
+					UE_LOG(LogAerotelicDocumentTest, Display, TEXT("skipped: %s"), *Why.Replace(TEXT("\n"), TEXT(" ")));
+				}
+				else if (Placed.size() == 1)
+				{
+					// Al, the aluminium preset, is the enclosing block's.
+					const aerotelic::TriMesh& Surface = Placed[0].mesh;
+					std::vector<aerotelic::Vec3> ShellNodes = Surface.vertices;
+					AerotelicStructuralFea::FRequest Request;
+					Request.Backend = AerotelicStructuralFea::EBackend::Tacs;
+					Request.Nodes = &ShellNodes;
+					for (const auto& T : Surface.triangles)
+					{
+						AerotelicStructuralFea::FShellFace F;
+						F.N[0] = T[0]; F.N[1] = T[1]; F.N[2] = T[2];
+						F.Region = 1;
+						Request.ShellFaces.Add(F);
+					}
+					AerotelicStructuralFea::FRegion Region;
+					Region.Id = 1;
+					Region.Label = TEXT("beam");
+					Region.Skin = Al;
+					Region.SkinThickness = 0.01;
+					Request.Regions.Add(Region);
+					Request.LengthToSI = 1.0;
+					AerotelicStructuralFea::FSupport Root;
+					Root.Axis = TEXT('y');
+					Root.bAtMin = true;
+					Request.Supports.Add(Root);
+					const double P = 1000.0;
+					for (double Side : { -0.5, 0.5 })
+					{
+						AerotelicStructuralFea::FPointForce F;
+						F.At = aerotelic::Vec3{ Side, 5.0, 0.0 };
+						F.Force = aerotelic::Vec3{ 0.0, 0.0, -0.5 * P };
+						Request.PointForces.Add(F);
+					}
+					Request.Modes = 4;
+					Request.VtkPath = FPaths::Combine(FPlatformProcess::UserTempDir(), TEXT("aerotelic_document_test_fea_beam_tacs.vtk"));
+					IFileManager::Get().Delete(*Request.VtkPath, false, true, true);
+					AerotelicStructuralFea::FResult R;
+					FString TacsError;
+					const bool bSolved = AerotelicStructuralFea::Run(Request, R, TacsError);
+					Check(bSolved, FString::Printf(TEXT("fea (TACS): the box beam solved on TACS (%s)"), bSolved ? *FString::Printf(TEXT("%d nodes, %d shells, %d dof, %.1f s, TACS %s"), R.Nodes, R.Shells, R.Dofs, R.Seconds, *R.SolverVersion) : *TacsError));
+					if (bSolved)
+					{
+						const double E = Al.youngs_modulus, G = E / (2.0 * (1.0 + Al.poisson_ratio));
+						const double I = 2.0 * (1.0 * 0.01 * 0.25 + 0.01 * 1.0 / 12.0);
+						const double Delta = P * 1000.0 / (3.0 * E * I) + P * 10.0 / (G * 2.0 * 1.0 * 0.01);
+						Check(R.Backend == TEXT("tacs") && R.LinearSolver == TEXT("gmres"), FString::Printf(TEXT("fea (TACS): the result says TACS ran it (%s, %s)"), *R.Backend, *R.LinearSolver));
+						Check(R.bBalanced && FMath::Abs(R.Reaction[2] - P) <= 0.01 * P && FMath::Abs(R.Reaction[0]) <= 0.01 * P && FMath::Abs(R.Reaction[1]) <= 0.01 * P,
+							FString::Printf(TEXT("fea (TACS): the clamp carries the two tip loads, %.4g N (reactions %.4g, %.4g, %.4g; balance error %.2g)"), P, R.Reaction[0], R.Reaction[1], R.Reaction[2], R.BalanceError));
+						Check(R.Shells == ExpectedTriangles && R.SupportNodes == 9, FString::Printf(TEXT("fea (TACS): a shell per triangle, the 9 root nodes clamped (%d shells, %d fixed)"), R.Shells, R.SupportNodes));
+						Check(FMath::Abs(R.MaxDisplacement / Delta - 1.0) < 0.05 && R.MaxDisplacementAt[1] > 4.9,
+							FString::Printf(TEXT("fea (TACS): the tip deflects as Timoshenko's thin-walled box, %.4g m (got %.4g at y = %.2f, %.1f%%)"), Delta, R.MaxDisplacement, R.MaxDisplacementAt[1], 100.0 * (R.MaxDisplacement / Delta - 1.0)));
+						const double SigmaRoot = P * 10.0 * 0.5 / I;
+						Check(R.Entries.Num() == 1 && R.Entries[0].MaxVonMises > 0.9 * SigmaRoot && R.Entries[0].MaxVonMises < 2.0 * SigmaRoot,
+							FString::Printf(TEXT("fea (TACS): the peak von Mises is the root bending stress M c / I, %.4g Pa, up to the clamp's concentration (got %.4g)"), SigmaRoot, R.Entries.Num() ? R.Entries[0].MaxVonMises : 0.0));
+						Check(FMath::Abs(R.Mass - Al.density * 0.01 * 2.0 * (10.0 + 10.0 + 1.0)) < 1e-6 * R.Mass, FString::Printf(TEXT("fea (TACS): the mass is rho t A (%.5g kg)"), R.Mass));
+						{
+							const double Rho = Al.density, A = 4.0 * 1.0 * 0.01, As = 2.0 * 1.0 * 0.01, Lb = 10.0;
+							const double Beta2 = 1.8751 * 1.8751;
+							double F1 = Beta2 / (2.0 * PI * Lb * Lb) * FMath::Sqrt(E * I / (Rho * A));
+							F1 /= FMath::Sqrt(1.0 + Beta2 * I / (A * Lb * Lb) * (1.0 + E * A / (G * As)));
+							const double CapMass = Rho * 0.01 * 1.0 * 1.0, EffectiveMass = 0.25 * Rho * A * Lb;
+							F1 *= FMath::Sqrt(EffectiveMass / (EffectiveMass + CapMass));
+							const TArray<double>& F = R.NaturalFrequencies;
+							Check(F.Num() == 4 && F[0] > 0.0 && F[1] >= F[0] && F[2] >= F[1] && F[3] >= F[2],
+								FString::Printf(TEXT("fea (TACS): four natural frequencies came back ascending from %s in %.2f s (%d)"), *R.Eigensolver, R.SecondsModes, F.Num()));
+							Check(F.Num() >= 2 && FMath::Abs(F[1] / F[0] - 1.0) < 0.01 && FMath::Abs(F[0] / F1 - 1.0) < 0.06,
+								FString::Printf(TEXT("fea (TACS): the first bending pair is degenerate at the clamped-free beam's %.4g Hz (got %.4g, %.4g)"), F1, F.Num() >= 2 ? F[0] : 0.0, F.Num() >= 2 ? F[1] : 0.0));
+						}
+						// The adjoint: one thickness variable (the beam's skin); the
+						// mass gradient is rho A exactly; thicker is safer.
+						const double RhoA = Al.density * 2.0 * (10.0 + 10.0 + 1.0);
+						const AerotelicStructuralFea::FResult::FSensitivity* MassSens = R.Sensitivities.FindByPredicate([](const AerotelicStructuralFea::FResult::FSensitivity& S) { return S.Function == TEXT("mass"); });
+						const AerotelicStructuralFea::FResult::FSensitivity* KsSens = R.Sensitivities.FindByPredicate([](const AerotelicStructuralFea::FResult::FSensitivity& S) { return S.Function == TEXT("ks_failure"); });
+						Check(R.DesignVariables.Num() == 1 && R.DesignVariables[0].Kind == TEXT("skin") && FMath::IsNearlyEqual(R.DesignVariables[0].Thickness, 0.01, 1e-12),
+							FString::Printf(TEXT("fea (TACS): one thickness design variable, the beam's 10 mm skin (%d)"), R.DesignVariables.Num()));
+						Check(MassSens != nullptr && MassSens->Gradient.Num() == 1 && FMath::Abs(MassSens->Gradient[0] / RhoA - 1.0) < 1e-6 && FMath::Abs(MassSens->Value - R.Mass) < 1e-6 * R.Mass,
+							FString::Printf(TEXT("fea (TACS): the adjoint's d mass / d t is rho A = %.5g kg/m (got %s)"), RhoA, MassSens != nullptr && MassSens->Gradient.Num() ? *FString::Printf(TEXT("%.5g"), MassSens->Gradient[0]) : TEXT("none")));
+						Check(KsSens != nullptr && KsSens->Gradient.Num() == 1 && KsSens->Gradient[0] < 0.0 && KsSens->Value > 0.0 && KsSens->Value < 1.0,
+							FString::Printf(TEXT("fea (TACS): the KS failure index of the skin is below 1 and falls with thickness (index %.4g, d/dt %.4g per m)"), KsSens != nullptr ? KsSens->Value : 0.0, KsSens != nullptr && KsSens->Gradient.Num() ? KsSens->Gradient[0] : 0.0));
+						FString Vtk;
+						Check(FFileHelper::LoadFileToString(Vtk, *Request.VtkPath) && Vtk.Contains(TEXT("VECTORS mode_1 double")) && Vtk.Contains(TEXT("SCALARS component int")),
+							"fea (TACS): the VTK carries the mode shapes and the component per cell");
+					}
+					IFileManager::Get().Delete(*Request.VtkPath, false, true, true);
+				}
+			}
 			// The scene as the later steps expect it.
 			Doc->RemoveEntity(Beam);
 			Doc->FlushPendingRebuilds();

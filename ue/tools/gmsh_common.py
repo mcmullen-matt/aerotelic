@@ -45,7 +45,14 @@ def _bootstrap_dlls():
 _bootstrap_dlls()
 
 import numpy as np  # noqa: E402
-import gmsh  # noqa: E402
+try:
+    import gmsh  # noqa: E402
+except ImportError:
+    # The TACS environment (Linux under WSL, 2026-11-17) has no gmsh: only
+    # the readers, the surface helpers and the failure convention are wanted
+    # there (structural_fea_tacs.py imports structural_fea.py, which imports
+    # this). Anything that meshes still needs the real module and says so.
+    gmsh = None
 
 TRI_MAGIC = b"AEROTRI1"
 

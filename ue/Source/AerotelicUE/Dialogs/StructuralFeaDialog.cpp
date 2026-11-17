@@ -235,6 +235,16 @@ namespace
 		}
 	};
 
+	// Prefixed to kHelp when the dialog runs on TACS (2026-11-17).
+	const TCHAR* kHelpTacs = TEXT(
+		"TACS (FEA)\n\n"
+		"This is the same dialog, the same load cases and the same model as Analysis > Structural (Kratos FEA), solved on TACS -- the Toolkit for the Analysis of Composite Structures (smdogroup.github.io/tacs) -- through pyTACS. TACS has no Windows build, so the application runs tools/structural_fea_tacs.py inside the Windows Subsystem for Linux: the environment is looked for at AEROTELIC_TACS_PYTHON (wsl:<distro>:<python>) or the default distribution's ~/micromamba/envs/tacs; Analysis > TACS (FEA) > Check Installation reports what was found and solves a small plate. The job directory handed over is identical to the Kratos solver's, so any case can be run on both and compared.\n\n"
+		"WHAT DIFFERS\n"
+		"The shell: TACS's Tri3Shell is a first-order shear deformation (Mindlin) triangle with MITC tying against shear locking and a drilling penalty, where Kratos's default is the Kirchhoff thin triangle; on thin skins they agree to a percent or two. The linear solver: GMRES with TACS's ILU preconditioner, near-complete at its default fill (a direct solve in all but name); the force balance is still the check. The pushrods: TACS has no truss element, so a rod is an axial 6-dof spring of stiffness E A / L along its own axis with its mass lumped on its ends -- the same stiffness and resultant. The stresses: recovered from the displacement and rotation fields (the membrane strain of each flat triangle, the Mindlin curvatures of its rotations), von Mises at the top, middle and bottom of an isotropic shell, the ply stresses and the Tsai-Wu reserve factor of a laminate, solved as the application's laminate.hpp does (F12* = -1/2). The inertial loads: gravity and the free-flight field go in through TACS's own consistent mass matrix. The reactions: K u - F at the fixed nodes.\n\n"
+		"THE ADJOINT\n"
+		"TACS is here for its gradients. Every isotropic skin and rib layer is one TACS component with one thickness design variable; after the solve the adjoint is run for the structural mass and for the KS-aggregated failure index (von Mises over the allowable, ~ its peak, 1 is failure) of every component that has an allowable, and the Result lists d mass / d t and d index / d t for every variable, per metre of thickness. Laminates have no design variable yet (TACS's laminate section has none; its smeared section would). Derivatives with respect to the geometry -- TACS gives d f / d X of every node; the application must supply d X / d parameter -- are the next step.\n\n"
+		"-----\n\n");
+
 	const TCHAR* kHelp = TEXT(
 		"STRUCTURAL (KRATOS FEA)\n\n"
 		"A linear static finite-element analysis of a LOAD CASE on KratosMultiphysics' StructuralMechanicsApplication, run as a separate process in the WingDesigner environment. Everything the solver sees is SI (the mesh scaled by the length unit, the materials as they are, loads in newtons and pascals); the dialog converts the results back.\n\n"
@@ -254,28 +264,34 @@ namespace
 		"Linear static, small displacement, linear elastic, the linear thin shell triangle (its reactions balance the loads exactly). The pressures are applied as the consistent nodal loads of each face. The reactions at the supports must balance what was applied: the Force balance line says by how much they miss, and a miss of more than one percent means the linear solver did not converge -- the solution is then reported as NOT converged and nothing in it is to be trusted. In free flight the same line gives the rigid-body accelerations, the load factor at the mass centre (the trim's n for an aero case: the check that the two models agree) and the reference node's reaction. Margin is allowable / peak von Mises - 1 for each region. The natural frequencies are the lowest modes of the same model with no loads, in hertz; under a model scale they are the replica's. The VTK holds the displacement, the stresses and the mode shapes for ParaView, in SI.");
 }
 
-void ShowAerotelicStructuralFeaDialog(TFunction<void(const FText&)> Status)
+void ShowAerotelicStructuralFeaDialog(TFunction<void(const FText&)> Status, AerotelicStructuralFea::EBackend Backend)
 {
+	const bool bTacs = Backend == AerotelicStructuralFea::EBackend::Tacs;
+	const FText Title = bTacs ? LOCTEXT("TitleTacs", "TACS (FEA)") : LOCTEXT("Title", "Structural (Kratos FEA)");
 	UAerotelicDocumentSubsystem* Doc = UAerotelicDocumentSubsystem::Get();
 	TArray<FAerotelicBodyChoicePtr> Choices = AnalysableChoices();
 	if (Choices.Num() == 0)
 	{
 		AerotelicMessageBox(EAppMsgType::Ok,
 			LOCTEXT("NoBody", "Nothing to analyse: add a body first. Any body with a structural material and a skin thickness under Structure... in the Scene tree can be analysed, as shells of that thickness with its generated structure as shells inside."),
-			LOCTEXT("Title", "Structural (Kratos FEA)"));
+			Title);
 		return;
 	}
-	if (AerotelicStructuralFea::FindScript().IsEmpty())
 	{
-		AerotelicMessageBox(EAppMsgType::Ok,
-			LOCTEXT("NoScript", "tools\\structural_fea.py is not installed beside the application."),
-			LOCTEXT("Title", "Structural (Kratos FEA)"));
-		return;
+		// The script, and for TACS its WSL environment (the Kratos
+		// interpreter is only checked when the solve starts, as before).
+		FString Why;
+		if (AerotelicStructuralFea::FindScript(Backend).IsEmpty() || (bTacs && !AerotelicStructuralFea::IsAvailable(Backend, Why)))
+		{
+			if (Why.IsEmpty()) Why = FString::Printf(TEXT("tools\\%s is not installed beside the application."), bTacs ? TEXT("structural_fea_tacs.py") : TEXT("structural_fea.py"));
+			AerotelicMessageBox(EAppMsgType::Ok, FText::FromString(Why), Title);
+			return;
+		}
 	}
 
 	const FVector2D Size(1180, 980);
 	TSharedRef<SWindow> Window = SNew(SWindow)
-		.Title(LOCTEXT("Title", "Structural (Kratos FEA)"))
+		.Title(Title)
 		.ClientSize(Size)
 		.SupportsMaximize(true)
 		.SupportsMinimize(true);
@@ -286,6 +302,7 @@ void ShowAerotelicStructuralFeaDialog(TFunction<void(const FText&)> Status)
 	D->Window = Window;
 	S->Status = Status;
 	S->Window = Window;
+	S->Backend = Backend;
 	S->Units = Doc != nullptr ? Doc->GetUnits() : aerotelic::UnitSystem{};
 	FillOptions(S, Choices);
 
@@ -315,6 +332,23 @@ void ShowAerotelicStructuralFeaDialog(TFunction<void(const FText&)> Status)
 			S->PathBox->SetText(FText::FromString(FPaths::ConvertRelativePathToFull(Files[0])));
 		}
 	};
+
+	// The Solver group's hint, by backend (two LOCTEXTs cannot share a ?:).
+	FText ModelHint;
+	if (bTacs)
+	{
+		ModelHint = LOCTEXT("ModelHintTacs",
+			"The model is SHELLS ONLY, the same one the Kratos solver gets: a body's own surface triangles as shells of its skin thickness and material, each generated layer (ribs, spars, stringers) as unloaded shells inside it on the same grid. "
+			"TACS's shell is the Tri3Shell: a first-order shear deformation (Mindlin) triangle with MITC tying and a drilling penalty, six degrees of freedom a node; the mass items, hinges and pushrods go in as RBE3, RBE2 and axial springs. The solve runs inside WSL (its first start takes a few seconds); the force balance is checked after every solve. "
+			"The natural frequencies are the same model's lowest modes with no loads (TACS's Lanczos eigensolver). TACS also runs the ADJOINT: the Result lists the gradients of the mass and of each region's failure index with respect to its thickness.");
+	}
+	else
+	{
+		ModelHint = LOCTEXT("ModelHint",
+			"The model is SHELLS ONLY: a body's own surface triangles become shell elements of its skin thickness and material -- the linear thin triangle, three nodes, six degrees of freedom each; each generated layer (a wing's ribs, spars, stringers) becomes unloaded shells inside the body on the same grid. "
+			"Build Model reports the degrees of freedom and which solver will run: the direct solver is exact but single-threaded, so the automatic choice takes it up to 150,000 degrees of freedom and the iterative solver (amgcl) beyond; the force balance is checked after every solve. "
+			"The natural frequencies are the same model's lowest modes with no loads (Spectra's shift-invert eigensolver).");
+	}
 
 	// ---- tab 1: set-up ----
 	D->RefreshCases();
@@ -365,12 +399,7 @@ void ShowAerotelicStructuralFeaDialog(TFunction<void(const FText&)> Status)
 				+ SVerticalBox::Slot().AutoHeight().Padding(0, 2)
 				[ FormRow(LOCTEXT("Modes", "Natural frequencies to compute (0 = none):"), MakeStateSpin(S, &FState::Modes, 0.0, 100.0, 1.0, FText::GetEmpty())) ]
 				+ SVerticalBox::Slot().AutoHeight().Padding(0, 4, 0, 0)
-				[
-					MakeInfoLabel(LOCTEXT("ModelHint",
-						"The model is SHELLS ONLY: a body's own surface triangles become shell elements of its skin thickness and material -- the linear thin triangle, three nodes, six degrees of freedom each; each generated layer (a wing's ribs, spars, stringers) becomes unloaded shells inside the body on the same grid. "
-						"Build Model reports the degrees of freedom and which solver will run: the direct solver is exact but single-threaded, so the automatic choice takes it up to 150,000 degrees of freedom and the iterative solver (amgcl) beyond; the force balance is checked after every solve. "
-						"The natural frequencies are the same model's lowest modes with no loads (Spectra's shift-invert eigensolver)."))
-				])
+				[ MakeInfoLabel(ModelHint) ])
 		]
 		+ SScrollBox::Slot().Padding(0, 0, 0, 8)
 		[
@@ -407,7 +436,7 @@ void ShowAerotelicStructuralFeaDialog(TFunction<void(const FText&)> Status)
 	Tabs.Add({ LOCTEXT("LoadsTab", "Loads"), MakePictureTab(S, TabLoads, LOCTEXT("LoadsEmpty", "Build the model (Set-up tab) to see the case's loads as vectors: the pressure on the wetted faces, each point force at its node, the inertial load at the centre of mass."), nullptr) });
 	Tabs.Add({ LOCTEXT("MassesTab", "Masses"), MakePictureTab(S, TabMasses, LOCTEXT("MassesEmpty", "Build the model (Set-up tab) to see the mass items hung on it, each with bars to the nodes that carry it, and the mass centre of everything."), nullptr) });
 	Tabs.Add({ LOCTEXT("SupportTab", "Support"), MakePictureTab(S, TabSupport, LOCTEXT("SupportEmpty", "Build the model (Set-up tab) to see the case's constraints: a marker on every node the supports fix, each plane as a frame, and what reaches no support -- or, in free flight, the one reference node."), nullptr) });
-	Tabs.Add({ LOCTEXT("HelpTab", "Help"), MakeHelpTab(FText::FromString(kHelp)) });
+	Tabs.Add({ LOCTEXT("HelpTab", "Help"), MakeHelpTab(FText::FromString(bTacs ? FString(kHelpTacs) + kHelp : FString(kHelp))) });
 
 	Window->SetContent(
 		SNew(SBorder).Padding(12)

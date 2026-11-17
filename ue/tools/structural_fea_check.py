@@ -218,13 +218,20 @@ def read_vtk(path):
     return points, cells, cell_types, point_data, cell_data
 
 
+BACKEND = "kratos"   # --backend tacs runs every case through structural_fea_tacs.py instead (2026-11-17)
+
+
 def run(job_dir, job):
     with open(os.path.join(job_dir, "job.json"), "w", encoding="utf-8") as f:
         json.dump(job, f, indent=1)
+    if BACKEND == "tacs":
+        import structural_fea_tacs as st
+        return st.run_job(job_dir)
     return sf.run_job(job_dir)
 
 
 def main(argv):
+    global BACKEND
     keep, solver = None, "auto"
     args = list(argv[1:])
     while args:
@@ -233,6 +240,11 @@ def main(argv):
             keep = args.pop(0)
         elif a == "--solver":
             solver = args.pop(0)
+        elif a == "--backend":
+            BACKEND = args.pop(0).lower()
+    tacs = BACKEND == "tacs"
+    if tacs:
+        print("backend: TACS (structural_fea_tacs.py); the linear solver is TACS's gmres whatever --solver says")
     failures = 0
     job_dir = tempfile.mkdtemp(prefix="aerotelic_fea_check_")
     try:
@@ -257,7 +269,7 @@ def main(argv):
         rs = run(sphere_dir, job_s)
         failures += not check(rs["ok"] and rs["shells"] == len(tris_s) and rs["rib_shells"] == 0 and rs["elements"] == len(tris_s), "sphere: a shell on each of the sphere's %d triangles" % len(tris_s))
         failures += not check(rs["nodes"] == len(verts_s) and rs["dofs"] == 6 * len(verts_s), "sphere: six degrees of freedom on every one of the %d nodes (%d dof)" % (len(verts_s), rs["dofs"]))
-        expected_solver = "sparse_lu" if solver in ("auto", "sparse_lu") else solver
+        expected_solver = "gmres" if tacs else ("sparse_lu" if solver in ("auto", "sparse_lu") else solver)
         failures += not check(rs["linear_solver"] == expected_solver, "sphere: the solver used is %s (asked for %s)" % (rs["linear_solver"], solver))
         failures += not check(abs(rs["applied_pressure"][2]) < 1e-6 * p * np.pi * a ** 2 and np.linalg.norm(rs["reaction"]) < 1e-3 * p * np.pi * a ** 2,
                               "sphere: a uniform pressure over a closed surface has no resultant, so the support carries nothing (|R| = %.3g N)" % np.linalg.norm(rs["reaction"]))
@@ -371,53 +383,56 @@ def main(argv):
         # shells. The ribs hold the section square, so the tip moves no more
         # than without them, and everything else still adds up.
         # ------------------------------------------------------------------
-        import rib_gmsh as rg
-        rib_dir = os.path.join(job_dir, "ribs")
-        os.makedirs(rib_dir)
-        rverts, rtris = box_shell(bb, bL, bh, 2, 20, 2)
-        tg.write_tri(os.path.join(rib_dir, "outer.tri"), rverts, rtris)
-        with open(os.path.join(rib_dir, "job.json"), "w", encoding="utf-8") as f:
-            json.dump({"outer": "outer.tri", "rib_size": 0.25, "plane_tolerance": 0.0,
-                       "ribs": [{"id": 2, "normal": [0.0, 1.0, 0.0], "offset": y, "height": 0.0} for y in (-2.5, 0.0, 2.5)],
-                       "outputs": {"nodes": "nodes_ribs.bin", "result": "ribs_result.json", "ribs": "ribs.bin"}}, f)
-        rr = rg.run_job(rib_dir)
-        with open(os.path.join(rib_dir, "nodes_ribs.bin"), "rb") as f:
-            assert f.read(8) == rg.NODES_MAGIC
-            (nn,) = struct.unpack("<I", f.read(4))
-            rnodes = np.frombuffer(f.read(nn * 24), dtype="<f8").reshape(nn, 3)
-        failures += not check(rr["ok"] and rr["surface_nodes"] == len(rverts) and np.allclose(rnodes[:len(rverts)], rverts) and rr["rib_faces"] > 0,
-                              "ribs: rib_gmsh.py put %d rib faces on the box's own %d nodes plus %d" % (rr["rib_faces"], len(rverts), nn - len(rverts)))
-        # Without ribs, on the same coarse grid, for the comparison.
-        write_mesh(os.path.join(rib_dir, "nodes.bin"), rverts)
-        write_faces(os.path.join(rib_dir, "faces.bin"), rtris, np.ones(len(rtris), dtype=np.int32))
-        job_0 = dict(job_b)
-        job_0["solver"] = dict(job_b["solver"], modes=0)
-        job_0["outputs"] = {"vtk": os.path.join(rib_dir, "plain.vtk"), "result": "plain_result.json"}
-        r0 = run(rib_dir, job_0)
-        # With ribs: the nodes rib_gmsh.py wrote (the file keeps its header,
-        # which the reader skips), the skin faces on the first of them.
-        rt = 0.005
-        job_r = dict(job_0)
-        job_r["nodes"] = "nodes_ribs.bin"
-        job_r["rib_faces"] = "ribs.bin"
-        job_r["regions"] = [{"id": 1, "label": "beam", "skin": {"material": AL, "thickness": bt}, "rib": None},
-                            {"id": 2, "label": "frames", "skin": None, "rib": {"material": AL, "thickness": rt}}]
-        job_r["outputs"] = {"vtk": os.path.join(rib_dir, "ribbed.vtk"), "result": "ribbed_result.json"}
-        rrb = run(rib_dir, job_r)
-        failures += not check(rrb["ok"] and rrb["nodes"] == nn and rrb["dofs"] == 6 * nn and rrb["shells"] == len(rtris) + rr["rib_faces"] and rrb["rib_shells"] == rr["rib_faces"] and rrb["wetted_faces"] == len(rtris),
-                              "ribs: %d skin shells + %d rib shells on %d nodes, the skin faces alone wetted" % (len(rtris), rr["rib_faces"], nn))
-        failures += not check(rrb["balanced"] and rrb["warnings"] == [] and abs(rrb["reaction"][2] - P_tip) < 0.01 * P_tip, "ribs: the clamp still carries the tip loads (%.4g N)" % rrb["reaction"][2])
-        expected_mass = r0["mass"] + AL["density"] * rt * rr["rib_area"]
-        failures += not check(abs(rrb["mass"] - expected_mass) < 1e-6 * expected_mass, "ribs: the mass is the skin's plus the ribs' rho t A (%.5g vs %.5g kg)" % (rrb["mass"], expected_mass))
-        failures += not check(rrb["max_displacement"] <= r0["max_displacement"] * (1.0 + 1e-6) and rrb["max_displacement"] > 0.5 * r0["max_displacement"],
-                              "ribs: the ribbed box moves no more than the plain one, and not wildly less (%.4g vs %.4g m)" % (rrb["max_displacement"], r0["max_displacement"]))
-        kinds = [(e["id"], e["kind"]) for e in rrb["per_material"]]
-        failures += not check(kinds == [(1, "skin"), (2, "rib")] and rrb["per_material"][1]["max_von_mises"] > 0.0 and rrb["per_material"][1]["max_von_mises"] < rrb["per_material"][0]["max_von_mises"],
-                              "ribs: per_material reports the skin and the ribs by kind, the ribs less stressed than the flanges (%.3g vs %.3g Pa)" % (rrb["per_material"][1]["max_von_mises"], rrb["per_material"][0]["max_von_mises"]))
-        pts_r, cells_r, types_r, pd_r, cd_r = read_vtk(os.path.join(rib_dir, "ribbed.vtk"))
-        failures += not check(len(pts_r) == nn and (cd_r["kind"] == 2).sum() == rr["rib_faces"] and (cd_r["material"][cd_r["kind"] == 2] == 2).all(),
-                              "ribs: the VTK marks the rib shells as kind 2 of region 2")
-        print("  ribs: %d dof in %.1f s; tip %.4g m vs %.4g plain; rib peak %.3g Pa" % (rrb["dofs"], rrb["seconds_solve"], rrb["max_displacement"], r0["max_displacement"], rrb["per_material"][1]["max_von_mises"]))
+        if tg.gmsh is None:
+            print("SKIP ribs: gmsh is not in this environment (pip install gmsh to run the rib case here)")
+        else:
+            import rib_gmsh as rg
+            rib_dir = os.path.join(job_dir, "ribs")
+            os.makedirs(rib_dir)
+            rverts, rtris = box_shell(bb, bL, bh, 2, 20, 2)
+            tg.write_tri(os.path.join(rib_dir, "outer.tri"), rverts, rtris)
+            with open(os.path.join(rib_dir, "job.json"), "w", encoding="utf-8") as f:
+                json.dump({"outer": "outer.tri", "rib_size": 0.25, "plane_tolerance": 0.0,
+                           "ribs": [{"id": 2, "normal": [0.0, 1.0, 0.0], "offset": y, "height": 0.0} for y in (-2.5, 0.0, 2.5)],
+                           "outputs": {"nodes": "nodes_ribs.bin", "result": "ribs_result.json", "ribs": "ribs.bin"}}, f)
+            rr = rg.run_job(rib_dir)
+            with open(os.path.join(rib_dir, "nodes_ribs.bin"), "rb") as f:
+                assert f.read(8) == rg.NODES_MAGIC
+                (nn,) = struct.unpack("<I", f.read(4))
+                rnodes = np.frombuffer(f.read(nn * 24), dtype="<f8").reshape(nn, 3)
+            failures += not check(rr["ok"] and rr["surface_nodes"] == len(rverts) and np.allclose(rnodes[:len(rverts)], rverts) and rr["rib_faces"] > 0,
+                                  "ribs: rib_gmsh.py put %d rib faces on the box's own %d nodes plus %d" % (rr["rib_faces"], len(rverts), nn - len(rverts)))
+            # Without ribs, on the same coarse grid, for the comparison.
+            write_mesh(os.path.join(rib_dir, "nodes.bin"), rverts)
+            write_faces(os.path.join(rib_dir, "faces.bin"), rtris, np.ones(len(rtris), dtype=np.int32))
+            job_0 = dict(job_b)
+            job_0["solver"] = dict(job_b["solver"], modes=0)
+            job_0["outputs"] = {"vtk": os.path.join(rib_dir, "plain.vtk"), "result": "plain_result.json"}
+            r0 = run(rib_dir, job_0)
+            # With ribs: the nodes rib_gmsh.py wrote (the file keeps its header,
+            # which the reader skips), the skin faces on the first of them.
+            rt = 0.005
+            job_r = dict(job_0)
+            job_r["nodes"] = "nodes_ribs.bin"
+            job_r["rib_faces"] = "ribs.bin"
+            job_r["regions"] = [{"id": 1, "label": "beam", "skin": {"material": AL, "thickness": bt}, "rib": None},
+                                {"id": 2, "label": "frames", "skin": None, "rib": {"material": AL, "thickness": rt}}]
+            job_r["outputs"] = {"vtk": os.path.join(rib_dir, "ribbed.vtk"), "result": "ribbed_result.json"}
+            rrb = run(rib_dir, job_r)
+            failures += not check(rrb["ok"] and rrb["nodes"] == nn and rrb["dofs"] == 6 * nn and rrb["shells"] == len(rtris) + rr["rib_faces"] and rrb["rib_shells"] == rr["rib_faces"] and rrb["wetted_faces"] == len(rtris),
+                                  "ribs: %d skin shells + %d rib shells on %d nodes, the skin faces alone wetted" % (len(rtris), rr["rib_faces"], nn))
+            failures += not check(rrb["balanced"] and rrb["warnings"] == [] and abs(rrb["reaction"][2] - P_tip) < 0.01 * P_tip, "ribs: the clamp still carries the tip loads (%.4g N)" % rrb["reaction"][2])
+            expected_mass = r0["mass"] + AL["density"] * rt * rr["rib_area"]
+            failures += not check(abs(rrb["mass"] - expected_mass) < 1e-6 * expected_mass, "ribs: the mass is the skin's plus the ribs' rho t A (%.5g vs %.5g kg)" % (rrb["mass"], expected_mass))
+            failures += not check(rrb["max_displacement"] <= r0["max_displacement"] * (1.0 + 1e-6) and rrb["max_displacement"] > 0.5 * r0["max_displacement"],
+                                  "ribs: the ribbed box moves no more than the plain one, and not wildly less (%.4g vs %.4g m)" % (rrb["max_displacement"], r0["max_displacement"]))
+            kinds = [(e["id"], e["kind"]) for e in rrb["per_material"]]
+            failures += not check(kinds == [(1, "skin"), (2, "rib")] and rrb["per_material"][1]["max_von_mises"] > 0.0 and rrb["per_material"][1]["max_von_mises"] < rrb["per_material"][0]["max_von_mises"],
+                                  "ribs: per_material reports the skin and the ribs by kind, the ribs less stressed than the flanges (%.3g vs %.3g Pa)" % (rrb["per_material"][1]["max_von_mises"], rrb["per_material"][0]["max_von_mises"]))
+            pts_r, cells_r, types_r, pd_r, cd_r = read_vtk(os.path.join(rib_dir, "ribbed.vtk"))
+            failures += not check(len(pts_r) == nn and (cd_r["kind"] == 2).sum() == rr["rib_faces"] and (cd_r["material"][cd_r["kind"] == 2] == 2).all(),
+                                  "ribs: the VTK marks the rib shells as kind 2 of region 2")
+            print("  ribs: %d dof in %.1f s; tip %.4g m vs %.4g plain; rib peak %.3g Pa" % (rrb["dofs"], rrb["seconds_solve"], rrb["max_displacement"], r0["max_displacement"], rrb["per_material"][1]["max_von_mises"]))
 
         # ------------------------------------------------------------------
         # Composite laminates (2026-11-12): a cantilever plate of eight

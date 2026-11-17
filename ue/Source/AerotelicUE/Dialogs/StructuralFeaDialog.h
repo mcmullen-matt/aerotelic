@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Entity/AerotelicStructuralFea.h"
 
 // Analysis -> Structural (Kratos FEA): pick bodies, choose the support
 // planes (or patches of them) and the loads (an inertial load factor, a
@@ -26,4 +27,8 @@
 // file named; no post-processing view yet. Status receives the status-bar
 // line. -AerotelicFeaSmoke builds the model at once, screenshots the
 // three pre-processor tabs to Saved/Screenshots and quits.
-void ShowAerotelicStructuralFeaDialog(TFunction<void(const FText&)> Status);
+// Backend (2026-11-17): the same dialog on Kratos (Analysis > Structural
+// (Kratos FEA)) or on TACS (Analysis > TACS (FEA) > Structural Analysis):
+// the title, the solver options, the hints and the result's wording
+// follow it; the model, the cases and the pictures are the same.
+void ShowAerotelicStructuralFeaDialog(TFunction<void(const FText&)> Status, AerotelicStructuralFea::EBackend Backend = AerotelicStructuralFea::EBackend::Kratos);

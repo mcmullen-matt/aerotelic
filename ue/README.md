@@ -4081,3 +4081,158 @@ RP-1351, 1994; Tsai & Wu, J. Composite Materials 5 (1971) 58; MIL-HDBK-17-2F
 Int. J. Numer. Meth. Eng. 31 (1991) 1415; Hancock & Potter, Composites A
 37 (2006) 413; Boisse et al., Composites A 42 (2011) 1156 (locking angles);
 Hofstee & van Keulen, Composite Structures 54 (2001) 179.
+
+## TACS (FEA): a second structural solver, with the adjoint (2026-11-17)
+
+The owner asked for a second finite-element solver beside Kratos -- TACS,
+the Toolkit for the Analysis of Composite Structures
+(https://smdogroup.github.io/tacs, Kennedy & Martins, Georgia Tech /
+Michigan; Apache licence) through its Python layer pyTACS -- under an
+Analysis submenu of its own, **Analysis > TACS (FEA)**, with the eventual
+goal of adjoint-based gradients. His decisions: WSL as the runtime, a
+dedicated submenu with the Kratos entry untouched, and ONE dialog with a
+backend switch rather than a second dialog.
+
+**Where it runs.** TACS has no Windows build (its conda packages are Linux
+and macOS; the install page says so). The application therefore runs the
+TACS script inside the Windows Subsystem for Linux: `wsl.exe -d <distro>
+-e <python> -u tools/structural_fea_tacs.py /mnt/c/.../job`, the job
+directory in `%TEMP%` reached through `/mnt/c`. The interpreter is found
+by `AerotelicMeshLib::FindTacsInterpreter`: `AEROTELIC_TACS_PYTHON`
+(`wsl:<distro>:<linux python>`, the distro optional; or a Windows
+python.exe should one ever have tacs), else the default distribution is
+asked once for `~/micromamba/envs/tacs/bin/python` (then miniforge3,
+miniconda3, mambaforge) and the answer remembered. The job runner
+(`AerotelicMeshLib::RunJob(FInterpreter, ...)`) maps the script and job
+paths with `ToWslPath` and otherwise works as for every Python backend
+(the pipe, the stage lines, Cancel -- which ends wsl.exe; whether the
+Linux process dies with it is not guaranteed). Installing it, once WSL is
+on (`wsl --install` as administrator, a reboot, `wsl --install -d
+Ubuntu-24.04`):
+
+    "${SHELL}" <<< 'curl -Ls https://micro.mamba.pm/install.sh | bash'
+    micromamba create -n tacs -c conda-forge -c smdogroup python=3.11 tacs
+    micromamba run -n tacs pip install gmsh      # only for the check script's rib case
+
+Beware: PyPI's `tacs` is an unrelated TOML configuration library; never
+`pip install tacs`. **Analysis > TACS (FEA) > Check Installation**
+(`Dialogs/TacsCheckDialog.cpp`, `tools/tacs_check.py`) looks for the
+environment again, prints the versions of tacs, mpi4py, pyNastran and
+numpy, and solves a two-triangle cantilever through the real path.
+
+**The same job, a second script.** `Entity/AerotelicStructuralFea.h` gained
+`EBackend {Kratos, Tacs}` on the request; `Run` picks the script
+(`FindScript(Backend)`: `structural_fea.py` or `structural_fea_tacs.py`),
+the interpreter and the error texts by it, writes `solver.backend` into
+the same `job.json`, and reads the same `result.json`. So every case the
+Kratos solver takes can be run on TACS unchanged and the two compared.
+`tools/structural_fea_tacs.py` imports `structural_fea.py` for the job
+contract, the validation, the rigid-body bookkeeping (mass centre,
+inertia, `inertia_relief`), the stack binning and the VTK writer
+(`gmsh_common.py` now tolerates a missing gmsh for this). What it does
+itself:
+
+- *Components.* pyTACS groups elements by property id, one component
+  each, and a component is where a thickness design variable lives. One
+  component per region's skin and per region's ribs for an isotropic
+  card (one thickness variable each); for a laminate one per distinct
+  (draped stack bin, reference-axis bin) -- the stack binned as the
+  Kratos script bins it, the axis to about six degrees -- with no design
+  variable yet (TACS's laminate section has none; its smeared section
+  would). The BDF is built with pyNastran (`GRID`, `CTRIA3`, a dummy
+  `PSHELL` per component, `CONM2` + `RBE3` per mass item, `RBE2` 123 per
+  hinge tie, `RBE2` 123456 per offset link, `CBUSH`/`PBUSH` per pushrod,
+  `SPC1` 123456 on the fixed nodes) and handed to pyTACS as an object;
+  the real sections are built in the element callback by property id:
+  `IsoShellConstitutive` with `tNum`, or `CompositeShellConstitutive`
+  from `OrthotropicPly`s under a `ShellRefAxisTransform` (TACS lists
+  plies BOTTOM-first; the job lists them outer-first with the outer face
+  on the +normal side, so the stack is reversed), or for a pushrod a
+  `SpringElement` with `DOFSpringConstitutive(k = [E A / L, 0, 0, 0, 0,
+  0])` along its own axis -- TACS has no truss, and the spring has the
+  rod's stiffness and resultant; the rod's mass is two `CONM2`s of half
+  each on its ends. The shell is `Tri3Shell`: first-order shear
+  deformation, MITC tying, drilling penalty, six degrees of freedom a
+  node (Kratos's default is the Kirchhoff thin triangle).
+- *Loads.* Pressures as the consistent nodal loads of each face, the
+  point forces on their nearest nodes (`addLoadToNodes`), and the whole
+  inertial field -- gravity, or in free flight g - a0 - alpha x (r - cg)
+  with -alpha on the rotations -- as M a through TACS's own consistent
+  mass matrix (`assembleMatType(MASS_MATRIX)`, `addLoadToRHS`), the
+  resultant logged against m (g - a0) as a check of the mass the elements
+  carry. Free flight fixes the reference node's six degrees of freedom
+  in the BDF, exactly as the Kratos script does.
+- *Reactions* are K u - F at the fixed degrees of freedom, with K u from
+  `assembleRes(applyBCs=False)`; the balance and moment checks are the
+  Kratos script's formulas.
+- *Stresses and margins* are recovered here, not read from TACS's f5
+  (whose shell "stresses" are the resultants N, M, Q): the constant
+  membrane strain of each flat triangle from the in-plane displacements,
+  the Mindlin curvatures from the linearly interpolated rotations
+  (kappa_x = d theta_y / dx, kappa_y = -d theta_x / dy, kappa_xy = d
+  theta_y / dy - d theta_x / dx, the director d = theta x n -- the field
+  the element itself uses, so the recovery is its own strain up to the
+  MITC shear terms), then the plane stress through the thickness: von
+  Mises at the top, middle and bottom of an isotropic shell; for a
+  laminate the ply stresses in each ply's axes and the Tsai-Wu reserve
+  factor from a RF^2 + b RF = 1 with F12* = -1/2 (laminate.hpp's
+  convention), the smallest over the plies and their faces -- the exact
+  factor, where TACS's own failure output is an index. Checked on
+  synthetic fields: a uniform strain and a uniform curvature come back
+  exactly in any frame, the isotropic top-fibre von Mises to 1e-9, the
+  uniaxial Tsai-Wu factors exactly, a [0]_8 tape in x bending stiffer
+  than [90]_8 with the right top-ply stress.
+- *Modes.* `createModalProblem` (Lanczos) on the same model; in free
+  flight a second pyTACS without the reference node's conditions,
+  `count + 6` asked and the rigid ones dropped by threshold.
+- *The adjoint.* After the solve, `evalFunctionsSens` for the
+  `StructuralMass` and for the `KSFailure` index (ksWeight 100, von
+  Mises over the allowable) of every component that has an allowable,
+  with respect to the thickness variables. The result carries them as
+  `sensitivities {design_variables, functions}`; `FResult::DesignVariables`
+  / `Sensitivities` read them; the dialog's Result lists d mass / d t
+  (which must be rho A exactly -- the DocumentTest checks it) and d
+  index / d t per component. This is the first piece of the
+  gradient-based design TACS was brought in for; the next is d X /
+  d parameter from the application's own parameterisation (the skin
+  grid is a fixed-topology parametric grid, so a perturbation of a wing
+  parameter moves nodes without remeshing; the gmsh rib discs are
+  nondeterministic, so ribs stay out of geometric variables for now) to
+  chain with TACS's d f / d X.
+
+**The dialog.** `ShowAerotelicStructuralFeaDialog(Status, Backend)`:
+Analysis > Structural (Kratos FEA) opens it on Kratos as before, Analysis
+> TACS (FEA) > Structural Analysis... on TACS. `FeaCaseState::FState`
+carries `Backend`; the title, the Solver group's options (TACS: one
+GMRES/ILU solver, one Tri3Shell), the cost line (no single-thread budget
+on TACS), the not-converged advice, the Help tab's TACS preface and the
+Result's adjoint lines follow it; the model, the cases and the pictures
+are the same. The submenu is `FillAnalysisMenu`'s `AddSubMenu` with the
+commands `StructuralTacs` and `TacsCheck`.
+
+**Tests.** `tools/structural_fea_check.py --backend tacs` runs every
+closed-form case (sphere, box beam and its modes, patch, ribs when gmsh
+is there, laminates, mass item, free flight, hinges) through the TACS
+script -- the cross-check of the two solvers. `AerotelicDocumentTest`
+gained "structural fea on TACS": the box beam on TACS (balance,
+Timoshenko within 5%, M c / I, rho t A, four modes with the degenerate
+pair at the beam's frequency, d mass / d t = rho A, the KS index below 1
+and falling with thickness, the VTK's mode shapes and component ids),
+skipped with the reason when the TACS environment is not there.
+`Build.cs` stages the two new scripts and the two check scripts the
+installation check imports.
+
+**Status at the time of writing.** WSL's platform feature was enabled
+on the development machine the same evening but a reboot is required
+before a distribution can be installed, so nothing here has yet run
+against a real TACS: the model building, BDF writing (pyNastran
+round-trips the coordinates to 1e-12) and stress recovery were dry-run
+on Windows; the pyTACS calls follow its documentation and source
+(assembleRes / assembleMatType with `applyBCs`, `getLocalNodeIDsFromGlobal`,
+`addLoadToRHS`, the element callback's `propID`), with fallbacks where
+an older signature might differ. To verify once the environment exists:
+`wsl -e ~/micromamba/envs/tacs/bin/python /mnt/c/Users/Matt/devel_1/aerotelic/ue/tools/structural_fea_check.py --backend tacs`,
+then Check Installation, then the DocumentTest. Open questions it will
+answer: the sign the spring's reference axis takes, whether pyTACS reads
+`SPC1` without a case control deck, and how far the Mindlin triangle
+sits from the Kirchhoff one on the check's thin box.

@@ -130,10 +130,46 @@ namespace AerotelicStructuralFea
 		}
 	}
 
-	FString FindScript()
+	const TCHAR* BackendName(EBackend Backend)
 	{
-		const FString Script = FPaths::Combine(FPaths::ProjectDir(), TEXT("tools"), TEXT("structural_fea.py"));
+		return Backend == EBackend::Tacs ? TEXT("TACS") : TEXT("Kratos FEA");
+	}
+
+	const TCHAR* BackendKey(EBackend Backend)
+	{
+		return Backend == EBackend::Tacs ? TEXT("tacs") : TEXT("kratos");
+	}
+
+	FString FindScript(EBackend Backend)
+	{
+		const FString Script = FPaths::Combine(FPaths::ProjectDir(), TEXT("tools"), Backend == EBackend::Tacs ? TEXT("structural_fea_tacs.py") : TEXT("structural_fea.py"));
 		return FPaths::FileExists(Script) ? FPaths::ConvertRelativePathToFull(Script) : FString();
+	}
+
+	bool IsAvailable(EBackend Backend, FString& OutWhy)
+	{
+		if (FindScript(Backend).IsEmpty())
+		{
+			OutWhy = FString::Printf(TEXT("tools\\%s is not installed beside the application."), Backend == EBackend::Tacs ? TEXT("structural_fea_tacs.py") : TEXT("structural_fea.py"));
+			return false;
+		}
+		if (Backend == EBackend::Tacs)
+		{
+			if (!AerotelicMeshLib::FindTacsInterpreter().IsValid())
+			{
+				OutWhy = TEXT("The TACS environment was not found. TACS has no Windows build: install the Windows Subsystem for Linux (wsl --install, as administrator, then reboot), a distribution (wsl --install -d Ubuntu-24.04), and in it\n"
+					"    micromamba create -n tacs -c conda-forge -c smdogroup python=3.11 tacs\n"
+					"so that ~/micromamba/envs/tacs/bin/python exists; or set AEROTELIC_TACS_PYTHON=wsl:<distro>:<path to that python>. Analysis > TACS (FEA) > Check Installation looks again.");
+				return false;
+			}
+			return true;
+		}
+		if (AerotelicMeshLib::FindPython().IsEmpty())
+		{
+			OutWhy = TEXT("The Python interpreter was not found: install Kratos (pip install KratosMultiphysics KratosStructuralMechanicsApplication KratosLinearSolversApplication scipy, Kratos all at the same version) in the WingDesigner micromamba environment, or point AEROTELIC_MESHLIB_PYTHON at a python.exe that has them.");
+			return false;
+		}
+		return true;
 	}
 
 	bool Run(const FRequest& Request, FResult& Out, FString& OutError, AerotelicMeshLib::FJobProgress* Progress)
@@ -171,16 +207,19 @@ namespace AerotelicStructuralFea
 			OutError = TEXT("no solution file to write");
 			return false;
 		}
-		const FString Script = FindScript();
-		if (Script.IsEmpty())
+		if (!IsAvailable(Request.Backend, OutError))
 		{
-			OutError = TEXT("tools\\structural_fea.py was not found beside the application.");
 			return false;
 		}
-		if (AerotelicMeshLib::FindPython().IsEmpty())
+		const FString Script = FindScript(Request.Backend);
+		AerotelicMeshLib::FInterpreter Interpreter;
+		if (Request.Backend == EBackend::Tacs)
 		{
-			OutError = TEXT("The Python interpreter was not found: install Kratos (pip install KratosMultiphysics KratosStructuralMechanicsApplication KratosLinearSolversApplication scipy, Kratos all at the same version) in the WingDesigner micromamba environment, or point AEROTELIC_MESHLIB_PYTHON at a python.exe that has them.");
-			return false;
+			Interpreter = AerotelicMeshLib::FindTacsInterpreter();
+		}
+		else
+		{
+			Interpreter.Python = AerotelicMeshLib::FindPython();
 		}
 
 		const FString Dir = FPaths::Combine(FPlatformProcess::UserTempDir(), TEXT("aerotelic_fea_") + FGuid::NewGuid().ToString(EGuidFormats::Short));
@@ -416,12 +455,13 @@ namespace AerotelicStructuralFea
 			TEXT("{\n \"nodes\": \"nodes.bin\",\n \"faces\": %s,\n \"rib_faces\": %s,\n \"axes\": %s,\n \"rib_axes\": %s,\n \"regions\": [%s],\n")
 			TEXT(" \"supports\": [%s],\n \"inertia_relief\": %s,\n \"masses\": [%s],\n \"ties\": [%s],\n \"links\": [%s],\n \"bars\": [%s],\n")
 			TEXT(" \"loads\": {\"load_factor\": %s, \"pressure\": %s, \"pressure_file\": %s, \"point_forces\": [%s]},\n")
-			TEXT(" \"solver\": {\"echo_level\": 0, \"linear_solver\": %s, \"shell_element\": %s, \"modes\": %d},\n")
+			TEXT(" \"solver\": {\"backend\": %s, \"echo_level\": 0, \"linear_solver\": %s, \"shell_element\": %s, \"modes\": %d},\n")
 			TEXT(" \"outputs\": {\"vtk\": %s, \"result\": \"result.json\"}\n}\n"),
 			FacesFile.IsEmpty() ? TEXT("null") : *JsonString(FacesFile), RibsFile.IsEmpty() ? TEXT("null") : *JsonString(RibsFile),
 			AxesFile.IsEmpty() ? TEXT("null") : *JsonString(AxesFile), RibAxesFile.IsEmpty() ? TEXT("null") : *JsonString(RibAxesFile), *Regions,
 			*SupportsJson, *ReliefJson, *MassesJson, *TiesJson, *LinksJson, *BarsJson,
 			*Num(Request.LoadFactor), *Num(Request.Pressure), PressureFile.IsEmpty() ? TEXT("null") : *JsonString(PressureFile), *PointsJson,
+			*JsonString(BackendKey(Request.Backend)),
 			*JsonString(Request.LinearSolver.IsEmpty() ? FString(TEXT("auto")) : Request.LinearSolver),
 			*JsonString(Request.ShellElement.IsEmpty() ? FString(TEXT("ShellThinElement3D3N")) : Request.ShellElement),
 			FMath::Max(Request.Modes, 0),
@@ -434,7 +474,7 @@ namespace AerotelicStructuralFea
 		}
 
 		TSharedPtr<FJsonObject> Result;
-		if (!AerotelicMeshLib::RunJob(Script, Dir, Result, OutError, Progress))
+		if (!AerotelicMeshLib::RunJob(Interpreter, Script, Dir, Result, OutError, Progress))
 		{
 			Cleanup();
 			return false;
@@ -599,6 +639,54 @@ namespace AerotelicStructuralFea
 		if (Out.VtkPath.IsEmpty())
 		{
 			Out.VtkPath = Request.VtkPath;
+		}
+		// Which solver ran, and TACS's adjoint (2026-11-17).
+		if (!Result->TryGetStringField(TEXT("backend"), Out.Backend)) Out.Backend = BackendKey(Request.Backend);
+		Result->TryGetStringField(TEXT("tacs_version"), Out.SolverVersion);
+		{
+			const TSharedPtr<FJsonObject>* Sens = nullptr;
+			if (Result->TryGetObjectField(TEXT("sensitivities"), Sens) && Sens != nullptr && Sens->IsValid())
+			{
+				const TArray<TSharedPtr<FJsonValue>>* Vars = nullptr;
+				if ((*Sens)->TryGetArrayField(TEXT("design_variables"), Vars))
+				{
+					for (const TSharedPtr<FJsonValue>& V : *Vars)
+					{
+						const TSharedPtr<FJsonObject>* Obj = nullptr;
+						if (!V.IsValid() || !V->TryGetObject(Obj)) continue;
+						FResult::FDesignVariable D;
+						(*Obj)->TryGetStringField(TEXT("component"), D.Component);
+						(*Obj)->TryGetStringField(TEXT("kind"), D.Kind);
+						D.Region = static_cast<int32>(NumberOr(*Obj, TEXT("region")));
+						D.Thickness = NumberOr(*Obj, TEXT("thickness"));
+						Out.DesignVariables.Add(D);
+					}
+				}
+				const TArray<TSharedPtr<FJsonValue>>* Funcs = nullptr;
+				if ((*Sens)->TryGetArrayField(TEXT("functions"), Funcs))
+				{
+					for (const TSharedPtr<FJsonValue>& V : *Funcs)
+					{
+						const TSharedPtr<FJsonObject>* Obj = nullptr;
+						if (!V.IsValid() || !V->TryGetObject(Obj)) continue;
+						FResult::FSensitivity S;
+						(*Obj)->TryGetStringField(TEXT("name"), S.Function);
+						(*Obj)->TryGetStringField(TEXT("component"), S.Component);
+						S.Region = static_cast<int32>(NumberOr(*Obj, TEXT("region")));
+						S.Value = NumberOr(*Obj, TEXT("value"));
+						const TArray<TSharedPtr<FJsonValue>>* Grad = nullptr;
+						if ((*Obj)->TryGetArrayField(TEXT("gradient"), Grad))
+						{
+							for (const TSharedPtr<FJsonValue>& G : *Grad)
+							{
+								double X = 0.0;
+								if (G.IsValid() && G->TryGetNumber(X)) S.Gradient.Add(X);
+							}
+						}
+						Out.Sensitivities.Add(S);
+					}
+				}
+			}
 		}
 		Cleanup();
 		return true;

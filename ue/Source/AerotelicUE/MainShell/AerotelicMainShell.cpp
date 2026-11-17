@@ -19,6 +19,7 @@
 #include "Dialogs/MaterialLibraryDialog.h"
 #include "Dialogs/LoadCasesDialog.h"
 #include "Dialogs/StructuralFeaDialog.h"
+#include "Dialogs/TacsCheckDialog.h"
 #include "Dialogs/DustDialog.h"
 #include "Dialogs/ThemeDialog.h"
 #include "Branding/AerotelicTheme.h"
@@ -455,6 +456,8 @@ void SAerotelicMainShell::BindCommands()
 	// Analysis
 	Commands->MapAction(C.MassProperties, FExecuteAction::CreateLambda([this]() { ShowAerotelicMassPropertiesDialog([this](const FText& T) { SetStatus(T); }); }));
 	Commands->MapAction(C.StructuralFea, FExecuteAction::CreateLambda([this]() { ShowAerotelicStructuralFeaDialog([this](const FText& T) { SetStatus(T); }); }));
+	Commands->MapAction(C.StructuralTacs, FExecuteAction::CreateLambda([this]() { ShowAerotelicStructuralFeaDialog([this](const FText& T) { SetStatus(T); }, AerotelicStructuralFea::EBackend::Tacs); }));
+	Commands->MapAction(C.TacsCheck, FExecuteAction::CreateLambda([this]() { ShowAerotelicTacsCheckDialog([this](const FText& T) { SetStatus(T); }); }));
 	Commands->MapAction(C.PotentialFlow, FExecuteAction::CreateLambda([this]() { ShowAerotelicPotentialFlowDialog([this](const FText& T) { SetStatus(T); }); }));
 	Commands->MapAction(C.HighOrderPanel, FExecuteAction::CreateLambda([this]() { ShowAerotelicHighOrderPanelDialog([this](const FText& T) { SetStatus(T); }); }));
 	Commands->MapAction(C.DustVpm, FExecuteAction::CreateLambda([this]() { ShowAerotelicDustDialog([this](const FText& T) { SetStatus(T); }); }));
@@ -806,6 +809,18 @@ void SAerotelicMainShell::FillAnalysisMenu(FMenuBuilder& Menu)
 {
 	Menu.AddMenuEntry(FAerotelicCommands::Get().MassProperties);
 	Menu.AddMenuEntry(FAerotelicCommands::Get().StructuralFea);
+	// Analysis > TACS (FEA) (2026-11-17): the second structural solver, in
+	// a submenu of its own -- the analysis (the shared dialog on the TACS
+	// backend) and the installation check. The Kratos entry above stays as
+	// it is.
+	Menu.AddSubMenu(LOCTEXT("TacsMenu", "TACS (FEA)"),
+		LOCTEXT("TacsMenuTip", "The structural analysis on TACS, the Toolkit for the Analysis of Composite Structures: the same load cases and model as the Kratos solver, a different shell element, and the adjoint's gradients. Runs inside the Windows Subsystem for Linux."),
+		FNewMenuDelegate::CreateLambda([](FMenuBuilder& Sub)
+		{
+			Sub.SetSearchable(false);
+			Sub.AddMenuEntry(FAerotelicCommands::Get().StructuralTacs);
+			Sub.AddMenuEntry(FAerotelicCommands::Get().TacsCheck);
+		}));
 	Menu.AddMenuEntry(FAerotelicCommands::Get().PotentialFlow);
 	Menu.AddMenuEntry(FAerotelicCommands::Get().HighOrderPanel);
 	Menu.AddMenuEntry(FAerotelicCommands::Get().DustVpm);

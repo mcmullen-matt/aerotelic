@@ -476,6 +476,18 @@ namespace AerotelicFeaCase
 
 		TSharedPtr<SAerotelicTabStrip> Tabs;
 		bool bSmoke = false;
+		// The solver the dialog runs (2026-11-17): Kratos, or TACS -- the
+		// same model and cases, a different script and interpreter
+		// (Entity/AerotelicStructuralFea.h EBackend). Set before FillOptions.
+		AerotelicStructuralFea::EBackend Backend = AerotelicStructuralFea::EBackend::Kratos;
+		bool IsTacs() const { return Backend == AerotelicStructuralFea::EBackend::Tacs; }
+		FText Title() const { return IsTacs() ? LOCTEXT("TitleTacs", "TACS (FEA)") : LOCTEXT("Title", "Structural (Kratos FEA)"); }
+		// What to do about a solve whose reactions miss the loads.
+		const TCHAR* NotConvergedAdvice() const
+		{
+			return IsTacs() ? TEXT("TACS's GMRES stopped short: the log has its residuals; a finer or better-conditioned mesh usually cures it (a zero-area or sliver face is the usual cause).")
+			                : TEXT("Choose the direct solver (sparse_lu) under Set-up and solve again.");
+		}
 
 		// The support patches' handles as last drawn, and the one being
 		// dragged (its plane and kind; -1 none). Hover is the handle under
@@ -488,7 +500,7 @@ namespace AerotelicFeaCase
 
 		void Message(const FText& Text)
 		{
-			AerotelicMessageBox(EAppMsgType::Ok, Text, LOCTEXT("Title", "Structural (Kratos FEA)"));
+			AerotelicMessageBox(EAppMsgType::Ok, Text, Title());
 		}
 
 		// The builder's options: the status line to write progress to (the
@@ -694,13 +706,24 @@ namespace AerotelicFeaCase
 			}
 			Request.LoadFactor = LoadFactor;
 			Request.Pressure = Pressure * Units.StressToSI();
-			static const TCHAR* kSolvers[] = { TEXT("auto"), TEXT("sparse_lu"), TEXT("amgcl") };
-			Request.LinearSolver = kSolvers[FMath::Clamp(SolverIndex, 0, 2)];
-			// The thick corotational triangle is no longer offered (2026-11-02:
-			// too stiff and not converging on a thin-walled box, its force
-			// balance drifting with refinement); the script still takes it.
-			static const TCHAR* kShellElements[] = { TEXT("ShellThinElement3D3N"), TEXT("ShellThinElementCorotational3D3N") };
-			Request.ShellElement = kShellElements[FMath::Clamp(ShellIndex, 0, 1)];
+			Request.Backend = Backend;
+			if (IsTacs())
+			{
+				// TACS has one Krylov solver and one linear triangle; the
+				// script ignores the Kratos names.
+				Request.LinearSolver = TEXT("gmres");
+				Request.ShellElement = TEXT("Tri3Shell");
+			}
+			else
+			{
+				static const TCHAR* kSolvers[] = { TEXT("auto"), TEXT("sparse_lu"), TEXT("amgcl") };
+				Request.LinearSolver = kSolvers[FMath::Clamp(SolverIndex, 0, 2)];
+				// The thick corotational triangle is no longer offered (2026-11-02:
+				// too stiff and not converging on a thin-walled box, its force
+				// balance drifting with refinement); the script still takes it.
+				static const TCHAR* kShellElements[] = { TEXT("ShellThinElement3D3N"), TEXT("ShellThinElementCorotational3D3N") };
+				Request.ShellElement = kShellElements[FMath::Clamp(ShellIndex, 0, 1)];
+			}
 			Request.Modes = FMath::Max(FMath::RoundToInt32(Modes), 0);
 			Request.VtkPath = PathBox.IsValid() ? PathBox->GetText().ToString().TrimStartAndEnd() : FString();
 		}
@@ -953,10 +976,17 @@ namespace AerotelicFeaCase
 		// warning past the direct solver's budget.
 		bool OverBudget(const FModel& M) const
 		{
-			return M.Dofs > AerotelicStructuralFea::kAutoDirectDofs;
+			// TACS factorises with its own ILU (near-complete at the default
+			// fill) on the Linux side: no single-thread budget to warn of.
+			return !IsTacs() && M.Dofs > AerotelicStructuralFea::kAutoDirectDofs;
 		}
 		FString CostText(const FModel& M) const
 		{
+			if (IsTacs())
+			{
+				return FString::Printf(TEXT("about %s DOF (six on each of %s shell nodes), TACS's GMRES with its near-complete ILU, inside WSL"),
+					*Thousands(M.Dofs), *Thousands(M.ShellNodes));
+			}
 			const bool bDirect = SolverIndex == 1 || (SolverIndex == 0 && M.DirectSolverAuto());
 			FString Text = FString::Printf(TEXT("about %s DOF (six on each of %s shell nodes), %s"),
 				*Thousands(M.Dofs), *Thousands(M.ShellNodes),
@@ -1773,7 +1803,7 @@ namespace AerotelicFeaCase
 			{
 				const EAppReturnType::Type Answer = AerotelicMessageBox(EAppMsgType::YesNo,
 					FText::FromString(FString::Printf(TEXT("%d point force(s) landed more than a mesh edge from the point typed -- see the Loads tab for where each went. Solve anyway?"), Far)),
-					LOCTEXT("Title", "Structural (Kratos FEA)"));
+					Title());
 				if (Answer != EAppReturnType::Yes)
 				{
 					if (Tabs.IsValid()) Tabs->SetActiveTab(TabLoads);
@@ -1792,7 +1822,7 @@ namespace AerotelicFeaCase
 							? TEXT("the direct solver was chosen by name, and at this size it can take hours on one thread or run the machine out of memory (a 540,000-DOF fuselage exhausted 32 GB and the page file)")
 							: TEXT("the iterative solver (amgcl) will run instead, on every core; it can stop short on thin shells, which the force balance will report afterwards"),
 						TEXT("A faster, exact solve: coarsen the bodies' Mesh tab grids (the shells are built on them, a node per vertex)."))),
-					LOCTEXT("Title", "Structural (Kratos FEA)"));
+					Title());
 				if (Answer != EAppReturnType::Yes) return;
 			}
 
@@ -1813,7 +1843,9 @@ namespace AerotelicFeaCase
 			}
 			Job = J;
 			SetSolving(true);
-			ShowProgress(FString::Printf(TEXT("starting the solver on %s shells (%s wetted faces, %s rib shells)"), *Thousands((int64)M.WettedFaces.Num() + M.RibFaces.Num()), *Thousands(M.WettedFaces.Num()), *Thousands(M.RibFaces.Num())));
+			ShowProgress(FString::Printf(TEXT("starting %s on %s shells (%s wetted faces, %s rib shells)%s"), AerotelicStructuralFea::BackendName(Backend),
+				*Thousands((int64)M.WettedFaces.Num() + M.RibFaces.Num()), *Thousands(M.WettedFaces.Num()), *Thousands(M.RibFaces.Num()),
+				IsTacs() ? TEXT(" -- inside WSL; its first start takes a few seconds") : TEXT("")));
 			Async(EAsyncExecution::Thread, [J]()
 			{
 				J->bOk = AerotelicStructuralFea::Run(J->Built->Request, J->Result, J->Error, &J->Progress);
@@ -1932,12 +1964,37 @@ namespace AerotelicFeaCase
 			{
 				Peaks += FString::Printf(TEXT("%s%d hinge tie(s) and NO pushrod: a hinged flap with nothing to hold its rotation; if the balance below is off, that is why"), Peaks.IsEmpty() ? TEXT("") : TEXT("\n"), R.Ties);
 			}
+			// TACS's adjoint (2026-11-17): the gradients of the mass and of each
+			// component's KS failure index with respect to the thickness
+			// variables (one per isotropic skin or rib layer), SI per metre.
+			if (R.DesignVariables.Num() > 0 && R.Sensitivities.Num() > 0)
+			{
+				FString Vars;
+				for (int32 i = 0; i < R.DesignVariables.Num(); ++i)
+				{
+					Vars += FString::Printf(TEXT("%st%d = %s (%.4g %s)"), i ? TEXT(", ") : TEXT(""), i + 1, *R.DesignVariables[i].Component, R.DesignVariables[i].Thickness / L2, *UnitName(Units.LengthName()));
+				}
+				Peaks += FString::Printf(TEXT("%sADJOINT (TACS) over the thickness variables %s:"), Peaks.IsEmpty() ? TEXT("") : TEXT("\n"), *Vars);
+				for (const AerotelicStructuralFea::FResult::FSensitivity& S : R.Sensitivities)
+				{
+					FString Grad;
+					for (int32 i = 0; i < S.Gradient.Num(); ++i) Grad += FString::Printf(TEXT("%s%.4g"), i ? TEXT(", ") : TEXT(""), S.Gradient[i]);
+					if (S.Function == TEXT("mass"))
+					{
+						Peaks += FString::Printf(TEXT("\n  d mass / d t = [%s] kg/m (mass %.5g kg)"), *Grad, S.Value);
+					}
+					else
+					{
+						Peaks += FString::Printf(TEXT("\n  d KS failure index(%s) / d t = [%s] per m (index %.4g; 1 is failure, von Mises over the allowable)"), *S.Component, *Grad, S.Value);
+					}
+				}
+			}
 			LblStress->SetText(FText::FromString(FString::Printf(TEXT("%.4g %s, in region %d"), R.MaxVonMises / S2, *UnitName(Units.StressName()), R.MaxVonMisesRegion)));
 			LblMargins->SetText(FText::FromString(Peaks));
 			const double WorstError = FMath::Max(R.BalanceError, R.MomentError);
 			FString Verdict = R.bBalanced
 				? FString::Printf(TEXT("Balanced to %.2g%%."), 100.0 * WorstError)
-				: FString::Printf(TEXT("NOT CONVERGED: the reactions miss the applied loads by %.1f%%, so the linear solver (%s) did not converge and the displacements and stresses above mean nothing. Solve again with the direct solver."), 100.0 * WorstError, *R.LinearSolver);
+				: FString::Printf(TEXT("NOT CONVERGED: the reactions miss the applied loads by %.1f%%, so the linear solver (%s) did not converge and the displacements and stresses above mean nothing. %s"), 100.0 * WorstError, *R.LinearSolver, NotConvergedAdvice());
 			if (B.AeroCase.IsValid())
 			{
 				const FAerotelicAeroLoadCase& A = *B.AeroCase;
@@ -1992,7 +2049,8 @@ namespace AerotelicFeaCase
 				LblModes->SetText(FText::FromString(FString::Printf(TEXT("%s%s (%s, %.1f s; mode shapes mode_1 .. mode_%d in the VTK)"), *Listed,
 					IsReplica() ? *FString::Printf(TEXT(" -- of the %s replica"), *ScaleText()) : TEXT(""), *R.Eigensolver, R.SecondsModes, R.NaturalFrequencies.Num())));
 			}
-			LblTime->SetText(FText::FromString(FString::Printf(TEXT("%.1f s (%.1f solving with %s%s)"), R.Seconds, R.SecondsSolve, *R.LinearSolver,
+			LblTime->SetText(FText::FromString(FString::Printf(TEXT("%.1f s (%.1f solving with %s%s%s)"), R.Seconds, R.SecondsSolve, *R.LinearSolver,
+				R.Backend == TEXT("tacs") ? *FString::Printf(TEXT(" on TACS %s"), *R.SolverVersion) : TEXT(""),
 				R.SecondsModes > 0.0 ? *FString::Printf(TEXT(", %.1f on the natural frequencies"), R.SecondsModes) : TEXT(""))));
 			for (const FString& W : R.Warnings)
 			{
@@ -2013,8 +2071,8 @@ namespace AerotelicFeaCase
 				// The one tell of a solver that stopped short: say it where it
 				// cannot be missed, not only in the Result group.
 				AerotelicMessageBox(EAppMsgType::Ok, FText::FromString(FString::Printf(
-					TEXT("The solution did not converge: the reactions at the supports miss the applied loads by %.1f%% (the linear solver was %s). The displacements and stresses it reports, and the file it wrote, are not to be trusted. Choose the direct solver (sparse_lu) under Set-up and solve again."),
-					100.0 * R.BalanceError, *R.LinearSolver)), LOCTEXT("NotConverged", "Structural Analysis Did Not Converge"));
+					TEXT("The solution did not converge: the reactions at the supports miss the applied loads by %.1f%% (the linear solver was %s). The displacements and stresses it reports, and the file it wrote, are not to be trusted. %s"),
+					100.0 * R.BalanceError, *R.LinearSolver, NotConvergedAdvice())), LOCTEXT("NotConverged", "Structural Analysis Did Not Converge"));
 			}
 		}
 
@@ -2453,13 +2511,24 @@ namespace AerotelicFeaCase
 	inline void FillOptions(TSharedRef<FState> S, const TArray<FAerotelicBodyChoicePtr>& Choices)
 	{
 		S->Choices = Choices;
-		S->SolverOptions = {
-			MakeShared<FString>(FString::Printf(TEXT("Automatic (direct up to %s DOF, iterative beyond)"), *Thousands(AerotelicStructuralFea::kAutoDirectDofs))),
-			MakeShared<FString>(TEXT("sparse_lu (direct; exact; one thread)")),
-			MakeShared<FString>(TEXT("amgcl (iterative; every core; check the force balance)")) };
-		S->ShellOptions = {
-			MakeShared<FString>(TEXT("Linear thin triangle (Kirchhoff; reactions balance exactly)")),
-			MakeShared<FString>(TEXT("Corotational thin triangle (small displacements only)")) };
+		if (S->IsTacs())
+		{
+			// TACS: one Krylov solver, one linear triangle (2026-11-17).
+			S->SolverOptions = { MakeShared<FString>(TEXT("GMRES with TACS's ILU preconditioner (near-complete at the default fill; every core)")) };
+			S->ShellOptions = { MakeShared<FString>(TEXT("Tri3Shell (first-order shear deformation, MITC tying, drilling penalty)")) };
+			S->SolverIndex = 0;
+			S->ShellIndex = 0;
+		}
+		else
+		{
+			S->SolverOptions = {
+				MakeShared<FString>(FString::Printf(TEXT("Automatic (direct up to %s DOF, iterative beyond)"), *Thousands(AerotelicStructuralFea::kAutoDirectDofs))),
+				MakeShared<FString>(TEXT("sparse_lu (direct; exact; one thread)")),
+				MakeShared<FString>(TEXT("amgcl (iterative; every core; check the force balance)")) };
+			S->ShellOptions = {
+				MakeShared<FString>(TEXT("Linear thin triangle (Kirchhoff; reactions balance exactly)")),
+				MakeShared<FString>(TEXT("Corotational thin triangle (small displacements only)")) };
+		}
 		S->AxisOptions = { MakeShared<FString>(TEXT("x")), MakeShared<FString>(TEXT("y")), MakeShared<FString>(TEXT("z")) };
 		S->PlaneOptions = { MakeShared<FString>(TEXT("at the value")), MakeShared<FString>(TEXT("at the mesh's minimum")), MakeShared<FString>(TEXT("at the mesh's maximum")) };
 		S->BodyOptions.Reset();

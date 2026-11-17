@@ -1,9 +1,11 @@
 #include "AerotelicMeshLib.h"
 
 #include "HAL/PlatformProcess.h"
+#include "HAL/PlatformMisc.h"
 #include "HAL/FileManager.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
+#include "Misc/ScopeLock.h"
 #include "Dom/JsonObject.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
@@ -117,6 +119,102 @@ namespace AerotelicMeshLib
 		return FString();
 	}
 
+	FString FInterpreter::Describe() const
+	{
+		return bWsl ? FString::Printf(TEXT("wsl:%s:%s"), *Distro, *Python) : Python;
+	}
+
+	FString ToWslPath(const FString& WindowsPath)
+	{
+		FString Full = FPaths::ConvertRelativePathToFull(WindowsPath);
+		Full.ReplaceInline(TEXT("\\"), TEXT("/"));
+		if (Full.Len() >= 2 && FChar::IsAlpha(Full[0]) && Full[1] == TEXT(':'))
+		{
+			FString Rest = Full.Mid(2);
+			if (!Rest.StartsWith(TEXT("/"))) Rest = TEXT("/") + Rest;
+			return FString::Printf(TEXT("/mnt/%c%s"), FChar::ToLower(Full[0]), *Rest);
+		}
+		return Full;
+	}
+
+	namespace
+	{
+		FString WslExe()
+		{
+			const FString Root = FPlatformMisc::GetEnvironmentVariable(TEXT("SystemRoot"));
+			const FString Exe = FPaths::Combine(Root.IsEmpty() ? FString(TEXT("C:\\Windows")) : Root, TEXT("System32"), TEXT("wsl.exe"));
+			return FPaths::FileExists(Exe) ? Exe : FString();
+		}
+
+		// Asks the default WSL distribution for a tacs environment's python.
+		// Empty when WSL is not installed, has no distribution, or none of
+		// the usual environment roots holds one.
+		FString ProbeWslTacsPython()
+		{
+			const FString Wsl = WslExe();
+			if (Wsl.IsEmpty()) return FString();
+			// sh expands $HOME inside the distribution; no double quotes
+			// inside, the command line is one quoted argument.
+			const FString Params = TEXT("-e sh -c \"for p in $HOME/micromamba/envs/tacs/bin/python $HOME/miniforge3/envs/tacs/bin/python $HOME/miniconda3/envs/tacs/bin/python $HOME/mambaforge/envs/tacs/bin/python /opt/tacs/bin/python; do if [ -x $p ]; then echo $p; exit 0; fi; done; exit 3\"");
+			int32 Code = -1;
+			FString Out, Err;
+			const double T0 = FPlatformTime::Seconds();
+			const bool bRan = FPlatformProcess::ExecProcess(*Wsl, *Params, &Code, &Out, &Err);
+			// wsl.exe's own messages (no distribution, not installed) come out
+			// UTF-16 and do not start with a slash; a path from sh is plain.
+			Out.TrimStartAndEndInline();
+			UE_LOG(LogAerotelicMeshLib, Log, TEXT("TACS interpreter probe: wsl exit %d in %.2f s: '%s' %s"), Code, FPlatformTime::Seconds() - T0, *Out, *Err.Left(200));
+			if (!bRan || Code != 0 || !Out.StartsWith(TEXT("/"))) return FString();
+			FString Line;
+			Out.Split(TEXT("\n"), &Line, nullptr);
+			return Line.IsEmpty() ? Out : Line.TrimStartAndEnd();
+		}
+
+		FCriticalSection GTacsLock;
+		bool GTacsProbed = false;
+		FInterpreter GTacs;
+	}
+
+	FInterpreter FindTacsInterpreter(bool bRefresh)
+	{
+		FScopeLock Lock(&GTacsLock);
+		if (GTacsProbed && !bRefresh) return GTacs;
+		GTacsProbed = true;
+		GTacs = FInterpreter();
+		const FString FromEnv = FPlatformMisc::GetEnvironmentVariable(TEXT("AEROTELIC_TACS_PYTHON")).TrimStartAndEnd();
+		if (!FromEnv.IsEmpty())
+		{
+			if (FromEnv.StartsWith(TEXT("wsl:")))
+			{
+				// wsl:<distro>:<python>; the distro may be empty.
+				const FString Rest = FromEnv.Mid(4);
+				FString Distro, Python;
+				if (!Rest.Split(TEXT(":"), &Distro, &Python)) Python = Rest;
+				GTacs.bWsl = true;
+				GTacs.Distro = Distro.TrimStartAndEnd();
+				GTacs.Python = Python.TrimStartAndEnd();
+				if (GTacs.Python.IsEmpty()) GTacs.Python = ProbeWslTacsPython();
+			}
+			else if (FPaths::FileExists(FromEnv))
+			{
+				GTacs.Python = FPaths::ConvertRelativePathToFull(FromEnv);
+			}
+			return GTacs;
+		}
+		const FString Probed = ProbeWslTacsPython();
+		if (!Probed.IsEmpty())
+		{
+			GTacs.bWsl = true;
+			GTacs.Python = Probed;
+		}
+		return GTacs;
+	}
+
+	namespace
+	{
+		bool RunProcess(const FString& Exe, const FString& Params, const FString& WorkingDir, const FString& Name, const FString& Dir, TSharedPtr<FJsonObject>& OutResult, FString& OutError, FJobProgress* Progress);
+	}
+
 	bool RunJob(const FString& Script, const FString& Dir, TSharedPtr<FJsonObject>& OutResult, FString& OutError, FJobProgress* Progress)
 	{
 		const FString Python = FindPython();
@@ -125,11 +223,45 @@ namespace AerotelicMeshLib
 			OutError = TEXT("The backend's Python interpreter was not found: point AEROTELIC_MESHLIB_PYTHON at a python.exe that has the libraries, or install them in the WingDesigner micromamba environment.");
 			return false;
 		}
+		FInterpreter I;
+		I.Python = Python;
+		return RunJob(I, Script, Dir, OutResult, OutError, Progress);
+	}
+
+	bool RunJob(const FInterpreter& Interpreter, const FString& Script, const FString& Dir, TSharedPtr<FJsonObject>& OutResult, FString& OutError, FJobProgress* Progress)
+	{
+		if (!Interpreter.IsValid())
+		{
+			OutError = TEXT("The backend's Python interpreter was not found.");
+			return false;
+		}
 		const FString Name = FPaths::GetCleanFilename(Script);
+		const FString WorkingDir = FPaths::GetPath(Script);
+		if (Interpreter.bWsl)
+		{
+			const FString Wsl = WslExe();
+			if (Wsl.IsEmpty())
+			{
+				OutError = TEXT("wsl.exe was not found: the Windows Subsystem for Linux is not installed.");
+				return false;
+			}
+			// -u: unbuffered, so the stage lines reach the dialog as they are
+			// printed. The paths cross into the distribution as /mnt/<drive>/...
+			const FString Params = FString::Printf(TEXT("%s-e \"%s\" -u \"%s\" \"%s\""),
+				Interpreter.Distro.IsEmpty() ? TEXT("") : *FString::Printf(TEXT("-d \"%s\" "), *Interpreter.Distro),
+				*Interpreter.Python, *ToWslPath(Script), *ToWslPath(Dir));
+			return RunProcess(Wsl, Params, WorkingDir, Name, Dir, OutResult, OutError, Progress);
+		}
 		const FString Params = FString::Printf(TEXT("\"%s\" \"%s\""), *Script, *Dir);
+		return RunProcess(Interpreter.Python, Params, WorkingDir, Name, Dir, OutResult, OutError, Progress);
+	}
+
+	namespace
+	{
+	bool RunProcess(const FString& Python, const FString& Params, const FString& WorkingDir, const FString& Name, const FString& Dir, TSharedPtr<FJsonObject>& OutResult, FString& OutError, FJobProgress* Progress)
+	{
 		void* ReadPipe = nullptr; void* WritePipe = nullptr;
 		FPlatformProcess::CreatePipe(ReadPipe, WritePipe);
-		const FString WorkingDir = FPaths::GetPath(Script);
 		const double T0 = FPlatformTime::Seconds();
 		FProcHandle Proc = FPlatformProcess::CreateProc(*Python, *Params, false, true, true, nullptr, 0, *WorkingDir, WritePipe, nullptr, WritePipe);
 		// CloseProc resets the handle, so remember whether it started.
@@ -225,5 +357,6 @@ namespace AerotelicMeshLib
 			return false;
 		}
 		return true;
+	}
 	}
 }
