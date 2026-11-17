@@ -885,8 +885,9 @@ unknowns, take a second or two per angle.
   not clÂ·c / c_ref, "a surrogate scaled by a constant"), against the span
   fraction. No strips (Matt, 2026-10-28: "finite strip widths fall apart
   where the chord goes to zero"): the wing's own network is cut by a
-  plane normal to its placed span axis every 5% of the semi-span
-  (`kLoadCuts`), root station to tip station, and `CutSection`
+  plane normal to its placed span axis at the centres of 20 bands of the
+  semi-span (`kLoadCuts`; since 2026-11-16 never at the root ring or the
+  tip cap themselves, where a cut found the cap or nothing), and `CutSection`
   (`core/.../panel_loads.hpp`) intersects the plane with the panels --
   one segment per panel crossed, its ends on the panel's two spanwise
   edges, Cp interpolated along the span between the panel's centre and
@@ -2815,6 +2816,25 @@ on the wing the way the real one does.
   cut at each station through the planform, the actor transform (the
   replica) and the operand's mirror; a symmetric wing's port flap
   (`<name> (port)`) hinges to the same `Main`.
+* **Through a boolean result (2026-11-16).** The fuse keeps a flap a
+  body of its own (its gap parts it from the airframe) under a name that
+  says nothing of where it came from (`Body 3`), and my_drone's load
+  cases choose the boolean's bodies -- so every control surface floated,
+  was left out with the "no load path" note, and was missing from the
+  VTK (Matt). The resolver now walks a chosen boolean's operands (nested
+  booleans too, mirror flags composed): a result body IS an operand
+  wing's flap when its centroid lies inside that flap's own placed mesh
+  and the two volumes agree within 2% (nothing touched the flap, so the
+  fused solid is the flap's mesh); its main element is the chosen body of
+  the same boolean that contains the centroid of the wing's `Main` mesh
+  (the fused airframe), else the largest chosen body. The hinge is then
+  built exactly as for the wing's own bodies, the notes naming both the
+  result body and the flap ("Body 3 of BoolOp 1 (flap 'Flap 2' of Wing)
+  hinged to Body 1"); a small result body that is no operand's flap is
+  named once as likely to float. DocumentTest "fea (hinge, boolean)":
+  the aileron wing fused with the sphere, its three bodies chosen as a
+  boolean's -- one flap hinged, two ties spanning two different bodies a
+  gap apart, nothing floating.
 * **The dialog.** `ResolveHinges` runs with `ResolveMasses` before the
   pre-processor and again after a trim renumbers the nodes, so a hinged
   flap is on the load path (the pre-processor's union-find unites tie
@@ -3155,6 +3175,77 @@ off), so the mesh is in plain sight. The span loading cuts a wing's own
 triangles of the fused surface (a tip-to-tip wing shows both halves, an
 imaged one its image); "All bodies" bins every panel. The polars' per-body
 columns are the entities' shares. The help was rewritten.
+
+**Span Loading fixed on my_drone (2026-11-16).** Matt's Cl·c plot was wrong
+three ways, all found by replaying the tab headlessly
+(`%TEMP%\aerotelic_sym\span_probe.cpp`, not in the repo):
+1. With the plane on -- the default for my_drone, whose wings are symmetric
+   -- the fin's pressures ran to Cp -5e9. `BuildCase` had fused the fin
+   nudged by a millionth of the configuration (the boolean refused the exact
+   fin-root-on-boom-cap contact), so its trailing edge lay 2e-6 off y = 0;
+   cut at the plane, the wedge at the trailing edge left slivers 2e-6 wide
+   facing their own image, and the gradient fit across them exploded.
+   `tripanel::Solve` now puts every vertex within 1e-5 of the configuration's
+   diagonal of the plane ON it before the cut (noted in the body's notes).
+   The nudged fin then solves as the exact one (`tri_panel_check`: max |ΔCp|
+   4e-4).
+2. A cut exactly on a ring of the mesh -- the root of a tip-to-tip wing at
+   y = 0, every eighth of the HT whose 20 stations coincided with the 20 cut
+   stations -- counted each edge lying in the plane from both triangles:
+   twice the load at the root, spikes at ±0.125, ±0.25, ±0.375 of the HT,
+   and at the tips the cap's triangles (length 2.6 for a 0.21 chord, l/q
+   negative). `CutSection` treats a vertex on the plane as on its positive
+   side, so an in-plane edge is found once and an in-plane triangle not at
+   all; and the dialog now cuts at the centres of the `kLoadCuts` bands
+   (2.5%, 7.5%, ... of the semi-span), never at the root or tip stations.
+3. With the plane on, a tip-to-tip wing was cut at -s on the solved body,
+   which is the starboard half only: the plot showed half the wing spread
+   over the whole axis with the elliptic fit over the half. The image cut
+   (the plane on) now comes first, the tip-to-tip cut without it.
+4. Later the same evening Matt saw the tailplane's cl asymmetric at 8° with
+   the plane OFF (the wing was symmetric). The fin's trailing edge lies in
+   y = 0, and its wake sheet ran along the tailplane's root a fraction of a
+   millimetre from the root panels; its strength is zero by symmetry, but the
+   coupling left the tailplane 30% different port to starboard (removing the
+   fin's wake alone made it symmetric to 1%, removing the fin exactly). Now
+   an edge lying in y = 0 with the free stream in that plane and no plane
+   option sheds nothing (`BodyResult::centreline_edges`, a note) -- the same
+   answer the plane-on rim rule gives; a sideslip sheds it. The fuse-retry
+   nudge is in x and z only, so a centreline body stays on y = 0. The T-tail
+   regression (`tri_panel_check` case 6: fin + tip-to-tip tailplane fused,
+   8°, plane off) is symmetric to 0.0% and equals the plane-on solve.
+5. What Matt had actually been looking at (found by the `-AerotelicPanelSmoke`
+   screenshot): the tab opened on "VT (1 of 4)", the fin, listed first because
+   the views followed the boolean's operand order. A fin's loading is a side
+   force, about zero in symmetric flow and a hair negative here, so its
+   dashed "elliptic, same integral" curve sat below the axis while C_L was
+   positive. The views now run All bodies, the lifting surfaces by span, then
+   the fins; a fin's view is titled "side loading of a fin, root to tip" with
+   y / q and cy and no elliptic reference.
+**The span-loading optimiser (2026-11-16, Matt's ask, now
+`core/src/tools/span_load_optimizer.cpp`, target `span_load_optimizer`).**
+`span_load_optimizer <project.yaml> [--wing Wing] [--tail HT] [--alpha 4]
+[--budget 570] [--out file]` runs Nelder & Mead's downhill simplex on ten
+variables -- the wing's chord multipliers at η 0, 0.5, 1 (a three-pole
+quadratic Bézier leading and trailing edge anchored on the baseline
+quarter-chord line, so the wing does not move) and twist poles at the same
+stations, the tailplane's chord root/tip and twist root/tip (its planform
+converted to the same anchored form) -- bounded to 0.6..1.6 × chord and ±8°,
+against the relative RMS distance of the "All bodies" 40-bin lift from the
+ellipse of the same integral, each evaluation the dialog's own pipeline
+(aero copies, fuse, plane on, 1.7 s on my_drone). Span, dihedral, sections,
+flaps, structure and placement are held. It writes a NEW project file
+(`<project>_elliptic.yaml` by default) and never touches the input. The
+simplex was chosen because the objective is a noisy black box (a parameter
+change moves triangles and seams); on my_drone at 4° its 646 evaluations
+converged in 166 s, 0.156 → 0.045, L / q 0.398 → 0.426, with the wing's mid
+twist pole on its +8° bound. The result's "All bodies" plot follows the
+ellipse except the two notches where the wing is buried in the fuselage.
+With the fixes my_drone's fused solve with the plane on gives C_L 0.1056
+(0.1057 without the plane) at 2°, every body's Cp within -0.9..1.0, the
+Wing's loading symmetric with L/q 0.2074 either way, and at 8° the
+tailplane's loading port against starboard within 1% with the plane off
+(the rest is the boolean's seams, which differ a little side to side).
 
 **Checked**: `tri_panel_check` 27/27 -- the sphere Cp = 1 - 9/4 sin²θ to
 0.083 worst and 0.016 mean on 2688 panels, μ = x/2, no net force, GMRES

@@ -135,6 +135,13 @@ struct BodyResult {
 	bool cut_at_plane = false;
 	int wake_edges = 0;          // trailing-edge edges that shed a wake
 	int rim_edges = 0;           // trailing-edge edges on the plane's rim (one triangle: no wake)
+	// Trailing-edge edges lying in y = 0 with the free stream in that plane
+	// and no symmetry option (a centreline fin): no wake. A sheet there would
+	// run along the centreline geometry (a tailplane's root) within a
+	// fraction of a panel of its panels and couple the two sides; by the
+	// configuration's symmetry its strength is zero, and the plane on gives
+	// the same through its rim rule. A sideslip sheds it.
+	int centreline_edges = 0;
 	int buried_edges = 0;        // trailing-edge edges whose wake would run into another body
 	int dropped_in_plane = 0;    // triangles lying in the symmetry plane, left out
 	// -sum Cp n A / S_ref over this body (the image included when mirrored).

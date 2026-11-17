@@ -335,7 +335,9 @@ namespace AerotelicAeroTrim
 				P.Share.SpanAxis = Axis;
 				P.Share.RootPoint = FVector(Ends[0].x, Ends[0].y, Ends[0].z);
 				P.Share.TipPoint = FVector(Ends[1].x, Ends[1].y, Ends[1].z);
-				for (int32 k = 0; k <= kLoadCuts; ++k) P.Share.CutChords.Add(W->planform().ChordAt(static_cast<double>(k) / kLoadCuts) * Scale);
+				// The chord at the centre of each of the kLoadCuts bands the
+				// loading is cut at (never the root ring or the tip cap).
+				for (int32 k = 0; k < kLoadCuts; ++k) P.Share.CutChords.Add(W->planform().ChordAt((k + 0.5) / kLoadCuts) * Scale);
 				P.Share.Triangles = static_cast<int32>(P.Body.mesh.triangles.size());
 				P.Bounds = BoundsOf(P.Body.mesh);
 				Pieces.Add(MoveTemp(P));
@@ -432,7 +434,10 @@ namespace AerotelicAeroTrim
 				catch (const aerotelic::MeshBooleanError& E)
 				{
 					const double Eps = 1e-6 * Diag;
-					const aerotelic::Vec3 Shift{ Eps * 0.5773502692, Eps * 0.5773502692, Eps * 0.5773502692 };
+					// In the plane of symmetry (no y), so a centreline body stays on
+					// y = 0: a fin nudged off it by a millionth left its trailing edge
+					// a whisker off the plane (2026-11-16).
+					const aerotelic::Vec3 Shift{ Eps * 0.7071067812, 0.0, Eps * 0.7071067812 };
 					try
 					{
 						aerotelic::TriMesh Nudged = Pieces[Members[k]].Body.mesh;

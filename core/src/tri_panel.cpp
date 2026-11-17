@@ -386,6 +386,16 @@ Solution Solve(const std::vector<Body>& bodies, const Vec3& free_stream, const O
 		for (size_t i = 0; i < parent.size(); ++i) parent[i] = static_cast<int>(i);
 		if (options.symmetry_y) {
 			const double y0 = *options.symmetry_y;
+			// Vertices a whisker off the plane are put ON it first. A body
+			// nudged off the plane by a millionth of the configuration (the
+			// retry of a refused fuse; a fin placed at y = 1e-7 by hand)
+			// otherwise leaves, once cut, slivers a millionth wide facing
+			// their own image, and the gradient fit across them runs to 1e5
+			// (my_drone's fin: Cp -5e9, 2026-11-16).
+			const double snap = std::max(tiny, 1e-5 * diag);
+			int snapped = 0;
+			for (Vec3& v : mesh.vertices) if (v.y != y0 && std::fabs(v.y - y0) <= snap) { v.y = y0; ++snapped; }
+			if (snapped > 0) p.result.notes.push_back(b.name + ": " + std::to_string(snapped) + " vertex(es) within " + std::to_string(snap) + " of the symmetry plane put on it");
 			double ymin = 1e300, ymax = -1e300;
 			for (const Vec3& v : mesh.vertices) { ymin = std::min(ymin, v.y); ymax = std::max(ymax, v.y); }
 			if (ymin < y0 - tiny && ymax > y0 + tiny) {
@@ -486,6 +496,12 @@ Solution Solve(const std::vector<Body>& bodies, const Vec3& free_stream, const O
 			if (tris.size() == 1) { ++p.result.rim_edges; continue; }
 			if (tris.size() != 2) { ++non_manifold; continue; }
 			const Vec3 a = mesh.vertices[e[0]], bb = mesh.vertices[e[1]];
+			// An edge lying in y = 0 with the stream in that plane and no plane
+			// option (a centreline fin, 2026-11-16: my_drone's fin wake ran
+			// along the tailplane's root a fraction of a millimetre from its
+			// panels and left the tailplane 30% asymmetric): no wake, as the
+			// rim rule gives with the plane on. See BodyResult::centreline_edges.
+			if (!options.symmetry_y && std::fabs(d.y) < 1e-9 && std::fabs(a.y) <= 1e-5 * diag && std::fabs(bb.y) <= 1e-5 * diag) { ++p.result.centreline_edges; continue; }
 			const Vec3 dl = bb - a;
 			Vec3 nw = Cross(d, dl);
 			const double nwl = Length(nw);
@@ -515,6 +531,7 @@ Solution Solve(const std::vector<Body>& bodies, const Vec3& free_stream, const O
 		if (parallel > 0) p.result.notes.push_back(b.name + ": " + std::to_string(parallel) + " trailing-edge edge(s) run along the stream and shed no wake");
 		if (p.result.buried_edges > 0) p.result.notes.push_back(b.name + ": " + std::to_string(p.result.buried_edges) + " trailing-edge edge(s) run into another body downstream and shed no wake");
 		if (p.result.rim_edges > 0) p.result.notes.push_back(b.name + ": " + std::to_string(p.result.rim_edges) + " trailing-edge edge(s) lie on the symmetry plane's rim (the image is the other side) and shed no wake");
+		if (p.result.centreline_edges > 0) p.result.notes.push_back(b.name + ": " + std::to_string(p.result.centreline_edges) + " trailing-edge edge(s) lie in the plane y = 0 with the free stream in it (a centreline fin) and shed no wake: a sheet there would run along the centreline geometry within a fraction of a panel of its panels; by symmetry its strength is zero (a sideslip sheds it)");
 	}
 
 	// ---- the influence matrix ----
@@ -717,17 +734,20 @@ SectionCut CutSection(const BodyResult& body, const Vec3& axis, double s, bool m
 		Vec3 v[3] = {pos(tr[0]), pos(tr[1]), pos(tr[2])};
 		double f[3];
 		for (int k = 0; k < 3; ++k) f[k] = Dot(v[k], axis) - s;
+		// A vertex ON the plane counts as on its positive side: an edge lying
+		// in the plane is then found once, by the triangle below it, not by
+		// both (a cut on a ring of the mesh -- the root of a wing built tip to
+		// tip, a station of its grid -- doubled the load there, 2026-11-16),
+		// and a triangle lying in the plane (a tip cap) is not a section.
 		std::vector<Vec3> pts;
 		for (int k = 0; k < 3; ++k) {
 			const int k2 = (k + 1) % 3;
 			if ((f[k] < 0.0) != (f[k2] < 0.0)) {
 				const double w = f[k] / (f[k] - f[k2]);
 				pts.push_back(v[k] + (v[k2] - v[k]) * w);
-			} else if (f[k] == 0.0) {
-				pts.push_back(v[k]);
 			}
 		}
-		if (pts.size() < 2) continue;
+		if (pts.size() != 2) continue;
 		Vec3 n = r.normal;
 		if (mirror_y) n.y = -n.y;
 		Vec3 tvec = pts[1] - pts[0];

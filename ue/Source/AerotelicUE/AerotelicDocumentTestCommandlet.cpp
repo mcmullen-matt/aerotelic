@@ -1311,6 +1311,112 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 						bTiesSpan = bTiesSpan && bSlaveOnFlap && bMasterOnMain && aerotelic::Length(Built.Nodes[T.Master] - Built.Nodes[T.Slave]) < 0.05 * Wing->GetModelAs<aerotelic::WingModel>()->planform().RootChord();
 					}
 					Check(bTiesSpan, "fea (hinge): each tie joins a node of the aileron's skin to a node of the main element's a gap apart");
+
+					// The same hinge through a BOOLEAN RESULT (2026-11-16): fused
+					// with the sphere, the wing's main element and its aileron come
+					// out as bodies of the result named by size ("Body 1" ...), and
+					// my_drone's load cases choose exactly those; until today every
+					// control surface in such a case floated and was left out. The
+					// resolver maps a result body back to the operand flap whose
+					// mesh contains it and hinges it to the body holding the wing's
+					// main element.
+					if (Primitive != nullptr)
+					{
+						TArray<FAerotelicBooleanOperand> Ops;
+						FAerotelicBooleanOperand BW, BS;
+						BW.Entity = Wing;
+						BS.Entity = Primitive;
+						Ops.Add(BW);
+						Ops.Add(BS);
+						FString BoolError;
+						AAerotelicEntityActor* Fused = Doc->AddBoolean(TEXT("Hinge fuse"), Ops, TEXT("fuse"), BoolError);
+						Doc->FlushPendingRebuilds();
+						const int32 NFused = Fused != nullptr ? Fused->GetBodies().Num() : -1;
+						Check(Fused != nullptr && NFused >= 3, FString::Printf(TEXT("fea (hinge, boolean): the wing, its aileron and the sphere fuse into %d bodies (%s)"), NFused, *BoolError));
+						if (Fused != nullptr && NFused >= 3)
+						{
+							AerotelicFeaModelBuilder::FCache BCache;
+							AerotelicFeaModelBuilder::FBuilt BB;
+							TArray<AerotelicFeaModelBuilder::FChosenBody> BChosen;
+							FAerotelicBooleanOperand BOp;
+							BOp.Entity = Fused;
+							for (int32 i = 0; i < NFused; ++i) Fused->SetBodyStructure(Fused->GetBodies()[i].Name, FlapSkin);
+							Doc->FlushPendingRebuilds();
+							bool bAll = true;
+							for (int32 i = 0; i < NFused; ++i)
+							{
+								const FString Role = Fused->GetBodies()[i].Name;
+								bAll = AerotelicFeaModelBuilder::AppendBody(BOp, Role, TEXT("Hinge fuse / ") + Role, i, Options, BCache, BB) && bAll;
+								AerotelicFeaModelBuilder::FChosenBody K;
+								K.Operand = BOp;
+								K.Role = Role;
+								K.Index = i;
+								BChosen.Add(K);
+							}
+							AerotelicStructuralFea::FRequest BReq;
+							BReq.Nodes = &BB.Nodes;
+							BReq.ShellFaces = BB.ShellFaces;
+							BReq.RibFaces = BB.RibFaces;
+							BReq.Regions = BB.Regions;
+							BReq.LengthToSI = Doc->GetUnits().LengthToSI();
+							TArray<FString> BNotes;
+							const int32 BHinged = bAll ? AerotelicFeaModelBuilder::ResolveFlapHinges(BChosen, BB.Nodes, BReq.ShellFaces, BReq.RibFaces, BReq.Regions, BReq, BNotes) : -1;
+							Check(bAll && BHinged == 1 && BReq.Ties.Num() == 2 && BReq.Links.Num() == 2 && BReq.Bars.Num() == 1,
+								FString::Printf(TEXT("fea (hinge, boolean): the result's bodies map back to the aileron and the main element: %d hinged, %d ties, %d links, %d rod(s) (%s%s)"), BHinged, BReq.Ties.Num(), BReq.Links.Num(), BReq.Bars.Num(), *FString::Join(BNotes, TEXT("; ")), BB.Problems.Num() ? *(TEXT("; problems: ") + FString::Join(BB.Problems, TEXT("; "))) : TEXT("")));
+							// The ties span the gap between two DIFFERENT bodies of the
+							// result, the slave on the small one (the aileron).
+							bool bSpan = BReq.Ties.Num() == 2;
+							int32 AirframeBody = -1;
+							for (const AerotelicStructuralFea::FTie& T : BReq.Ties)
+							{
+								int32 SlaveBody = -1, MasterBody = -1;
+								for (const AerotelicStructuralFea::FShellFace& Face : BReq.ShellFaces)
+								{
+									const AerotelicStructuralFea::FRegion* Reg = BReq.Regions.FindByPredicate([&Face](const AerotelicStructuralFea::FRegion& X) { return X.Id == Face.Region; });
+									if (Reg == nullptr) continue;
+									for (int32 k = 0; k < 3; ++k)
+									{
+										if (Face.N[k] == T.Slave) SlaveBody = Reg->Body;
+										if (Face.N[k] == T.Master) MasterBody = Reg->Body;
+									}
+								}
+								if (MasterBody >= 0) AirframeBody = MasterBody;
+								bSpan = bSpan && SlaveBody >= 0 && MasterBody >= 0 && SlaveBody != MasterBody && aerotelic::Length(BB.Nodes[T.Master] - BB.Nodes[T.Slave]) < 0.05 * Wing->GetModelAs<aerotelic::WingModel>()->planform().RootChord();
+							}
+							Check(bSpan, "fea (hinge, boolean): each tie joins a node of the aileron's fused body to one of the airframe's a gap apart");
+							// Rooted at the min-y plane of the body the hinge was tied to
+							// (the fused wing): the wing and its hinged aileron are on the
+							// load path; the sphere, fused with nothing, floats and is the
+							// only thing that does.
+							AerotelicStructuralFea::FSupport BRoot;
+							BRoot.Axis = TEXT('y');
+							BRoot.bAtMin = true;
+							BRoot.Body = AirframeBody >= 0 ? AirframeBody : 0;
+							BReq.Supports.Add(BRoot);
+							AerotelicFeaPreprocess::FModel BPre;
+							FString BPreError;
+							const bool bBPre = bAll && AerotelicFeaPreprocess::Build(BReq, BPre, BPreError);
+							FString Floating;
+							if (bBPre)
+							{
+								for (const AerotelicStructuralFea::FRegion& Reg : BReq.Regions)
+									Floating += FString::Printf(TEXT(" [%s body %d%s]"), *Reg.Label, Reg.Body, BPre.FloatingRegions.Contains(Reg.Id) ? TEXT(" FLOATS") : TEXT(""));
+							}
+							Check(bBPre && BPre.SupportNodes.Num() > 0 && !BPre.FloatingRegions.Contains(BReq.Regions.FindByPredicate([&](const AerotelicStructuralFea::FRegion& X) { return X.Body == AirframeBody; }) ? BReq.Regions.FindByPredicate([&](const AerotelicStructuralFea::FRegion& X) { return X.Body == AirframeBody; })->Id : -1),
+								FString::Printf(TEXT("fea (hinge, boolean): the airframe body %d is rooted (%d support nodes; %d of %d regions float:%s; %s)"), AirframeBody, bBPre ? BPre.SupportNodes.Num() : -1, bBPre ? BPre.FloatingRegions.Num() : -1, BReq.Regions.Num(), *Floating, *BPreError));
+							// The hinged aileron's regions are on the load path with it.
+							bool bAileronHeld = bBPre;
+							for (const AerotelicStructuralFea::FTie& T : BReq.Ties)
+							{
+								for (const AerotelicStructuralFea::FShellFace& Face : BReq.ShellFaces)
+									for (int32 k = 0; k < 3; ++k)
+										if (Face.N[k] == T.Slave && BPre.FloatingRegions.Contains(Face.Region)) bAileronHeld = false;
+							}
+							Check(bAileronHeld, FString::Printf(TEXT("fea (hinge, boolean): the aileron's fused body hangs on its hinge, not floating (%d floating:%s)"), bBPre ? BPre.FloatingRegions.Num() : -1, *Floating));
+						}
+						if (Fused != nullptr) Doc->RemoveEntity(Fused);
+						Doc->FlushPendingRebuilds();
+					}
 					AerotelicFeaPreprocess::FModel PreH;
 					FString PreHError;
 					const bool bPreH = AerotelicFeaPreprocess::Build(Request, PreH, PreHError);

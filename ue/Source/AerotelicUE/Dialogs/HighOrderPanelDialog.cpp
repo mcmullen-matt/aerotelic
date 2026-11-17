@@ -331,12 +331,26 @@ namespace
 		};
 		TArray<FLoadView> LoadViews() const
 		{
+			// "All bodies" first when there is more than one share, then the
+			// lifting surfaces by span (the main wing before the tailplane),
+			// the fins last: their "span" loading is a side force, integral
+			// about zero. The stepper used to open on the first operand of a
+			// boolean -- my_drone's fin -- and its side force, a hair negative,
+			// read as "the lift is not elliptic" (Matt, 2026-11-16).
 			TArray<FLoadView> Out;
 			const FCase* C = CurrentCase();
 			if (C == nullptr) return Out;
+			struct FRank { int32 Share; double Span; bool bFin; };
+			TArray<FRank> Ranks;
 			for (int32 i = 0; i < C->Shares.Num(); ++i)
-				if (C->Shares[i].bWing && !C->Shares[i].bMirrorCopy) Out.Add({ i, C->Shares[i].Name });
-			if (C->Shares.Num() > 1 || Out.Num() == 0) Out.Add({ -1, TEXT("All bodies") });
+			{
+				const FShare& Sh = C->Shares[i];
+				if (!Sh.bWing || Sh.bMirrorCopy) continue;
+				Ranks.Add({ i, FVector::Dist(Sh.RootPoint, Sh.TipPoint), FMath::Abs(Sh.SpanAxis.Z) > 0.9 });
+			}
+			Ranks.Sort([](const FRank& A, const FRank& B) { return A.bFin != B.bFin ? !A.bFin : A.Span > B.Span; });
+			if (C->Shares.Num() > 1 || Ranks.Num() == 0) Out.Add({ -1, TEXT("All bodies") });
+			for (const FRank& R : Ranks) Out.Add({ R.Share, C->Shares[R.Share].Name });
 			return Out;
 		}
 
@@ -839,32 +853,31 @@ namespace
 					LoadDir = aerotelic::Normalized(aerotelic::Cross(C->Stream, Axis));
 					bSideLoad = FMath::Abs(Sh.SpanAxis.Z) > 0.9;
 					const double SRoot = FVector::DotProduct(Sh.RootPoint, Sh.SpanAxis), STip = FVector::DotProduct(Sh.TipPoint, Sh.SpanAxis);
-					const int32 NCuts = Sh.CutChords.Num() - 1;
-					auto Cut = [&](bool bMirror)
+					const int32 NCuts = Sh.CutChords.Num();
+					auto Cut = [&](bool bOtherHalf, bool bMirror)
 					{
-						// A mirrored cut: the image half (the plane on) or the port
-						// half of a wing built tip to tip, both at the reflected station.
-						for (int32 k = 0; k <= NCuts; ++k)
+						// The cuts at the centres of NCuts bands from the root to the
+						// tip: never on the root ring or the tip cap, where a cut
+						// catches the cap's triangles or nothing at all.
+						for (int32 k = 0; k < NCuts; ++k)
 						{
-							const double S = SRoot + (STip - SRoot) * k / NCuts;
-							const double SAt = bMirror ? -S : S;
-							const tripanel::SectionCut Sc = tripanel::CutSection(BR, Axis, SAt, false, &Sh.Mask);
+							const double S = SRoot + (STip - SRoot) * (k + 0.5) / NCuts;
+							const double SAt = bOtherHalf ? -S : S;
+							const tripanel::SectionCut Sc = tripanel::CutSection(BR, Axis, SAt, bMirror, &Sh.Mask);
 							if (!Sc.found) continue;
 							Points.Add({ SAt, SAt, SAt, aerotelic::Dot(Sc.force_per_span, LoadDir), Sh.CutChords[k] });
 						}
 					};
-					Cut(false);
-					if (Sh.bTipToTip && FMath::Abs(Sh.SpanAxis.Y) > 0.9) Cut(true);
-					else if (Sh.bImaged && FMath::Abs(Sh.SpanAxis.Y) > 0.9)
+					Cut(false, false);
+					if (FMath::Abs(Sh.SpanAxis.Y) > 0.9)
 					{
-						// The image: the same body reflected, cut at the reflected station.
-						for (int32 k = 0; k <= NCuts; ++k)
-						{
-							const double S = SRoot + (STip - SRoot) * k / NCuts;
-							const tripanel::SectionCut Sc = tripanel::CutSection(BR, Axis, -S, true, &Sh.Mask);
-							if (!Sc.found) continue;
-							Points.Add({ -S, -S, -S, aerotelic::Dot(Sc.force_per_span, LoadDir), Sh.CutChords[k] });
-						}
+						// The port half. With the plane on the solved body is the
+						// starboard half and the image is the other: the same panels
+						// reflected, cut at the reflected station. Without it a wing
+						// built tip to tip is one body, cut at the reflected station
+						// as it stands.
+						if (Sh.bImaged) Cut(true, true);
+						else if (Sh.bTipToTip) Cut(true, false);
 					}
 				}
 				else
@@ -914,28 +927,34 @@ namespace
 			const double S0 = 0.5 * (SMin + SMax), Half = FMath::Max(0.5 * (SMax - SMin), 1e-9);
 			const FString LengthUnit = UTF8_TO_TCHAR(Units.LengthName());
 
+			// A fin (its span axis vertical) carries a SIDE force: shown root to
+			// tip with no elliptic reference, and named so -- its integral is
+			// about zero in symmetric flow and reads nothing like a lift.
 			TArray<FAerotelicPlotSeries> Series;
 			FAerotelicPlotSeries Computed;
-			Computed.Label = bWing ? TEXT("l / q  (panel method, pressures)") : TEXT("l / q  (all bodies, pressures)");
+			Computed.Label = bSideLoad ? TEXT("y / q  side force per unit span (panel method, pressures)") : bWing ? TEXT("l / q  (panel method, pressures)") : TEXT("l / q  (all bodies, pressures)");
 			Computed.Color = FLinearColor(FColor::FromHex(TEXT("#d56b3a")));
 			for (const FPoint& P : Points) Computed.Points.Add(FVector2D((P.S - S0) / Half, P.LoadPerSpan));
 			Series.Add(Computed);
-			FAerotelicPlotSeries Elliptic;
-			Elliptic.Label = TEXT("l / q  elliptic, same integral");
-			Elliptic.Color = FLinearColor(FColor::FromHex(TEXT("#3a7bd5")));
-			Elliptic.bMarkers = false;
-			Elliptic.bDashed = true;
-			for (int32 i = 0; i <= 100; ++i)
+			if (!bSideLoad)
 			{
-				const double S = S0 - Half + (2.0 * Half) * i / 100.0;
-				const double X = (S - S0) / Half;
-				Elliptic.Points.Add(FVector2D(X, 4.0 * TotalForce / (3.14159265358979323846 * 2.0 * Half) * std::sqrt(FMath::Max(0.0, 1.0 - X * X))));
+				FAerotelicPlotSeries Elliptic;
+				Elliptic.Label = TEXT("l / q  elliptic, same integral");
+				Elliptic.Color = FLinearColor(FColor::FromHex(TEXT("#3a7bd5")));
+				Elliptic.bMarkers = false;
+				Elliptic.bDashed = true;
+				for (int32 i = 0; i <= 100; ++i)
+				{
+					const double S = S0 - Half + (2.0 * Half) * i / 100.0;
+					const double X = (S - S0) / Half;
+					Elliptic.Points.Add(FVector2D(X, 4.0 * TotalForce / (3.14159265358979323846 * 2.0 * Half) * std::sqrt(FMath::Max(0.0, 1.0 - X * X))));
+				}
+				Series.Add(Elliptic);
 			}
-			Series.Add(Elliptic);
 			if (bWing)
 			{
 				FAerotelicPlotSeries Cl;
-				Cl.Label = TEXT("cl  (section lift coefficient, right axis)");
+				Cl.Label = bSideLoad ? TEXT("cy  (section side-force coefficient, right axis)") : TEXT("cl  (section lift coefficient, right axis)");
 				Cl.Color = FLinearColor(FColor::FromHex(TEXT("#c8d53a")));
 				Cl.bRightAxis = true;
 				for (const FPoint& P : Points)
@@ -946,10 +965,15 @@ namespace
 				Series.Add(Cl);
 			}
 			LoadPlot->SetSeries(Series);
-			const FText LeftLabel = FText::FromString(FString::Printf(TEXT("l / q  lift per unit span over the dynamic pressure, %s"), *LengthUnit));
-			if (bWing)
+			const FText LeftLabel = FText::FromString(bSideLoad ? FString::Printf(TEXT("y / q  side force per unit span over the dynamic pressure, %s"), *LengthUnit) : FString::Printf(TEXT("l / q  lift per unit span over the dynamic pressure, %s"), *LengthUnit));
+			if (bSideLoad)
 			{
-				LoadPlot->SetTitle(FText::FromString(FString::Printf(TEXT("%s: span loading, α = %g°  (L / q = %.4f %s², %s = %.4f; cuts every %d%% of the semi-span)"), *LoadView.Name, C->AlphaDeg, TotalForce, *LengthUnit, bSideLoad ? TEXT("C_Y") : TEXT("C_L"), TotalCoefficient, 100 / kLoadCuts)));
+				LoadPlot->SetTitle(FText::FromString(FString::Printf(TEXT("%s: side loading of a fin, root to tip, α = %g°  (Y / q = %.4f %s², C_Y = %.4f; zero in symmetric flow; cuts every %d%% of the height; no elliptic reference for a fin)"), *LoadView.Name, C->AlphaDeg, TotalForce, *LengthUnit, TotalCoefficient, 100 / kLoadCuts)));
+				LoadPlot->SetAxisLabels(LOCTEXT("FinAxis", "height fraction (root -1, tip +1)"), LeftLabel, LOCTEXT("CyAxis", "cy  section side-force coefficient"));
+			}
+			else if (bWing)
+			{
+				LoadPlot->SetTitle(FText::FromString(FString::Printf(TEXT("%s: span loading, α = %g°  (L / q = %.4f %s², C_L = %.4f; cuts every %d%% of the semi-span)"), *LoadView.Name, C->AlphaDeg, TotalForce, *LengthUnit, TotalCoefficient, 100 / kLoadCuts)));
 				LoadPlot->SetAxisLabels(LOCTEXT("SpanAxis", "span fraction 2s / b"), LeftLabel, LOCTEXT("ClAxis", "cl  section lift coefficient"));
 			}
 			else

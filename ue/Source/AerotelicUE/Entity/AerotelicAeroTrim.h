@@ -49,7 +49,10 @@ namespace AerotelicAeroTrim
 	// steady potential flow).
 	bool IsPanelable(EntityType T);
 
-	// The span loading is cut every 5% of the semi-span.
+	// The span loading is cut at the centres of this many bands of the
+	// semi-span (every 5%): never on the root ring, the tip cap or, for a
+	// grid with as many stations, a vertex ring of the mesh, where a cut
+	// finds a cap's triangles or nothing at all.
 	constexpr int32 kLoadCuts = 20;
 
 	// One entity's (or a mirrored copy's) share of a case: the solved body

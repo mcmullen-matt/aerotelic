@@ -12,6 +12,7 @@
 #include <cstdio>
 #include <string>
 
+#include "aerotelic/mesh_boolean.hpp"
 #include "aerotelic/tri_panel.hpp"
 #include "aerotelic/wing_panels.hpp"
 
@@ -369,6 +370,160 @@ int main() {
 				Vec3 sum{0.0, 0.0, 0.0};
 				for (const Vec3& f : bins) sum += f;
 				Check(std::fabs(Dot(sum, lift) / wing.planform().PlanformArea() / cl_p - 1.0) < 1e-6, "wing: the binned loads sum to the force");
+			}
+
+			// A cut exactly on a ring of the mesh (the root of the wing built
+			// tip to tip at y = 0; a station of its grid) finds each edge lying
+			// in the plane once, by the triangle on one side of it: the load
+			// there is its neighbours', not twice it (the span loading's spikes
+			// at the root and every eighth of my_drone's tail, 2026-11-16).
+			{
+				const Vec3 axis{0.0, 1.0, 0.0};
+				for (double ring : {0.0, 5.0}) {
+					const SectionCut on = CutSection(sw.bodies[0], axis, ring);
+					const SectionCut off = CutSection(sw.bodies[0], axis, ring + 0.05);
+					const double l_on = Dot(on.force_per_span, lift), l_off = Dot(off.force_per_span, lift);
+					std::printf("tip-to-tip wing: cut at y = %.1f (a ring) l/q %.4f over %zu segments of length %.3f; at %.2f l/q %.4f over %zu of %.3f\n", ring, l_on, on.cp.size(), on.length, ring + 0.05, l_off, off.cp.size(), off.length);
+					Check(on.found && off.found && std::fabs(on.length / off.length - 1.0) < 0.1 && std::fabs(l_on / l_off - 1.0) < 0.1,
+						F("tip-to-tip wing: the cut on the ring at y = %.1f counts each edge once (length %.3f vs %.3f beside it)", ring, on.length, off.length));
+				}
+			}
+
+			// ---- 5. a fin on the centreline, a whisker off the plane ----
+			// my_drone's fin (2026-11-16): BuildCase fuses a body the boolean
+			// refused nudged by a millionth of the configuration, so the fin's
+			// trailing edge lay 2e-6 off y = 0. Cut at the plane, the wedge at
+			// the trailing edge left slivers 2e-6 wide facing their own image
+			// and the gradient fit across them gave Cp -5e9. Vertices that
+			// close to the plane are put on it before the cut; the nudged fin
+			// must then solve as the exact one does.
+			{
+				PlanformSpec fs;
+				fs.semi_span = 0.4; fs.root_chord = 0.8; fs.tip_chord = 0.2; fs.sweep_angle = 30.0;
+				WingModel fin(fs, "Fin");
+				fin.AddSection(Airfoil::Naca4("0012"), 0.0);
+				fin.AddSection(Airfoil::Naca4("0012"), 1.0);
+				fin.mesh.stations = 16; fin.mesh.around = 40; fin.mesh.refine = false;
+				std::vector<NamedMesh> fmesh = fin.BuildMeshes(0.01);
+				std::vector<Vec3> fte = TrailingEdgePolyline(fin, 0.0, 1.0, 200);
+				auto upright = [](const Vec3& p) { return Vec3{p.x, -p.z, p.y}; }; // span along z, thickness along y
+				Body exact;
+				exact.name = "Fin";
+				exact.mesh = fmesh[0].mesh;
+				for (Vec3& v : exact.mesh.vertices) v = upright(v);
+				for (Vec3& v : fte) v = upright(v);
+				exact.trailing_edges = {fte};
+				exact.trailing_edge_tolerance = 1e-5;
+				Body nudged = exact;
+				nudged.mesh.Translate({0.0, 2e-6, 0.0});
+				for (auto& line : nudged.trailing_edges) for (Vec3& v : line) v.y += 2e-6;
+				Options fo;
+				fo.symmetry_y = 0.0;
+				fo.reference_area = fin.planform().PlanformArea();
+				const Vec3 fin_stream{std::cos(4.0 * kPi / 180.0), 0.0, std::sin(4.0 * kPi / 180.0)};
+				Solution se = Solve({exact}, fin_stream, fo);
+				Solution sn = Solve({nudged}, fin_stream, fo);
+				double cp_lo_e = 1.0, cp_lo_n = 1.0, worst = 0.0;
+				for (const PanelResult& p : se.bodies[0].panels) if (p.area > 0.0) cp_lo_e = std::min(cp_lo_e, p.cp);
+				for (const PanelResult& p : sn.bodies[0].panels) if (p.area > 0.0) cp_lo_n = std::min(cp_lo_n, p.cp);
+				const bool same_count = se.bodies[0].panels.size() == sn.bodies[0].panels.size();
+				if (same_count) for (size_t k = 0; k < se.bodies[0].panels.size(); ++k) worst = std::max(worst, std::fabs(se.bodies[0].panels[k].cp - sn.bodies[0].panels[k].cp));
+				std::printf("fin on the plane: exact %d panels (Cp min %.3f, rim %d), nudged 2e-6 %d panels (Cp min %.3f, rim %d), max |dCp| %.2e\n",
+					se.unknowns, cp_lo_e, se.bodies[0].rim_edges, sn.unknowns, cp_lo_n, sn.bodies[0].rim_edges, worst);
+				for (const std::string& n : sn.notes) std::printf("  note: %s\n", n.c_str());
+				Check(se.bodies[0].rim_edges > 0 && se.bodies[0].wake_edges == 0, "fin on the plane: its trailing edge is the plane's rim and sheds no wake");
+				Check(cp_lo_e > -3.0 && cp_lo_n > -3.0, F("fin a whisker off the plane: sane pressures (Cp min %.3f exact, %.3f nudged)", cp_lo_e, cp_lo_n));
+				Check(same_count && worst < 0.01, F("fin a whisker off the plane: the same panels and pressures as on it (max |dCp| %.2e)", worst));
+			}
+
+			// ---- 6. a T-tail with the plane OFF ----
+			// my_drone (2026-11-16): the fin's trailing edge lies in y = 0 and its
+			// wake sheet ran along the tailplane's root a fraction of a millimetre
+			// from the root panels. Its strength is zero by symmetry, but the
+			// coupling left the tailplane's loading 30% different port to
+			// starboard. With the free stream in the plane an edge lying in y = 0
+			// sheds nothing (the plane on says the same through its rim rule), and
+			// the tailplane comes out symmetric, as with the plane on.
+			{
+				PlanformSpec fs;
+				fs.semi_span = 0.4; fs.root_chord = 0.4; fs.tip_chord = 0.2; fs.sweep_angle = 0.0;
+				WingModel fin(fs, "Fin");
+				fin.AddSection(Airfoil::Naca4("0012"), 0.0);
+				fin.AddSection(Airfoil::Naca4("0012"), 1.0);
+				fin.mesh.stations = 16; fin.mesh.around = 40; fin.mesh.refine = false;
+				auto upright = [](const Vec3& p) { return Vec3{p.x, -p.z, p.y}; };
+				TriMesh fin_mesh = fin.BuildMeshes(0.01)[0].mesh;
+				for (Vec3& v : fin_mesh.vertices) v = upright(v);
+				std::vector<Vec3> fte = TrailingEdgePolyline(fin, 0.0, 1.0, 200);
+				for (Vec3& v : fte) v = upright(v);
+				const Vec3 fin_tip_te = fte.back();
+				// The tailplane: a wing built tip to tip, its root trailing edge on
+				// the fin's tip trailing edge.
+				PlanformSpec hs;
+				hs.semi_span = 0.5; hs.root_chord = 0.2; hs.tip_chord = 0.2; hs.sweep_angle = 0.0;
+				WingModel ht0(hs, "HT");
+				ht0.AddSection(Airfoil::Naca4("0012"), 0.0);
+				ht0.AddSection(Airfoil::Naca4("0012"), 1.0);
+				ht0.mesh.stations = 20; ht0.mesh.around = 40; ht0.mesh.refine = false;
+				WingModelSpec hspec = ht0.Serialize();
+				hspec.symmetric = true;
+				WingModel ht(hspec);
+				ht.mesh = ht0.mesh;
+				TriMesh ht_mesh = ht.BuildMeshes(0.01)[0].mesh;
+				std::vector<Vec3> hte = TrailingEdgePolyline(ht0, 0.0, 1.0, 200);
+				const Vec3 shift = fin_tip_te - hte.front();
+				ht_mesh.Translate(shift);
+				std::vector<Vec3> hte_port = hte;
+				for (Vec3& v : hte) v += shift;
+				for (Vec3& v : hte_port) { v += shift; v.y = -v.y; }
+				TriMesh fused;
+				std::string how = "exact";
+				try {
+					fused = MeshBoolean(fin_mesh, ht_mesh, MeshBooleanOp::Fuse);
+				} catch (const MeshBooleanError&) {
+					TriMesh nudged = ht_mesh;
+					nudged.Translate({1e-6, 0.0, 1e-6});
+					fused = MeshBoolean(fin_mesh, nudged, MeshBooleanOp::Fuse);
+					how = "nudged in x and z";
+				}
+				MeshStats tst = ComputeMeshStats(fused);
+				std::printf("T-tail: fin %zu + tailplane %zu triangles fused (%s) into %d, closed %d outward %d\n", fin_mesh.triangles.size(), ht_mesh.triangles.size(), how.c_str(), tst.triangles, (int)tst.closed, (int)tst.outward);
+				Body tail;
+				tail.name = "T-tail";
+				tail.mesh = fused;
+				tail.trailing_edges = {fte, hte, hte_port};
+				tail.trailing_edge_tolerance = 1e-5;
+				const double a8 = 8.0 * kPi / 180.0;
+				const Vec3 stream8{std::cos(a8), 0.0, std::sin(a8)}, lift8{-std::sin(a8), 0.0, std::cos(a8)};
+				Options off;
+				off.reference_area = 2.0 * ht0.planform().PlanformArea();
+				Solution so = Solve({tail}, stream8, off);
+				Options on = off;
+				on.symmetry_y = 0.0;
+				Solution sn = Solve({tail}, stream8, on);
+				for (const std::string& n : so.notes) std::printf("  note (plane off): %s\n", n.c_str());
+				std::printf("T-tail plane off: %d unknowns, %d wake edges, %d centreline edges, C_L %.4f (wake %.4f); plane on: %d unknowns, %d wake, %d rim, C_L %.4f (wake %.4f)\n",
+					so.unknowns, so.bodies[0].wake_edges, so.bodies[0].centreline_edges, Dot(so.force_coefficient, lift8), so.lift_from_wake.value_or(0.0),
+					sn.unknowns, sn.bodies[0].wake_edges, sn.bodies[0].rim_edges, Dot(sn.force_coefficient, lift8), sn.lift_from_wake.value_or(0.0));
+				Check(so.bodies[0].centreline_edges > 0 && so.bodies[0].wake_edges > 0, F("T-tail plane off: the fin's %.0f trailing-edge edges in y = 0 shed no wake, the tailplane's %.0f do", so.bodies[0].centreline_edges, so.bodies[0].wake_edges));
+				Check(std::fabs(Dot(so.force_coefficient, lift8) / Dot(sn.force_coefficient, lift8) - 1.0) < 0.03, F("T-tail: the lift agrees with the plane on (%.4f vs %.4f)", Dot(so.force_coefficient, lift8), Dot(sn.force_coefficient, lift8)));
+				// The tailplane's loading port against starboard, and against the
+				// plane-on solve's image.
+				const Vec3 yaxis{0.0, 1.0, 0.0};
+				double worst_lr = 0.0, worst_on = 0.0;
+				// Between the grid's rings (every 0.025): a cut ON a ring takes the
+				// band on its negative side, which is the inboard band on one
+				// half and the outboard one on the other.
+				for (double s : {0.0625, 0.1875, 0.3125, 0.4375}) {
+					const double lp = Dot(CutSection(so.bodies[0], yaxis, s).force_per_span, lift8);
+					const double lm = Dot(CutSection(so.bodies[0], yaxis, -s).force_per_span, lift8);
+					const double li = Dot(CutSection(sn.bodies[0], yaxis, -s, true).force_per_span, lift8);
+					std::printf("  tailplane at y = +-%.3f: l/q %.4f starboard, %.4f port, %.4f plane-on image\n", s, lp, lm, li);
+					worst_lr = std::max(worst_lr, std::fabs(lp / lm - 1.0));
+					worst_on = std::max(worst_on, std::fabs(lp / li - 1.0));
+				}
+				Check(worst_lr < 0.02, F("T-tail plane off: the tailplane's loading is symmetric port to starboard (worst %.1f%%)", 100.0 * worst_lr));
+				Check(worst_on < 0.05, F("T-tail: the tailplane's loading agrees with the plane-on solve (worst %.1f%%)", 100.0 * worst_on));
 			}
 		}
 	} catch (const std::exception& e) {

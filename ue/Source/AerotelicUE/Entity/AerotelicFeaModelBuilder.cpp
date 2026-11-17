@@ -1,6 +1,7 @@
 #include "AerotelicFeaModelBuilder.h"
 
 #include "AerotelicBodyStructure.h"
+#include "AerotelicBooleanModel.h"
 #include "AerotelicDocumentSubsystem.h"
 #include "AerotelicEntityActor.h"
 #include "AerotelicMeshing.h"
@@ -9,10 +10,13 @@
 #include "aerotelic/laminate.hpp"
 #include "aerotelic/mat.hpp"
 #include "aerotelic/section_cut.hpp"
+#include "aerotelic/sdf.hpp"
 #include "aerotelic/structure_plan.hpp"
 #include "aerotelic/wing_model.hpp"
 
 #include <cmath>
+#include <functional>
+#include <memory>
 #include <limits>
 
 namespace AerotelicFeaModelBuilder
@@ -345,8 +349,37 @@ namespace AerotelicFeaModelBuilder
 	{
 		using namespace AerotelicStructuralFea;
 		static const FString kPort = TEXT(" (port)");
+		static const FString kMain = TEXT("Main");
 		const double LengthToSI = ProjectLengthToSI();
-		int32 Hinged = 0;
+
+		// A flap body's role is the flap's name, or that plus " (port)" for
+		// the port copy of a symmetric wing; the main element is "Main"
+		// either way (a symmetric wing's is one body tip to tip).
+		auto FlapOf = [&](const aerotelic::WingModel* W, const FString& Role, bool& bOutPort) -> const aerotelic::FlapSpec*
+		{
+			bOutPort = Role.EndsWith(kPort);
+			const FString Name = bOutPort ? Role.LeftChop(kPort.Len()) : Role;
+			for (const aerotelic::FlapSpec& F : W->flaps) if (UTF8_TO_TCHAR(F.name.c_str()) == Name) return &F;
+			return nullptr;
+		};
+
+		// One flap to hinge: the wing it belongs to, which half, the planes
+		// it is reflected in (the wing's own under a mirrored operand, then
+		// a mirrored boolean's), and the region bodies of the flap and of
+		// the main element it hinges to.
+		struct FJob
+		{
+			AAerotelicEntityActor* Wing = nullptr;
+			const aerotelic::WingModel* W = nullptr;
+			const aerotelic::FlapSpec* Flap = nullptr;
+			bool bPort = false;
+			TArray<const AAerotelicEntityActor*> Reflectors;
+			int32 FlapBody = -1, MainBody = -1;
+			FString Label, MainLabel;
+		};
+		TArray<FJob> Jobs;
+
+		// ---- a wing's own bodies ----
 		for (const FChosenBody& C : Chosen)
 		{
 			AAerotelicEntityActor* Entity = C.Operand.Entity.Get();
@@ -358,38 +391,197 @@ namespace AerotelicFeaModelBuilder
 			if (Entity->GetEntityType() != aerotelic::project_yaml::EntityType::Wing) continue;
 			const aerotelic::WingModel* W = Entity->GetModelAs<aerotelic::WingModel>();
 			if (W == nullptr) continue;
-			// A flap body's role is the flap's name, or that plus " (port)" for
-			// the port copy of a symmetric wing; the main element is "Main"
-			// either way (a symmetric wing's is one body tip to tip).
-			const bool bPort = C.Role.EndsWith(kPort);
-			const FString FlapName = bPort ? C.Role.LeftChop(kPort.Len()) : C.Role;
-			const aerotelic::FlapSpec* Flap = nullptr;
-			for (const aerotelic::FlapSpec& F : W->flaps) if (UTF8_TO_TCHAR(F.name.c_str()) == FlapName) { Flap = &F; break; }
+			bool bPort = false;
+			const aerotelic::FlapSpec* Flap = FlapOf(W, C.Role, bPort);
 			if (Flap == nullptr) continue;
-			const FString MainRole = TEXT("Main");
 			const FChosenBody* Main = nullptr;
 			for (const FChosenBody& D : Chosen)
 			{
-				if (D.Operand.Entity.Get() == Entity && D.Operand.bMirror == C.Operand.bMirror && D.Role == MainRole && D.Index >= 0) { Main = &D; break; }
+				if (D.Operand.Entity.Get() == Entity && D.Operand.bMirror == C.Operand.bMirror && D.Role == kMain && D.Index >= 0) { Main = &D; break; }
 			}
 			if (Main == nullptr)
 			{
-				Notes.Add(FString::Printf(TEXT("flap '%s' of %s: its main element (%s) is not chosen, so it has no hinge and floats"), *C.Role, *Entity->EntityName, *MainRole));
+				Notes.Add(FString::Printf(TEXT("flap '%s' of %s: its main element (%s) is not chosen, so it has no hinge and floats"), *C.Role, *Entity->EntityName, *kMain));
 				continue;
 			}
-			// Has either body any node in the model (not refused, not trimmed)?
-			auto HasNodes = [&](int32 Body) { return AttachmentNodes(Nodes, ShellFaces, RibFaces, Regions, Body, aerotelic::Vec3{}, 1).Num() > 0; };
-			if (!HasNodes(C.Index) || !HasNodes(Main->Index))
+			FJob J;
+			J.Wing = Entity; J.W = W; J.Flap = Flap; J.bPort = bPort;
+			if (C.Operand.bMirror) J.Reflectors.Add(Entity);
+			J.FlapBody = C.Index; J.MainBody = Main->Index;
+			J.Label = FString::Printf(TEXT("flap '%s' of %s"), *C.Role, *Entity->EntityName);
+			J.MainLabel = kMain;
+			Jobs.Add(J);
+		}
+
+		// ---- a boolean result's bodies (2026-11-16) ----
+		// The fuse keeps a flap a body of its own (its gap parts it from the
+		// airframe) under a name that says nothing of where it came from
+		// ("Body 3"), and my_drone's load cases choose the boolean's bodies:
+		// every control surface floated and was left out. A boolean body IS
+		// an operand wing's flap when its centroid lies inside that flap's
+		// own placed mesh and the two volumes agree (nothing touched the
+		// flap, so the fused solid is the flap's mesh); its main element is
+		// the chosen body of the same boolean that contains the centroid of
+		// the wing's main mesh (the fused airframe), else the largest chosen
+		// body of that boolean.
+		{
+			struct FLeaf { AAerotelicEntityActor* Entity = nullptr; TArray<const AAerotelicEntityActor*> Reflectors; };
+			std::function<void(AAerotelicEntityActor*, const TArray<const AAerotelicEntityActor*>&, TArray<FLeaf>&, int32)> Leaves;
+			Leaves = [&Leaves](AAerotelicEntityActor* E, const TArray<const AAerotelicEntityActor*>& Reflectors, TArray<FLeaf>& Out, int32 Depth)
 			{
-				Notes.Add(FString::Printf(TEXT("flap '%s' of %s: the flap or its main element has no nodes in the model, so no hinge was built"), *C.Role, *Entity->EntityName));
+				if (E == nullptr || E->GetModel() == nullptr || Depth > 8) return;
+				if (E->GetEntityType() == aerotelic::project_yaml::EntityType::Boolean)
+				{
+					const FAerotelicBooleanModel* M = E->GetModelAs<FAerotelicBooleanModel>();
+					if (M == nullptr) return;
+					for (const FAerotelicBooleanOperand& Op : M->Operands)
+					{
+						if (!Op.Entity.IsValid()) continue;
+						TArray<const AAerotelicEntityActor*> R;
+						if (Op.bMirror) R.Add(Op.Entity.Get());
+						R.Append(Reflectors);
+						Leaves(Op.Entity.Get(), R, Out, Depth + 1);
+					}
+					return;
+				}
+				Out.Add({ E, Reflectors });
+			};
+			auto CentroidOf = [](const aerotelic::TriMesh& M)
+			{
+				aerotelic::Vec3 C{ 0.0, 0.0, 0.0 };
+				for (const aerotelic::Vec3& V : M.vertices) C += V;
+				return M.vertices.empty() ? C : C * (1.0 / static_cast<double>(M.vertices.size()));
+			};
+			struct FBoolBody
+			{
+				const FChosenBody* C = nullptr;
+				aerotelic::TriMesh Mesh;
+				aerotelic::Vec3 Centroid;
+				double Volume = 0.0;
+				std::shared_ptr<aerotelic::MeshSdf> Sdf;
+				bool bMatched = false, bMain = false;
+			};
+			TMap<AAerotelicEntityActor*, TArray<FBoolBody>> ByBoolean;
+			for (const FChosenBody& C : Chosen)
+			{
+				AAerotelicEntityActor* Entity = C.Operand.Entity.Get();
+				if (Entity == nullptr || C.Index < 0 || Entity->GetEntityType() != aerotelic::project_yaml::EntityType::Boolean) continue;
+				const FString Role = RoleOf(Entity, C.Role);
+				for (const aerotelic::NamedMesh& NM : Entity->GetPlacedMeshes(C.Operand.bMirror))
+				{
+					if (UTF8_TO_TCHAR(NM.name.c_str()) != Role || NM.mesh.IsEmpty()) continue;
+					FBoolBody B;
+					B.C = &C;
+					B.Mesh = NM.mesh;
+					B.Centroid = CentroidOf(NM.mesh);
+					B.Volume = FMath::Abs(NM.mesh.SignedVolume());
+					ByBoolean.FindOrAdd(Entity).Add(MoveTemp(B));
+					break;
+				}
+			}
+			for (auto& Entry : ByBoolean)
+			{
+				AAerotelicEntityActor* Boolean = Entry.Key;
+				TArray<FBoolBody>& Bodies = Entry.Value;
+				TArray<FLeaf> LeafList;
+				Leaves(Boolean, {}, LeafList, 0);
+				for (const FLeaf& L : LeafList)
+				{
+					if (L.Entity->GetEntityType() != aerotelic::project_yaml::EntityType::Wing) continue;
+					const aerotelic::WingModel* W = L.Entity->GetModelAs<aerotelic::WingModel>();
+					if (W == nullptr || W->flaps.empty()) continue;
+					const std::vector<aerotelic::NamedMesh> Own = L.Entity->GetPlacedMeshes(false);
+					const aerotelic::NamedMesh* OwnMain = nullptr;
+					for (const aerotelic::NamedMesh& NM : Own) if (NM.name == "Main") OwnMain = &NM;
+					for (const aerotelic::NamedMesh& NM : Own)
+					{
+						const FString Role = UTF8_TO_TCHAR(NM.name.c_str());
+						bool bPort = false;
+						const aerotelic::FlapSpec* Flap = FlapOf(W, Role, bPort);
+						if (Flap == nullptr || NM.mesh.IsEmpty()) continue;
+						const double FlapVolume = FMath::Abs(NM.mesh.SignedVolume());
+						for (FBoolBody& B : Bodies)
+						{
+							if (B.bMatched || B.bMain) continue;
+							if (FMath::Abs(B.Volume - FlapVolume) > 0.02 * FlapVolume) continue;
+							TArray<const AAerotelicEntityActor*> Reflectors = L.Reflectors;
+							if (B.C->Operand.bMirror) Reflectors.Add(Boolean);
+							aerotelic::TriMesh FlapMesh = NM.mesh;
+							for (const AAerotelicEntityActor* R : Reflectors) R->ReflectMesh(FlapMesh);
+							if (!aerotelic::MeshSdf(FlapMesh).Inside(B.Centroid)) continue;
+							// The main element among the bodies of the same boolean and
+							// mirror: the one holding the wing's main centroid, else the
+							// largest.
+							FBoolBody* Main = nullptr;
+							if (OwnMain != nullptr && !OwnMain->mesh.IsEmpty())
+							{
+								aerotelic::TriMesh MainMesh = OwnMain->mesh;
+								for (const AAerotelicEntityActor* R : Reflectors) R->ReflectMesh(MainMesh);
+								const aerotelic::Vec3 MainCentroid = CentroidOf(MainMesh);
+								for (FBoolBody& D : Bodies)
+								{
+									if (&D == &B || D.C->Operand.bMirror != B.C->Operand.bMirror) continue;
+									if (!D.Sdf) D.Sdf = std::make_shared<aerotelic::MeshSdf>(D.Mesh);
+									if (D.Sdf->Inside(MainCentroid)) { Main = &D; break; }
+								}
+							}
+							if (Main == nullptr)
+							{
+								for (FBoolBody& D : Bodies)
+									if (&D != &B && D.C->Operand.bMirror == B.C->Operand.bMirror && (Main == nullptr || D.Volume > Main->Volume)) Main = &D;
+							}
+							if (Main == nullptr)
+							{
+								Notes.Add(FString::Printf(TEXT("%s of %s is flap '%s' of %s, but no other body of the result is chosen to hinge it to: it floats"), *RoleOf(Boolean, B.C->Role), *Boolean->EntityName, *Role, *L.Entity->EntityName));
+								B.bMatched = true;
+								break;
+							}
+							FJob J;
+							J.Wing = L.Entity; J.W = W; J.Flap = Flap; J.bPort = bPort;
+							J.Reflectors = Reflectors;
+							J.FlapBody = B.C->Index; J.MainBody = Main->C->Index;
+							J.Label = FString::Printf(TEXT("%s of %s (flap '%s' of %s)"), *RoleOf(Boolean, B.C->Role), *Boolean->EntityName, *Role, *L.Entity->EntityName);
+							J.MainLabel = RoleOf(Boolean, Main->C->Role);
+							Jobs.Add(J);
+							B.bMatched = true;
+							Main->bMain = true;
+							break;
+						}
+					}
+				}
+				// A small body of the result that is no flap of any operand:
+				// said once, since it will float.
+				double Largest = 0.0;
+				for (const FBoolBody& B : Bodies) Largest = FMath::Max(Largest, B.Volume);
+				for (const FBoolBody& B : Bodies)
+				{
+					if (B.bMatched || B.bMain || !(B.Volume < 0.2 * Largest)) continue;
+					Notes.Add(FString::Printf(TEXT("%s of %s matches no flap of the result's operands (a body of %.3g%% of the largest): if it touches nothing it floats"), *RoleOf(Boolean, B.C->Role), *Boolean->EntityName, 100.0 * B.Volume / FMath::Max(Largest, 1e-300)));
+				}
+			}
+		}
+
+		// Has a body any node in the model (not refused, not trimmed)?
+		auto HasNodes = [&](int32 Body) { return AttachmentNodes(Nodes, ShellFaces, RibFaces, Regions, Body, aerotelic::Vec3{}, 1).Num() > 0; };
+
+		int32 Hinged = 0;
+		for (const FJob& J : Jobs)
+		{
+			AAerotelicEntityActor* Entity = J.Wing;
+			const aerotelic::WingModel* W = J.W;
+			const aerotelic::FlapSpec* Flap = J.Flap;
+			const bool bPort = J.bPort;
+			const FString Short = FString(UTF8_TO_TCHAR(Flap->name.c_str())) + (bPort ? kPort : FString());
+			if (!HasNodes(J.FlapBody) || !HasNodes(J.MainBody))
+			{
+				Notes.Add(FString::Printf(TEXT("%s: the flap or its main element has no nodes in the model, so no hinge was built"), *J.Label));
 				continue;
 			}
 
 			// A point of the flap's section at station eta, in airfoil
 			// coordinates, placed: the wing's planform puts it in the model,
 			// the port copy is mirrored in the model's y = 0, the actor
-			// transform places it (the replica), the operand's mirror reflects
-			// it.
+			// transform places it (the replica), the mirrors reflect it.
 			const FTransform Transform = Entity->GetActorTransform();
 			auto Place = [&](double Eta, double X, double Y) -> aerotelic::Vec3
 			{
@@ -397,7 +589,7 @@ namespace AerotelicFeaModelBuilder
 				aerotelic::TriMesh M;
 				M.vertices.push_back(aerotelic::Vec3{P(0, 0), bPort ? -P(0, 1) : P(0, 1), P(0, 2)});
 				AerotelicMeshing::PlaceMesh(M, Transform);
-				if (C.Operand.bMirror) Entity->ReflectMesh(M);
+				for (const AAerotelicEntityActor* R : J.Reflectors) R->ReflectMesh(M);
 				return M.vertices[0];
 			};
 			auto Nearest = [&](int32 Body, const aerotelic::Vec3& At) -> int32
@@ -428,9 +620,9 @@ namespace AerotelicFeaModelBuilder
 				aerotelic::FlapCut Cut;
 				if (!CutAt(Eta, Cut)) continue;
 				const aerotelic::Vec3 Hinge = Place(Eta, Cut.x_hinge, Cut.y_hinge);
-				const int32 Slave = Nearest(C.Index, Hinge);
+				const int32 Slave = Nearest(J.FlapBody, Hinge);
 				if (Slave < 0 || SlavesUsed.Contains(Slave)) continue;   // a coarse flap: two brackets on one node is one bracket
-				const int32 Master = Nearest(Main->Index, Nodes[Slave]);
+				const int32 Master = Nearest(J.MainBody, Nodes[Slave]);
 				if (Master < 0 || Master == Slave) continue;
 				FTie T;
 				T.Master = Master; T.Slave = Slave;
@@ -440,7 +632,7 @@ namespace AerotelicFeaModelBuilder
 			}
 			if (TiesAdded == 0)
 			{
-				Notes.Add(FString::Printf(TEXT("flap '%s' of %s: no hinge bracket could be placed (the section cut failed at every bracket station)"), *C.Role, *Entity->EntityName));
+				Notes.Add(FString::Printf(TEXT("%s: no hinge bracket could be placed (the section cut failed at every bracket station)"), *J.Label));
 				continue;
 			}
 
@@ -460,19 +652,19 @@ namespace AerotelicFeaModelBuilder
 					const aerotelic::Vec3 Hinge = Place(Eta, Cut.x_hinge, Cut.y_hinge);
 					const aerotelic::Vec3 Horn = Place(Eta, HornXY(0, 0), HornXY(0, 1));
 					const aerotelic::Vec3 Servo = Place(Eta, Cut.x_hinge - Flap->pushrod_forward, Cut.y_hinge - Flap->horn_arm);
-					const int32 OnFlap = Nearest(C.Index, Hinge);
-					const int32 OnMain = Nearest(Main->Index, Servo);
+					const int32 OnFlap = Nearest(J.FlapBody, Hinge);
+					const int32 OnMain = Nearest(J.MainBody, Servo);
 					if (OnFlap >= 0 && OnMain >= 0 && aerotelic::DistanceSq(Horn, Servo) > 0.0)
 					{
 						FLink HornLink, ServoLink;
-						HornLink.Name = FString::Printf(TEXT("%s horn"), *C.Role);
+						HornLink.Name = FString::Printf(TEXT("%s horn"), *Short);
 						HornLink.On = OnFlap; HornLink.At = Horn;
-						ServoLink.Name = FString::Printf(TEXT("%s servo arm"), *C.Role);
+						ServoLink.Name = FString::Printf(TEXT("%s servo arm"), *Short);
 						ServoLink.On = OnMain; ServoLink.At = Servo;
 						const int32 HornIndex = Request.Links.Add(HornLink);
 						const int32 ServoIndex = Request.Links.Add(ServoLink);
 						FBar Rod;
-						Rod.Name = FString::Printf(TEXT("%s pushrod"), *C.Role);
+						Rod.Name = FString::Printf(TEXT("%s pushrod"), *Short);
 						Rod.A.Link = HornIndex;
 						Rod.B.Link = ServoIndex;
 						const double Dia = Flap->pushrod_diameter * LengthToSI;
@@ -485,7 +677,7 @@ namespace AerotelicFeaModelBuilder
 				}
 			}
 			++Hinged;
-			Notes.Add(FString::Printf(TEXT("flap '%s' of %s hinged to %s: %d bracket tie(s)%s%s"), *C.Role, *Entity->EntityName, *MainRole, TiesAdded,
+			Notes.Add(FString::Printf(TEXT("%s hinged to %s: %d bracket tie(s)%s%s"), *J.Label, *J.MainLabel, TiesAdded,
 				TiesAdded < NBrackets ? *FString::Printf(TEXT(" (%d asked; the flap's grid is too coarse for more)"), NBrackets) : TEXT(""),
 				bRod ? *FString::Printf(TEXT(", a %.4g mm pushrod from a horn %.3g c below the hinge to a servo arm %.3g c ahead of it%s"), Flap->pushrod_diameter * LengthToSI * 1000.0, Flap->horn_arm, Flap->pushrod_forward,
 					Flap->deflection_deg != 0.0 ? *FString::Printf(TEXT(", the flap deflected %.3g deg"), Flap->deflection_deg) : TEXT(""))
