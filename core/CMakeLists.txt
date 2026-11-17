@@ -143,6 +143,12 @@ target_link_libraries(step_writer_check PRIVATE aerotelic_core)
 target_compile_definitions(step_writer_check PRIVATE AEROTELIC_STEP_WRITER="$<TARGET_FILE:aerotelic_step_writer>")
 add_dependencies(step_writer_check aerotelic_step_writer)
 
+# The span-loading optimiser (src/tools/span_load_optimizer.cpp): Nelder-Mead
+# on a project's wing and tailplane chord and twist poles through the panel
+# method, for a lift distribution as near an ellipse as they allow.
+add_executable(span_load_optimizer src/tools/span_load_optimizer.cpp)
+target_link_libraries(span_load_optimizer PRIVATE aerotelic_core)
+
 add_executable(nurbs_fixture_check tests/nurbs_fixture_check.cpp)
 target_link_libraries(nurbs_fixture_check PRIVATE aerotelic_core)
 
