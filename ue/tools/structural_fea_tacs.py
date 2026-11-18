@@ -924,7 +924,16 @@ def run_job(job_dir):
         # The callback recorded pyTACS's component index of each property.
         if not comp["has_strengths"] or "comp_id" not in comp:
             continue
-        problem.addFunction("ks_%d" % int(comp["prop"]), functions.KSFailure, compIDs=[int(comp["comp_id"])], ksWeight=float(solver_opts.get("ks_weight") or KS_WEIGHT))
+        # DISCRETE aggregation: KS = max + ln(sum exp(rho (f - max))) / rho over
+        # the quadrature points, an UPPER bound on the peak index (within
+        # ln(N) / rho of it). pyTACS's default, the continuous (area-
+        # weighted) form, sits BELOW the peak by up to ln(A / A_peak) / rho:
+        # on my_drone's skin it read 1.00 where the recovered peak was 1.16,
+        # so a sizing on it left the allowable exceeded (2026-11-18).
+        ks_kw = {"compIDs": [int(comp["comp_id"])], "ksWeight": float(solver_opts.get("ks_weight") or KS_WEIGHT)}
+        if hasattr(functions, "KSAggregationType"):
+            ks_kw["ksAggregationType"] = functions.KSAggregationType.KS_DISCRETE
+        problem.addFunction("ks_%d" % int(comp["prop"]), functions.KSFailure, **ks_kw)
 
     log("  solving %d dofs (%d in TACS with the rigid elements' multipliers) with %s on %d shells%s"
         % (dofs, tacs_dofs, LINEAR_SOLVER, len(shells), ", %d laminate region(s)" % len(model["laminates"]) if model["laminates"] else ""))

@@ -4220,7 +4220,10 @@ itself:
   note is logged when the seventh is not at least 100 times the sixth.
 - *The adjoint.* After the solve, `evalFunctionsSens` for the
   `StructuralMass` and for the `KSFailure` index (ksWeight 100, von
-  Mises over the allowable) of every component that has an allowable,
+  Mises over the allowable, DISCRETE aggregation -- an upper bound on
+  the peak index within ln(N)/100; pyTACS's default continuous form is
+  area-weighted and read 1.00 on my_drone's skin where the recovered
+  peak was 1.16) of every component that has an allowable,
   with respect to the thickness variables. The result carries them as
   `sensitivities {design_variables, functions}`; `FResult::DesignVariables`
   / `Sensitivities` read them; the dialog's Result lists d mass / d t
@@ -4292,3 +4295,53 @@ Also tightened for TACS alone: the stresses' independence of the
 reference node is checked to 1e-7 instead of 1e-8 (GMRES at its 1e-12
 residual leaves 1.2e-8 in them; Kratos's direct solver 1e-9). Cancel
 killing the Linux process is still unverified.
+
+**First use of the adjoint: minimum-mass thickness sizing
+(`tools/tacs_thickness_opt.py`, 2026-11-18).** The owner asked for load
+case 1 of my_drone sized for minimum structural mass on the internal
+members' thicknesses, within the material allowables, on TACS's
+gradients. The tool takes a job directory the application wrote (run a
+case with `AEROTELIC_FEA_KEEP=1` and the directory stays in `%TEMP%`),
+makes every "rib"-card component (the generated layers: ribs, spars,
+frames, stringers; the skins stay as drawn unless `--kinds rib,skin`) a
+design variable, and runs SciPy's SLSQP in millimetres on
+
+    minimise m(t)   subject to   KS_c(t) <= 1 for every component c,  t_min <= t <= t_max
+
+with m, every KS_c and all their gradients from one TACS solve plus one
+adjoint per iterate (`result["sensitivities"]`), each evaluation in a
+working copy of the job with modes off. `--fd-check <dv>` compares the
+adjoint with a central difference on one variable. What the adjoint
+leaves out: in free flight the inertial load M(t) a(t) depends on the
+design, and the script hands it to TACS as a fixed vector, so the term
+-psi^T (dM/dt) a is missing. Measured on my_drone (HT ribs variable):
+mass exact, the two large KS gradients within 1% and 0.6%, the small
+cross terms (which the adjoint reports as ~0) 0.05 to 15 per metre
+against dominant terms of 500 to 4000 -- second order, but enough to
+stall SLSQP's line search a tenth of a percent over the limit, so the
+tool keeps and reports the best feasible iterate. The proper fix is
+`addMatDVSensInnerProduct(MASS_MATRIX, psi, a)` added to each gradient.
+
+Two things the first run taught. (1) pyTACS's default KS is the
+CONTINUOUS (area-weighted) aggregate, which sits BELOW the peak index:
+sized to KS = 1.00 on it, the recovered skin margin was still -0.137.
+The script now asks for `KS_DISCRETE`, an upper bound within ln(N)/100,
+and the sized margins came out +0.011 to +0.017. (2) The result depends
+entirely on the case, and my_drone's Case 1 as the dialog trims it is
+not the 4 g pull-up it claims: the one-step linear trim lands at
+alpha = 17.5 deg with the HT flap at 9 deg, where the panel method gives
+C_L = -0.60 against 1.24 required (lift -302 N against n W = 622 N),
+so the mapped pressures put 151 N DOWN and 280 N of drag on the
+airframe, nothing on the wing and a great deal on the tail. Sized to
+that case (56,868 dof, 3.6 s an evaluation, 138 evaluations): mass
+15.89 -> 12.31 kg (-22.6%); every wing and fuselage member to the
+0.3 mm floor (margins +4 to +150 even there), the VT ribs 1.5 -> 1.14 mm,
+the HT flap ribs 1.5 -> 4.29 mm (their hinge-bracket tie nodes: the
+peak was 1.41 GPa) and the HT ribs 1.5 -> 9.59 mm, which is the
+optimiser stiffening the tail to relieve a 1.03 GPa concentration in
+the 1 mm skin at the HT / fin junction on the centreline -- the active
+constraints at the optimum are that skin and the flap ribs. A sizing
+worth building needs the case re-trimmed (or trimmed in more than one
+step), the skins as variables or the junction detailed, and every V-n
+case at once (the tool takes one job directory; several is the natural
+extension, the constraints simply concatenated).
