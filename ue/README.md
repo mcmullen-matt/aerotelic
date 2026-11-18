@@ -4114,7 +4114,14 @@ Ubuntu-24.04`):
     micromamba create -n tacs -c conda-forge -c smdogroup python=3.11 tacs
     micromamba run -n tacs pip install gmsh      # only for the check script's rib case
 
-Beware: PyPI's `tacs` is an unrelated TOML configuration library; never
+or, after that reboot, all of it in one go -- the distribution if missing,
+micromamba and the `tacs` environment at `~/micromamba/envs/tacs`, gmsh,
+then the check script on the TACS backend through WSL:
+
+    powershell -ExecutionPolicy Bypass -File ue\tools\setup_tacs_wsl.ps1
+
+(written 2026-11-17 before the reboot, so untested end to end; every step
+prints its command and is idempotent). Beware: PyPI's `tacs` is an unrelated TOML configuration library; never
 `pip install tacs`. **Analysis > TACS (FEA) > Check Installation**
 (`Dialogs/TacsCheckDialog.cpp`, `tools/tacs_check.py`) looks for the
 environment again, prints the versions of tacs, mpi4py, pyNastran and
@@ -4149,9 +4156,16 @@ itself:
   plies BOTTOM-first; the job lists them outer-first with the outer face
   on the +normal side, so the stack is reversed), or for a pushrod a
   `SpringElement` with `DOFSpringConstitutive(k = [E A / L, 0, 0, 0, 0,
-  0])` along its own axis -- TACS has no truss, and the spring has the
-  rod's stiffness and resultant; the rod's mass is two `CONM2`s of half
-  each on its ends. The shell is `Tri3Shell`: first-order shear
+  0])` -- TACS has no truss, and the spring has the rod's stiffness and
+  resultant; the spring's local x is the element's own direction, and
+  the reference axis handed to `SpringRefAxisTransform` (and written as
+  the `CBUSH` x vector) is a PERPENDICULAR to the rod: TACS takes local
+  z = x cross reference, so a reference along the rod would leave the
+  frame undefined (`TACSSpringElementTransform.h`). The rod's mass is
+  two `CONM2`s of half each on its ends. A GRID no element touches is
+  refused by pyTACS outright (its unattached-node check), so a loose node
+  gets a massless `CONM2` and sits in the `SPC1` set. The shell is
+  `Tri3Shell`: first-order shear
   deformation, MITC tying, drilling penalty, six degrees of freedom a
   node (Kratos's default is the Kirchhoff thin triangle).
 - *Loads.* Pressures as the consistent nodal loads of each face, the

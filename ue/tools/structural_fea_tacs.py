@@ -568,7 +568,8 @@ def write_bdf(model, with_spc=True):
     then a node per offset link), CTRIA3 per shell on a dummy PSHELL per
     component (the real section is built in the element callback), CONM2 +
     RBE3 per mass item, RBE2 (123) per hinge tie, RBE2 (123456) per offset
-    link, CBUSH + PBUSH per bar with half its mass as CONM2 on each end,
+    link, CBUSH + PBUSH per bar with half its mass as CONM2 on each end, a
+    massless CONM2 on each loose node (pyTACS refuses an unattached GRID),
     SPC1 123456 on the fixed nodes (and on the loose ones)."""
     from pyNastran.bdf.bdf import BDF
     nodes, shells = model["nodes"], model["shells"]
@@ -612,17 +613,40 @@ def write_bdf(model, with_spc=True):
         k_axial = b_["youngs_modulus"] * b_["area"] / length
         pid = BAR_PROP_BASE + k
         bdf.add_pbush(pid, [k_axial, 0.0, 0.0, 0.0, 0.0, 0.0], None, None)
+        # TACS's spring frame: local x is always the element's own direction
+        # (end a to end b); the REFERENCE axis only orients the lateral axes,
+        # local z = x cross reference, and must not be parallel to the bar
+        # (TACSSpringElementTransform.h: a parallel reference leaves the
+        # frame undefined). A perpendicular is given, as Nastran's CBUSH x
+        # vector wants too.
+        reference = _perpendicular((pb - pa) / length)
         eid += 1
-        bdf.add_cbush(eid, pid, [int(b_["a"]) + 1, int(b_["b"]) + 1], [float(v) for v in (pb - pa) / length], None)
-        bar_props.append({"prop": pid, "axis": (pb - pa) / length, "k": k_axial, "name": b_["name"], "index": k})
+        bdf.add_cbush(eid, pid, [int(b_["a"]) + 1, int(b_["b"]) + 1], [float(v) for v in reference], None)
+        bar_props.append({"prop": pid, "axis": reference, "k": k_axial, "name": b_["name"], "index": k})
         half = 0.5 * b_["density"] * b_["area"] * length
         for end in (b_["a"], b_["b"]):
             eid += 1
             bdf.add_conm2(eid, int(end) + 1, half)
+    # pyTACS refuses a GRID no element touches (pymeshloader's unattached
+    # node check, before the assembler is built): a loose node is given a
+    # massless CONM2 to belong to, and is held still by the SPC1 below.
+    for v in model["loose"]:
+        eid += 1
+        bdf.add_conm2(eid, int(v) + 1, 0.0)
     fixed = sorted(set(int(v) + 1 for v in model["support_nodes"]) | set(int(v) + 1 for v in model["loose"])) if with_spc else sorted(int(v) + 1 for v in model["loose"])
     if fixed:
         bdf.add_spc1(1, "123456", fixed)
     return bdf, bar_props, n_shell_eids
+
+
+def _perpendicular(e):
+    """A unit vector perpendicular to the unit vector e: the global axis
+    least aligned with e, projected off it."""
+    e = np.asarray(e, dtype=np.float64)
+    axis = np.zeros(3)
+    axis[int(np.argmin(np.abs(e)))] = 1.0
+    p = axis - float(np.dot(axis, e)) * e
+    return p / float(np.linalg.norm(p))
 
 
 def _element_callback(model, bar_props, dv_table):
@@ -630,7 +654,9 @@ def _element_callback(model, bar_props, dv_table):
     its property id -- an isotropic shell with a thickness design
     variable, a laminate (TACS wants the plies bottom-first; the job lists
     them outer-first, the outer face on the +normal side), or a bar's axial
-    spring along its own axis."""
+    spring (TACS's spring frame has local x along the element itself; the
+    reference axis handed to SpringRefAxisTransform is a perpendicular that
+    orients the unstiffened lateral axes)."""
     from tacs import constitutive, elements
     by_prop = {int(c["prop"]): c for c in model["components"]}
     bars_by_prop = {int(b["prop"]): b for b in bar_props}
