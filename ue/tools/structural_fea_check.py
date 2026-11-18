@@ -653,7 +653,10 @@ def main(argv):
         _, _, _, _, cd1 = read_vtk(os.path.join(ff_dir, "trim.vtk"))
         _, _, _, _, cd2 = read_vtk(os.path.join(ff_dir, "trim_corner.vtk"))
         dvm = float(np.abs(cd1["von_mises_element"] - cd2["von_mises_element"]).max() / cd1["von_mises_element"].max())
-        failures += not check(r2["ok"] and r2["support_node"] == 0 and r2["support_node"] != r1["support_node"] and dvm < 1e-8 and np.linalg.norm(r2["reaction"]) < 1e-9 * scale1,
+        # Kratos's direct solver agrees to 1e-9; TACS's GMRES at its 1e-12
+        # residual leaves 1.2e-8 in the stresses (2026-11-18).
+        dvm_tol = 1e-7 if tacs else 1e-8
+        failures += not check(r2["ok"] and r2["support_node"] == 0 and r2["support_node"] != r1["support_node"] and dvm < dvm_tol and np.linalg.norm(r2["reaction"]) < 1e-9 * scale1,
                               "free flight: the stresses do not depend on the reference node (node %d vs %d, max relative difference %.1e)" % (r2["support_node"], r1["support_node"], dvm))
         # Gravity alone: the body falls freely, nothing is loaded.
         r3 = run(ff_dir, ff_job("fall", 0.0, 1.0))

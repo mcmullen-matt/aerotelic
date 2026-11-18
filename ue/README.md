@@ -4110,9 +4110,9 @@ Linux process dies with it is not guaranteed). Installing it, once WSL is
 on (`wsl --install` as administrator, a reboot, `wsl --install -d
 Ubuntu-24.04`):
 
-    "${SHELL}" <<< 'curl -Ls https://micro.mamba.pm/install.sh | bash'
-    micromamba create -n tacs -c conda-forge -c smdogroup python=3.11 tacs
-    micromamba run -n tacs pip install gmsh      # only for the check script's rib case
+    mkdir -p ~/bin && curl -Ls -o ~/bin/micromamba https://github.com/mamba-org/micromamba-releases/releases/latest/download/micromamba-linux-64 && chmod +x ~/bin/micromamba
+    ~/bin/micromamba create -r ~/micromamba -n tacs -c conda-forge -c smdogroup python=3.11 tacs
+    ~/bin/micromamba install -r ~/micromamba -n tacs -c conda-forge python-gmsh   # only for the check script's rib case
 
 or, after that reboot, all of it in one go -- the distribution if missing,
 micromamba and the `tacs` environment at `~/micromamba/envs/tacs`, gmsh,
@@ -4120,8 +4120,14 @@ then the check script on the TACS backend through WSL:
 
     powershell -ExecutionPolicy Bypass -File ue\tools\setup_tacs_wsl.ps1
 
-(written 2026-11-17 before the reboot, so untested end to end; every step
-prints its command and is idempotent). Beware: PyPI's `tacs` is an unrelated TOML configuration library; never
+(every step prints its command and is idempotent; first run for real
+2026-11-18, which taught it three things: the stock Ubuntu WSL image has
+no `bzip2`, so micromamba comes as the static binary from its GitHub
+releases rather than the `.tar.bz2`; the shell text goes through a file
+in `%TEMP%`, because double quotes inside one `wsl.exe` argument do not
+survive the Windows command line; and gmsh is conda-forge's `python-gmsh`,
+not the pip wheel, whose `libgmsh` dlopens the system `libGLU.so.1` that
+the image lacks). Beware: PyPI's `tacs` is an unrelated TOML configuration library; never
 `pip install tacs`. **Analysis > TACS (FEA) > Check Installation**
 (`Dialogs/TacsCheckDialog.cpp`, `tools/tacs_check.py`) looks for the
 environment again, prints the versions of tacs, mpi4py, pyNastran and
@@ -4174,8 +4180,17 @@ itself:
   with -alpha on the rotations -- as M a through TACS's own consistent
   mass matrix (`assembleMatType(MASS_MATRIX)`, `addLoadToRHS`), the
   resultant logged against m (g - a0) as a check of the mass the elements
-  carry. Free flight fixes the reference node's six degrees of freedom
-  in the BDF, exactly as the Kratos script does.
+  carry. In free flight a0 and alpha are solved from that same mass
+  matrix (`_assemble_mass_load`: with R the six rigid modes about the
+  mass centre, R^T M R [a0; alpha] = R^T (F_ext + M g)), not taken from
+  `structural_fea.py`'s analytic sums: the two differ by about 1e-6 in
+  the inertia (the shells' through-thickness rotary inertia, which the
+  triangles' analytic sum has not), and on the first real run that
+  difference was the whole moment the reference node carried (8e-6 Nm
+  against 148 N of load; now 1e-9 Nm). The result's `inertia_cg` is the
+  mass matrix's, so alpha = I_cg^-1 M holds for the reader. Free flight
+  fixes the reference node's six degrees of freedom in the BDF, exactly
+  as the Kratos script does.
 - *Reactions* are K u - F at the fixed degrees of freedom, with K u from
   `assembleRes(applyBCs=False)`; the balance and moment checks are the
   Kratos script's formulas.
@@ -4198,7 +4213,11 @@ itself:
   than [90]_8 with the right top-ply stress.
 - *Modes.* `createModalProblem` (Lanczos) on the same model; in free
   flight a second pyTACS without the reference node's conditions,
-  `count + 6` asked and the rigid ones dropped by threshold.
+  `count + 6` asked and the six smallest |lambda| dropped as the rigid
+  modes (not a fraction of the largest eigenvalue: the shift-invert
+  Lanczos left one rigid mode at 0.014 Hz beside elastic ones from
+  2.6 Hz, 5e-6 of the largest asked for, which a 1e-6 threshold kept). A
+  note is logged when the seventh is not at least 100 times the sixth.
 - *The adjoint.* After the solve, `evalFunctionsSens` for the
   `StructuralMass` and for the `KSFailure` index (ksWeight 100, von
   Mises over the allowable) of every component that has an allowable,
@@ -4236,17 +4255,40 @@ skipped with the reason when the TACS environment is not there.
 `Build.cs` stages the two new scripts and the two check scripts the
 installation check imports.
 
-**Status at the time of writing.** WSL's platform feature was enabled
-on the development machine the same evening but a reboot is required
-before a distribution can be installed, so nothing here has yet run
-against a real TACS: the model building, BDF writing (pyNastran
-round-trips the coordinates to 1e-12) and stress recovery were dry-run
-on Windows; the pyTACS calls follow its documentation and source
-(assembleRes / assembleMatType with `applyBCs`, `getLocalNodeIDsFromGlobal`,
-`addLoadToRHS`, the element callback's `propID`), with fallbacks where
-an older signature might differ. To verify once the environment exists:
-`wsl -e ~/micromamba/envs/tacs/bin/python /mnt/c/Users/Matt/devel_1/aerotelic/ue/tools/structural_fea_check.py --backend tacs`,
-then Check Installation, then the DocumentTest. Open questions it will
-answer: the sign the spring's reference axis takes, whether pyTACS reads
-`SPC1` without a case control deck, and how far the Mindlin triangle
-sits from the Kirchhoff one on the check's thin box.
+**First run against a real TACS (2026-11-18, TACS 3.12.3, Ubuntu-24.04
+under WSL 2).** After the reboot the Check Installation path solved its
+plate in 0.04 s with the adjoint gradient, and the check script ran all
+75 cases: 73 pass after the two fixes above (the rigid-mode filter and
+the mass-matrix inertia relief). The pyTACS calls all held (`SPC1`
+without case control, `applyBCs`, `propID`, the spring's reference axis).
+The `tacs` package has no `__version__`; the version comes from
+`importlib.metadata`. Two cases still fail, and both are differences
+between the solvers rather than defects, left for the owner to rule on:
+
+- *The linear triangle is stiff on coarse meshes.* TACS's `Tri3Shell`
+  has a constant-strain membrane, and the check's box beam (4 x 40 x 4
+  cells a face) comes out 5.3% below Timoshenko where the check allows
+  2% and Kratos's thin triangle (an ANDES-type membrane with drilling
+  rotations) passes. It is discretisation, converging at second order:
+  2x20x2 cells -18.1%, 4x40x4 -5.3%, 8x80x8 -1.4%, 16x160x16 -0.3% (first
+  mode 12.01, 11.10, 10.84, 10.77 Hz against the beam's 10.94). The
+  DocumentTest's box is the 2x20x2 row, so its three TACS checks
+  (deflection within 5%, M c / I, the 10.94 Hz pair) fail at -17.9%, 11%
+  and +10%. The choice is between a finer skin grid for the TACS
+  backend (four triangles per triangle quarters the error) and
+  per-backend tolerances that record the gap.
+- *A hinge tie across a gap.* The check ties the flap's leading-edge
+  corners at x = 1.02 to the main plate's trailing-edge corners at
+  x = 1.0. The Kratos script's tie equates the translations outright;
+  the `RBE2` is a rigid link, u_dep = u_indep + theta_indep x (X_dep -
+  X_indep) (`TACSRBE2.cpp`), so the flap corners also carry the main
+  plate's edge rotation across the 20 mm: a "slip" of 4.3e-5 m against
+  a 14 mm trailing-edge drop. pyTACS reads no `MPC` cards, so an exact
+  translation-only tie would need coincident nodes or a different
+  construction; or the rigid link is the better hinge and the check's
+  expectation changes.
+
+Also tightened for TACS alone: the stresses' independence of the
+reference node is checked to 1e-7 instead of 1e-8 (GMRES at its 1e-12
+residual leaves 1.2e-8 in them; Kratos's direct solver 1e-9). Cancel
+killing the Linux process is still unverified.

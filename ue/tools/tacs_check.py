@@ -29,7 +29,15 @@ def _version(name):
         mod = __import__(name)
     except Exception as exc:  # noqa: BLE001
         return None, "%s: %s" % (type(exc).__name__, exc)
-    return getattr(mod, "__version__", "present"), None
+    version = getattr(mod, "__version__", None)
+    if version is None:
+        # the tacs package has no __version__; its distribution metadata has 3.12.3
+        try:
+            import importlib.metadata as metadata
+            version = metadata.version(name)
+        except Exception:  # noqa: BLE001
+            version = "present"
+    return version, None
 
 
 def run(job_dir):

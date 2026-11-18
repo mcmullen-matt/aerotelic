@@ -16,9 +16,8 @@ reboot that `wsl --install` asks for:
 
     powershell -ExecutionPolicy Bypass -File ue\tools\setup_tacs_wsl.ps1 [-Distro Ubuntu-24.04] [-SkipCheck]
 
-Written 2026-11-17 before the machine had rebooted, so it is UNTESTED end to
-end: each step prints the command it runs; fix and rerun (every step is
-idempotent). Never `pip install tacs` on Windows: PyPI's "tacs" is an
+Each step prints the command it runs; fix and rerun (every step is
+idempotent). First run for real 2026-11-18. Never `pip install tacs` on Windows: PyPI's "tacs" is an
 unrelated TOML library.
 #>
 param(
@@ -38,11 +37,25 @@ function Invoke-Wsl([string[]]$Arguments) {
     return $out
 }
 
+function ConvertTo-WslPath([string]$WindowsPath) {
+    # C:\a\b -> /mnt/c/a/b (the default automount). Not wslpath: its output
+    # is UTF-8 while wsl.exe's own messages are UTF-16, so one encoding
+    # cannot read both.
+    $full = [System.IO.Path]::GetFullPath($WindowsPath)
+    return "/mnt/" + $full.Substring(0, 1).ToLower() + $full.Substring(2).Replace('\', '/')
+}
+
 function Invoke-InDistro([string]$Shell) {
-    # One sh -c command in the distribution, output streamed (UTF-8).
-    Write-Host "   wsl -d $Distro -e sh -c '...'" -ForegroundColor DarkGray
+    # The shell text goes through a file: double quotes inside one wsl.exe
+    # argument do not survive the Windows command line (sh -c "..." lost
+    # every quote and $(...) on the first run). LF endings, no BOM.
+    $file = Join-Path $env:TEMP "aerotelic_tacs_setup.sh"
+    $text = ($Shell -replace "`r`n", "`n") + "`n"
+    [System.IO.File]::WriteAllText($file, $text, (New-Object System.Text.UTF8Encoding($false)))
+    $linux = ConvertTo-WslPath $file
+    Write-Host "   wsl -d $Distro -e sh $linux" -ForegroundColor DarkGray
     Write-Host $Shell -ForegroundColor DarkGray
-    & wsl.exe -d $Distro -e sh -c $Shell
+    & wsl.exe -d $Distro -e sh $linux
     if ($LASTEXITCODE -ne 0) { throw "the command in $Distro failed with exit code $LASTEXITCODE" }
 }
 
@@ -74,20 +87,25 @@ Step "micromamba + the tacs environment (idempotent)"
 $linux = @'
 set -e
 cd "$HOME"
-if ! command -v bzip2 >/dev/null 2>&1 || ! command -v curl >/dev/null 2>&1; then
-  if [ "$(id -u)" = "0" ]; then apt-get update && apt-get install -y curl bzip2; else sudo apt-get update && sudo apt-get install -y curl bzip2; fi
+if ! command -v curl >/dev/null 2>&1; then
+  if [ "$(id -u)" = "0" ]; then apt-get update && apt-get install -y curl; else sudo apt-get update && sudo apt-get install -y curl; fi
 fi
 if [ ! -x "$HOME/bin/micromamba" ]; then
+  # The static binary from the releases: the micro.mamba.pm tarball needs
+  # bzip2, which the stock Ubuntu WSL image lacks (and sudo cannot prompt here).
   mkdir -p "$HOME/bin"
-  curl -Ls https://micro.mamba.pm/api/micromamba/linux-64/latest | tar -xj -C "$HOME" bin/micromamba
+  curl -Ls -o "$HOME/bin/micromamba" https://github.com/mamba-org/micromamba-releases/releases/latest/download/micromamba-linux-64
+  chmod +x "$HOME/bin/micromamba"
 fi
 "$HOME/bin/micromamba" --version
 if [ ! -x "$HOME/micromamba/envs/tacs/bin/python" ]; then
   "$HOME/bin/micromamba" create -y -r "$HOME/micromamba" -n tacs -c conda-forge -c smdogroup python=3.11 tacs
 fi
 PY="$HOME/micromamba/envs/tacs/bin/python"
-"$PY" -c "import gmsh" 2>/dev/null || "$PY" -m pip install --quiet gmsh
-"$PY" -c "import sys, tacs, mpi4py, numpy, pyNastran; print('python', sys.version.split()[0]); print('tacs', tacs.__version__); print('pyNastran', pyNastran.__version__); print('numpy', numpy.__version__)"
+# conda-forge's python-gmsh, not the pip wheel: the wheel dlopens the system
+# libGLU.so.1 and friends, which the stock WSL image lacks; conda-forge ships them.
+"$PY" -c "import gmsh" 2>/dev/null || "$HOME/bin/micromamba" install -y -r "$HOME/micromamba" -n tacs -c conda-forge python-gmsh
+"$PY" -c "import sys, tacs, mpi4py, numpy, pyNastran, importlib.metadata as m; print('python', sys.version.split()[0]); print('tacs', m.version('tacs')); print('pyNastran', pyNastran.__version__); print('numpy', numpy.__version__)"
 echo "TACS python: $PY"
 '@
 Invoke-InDistro $linux
@@ -95,9 +113,7 @@ Invoke-InDistro $linux
 if ($SkipCheck) { Write-Host ""; Write-Host "Done (check skipped)."; exit 0 }
 
 Step "structural_fea_check.py --backend tacs"
-$toolsWin = $PSScriptRoot
-$toolsLinux = (Invoke-Wsl @("-d", $Distro, "-e", "wslpath", "-a", $toolsWin) | Select-Object -First 1).Trim()
-if (-not $toolsLinux) { throw "wslpath could not map $toolsWin" }
+$toolsLinux = ConvertTo-WslPath $PSScriptRoot
 Invoke-InDistro ('cd "{0}" && "$HOME/micromamba/envs/tacs/bin/python" -u structural_fea_check.py --backend tacs' -f $toolsLinux)
 
 Write-Host ""

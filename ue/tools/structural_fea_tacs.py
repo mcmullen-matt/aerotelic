@@ -103,12 +103,22 @@ EIGENSOLVER = "tacs_lanczos"
 KS_WEIGHT = 100.0                 # the KS aggregate of the failure index per component
 AXIS_BIN = 0.1                    # a laminate's reference axis is binned to this (unit-vector components; ~6 degrees)
 MAX_COMPONENTS = 400              # distinct laminate components per region before the axis bins are coarsened
-RIGID_MODE_FRACTION = 1e-6        # an eigenvalue below this fraction of the largest asked for is a rigid mode (free flight)
+RIGID_MODE_GAP = 100.0            # free flight: the first elastic eigenvalue should be at least this many times the sixth rigid one (a note if not)
 PROP_SHELL_BASE = 1000            # property ids: shells from here, bars from BAR_PROP_BASE
 BAR_PROP_BASE = 900000
 DUMMY_MAT = 1
 
 _DRIVE = re.compile(r"^([A-Za-z]):[\\/](.*)$")
+
+
+def _tacs_version():
+    """The installed TACS version: the package has no __version__, the
+    conda/pip distribution metadata has it (3.12.3 on 2026-11-18)."""
+    try:
+        import importlib.metadata as metadata
+        return str(metadata.version("tacs"))
+    except Exception:  # noqa: BLE001
+        return "?"
 
 
 def host_path(path):
@@ -733,29 +743,100 @@ def _local_index(fea, bdf_ids):
     return local
 
 
-def _assemble_mass_load(fea, problem, model, local_of):
+def _all_points(model):
+    """Every node's position: the structural nodes, then the mass items'
+    attachment points, then the links' offset points (TACS's node order)."""
+    extra = [it["at"] for it in model["mass_items"]] + [l["at"] for l in model["links"]]
+    if extra:
+        return np.concatenate([model["nodes"], np.array(extra, dtype=np.float64).reshape(-1, 3)])
+    return np.asarray(model["nodes"], dtype=np.float64)
+
+
+def _assemble_mass_load(fea, problem, model, local_of, external=None):
     """The inertial load M a as a TACS vector: a the acceleration field at
     every node (structural, mass item, link), -alpha on the rotations, M
-    TACS's consistent mass matrix assembled without the conditions."""
+    TACS's consistent mass matrix assembled without the conditions.
+
+    In free flight a0 and alpha are solved here from M itself, not taken
+    from structural_fea.py's rigid-body sums: with R the six rigid modes
+    about the mass centre, R^T M R [a0; alpha] = R^T (F_ext + M g), so the
+    inertial load M (g - a0 - alpha x (r - cg)) and the external loads have
+    exactly no resultant and the reference node carries nothing. (The two
+    estimates differ by about 1e-8 of the loads -- the mass matrix's
+    moments against the triangles' analytic ones -- which was the whole
+    reaction moment on the first run against TACS 3.12.3.) model's a0,
+    alpha and nodal_acceleration are replaced by the consistent values."""
     import tacs
     assembler = problem.assembler
-    acc = assembler.createVec()
-    arr = acc.getArray()
     vpn = assembler.getVarsPerNode()
-    field = model["nodal_acceleration"]
-    alpha = model["alpha"]
-    n_all = len(model["nodes"]) + len(model["mass_items"]) + len(model["links"])
-    for i in range(n_all):
-        l_ = local_of[i]
-        arr[vpn * l_:vpn * l_ + 3] = field[i]
-        arr[vpn * l_ + 3:vpn * l_ + 6] = -alpha
+    points = _all_points(model)
+    n_all = len(points)
     M = assembler.createSchurMat()
     try:
         assembler.assembleMatType(tacs.TACS.MASS_MATRIX, M, applyBCs=False)
     except TypeError:
         assembler.assembleMatType(tacs.TACS.MASS_MATRIX, M)
-    load = assembler.createVec()
-    M.mult(acc, load)
+
+    def field_vec(translations, rotation):
+        vec = assembler.createVec()
+        arr = vec.getArray()
+        for i in range(n_all):
+            l_ = local_of[i]
+            arr[vpn * l_:vpn * l_ + 3] = translations[i]
+            arr[vpn * l_ + 3:vpn * l_ + 6] = rotation
+        return vec
+
+    if not model["free_flight"]:
+        acc = field_vec(model["nodal_acceleration"], -model["alpha"])
+        load = assembler.createVec()
+        M.mult(acc, load)
+        return load
+
+    cg = np.asarray(model["cg"], dtype=np.float64)
+    gravity = np.asarray(model["gravity"], dtype=np.float64)
+    arm = points - cg
+    modes = []
+    for k in range(3):
+        e = np.zeros(3)
+        e[k] = 1.0
+        modes.append(field_vec(np.tile(e, (n_all, 1)), np.zeros(3)))
+    for k in range(3):
+        e = np.zeros(3)
+        e[k] = 1.0
+        modes.append(field_vec(np.cross(e[None, :], arm), e))
+    m_modes = []
+    for v in modes:
+        w = assembler.createVec()
+        M.mult(v, w)
+        m_modes.append(w)
+    f_gravity = assembler.createVec()
+    M.mult(field_vec(np.tile(gravity, (n_all, 1)), np.zeros(3)), f_gravity)
+    total = np.asarray(f_gravity.getArray(), dtype=np.float64).copy()
+    if external is not None:
+        total = total + np.asarray(external, dtype=np.float64)
+    r_arrays = [np.asarray(v.getArray(), dtype=np.float64) for v in modes]
+    mr_arrays = [np.asarray(w.getArray(), dtype=np.float64) for w in m_modes]
+    m_rigid = np.array([[float(r_arrays[j] @ mr_arrays[k]) for k in range(6)] for j in range(6)])
+    rhs = np.array([float(r_arrays[j] @ total) for j in range(6)])
+    q = np.linalg.solve(m_rigid, rhs) if np.linalg.cond(m_rigid) < 1e12 else np.linalg.lstsq(m_rigid, rhs, rcond=None)[0]
+    a0, alpha = q[:3].copy(), q[3:].copy()
+    shift = float(np.linalg.norm(a0 - model["a0"]) + np.linalg.norm(alpha - model["alpha"]) * float(np.abs(arm).max()))
+    log("  free flight: a0 (%.6g, %.6g, %.6g) m/s^2 and alpha (%.6g, %.6g, %.6g) rad/s^2 from TACS's mass matrix (the rigid-body sums were %.2g m/s^2 away; mass %.6g kg)"
+        % (a0[0], a0[1], a0[2], alpha[0], alpha[1], alpha[2], shift, m_rigid[0, 0]))
+    model["a0"], model["alpha"] = a0, alpha
+    model["nodal_acceleration"] = gravity[None, :] - a0[None, :] - np.cross(alpha[None, :], arm)
+    # The inertia the result reports is the one alpha came from: the mass
+    # matrix's, about the mass centre (the shells' through-thickness rotary
+    # inertia included), so alpha = I_cg^-1 M holds for the reader exactly.
+    inertia_tacs = 0.5 * (m_rigid[3:, 3:] + m_rigid[3:, 3:].T)
+    inertia_shift = float(np.abs(inertia_tacs - np.asarray(model["inertia_cg"])).max() / max(float(np.abs(inertia_tacs).max()), 1e-300))
+    log("  free flight: the mass matrix's inertia about the mass centre differs from the triangles' and items' analytic sum by %.2g (relative)" % inertia_shift)
+    model["inertia_cg_analytic"] = np.asarray(model["inertia_cg"], dtype=np.float64)
+    model["inertia_cg"] = inertia_tacs
+    # M (g - a0 - alpha x arm) = M g - sum_k q_k M R_k
+    load = f_gravity
+    for k in range(6):
+        load.axpy(-float(q[k]), m_modes[k])
     return load
 
 
@@ -764,7 +845,7 @@ def run_job(job_dir):
     t_start = time.time()
     with open(os.path.join(job_dir, "job.json"), "r", encoding="utf-8-sig") as f:
         job = json.load(f)
-    tacs = _import_tacs()
+    _import_tacs()
     from tacs import pyTACS, functions
     from mpi4py import MPI
 
@@ -777,7 +858,7 @@ def run_job(job_dir):
     n_extra = len(mass_items) + len(links)
     free_flight = model["free_flight"]
     result = {
-        "ok": True, "backend": "tacs", "tacs_version": str(getattr(tacs, "__version__", "?")),
+        "ok": True, "backend": "tacs", "tacs_version": _tacs_version(),
         "wetted_faces": int(len(model["faces"])), "support_planes": model["support_planes"],
         "point_nodes": [int(n) for n, _ in model["point_loads"]], "applied_point": [float(v) for v in model["applied_point"]],
         "support_mode": "free flight" if free_flight else "clamped",
@@ -821,7 +902,8 @@ def run_job(job_dir):
         F6 = np.zeros((len(loaded), vpn))
         F6[:, :3] = nodal_load[loaded]
         problem.addLoadToNodes([int(v) + 1 for v in loaded], F6, nastranOrdering=True)
-    inertial = _assemble_mass_load(fea, problem, model, local_of)
+    external_now = np.asarray(problem.F.getArray(), dtype=np.float64).copy() if free_flight else None
+    inertial = _assemble_mass_load(fea, problem, model, local_of, external=external_now)
     inertial_arr = inertial.getArray().copy()
     problem.addLoadToRHS(inertial)
     # What the mass matrix put on the model, against m (g - a0): a check of
@@ -1054,10 +1136,25 @@ def run_job(job_dir):
                 eigs.append(float(np.real(lam)))
                 shapes.append(np.asarray(vec.getArray() if hasattr(vec, "getArray") else vec, dtype=np.float64).copy())
             eigs = np.array(eigs)
-            largest = float(np.abs(eigs).max()) if len(eigs) else 0.0
-            keep_mode = eigs > RIGID_MODE_FRACTION * largest if free_flight else eigs > 0.0
-            if free_flight and int((~keep_mode).sum()) != 6:
-                log("  note: %d rigid mode(s) found and dropped (6 expected)" % int((~keep_mode).sum()))
+            order = np.argsort(np.abs(eigs))
+            if free_flight:
+                # The six rigid modes are the six smallest |lambda|; the
+                # shift-invert Lanczos returns them as small nonzero numbers
+                # (first run against TACS 3.12.3: a leftover at 0.014 Hz
+                # beside elastic modes from 2.6 Hz, 5e-6 of the largest
+                # eigenvalue asked for, so a fraction of the largest is no
+                # criterion). The gap to the seventh is reported when it is
+                # not clear.
+                keep_mode = np.ones(len(eigs), dtype=bool)
+                keep_mode[order[:6]] = False
+                if len(eigs) > 6:
+                    rigid_top = float(np.abs(eigs[order[5]]))
+                    elastic_low = float(np.abs(eigs[order[6]]))
+                    if elastic_low < RIGID_MODE_GAP * rigid_top:
+                        log("  note: the sixth rigid eigenvalue %.3g and the first elastic %.3g are not clearly apart (ratio %.1f, %g wanted): a mechanism, or too few rigid modes"
+                            % (rigid_top, elastic_low, elastic_low / max(rigid_top, 1e-300), RIGID_MODE_GAP))
+            else:
+                keep_mode = eigs > 0.0
             order = np.argsort(eigs)
             picked = [i for i in order if keep_mode[i]][:n_modes]
             frequencies = np.sqrt(np.maximum(eigs[picked], 0.0)) / (2.0 * np.pi)
