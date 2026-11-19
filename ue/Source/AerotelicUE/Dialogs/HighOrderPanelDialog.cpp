@@ -566,8 +566,32 @@ namespace
 				CpHi = Hi;
 			}
 
+			// A pressure coefficient beyond anything a potential flow gives is a
+			// broken fit, not a result (my_drone's boom at its cowling read Cp
+			// -5e56 on four panels and C_L -2e49, 2026-11-18). The solver now
+			// caps the surface speed and says so in its notes; this is the
+			// backstop, named by place, so a garbage coefficient is never shown
+			// as if it meant something.
+			FString Rogue;
+			{
+				int32 NRogue = 0;
+				double Worst = 0.0;
+				aerotelic::Vec3 WorstAt;
+				for (const TSharedPtr<FCase>& C : Done->Cases)
+					for (const tripanel::BodyResult& BR : C->Sol.bodies)
+						for (const tripanel::PanelResult& P : BR.panels)
+							if (P.area > 0.0 && (!FMath::IsFinite(P.cp) || FMath::Abs(P.cp) > 100.0)) { ++NRogue; if (!FMath::IsFinite(P.cp) || FMath::Abs(P.cp) > FMath::Abs(Worst)) { Worst = P.cp; WorstAt = P.centre; } }
+				if (NRogue > 0)
+				{
+					Rogue = FString::Printf(TEXT("WARNING: %d panel(s) carry a pressure coefficient beyond anything physical (worst %.3g at (%.3f, %.3f, %.3f)). The force and moment coefficients include them and are NOT to be trusted; the mesh there (a seam, a sliver) needs attention.\n"), NRogue, Worst, WorstAt.x, WorstAt.y, WorstAt.z);
+					AerotelicMessageBox(EAppMsgType::Ok, FText::FromString(Rogue), LOCTEXT("Title", "Panel Method"));
+				}
+				for (const std::string& N : Cases[0]->Sol.notes)
+					if (N.find("WARNING") != std::string::npos) Rogue += FString(UTF8_TO_TCHAR(N.c_str())) + TEXT("\n");
+			}
+
 			const FCase& First = *Cases[0];
-			FString Summary = FString::Printf(TEXT("%d solution%s: %d panels + %d wake strips, %d unknowns%s; %s; %.2f s in all.\n"),
+			FString Summary = Rogue + FString::Printf(TEXT("%d solution%s: %d panels + %d wake strips, %d unknowns%s; %s; %.2f s in all.\n"),
 				Cases.Num(), Cases.Num() == 1 ? TEXT("") : TEXT("s"), First.NBody, First.NWake, First.Sol.unknowns,
 				Done->Options.symmetry_y ? TEXT(" (the y >= 0 half, the image standing in for the rest)") : TEXT(", no symmetry plane"),
 				First.Sol.direct ? TEXT("direct solve") : *FString::Printf(TEXT("GMRES, %d iterations, residual %.1e"), First.Sol.iterations, First.Sol.residual), Seconds);

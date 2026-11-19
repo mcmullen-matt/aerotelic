@@ -670,14 +670,46 @@ Solution Solve(const std::vector<Body>& bodies, const Vec3& free_stream, const O
 				b1 += w * x * dm; b2 += w * y * dm;
 				++used;
 			}
-			const double det = a11 * a22 - a12 * a12;
+			// The 2 x 2 normal matrix is symmetric positive semi-definite; its
+			// eigenvalues say how well the neighbours resolve the gradient. When
+			// they lie nearly in a line (on a leading edge most neighbours face
+			// away and are excluded above, leaving two or three along the span
+			// -- my_drone's boom at its cowling, 2026-11-18: a determinant of
+			// 1e-56 and a gradient of 1e28), only the component along their line
+			// is known and only it is taken; the old relative determinant test
+			// never fired.
+			const double tr = a11 + a22, det = a11 * a22 - a12 * a12;
+			const double disc = std::sqrt(std::max(0.0, 0.25 * tr * tr - det));
+			const double l1 = 0.5 * tr + disc, l2 = 0.5 * tr - disc;
 			Vec3 grad{0.0, 0.0, 0.0};
-			if (used >= 2 && std::fabs(det) > 1e-30 * (a11 * a22 + 1e-300)) {
+			if (used >= 2 && l1 > 0.0 && l2 > 1e-6 * l1) {
 				const double gx = (b1 * a22 - b2 * a12) / det, gy = (a11 * b2 - a12 * b1) / det;
 				grad = t1 * gx + t2 * gy;
+			} else if (used >= 1 && l1 > 0.0) {
+				double ex, ey;   // the eigenvector of l1
+				if (std::fabs(a12) > 1e-300 * l1) { ex = l1 - a22; ey = a12; }
+				else if (a11 >= a22) { ex = 1.0; ey = 0.0; }
+				else { ex = 0.0; ey = 1.0; }
+				const double el = std::hypot(ex, ey);
+				ex /= el; ey /= el;
+				const double along = (ex * b1 + ey * b2) / l1;
+				grad = (t1 * ex + t2 * ey) * along;
+				++p.result.rank1_gradients;
 			}
 			r.grad_mu = grad;
 			r.velocity = free_stream - g.n * Dot(free_stream, g.n) + grad;
+			// A surface speed beyond any potential flow about a closed body is
+			// a fit gone wrong, not a flow: capped, counted and reported, so a
+			// handful of panels cannot carry the force sum away.
+			if (options.max_speed_ratio > 0.0) {
+				const double vmax = options.max_speed_ratio * vinf;
+				const double v2 = LengthSq(r.velocity);
+				if (v2 > vmax * vmax) {
+					r.velocity = r.velocity * (vmax / std::sqrt(v2));
+					if (p.result.capped_panels == 0) p.result.first_capped_at = g.c;
+					++p.result.capped_panels;
+				}
+			}
 			r.cp = 1.0 - LengthSq(r.velocity) / (vinf * vinf);
 			const Vec3 f = g.n * (-r.cp * g.area);
 			F += f;
@@ -693,6 +725,16 @@ Solution Solve(const std::vector<Body>& bodies, const Vec3& free_stream, const O
 		p.result.moment_coefficient = M * inv_s;
 		sol.force_coefficient += p.result.force_coefficient;
 		sol.moment_coefficient += p.result.moment_coefficient;
+		if (p.result.rank1_gradients > 0) {
+			p.result.notes.push_back(p.result.name + ": " + std::to_string(p.result.rank1_gradients)
+				+ " panel(s) have their neighbours in a line (a leading edge, a seam) and take only the gradient along it");
+		}
+		if (p.result.capped_panels > 0) {
+			const Vec3& c = p.result.first_capped_at;
+			p.result.notes.push_back(p.result.name + ": WARNING " + std::to_string(p.result.capped_panels) + " panel(s) had a surface speed beyond "
+				+ std::to_string(options.max_speed_ratio) + " times the free stream, capped there (an ill-conditioned gradient fit, first at ("
+				+ std::to_string(c.x) + ", " + std::to_string(c.y) + ", " + std::to_string(c.z) + ")): the pressures on and around them are not to be trusted");
+		}
 		for (const std::string& n : p.result.notes) sol.notes.push_back(n);
 	}
 	for (WakeStrip& w : sol.wakes) w.mu = mu[w.upper] - mu[w.lower];

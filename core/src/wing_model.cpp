@@ -2078,8 +2078,16 @@ NamedMesh WingModel::BuildAeroMesh(double tolerance, std::vector<std::vector<Vec
 		}
 	}
 
-	// Without flaps the trailing edge is the planform's, sampled finely: the
-	// sealed section's seam point at each station (a blunt section closed).
+	// Without flaps the trailing edge is the planform's, sampled finely (the
+	// sealed section's seam point at each station, a blunt section closed)
+	// and then SNAPPED TO THE MESH: what is handed on is the body's own
+	// vertices lying on the sampled line, in order along it, so that every
+	// mesh edge between two of them lies on the polyline exactly, as the
+	// flap branch above guarantees with the loft's rings. The sampled line on
+	// its own fails a CURVED trailing edge (a dihedral curve: my_drone's booms,
+	// 2026-11-18): the mesh's edges between stations are chords of the curve
+	// whose midpoints miss it by their sagitta, a tenth of a millimetre
+	// against the solver's micron tolerance, and the booms shed no wake.
 	if (trailing_edges && trailing_edges->empty()) {
 		std::vector<Vec3> line;
 		for (int i = 0; i <= 400; ++i) {
@@ -2090,12 +2098,40 @@ NamedMesh WingModel::BuildAeroMesh(double tolerance, std::vector<std::vector<Vec
 			if (symmetric && std::fabs(q.y) <= 1e-9 * std::max(semi, 1.0)) q.y = 0.0;
 			line.push_back(q);
 		}
+		Box3 bounds;
+		for (const Vec3& v : out.mesh.vertices) bounds.Add(v);
+		const double tol = 1e-6 * std::max(bounds.Diagonal(), 1e-300);
+		// The mesh vertices within tol of the line, ordered by arc length along it.
+		auto snap = [&](const std::vector<Vec3>& poly) {
+			std::vector<double> cum(poly.size(), 0.0);
+			for (size_t i = 1; i < poly.size(); ++i) cum[i] = cum[i - 1] + Length(poly[i] - poly[i - 1]);
+			struct Hit { double t; Vec3 p; };
+			std::vector<Hit> hits;
+			for (const Vec3& v : out.mesh.vertices) {
+				double best = std::numeric_limits<double>::infinity(), best_t = 0.0;
+				for (size_t i = 1; i < poly.size(); ++i) {
+					const Vec3 d = poly[i] - poly[i - 1];
+					const double l2 = LengthSq(d);
+					double u = l2 > 0.0 ? Dot(v - poly[i - 1], d) / l2 : 0.0;
+					u = std::clamp(u, 0.0, 1.0);
+					const double dist = Length(v - (poly[i - 1] + d * u));
+					if (dist < best) { best = dist; best_t = cum[i - 1] + u * std::sqrt(l2); }
+				}
+				if (best <= tol) hits.push_back({best_t, v});
+			}
+			std::sort(hits.begin(), hits.end(), [](const Hit& a, const Hit& b) { return a.t < b.t; });
+			std::vector<Vec3> snapped;
+			for (const Hit& h : hits) if (snapped.empty() || Length(h.p - snapped.back()) > tol) snapped.push_back(h.p);
+			// Fewer than two vertices on the line (a mesh built some other way):
+			// the sampled line as it stands.
+			return snapped.size() >= 2 ? snapped : poly;
+		};
 		if (symmetric) {
 			std::vector<Vec3> port;
 			for (const Vec3& q : line) port.push_back({q.x, -q.y, q.z});
-			trailing_edges->push_back(port);
+			trailing_edges->push_back(snap(port));
 		}
-		trailing_edges->push_back(line);
+		trailing_edges->push_back(snap(line));
 	}
 	return out;
 }

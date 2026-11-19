@@ -105,6 +105,11 @@ struct Options {
 	bool buried_rule = true;
 	// Neighbours for the gradient fit must face within this many degrees.
 	double gradient_max_angle_deg = 60.0;
+	// A panel's surface speed is capped at this many times the free stream
+	// (0: no cap). No potential flow about a closed body goes much beyond 2
+	// (a cylinder's crosswise peak); a fit on neighbours lying in a line can
+	// give anything. See BodyResult::capped_panels.
+	double max_speed_ratio = 4.0;
 };
 
 struct PanelResult {
@@ -144,6 +149,12 @@ struct BodyResult {
 	int centreline_edges = 0;
 	int buried_edges = 0;        // trailing-edge edges whose wake would run into another body
 	int dropped_in_plane = 0;    // triangles lying in the symmetry plane, left out
+	// The gradient fit: panels whose neighbours lay in a line (the gradient
+	// taken along it only), and panels whose surface speed exceeded
+	// Options::max_speed_ratio and was capped, the first of them.
+	int rank1_gradients = 0;
+	int capped_panels = 0;
+	Vec3 first_capped_at;
 	// -sum Cp n A / S_ref over this body (the image included when mirrored).
 	Vec3 force_coefficient;
 	Vec3 moment_coefficient;
