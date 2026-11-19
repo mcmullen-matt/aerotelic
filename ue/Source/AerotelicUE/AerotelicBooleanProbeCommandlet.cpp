@@ -166,14 +166,33 @@ namespace
 			return -1;
 		};
 		TArray<int32> WakeShare;
-		TMap<int32, int32> WakeCount;
+		TMap<int32, int32> WakeCount, RoutedCount, StoppedCount;
 		for (const tripanel::WakeStrip& W : C->Sol.wakes)
 		{
 			const int32 s = ShareOfPanel(W.body, W.upper >= 0 ? W.upper : W.lower);
 			WakeShare.Add(s);
 			++WakeCount.FindOrAdd(s);
+			if (W.routed_around >= 0 && !W.stopped) ++RoutedCount.FindOrAdd(s);
+			if (W.stopped) ++StoppedCount.FindOrAdd(s);
 		}
-		for (const auto& KV : WakeCount) UE_LOG(LogAerotelicBooleanProbe, Display, TEXT("wake: %d strips shed by %s"), KV.Value, KV.Key >= 0 ? *C->Shares[KV.Key].Name : TEXT("(unowned)"));
+		for (const auto& KV : WakeCount)
+			UE_LOG(LogAerotelicBooleanProbe, Display, TEXT("wake: %d strips shed by %s (%d routed around a body, %d stopped short of one)"), KV.Value, KV.Key >= 0 ? *C->Shares[KV.Key].Name : TEXT("(unowned)"), RoutedCount.FindRef(KV.Key), StoppedCount.FindRef(KV.Key));
+		// A strip's centreline z where its path crosses x (the path runs
+		// downstream, x increasing); false when it never reaches x.
+		auto SheetZAt = [](const tripanel::WakeStrip& W, double X, double& OutZ) -> bool
+		{
+			for (size_t k = 0; k + 1 < W.a_path.size(); ++k)
+			{
+				const aerotelic::Vec3 P0 = (W.a_path[k] + W.b_path[k]) * 0.5, P1 = (W.a_path[k + 1] + W.b_path[k + 1]) * 0.5;
+				if ((P0.x <= X && X <= P1.x) || (P1.x <= X && X <= P0.x))
+				{
+					const double T = std::fabs(P1.x - P0.x) > 1e-15 ? (X - P0.x) / (P1.x - P0.x) : 0.0;
+					OutZ = P0.z + (P1.z - P0.z) * T;
+					return true;
+				}
+			}
+			return false;
+		};
 
 		// Every wing share: the dialog's cuts, and the wakes' proximity.
 		for (int32 s = 0; s < C->Shares.Num(); ++s)
@@ -229,36 +248,44 @@ namespace
 			TMap<int32, double> Closest;
 			TMap<int32, int32> Within;
 			TMap<int32, aerotelic::Vec3> ClosestAt;
+			TMap<int32, int32> ClosestStrip;
 			for (size_t t = 0; t < BR.panels.size(); ++t)
 			{
 				if (!Sh.Mask[t]) continue;
 				const aerotelic::Vec3 P = BR.panels[t].centre;
 				TMap<int32, double> Best;
+				TMap<int32, int32> BestStrip;
 				for (int32 w = 0; w < (int32)C->Sol.wakes.size(); ++w)
 				{
 					const tripanel::WakeStrip& W = C->Sol.wakes[w];
 					const int32 From = WakeShare[w];
 					if (From == s) continue;   // its own wake
-					// The strip's two long edges over their first 3 reference lengths.
-					const double Frac = std::min(1.0, 3.0 * S.ReferenceLength / std::max(aerotelic::Length(W.corners[3] - W.corners[0]), 1e-12));
-					const aerotelic::Vec3 A1 = W.corners[0] + (W.corners[3] - W.corners[0]) * Frac;
-					const aerotelic::Vec3 B1 = W.corners[1] + (W.corners[2] - W.corners[1]) * Frac;
-					const double D = std::min({ SegmentDistance(P, W.corners[0], A1), SegmentDistance(P, W.corners[1], B1), SegmentDistance(P, (W.corners[0] + W.corners[1]) * 0.5, (A1 + B1) * 0.5) });
+					// The strip's two long edges and centreline over their first 3
+					// reference lengths, segment by segment (a routed strip kinks).
+					double D = 1e300, Cum = 0.0;
+					for (size_t k = 0; k + 1 < W.a_path.size() && Cum < 3.0 * S.ReferenceLength; ++k)
+					{
+						const aerotelic::Vec3 A0 = W.a_path[k], A1 = W.a_path[k + 1], B0 = W.b_path[k], B1 = W.b_path[k + 1];
+						D = std::min({ D, SegmentDistance(P, A0, A1), SegmentDistance(P, B0, B1), SegmentDistance(P, (A0 + B0) * 0.5, (A1 + B1) * 0.5) });
+						Cum += aerotelic::Length(A1 - A0);
+					}
 					double* Cur = Best.Find(From);
-					if (Cur == nullptr || D < *Cur) Best.Add(From, D);
+					if (Cur == nullptr || D < *Cur) { Best.Add(From, D); BestStrip.Add(From, w); }
 				}
 				for (const auto& KV : Best)
 				{
 					double* Cur = Closest.Find(KV.Key);
-					if (Cur == nullptr || KV.Value < *Cur) { Closest.Add(KV.Key, KV.Value); ClosestAt.Add(KV.Key, P); }
+					if (Cur == nullptr || KV.Value < *Cur) { Closest.Add(KV.Key, KV.Value); ClosestAt.Add(KV.Key, P); ClosestStrip.Add(KV.Key, BestStrip[KV.Key]); }
 					if (KV.Value < MedianEdge) ++Within.FindOrAdd(KV.Key);
 				}
 			}
 			for (const auto& KV : Closest)
 			{
 				const aerotelic::Vec3 At = ClosestAt[KV.Key];
-				UE_LOG(LogAerotelicBooleanProbe, Display, TEXT("  wake of %s comes within %.4f of this share's panels (median panel size %.4f; %d panels within one panel size), closest at (%.3f, %.3f, %.3f)"),
-					KV.Key >= 0 ? *C->Shares[KV.Key].Name : TEXT("(unowned)"), KV.Value, MedianEdge, Within.FindRef(KV.Key), At.x, At.y, At.z);
+				const tripanel::WakeStrip& W = C->Sol.wakes[ClosestStrip[KV.Key]];
+				UE_LOG(LogAerotelicBooleanProbe, Display, TEXT("  wake of %s comes within %.4f of this share's panels (median panel size %.4f; %d panels within one panel size), closest at (%.3f, %.3f, %.3f); that strip spans y %.3f..%.3f, %d segments%s"),
+					KV.Key >= 0 ? *C->Shares[KV.Key].Name : TEXT("(unowned)"), KV.Value, MedianEdge, Within.FindRef(KV.Key), At.x, At.y, At.z,
+					std::min(W.a_path[0].y, W.b_path[0].y), std::max(W.a_path[0].y, W.b_path[0].y), (int32)W.Segments(), W.routed_around >= 0 ? TEXT(", routed") : TEXT(", straight"));
 			}
 
 			// Where the other shares' sheets stand in z as they pass this share:
@@ -271,10 +298,9 @@ namespace
 				const tripanel::WakeStrip& W = C->Sol.wakes[w];
 				const int32 From = WakeShare[w];
 				if (From == s || From < 0) continue;
-				const aerotelic::Vec3 Mid = (W.corners[0] + W.corners[1]) * 0.5;
-				const aerotelic::Vec3 D = aerotelic::Normalized(W.corners[3] - W.corners[0]);
-				if (!(D.x > 1e-9) || Mid.x > Bounds.min.x) continue;   // only sheets that reach this share from upstream
-				const double YLo = std::min(W.corners[0].y, W.corners[1].y), YHi = std::max(W.corners[0].y, W.corners[1].y);
+				const aerotelic::Vec3 Mid = (W.a_path[0] + W.b_path[0]) * 0.5;
+				if (Mid.x > Bounds.min.x) continue;   // only sheets that reach this share from upstream
+				const double YLo = std::min(W.a_path[0].y, W.b_path[0].y), YHi = std::max(W.a_path[0].y, W.b_path[0].y);
 				double ZLo = 1e300, ZHi = -1e300;
 				int32 N = 0;
 				for (size_t t = 0; t < BR.panels.size(); ++t)
@@ -285,11 +311,12 @@ namespace
 					ZLo = std::min(ZLo, P.z); ZHi = std::max(ZHi, P.z); ++N;
 				}
 				if (N == 0) continue;
-				const double ZAtLead = Mid.z + (Bounds.min.x - Mid.x) / D.x * D.z;
-				const double ZAtTrail = Mid.z + (Bounds.max.x - Mid.x) / D.x * D.z;
+				double ZAtLead = 0.0, ZAtTrail = 0.0;
+				if (!SheetZAt(W, Bounds.min.x, ZAtLead) || !SheetZAt(W, Bounds.max.x, ZAtTrail)) continue;
 				const bool bThrough = (ZAtLead >= ZLo && ZAtLead <= ZHi) || (ZAtTrail >= ZLo && ZAtTrail <= ZHi) || (ZAtLead < ZLo && ZAtTrail > ZHi) || (ZAtLead > ZHi && ZAtTrail < ZLo);
-				UE_LOG(LogAerotelicBooleanProbe, Display, TEXT("  sheet of %s, y %.3f..%.3f, mu %.4f: z %.4f at x = %.3f, z %.4f at x = %.3f; this share there spans z %.4f..%.4f (%d panels)%s"),
-					*C->Shares[From].Name, YLo, YHi, W.mu, ZAtLead, Bounds.min.x, ZAtTrail, Bounds.max.x, ZLo, ZHi, N, bThrough ? TEXT("  <-- THROUGH THE BODY") : TEXT(""));
+				const FString Routed = W.stopped ? FString::Printf(TEXT(" [STOPPED short of body %d]"), W.routed_around) : W.routed_around >= 0 ? FString::Printf(TEXT(" [routed around body %d, %d segments]"), W.routed_around, (int32)W.Segments()) : FString();
+				UE_LOG(LogAerotelicBooleanProbe, Display, TEXT("  sheet of %s, y %.3f..%.3f, mu %.4f: z %.4f at x = %.3f, z %.4f at x = %.3f; this share there spans z %.4f..%.4f (%d panels)%s%s"),
+					*C->Shares[From].Name, YLo, YHi, W.mu, ZAtLead, Bounds.min.x, ZAtTrail, Bounds.max.x, ZLo, ZHi, N, bThrough ? TEXT("  <-- THROUGH THE BODY") : TEXT(""), *Routed);
 			}
 		}
 

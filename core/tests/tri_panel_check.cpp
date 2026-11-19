@@ -13,6 +13,7 @@
 #include <string>
 
 #include "aerotelic/mesh_boolean.hpp"
+#include "aerotelic/sdf.hpp"
 #include "aerotelic/tri_panel.hpp"
 #include "aerotelic/wing_panels.hpp"
 
@@ -524,6 +525,70 @@ int main() {
 				}
 				Check(worst_lr < 0.02, F("T-tail plane off: the tailplane's loading is symmetric port to starboard (worst %.1f%%)", 100.0 * worst_lr));
 				Check(worst_on < 0.05, F("T-tail: the tailplane's loading agrees with the plane-on solve (worst %.1f%%)", 100.0 * worst_on));
+			}
+
+			// ---- 7. a wake routed around a body downstream ----
+			// my_drone (2026-11-18): the front boom's sheet, shed along the
+			// stream, ran straight through the aft boom 0.8 m behind it, and the
+			// aft boom read cl 1 to 4 with Cp -15. A doublet sheet through a body
+			// is a potential jump across its panels. Here a wing's sheet meets a
+			// flat slab placed on its path: routed, the slab's pressures stay
+			// bounded, the wing's lift is what it is without the slab, and every
+			// routed point clears the slab's surface.
+			{
+				PlanformSpec ws;
+				ws.semi_span = 1.0; ws.root_chord = 0.2; ws.tip_chord = 0.2; ws.sweep_angle = 0.0;
+				WingModel w0(ws, "Wing");
+				w0.AddSection(Airfoil::Naca4("0012"), 0.0);
+				w0.AddSection(Airfoil::Naca4("0012"), 1.0);
+				w0.mesh.stations = 16; w0.mesh.around = 36; w0.mesh.refine = false;
+				WingModelSpec wspec = w0.Serialize();
+				wspec.symmetric = true;
+				WingModel w(wspec);
+				w.mesh = w0.mesh;
+				Body wing;
+				wing.name = "wing";
+				wing.mesh = w.BuildMeshes(0.01)[0].mesh;
+				std::vector<Vec3> te = TrailingEdgePolyline(w0, 0.0, 1.0, 200), te_port = te;
+				for (Vec3& v : te_port) v.y = -v.y;
+				wing.trailing_edges = {te, te_port};
+				wing.trailing_edge_tolerance = 1e-5;
+				const double a6 = 6.0 * kPi / 180.0;
+				const Vec3 stream6{std::cos(a6), 0.0, std::sin(a6)}, lift6{-std::sin(a6), 0.0, std::cos(a6)};
+				// The slab: an ellipsoid 0.8 m behind the trailing edge, centred on
+				// the sheet's height there, twice the wing's half span wide.
+				const double x_te = te.front().x;
+				const double x_slab = x_te + 0.8, z_slab = te.front().z + 0.8 * std::tan(a6);
+				Body slab;
+				slab.name = "slab";
+				slab.mesh = EllipsoidMesh(0.15, 1.4, 0.03, 0.004);
+				slab.mesh.Translate({x_slab, 0.0, z_slab});
+				MeshStats sst = ComputeMeshStats(slab.mesh);
+				Options ro;
+				ro.reference_area = 2.0 * w0.planform().PlanformArea();
+				Solution alone = Solve({wing}, stream6, ro);
+				Options straight = ro;
+				straight.wake_routing = false;
+				Solution thru = Solve({wing, slab}, stream6, straight);
+				Solution routed = Solve({wing, slab}, stream6, ro);
+				for (const std::string& n : routed.notes) std::printf("  note (routed): %s\n", n.c_str());
+				auto cp_min = [](const BodyResult& b) { double m = 1.0; for (const PanelResult& p : b.panels) if (p.area > 0.0) m = std::min(m, p.cp); return m; };
+				int n_routed = 0, n_stopped = 0, n_segments = 0;
+				for (const WakeStrip& ws_ : routed.wakes) { if (ws_.routed_around >= 0 && !ws_.stopped) ++n_routed; if (ws_.stopped) ++n_stopped; n_segments = std::max(n_segments, static_cast<int>(ws_.Segments())); }
+				const double cl_alone = Dot(alone.force_coefficient, lift6), cl_thru = Dot(thru.force_coefficient, lift6), cl_routed = Dot(routed.force_coefficient, lift6);
+				const double clw_alone = alone.lift_from_wake.value_or(0.0), clw_routed = routed.lift_from_wake.value_or(0.0);
+				std::printf("wake routing: slab %d triangles; wing alone C_L %.4f (wake %.4f); with the slab, straight sheet: C_L %.4f, slab Cp min %.3f; routed (%d of %d strips, up to %d segments, %d stopped): C_L %.4f (wake %.4f), slab Cp min %.3f, wing Cp min %.3f\n",
+					sst.triangles, cl_alone, clw_alone, cl_thru, cp_min(thru.bodies[1]), n_routed, (int)routed.wakes.size(), n_segments, n_stopped, cl_routed, clw_routed, cp_min(routed.bodies[1]), cp_min(routed.bodies[0]));
+				Check(n_routed > 0 && n_stopped == 0 && n_segments >= 3, F("wake routing: the strips meeting the slab are kinked around it (%.0f routed, %.0f stopped, %.0f segments)", n_routed, n_stopped, n_segments));
+				Check(cp_min(thru.bodies[1]) < -2.0, F("wake routing: a sheet through the slab wrecks its pressures (Cp min %.3f), the case the routing is for", cp_min(thru.bodies[1])));
+				Check(cp_min(routed.bodies[1]) > -1.5, F("wake routing: the routed sheet leaves the slab's pressures bounded (Cp min %.3f)", cp_min(routed.bodies[1])));
+				Check(std::fabs(clw_routed / clw_alone - 1.0) < 0.05, F("wake routing: the wing's circulation is the wing's alone within 5%% (%.4f vs %.4f)", clw_routed, clw_alone));
+				Check(std::fabs(cl_routed / clw_routed - 1.0) < 0.15, F("wake routing: pressures and wake circulation agree (%.4f vs %.4f)", cl_routed, clw_routed));
+				// Every point of every routed path clears the slab.
+				MeshSdf slab_sdf(slab.mesh);
+				double worst_clear = 1e300;
+				for (const WakeStrip& ws_ : routed.wakes) for (const Vec3& q : ws_.a_path) worst_clear = std::min(worst_clear, slab_sdf.Distance(q));
+				Check(worst_clear > 0.0, F("wake routing: every routed path point lies outside the slab (closest %.4f)", worst_clear));
 			}
 		}
 	} catch (const std::exception& e) {

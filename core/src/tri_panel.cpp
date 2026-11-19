@@ -4,8 +4,10 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <functional>
 #include <limits>
 #include <memory>
+#include <set>
 #include <stdexcept>
 #include <unordered_map>
 
@@ -272,7 +274,176 @@ struct Prepared {
 	BodyResult result;
 	std::vector<PanelGeom> geoms;
 	int first = 0; // the index of its first panel among the unknowns
+	double panel_size = 0.0; // sqrt of the mean panel area: the body's typical panel
 };
+
+// ---------------------------------------------------------------------------
+// Wake routing
+// ---------------------------------------------------------------------------
+
+// The offset along `side` from q that puts the point `clearance` outside the
+// body: stepped on the signed distance (negative inside), each step at least
+// the deficit, so a sloping surface is reached in a few.
+double LiftClear(const Vec3& q, const Vec3& side, double h0, double clearance, const MeshSdf& sdf) {
+	double h = h0;
+	for (int it = 0; it < 60; ++it) {
+		const double dist = sdf.Distance(q + side * h);
+		if (dist >= clearance) break;
+		h += std::max(clearance - dist, 0.25 * clearance);
+	}
+	return h;
+}
+
+struct Route {
+	std::vector<Vec3> points;   // the sheet's centreline from the shed edge's midpoint
+	int around = -1;            // the last body kinked around
+	int kinks = 0;
+	bool stopped = false;
+};
+
+// The size of a mesh triangle: the square root of its area.
+double TriangleSize(const TriMesh& mesh, int t) {
+	const auto& tr = mesh.triangles[t];
+	return std::sqrt(0.5 * Length(Cross(mesh.vertices[tr[1]] - mesh.vertices[tr[0]], mesh.vertices[tr[2]] - mesh.vertices[tr[0]])));
+}
+
+// The centreline of a sheet shed at `mid` along `d` for `length`: straight,
+// except where the strip would come within a clearance of a body -- inside
+// it or merely close, a sheet a third of a panel off a surface wrecks that
+// surface's pressures as surely as one through it: there it is kinked to
+// pass the body on the side it approached from, the clearance off the
+// surface at `samples` stations over the contact, and then returns to the
+// stream line at the far end. The strip is followed along its RAILS, the
+// offsets of its two long edges and its centreline from `mid`, by a march
+// on the bodies' signed distance (sphere tracing: each step the smallest
+// margin in hand, so open air is crossed in a few steps); the first rail
+// within the clearance of a body starts the kink and the last to clear it
+// ends it, every rail lifted clear. The clearance is `clearance_panels`
+// times the size of the triangle nearest the first contact (local: a fused
+// configuration is one body with panels of every size). The shedding body's
+// own surface about the edge is passed over for the first few clearances.
+// A contact the march never leaves within the wake length is noted.
+Route RouteWake(const Vec3& mid, const std::vector<Vec3>& rails, const Vec3& d, double length, double t_min, double skip_radius, size_t nbodies,
+	const std::vector<double>& panel_size, const std::vector<const TriMesh*>& meshes, const std::function<const MeshSdf&(size_t)>& sdf_of,
+	double clearance_panels, int samples, double tiny) {
+	Route r;
+	r.points.push_back(mid);
+	if (nbodies == 0) { r.points.push_back(mid + d * length); return r; }
+	double step_min = std::numeric_limits<double>::infinity();
+	for (size_t bj = 0; bj < nbodies; ++bj) step_min = std::min(step_min, panel_size[bj]);
+	step_min = std::max(0.25 * step_min, tiny);
+	// The margin of every rail against body j at t: the least signed distance
+	// less that body's nominal clearance (negative: in contact), with the
+	// rail and the closest point that set it. A closest point within
+	// skip_radius of the shed edge is the shedding surface itself: no contact.
+	struct Margin { double value; Vec3 p; MeshSdf::Closest c; };
+	auto margin = [&](size_t bj, double t) {
+		const MeshSdf& sdf = sdf_of(bj);
+		Margin m{std::numeric_limits<double>::infinity(), {}, {}};
+		for (const Vec3& off : rails) {
+			const Vec3 p = mid + d * t + off;
+			const MeshSdf::Closest c = sdf.ClosestPoint(p);
+			if (Length(c.point - mid) < skip_radius) {
+				// The shedding surface about the edge: no contact, and a step of
+				// the skip radius at most (an infinite margin would end the march).
+				if (skip_radius < m.value) m = {skip_radius, p, c};
+				continue;
+			}
+			const double signed_d = sdf.Inside(p) ? -c.distance : c.distance;
+			const double v = signed_d - clearance_panels * panel_size[bj];
+			if (v < m.value) m = {v, p, c};
+		}
+		return m;
+	};
+	double t = t_min;
+	for (int guard = 0; guard < 16 && t < length; ++guard) {
+		// March to the first contact.
+		int body = -1;
+		Margin first{};
+		while (t < length) {
+			double least = std::numeric_limits<double>::infinity();
+			for (size_t bj = 0; bj < nbodies; ++bj) {
+				const Margin m = margin(bj, t);
+				if (m.value < least) { least = m.value; first = m; body = static_cast<int>(bj); }
+			}
+			if (least < 0.0) break;
+			t += std::max(least, step_min);
+			body = -1;
+		}
+		if (body < 0) break;
+		const MeshSdf& sdf = sdf_of(body);
+		const TriMesh& mesh = *meshes[body];
+		// The clearance: the struck triangle's size, floored at half the body's
+		// typical panel (a seam sliver at the contact must not set it).
+		const double local = first.c.triangle >= 0 ? TriangleSize(mesh, first.c.triangle) : panel_size[body];
+		const double clearance = clearance_panels * std::max({local, 0.5 * panel_size[body], tiny});
+		const double t_in = t;
+		// The side: away from the body, from its closest point to the rail.
+		Vec3 side = first.p - first.c.point;
+		if (sdf.Inside(first.p)) side = side * -1.0;
+		side = side - d * Dot(side, d);
+		if (LengthSq(side) < 1e-24) {
+			side = Vec3{0.0, 0.0, 1.0} - d * d.z;
+			if (LengthSq(side) < 1e-24) side = Vec3{0.0, 1.0, 0.0};
+		}
+		side = Normalized(side);
+		// The contact's end: where every rail is clear of this body again.
+		double t_out = t_in;
+		bool left_it = false;
+		while (t_out < length) {
+			t_out += step_min;
+			if (margin(body, t_out).value >= 0.0) { left_it = true; break; }
+		}
+		if (!left_it) { t_out = length; r.stopped = true; }
+		// Every rail clear at q: the largest lift any of them needs.
+		auto lift_all = [&](const Vec3& q, double h0) {
+			double h = h0;
+			for (const Vec3& off : rails) h = std::max(h, LiftClear(q + off, side, h, clearance, sdf));
+			return h;
+		};
+		// Before the contact, still on the line; over it, lifted clear: the
+		// stations on the line, each with the lift it needs, then once more
+		// between them where the straight segment between two cleared stations
+		// would still cut into a curving surface (a leading edge).
+		std::vector<std::pair<double, double>> zone;   // (t, h) along the contact
+		if (t_in - clearance > Dot(r.points.back() - mid, d) + tiny) zone.push_back({t_in - clearance, 0.0});
+		double h = 0.0;
+		const int n_s = std::max(samples, 1);
+		for (int k = 0; k <= n_s; ++k) {
+			const double tk = t_in + (t_out - t_in) * (static_cast<double>(k) / n_s);
+			h = lift_all(mid + d * tk, h);
+			zone.push_back({tk, h});
+		}
+		if (left_it && t_out + clearance < length) zone.push_back({t_out + clearance, lift_all(mid + d * (t_out + clearance), 0.0)});
+		for (int pass = 0; pass < 2; ++pass) {
+			std::vector<std::pair<double, double>> refined;
+			refined.push_back(zone.front());
+			for (size_t k = 1; k < zone.size(); ++k) {
+				const double tm = 0.5 * (zone[k - 1].first + zone[k].first), hm = 0.5 * (zone[k - 1].second + zone[k].second);
+				const double need = lift_all(mid + d * tm, hm);
+				if (need > hm + 0.05 * clearance) refined.push_back({tm, need});
+				refined.push_back(zone[k]);
+			}
+			if (refined.size() == zone.size()) break;
+			zone = std::move(refined);
+		}
+		for (const auto& [tk, hk] : zone) {
+			const Vec3 p = mid + d * tk + side * hk;
+			if (Length(p - r.points.back()) > tiny) r.points.push_back(p);
+		}
+		// Past it, back towards the line.
+		if (left_it && t_out + clearance < length) {
+			t = t_out + clearance + step_min;
+		} else {
+			t = length;
+		}
+		++r.kinks;
+		r.around = body;
+	}
+	const Vec3 end = mid + d * length;
+	if (Length(end - r.points.back()) > tiny) r.points.push_back(end);
+	return r;
+}
 
 } // namespace
 
@@ -454,6 +625,12 @@ Solution Solve(const std::vector<Body>& bodies, const Vec3& free_stream, const O
 			if (p.geoms.back().degenerate) ++degenerate;
 		}
 		if (degenerate > 0) p.result.notes.push_back(b.name + ": " + std::to_string(degenerate) + " triangle(s) of no area carry no panel");
+		{
+			double area = 0.0;
+			int n = 0;
+			for (const PanelGeom& g : p.geoms) if (!g.degenerate) { area += g.area; ++n; }
+			p.panel_size = n > 0 ? std::sqrt(area / n) : tiny;
+		}
 		p.result.mesh = std::move(mesh);
 		p.result.parent = std::move(parent);
 		p.first = n_panels;
@@ -474,6 +651,11 @@ Solution Solve(const std::vector<Body>& bodies, const Vec3& free_stream, const O
 	};
 	const double probe = options.buried_probe > 0.0 ? options.buried_probe : 0.02 * diag;
 	const double buried_tol = options.buried_tolerance > 0.0 ? options.buried_tolerance : 0.05 * diag;
+	std::vector<double> panel_sizes(bodies.size());
+	for (size_t bi = 0; bi < bodies.size(); ++bi) panel_sizes[bi] = prep[bi].panel_size;
+	std::vector<const TriMesh*> body_meshes(bodies.size());
+	for (size_t bi = 0; bi < bodies.size(); ++bi) body_meshes[bi] = &bodies[bi].mesh;
+	const std::function<const MeshSdf&(size_t)> sdf_fn = [&](size_t bi) -> const MeshSdf& { return sdf_of(bi); };
 	for (size_t bi = 0; bi < bodies.size(); ++bi) {
 		Prepared& p = prep[bi];
 		const Body& b = bodies[bi];
@@ -489,6 +671,7 @@ Solution Solve(const std::vector<Body>& bodies, const Vec3& free_stream, const O
 			for (int k = 0; k < 3; ++k) adj[EdgeKey(tr[k], tr[(k + 1) % 3])].push_back(static_cast<int>(t));
 		}
 		int non_manifold = 0, parallel = 0;
+		std::set<int> routed_around, stopped_at;
 		for (const auto& e : edges) {
 			auto it = adj.find(EdgeKey(e[0], e[1]));
 			if (it == adj.end()) continue;
@@ -522,10 +705,47 @@ Solution Solve(const std::vector<Body>& bodies, const Vec3& free_stream, const O
 			w.body = static_cast<int>(bi);
 			w.upper = p.first + (d0 >= d1 ? t0 : t1);
 			w.lower = p.first + (d0 >= d1 ? t1 : t0);
-			// Corners ordered so the strip's normal is nw: (b, a, a + L d, b + L d).
-			w.corners = {bb, a, a + d * wake_length, bb + d * wake_length};
+			// The sheet's centreline: straight along the stream, or kinked
+			// around a body in its way; both long edges follow it.
+			const Vec3 mid = (a + bb) * 0.5;
+			Route route;
+			if (options.wake_routing) {
+				const std::vector<Vec3> rails{ a - mid, bb - mid, Vec3{0.0, 0.0, 0.0} };
+				// The march starts a couple of clearances past the edge, and the
+				// shedding body's own surface about the edge is no contact.
+				const double own_clear = options.wake_clearance_panels * p.panel_size;
+				route = RouteWake(mid, rails, d, wake_length, 2.5 * own_clear, 2.0 * own_clear, bodies.size(), panel_sizes, body_meshes, sdf_fn, options.wake_clearance_panels, options.wake_route_samples, tiny);
+			} else {
+				route.points = {mid, mid + d * wake_length};
+			}
+			for (const Vec3& q : route.points) {
+				w.a_path.push_back(a + (q - mid));
+				w.b_path.push_back(bb + (q - mid));
+			}
+			if (route.kinks > 0 || route.stopped) {
+				w.routed_around = route.around;
+				w.stopped = route.stopped;
+				if (route.stopped) { ++p.result.stopped_edges; stopped_at.insert(route.around); }
+				else { ++p.result.routed_edges; routed_around.insert(route.around); }
+			}
+			// Corners of the first segment, ordered so the strip's normal is nw: (b, a, a', b').
+			w.corners = {bb, a, w.a_path[1], w.b_path[1]};
 			sol.wakes.push_back(w);
 			++p.result.wake_edges;
+		}
+		if (p.result.routed_edges > 0) {
+			std::string names;
+			for (int k : routed_around) names += (names.empty() ? "" : ", ") + bodies[k].name;
+			char clear_txt[32];
+			std::snprintf(clear_txt, sizeof clear_txt, "%g", options.wake_clearance_panels);
+			p.result.notes.push_back(b.name + ": " + std::to_string(p.result.routed_edges) + " trailing-edge edge(s) shed a sheet that would run into a body downstream (" + names
+				+ ") and were routed around it, " + clear_txt + " panel sizes off its surface");
+		}
+		if (p.result.stopped_edges > 0) {
+			std::string names;
+			for (int k : stopped_at) names += (names.empty() ? "" : ", ") + bodies[k].name;
+			p.result.notes.push_back(b.name + ": WARNING " + std::to_string(p.result.stopped_edges) + " trailing-edge edge(s) shed a sheet that stays within a clearance of a body to the end of the wake (" + names
+				+ "): lengthen the wake, or expect that body's pressures under the sheet to be off");
 		}
 		if (non_manifold > 0) p.result.notes.push_back(b.name + ": " + std::to_string(non_manifold) + " trailing-edge edge(s) with more than two triangles shed no wake");
 		if (parallel > 0) p.result.notes.push_back(b.name + ": " + std::to_string(parallel) + " trailing-edge edge(s) run along the stream and shed no wake");
@@ -556,17 +776,20 @@ Solution Solve(const std::vector<Body>& bodies, const Vec3& free_stream, const O
 			image_sigma[j] = geom_of[j]->degenerate ? 0.0 : -Dot(free_stream, image_geoms[j].n);
 		}
 	}
-	// Wake strips as two triangles each (and their images).
+	// Wake strips as two triangles per segment (and their images), every
+	// segment of a strip carrying the same strength.
 	struct WakeTri { PanelGeom g; int upper, lower; };
 	std::vector<WakeTri> wake_tris;
 	for (const WakeStrip& w : sol.wakes) {
-		const Vec3& c0 = w.corners[0]; const Vec3& c1 = w.corners[1]; const Vec3& c2 = w.corners[2]; const Vec3& c3 = w.corners[3];
-		const PanelGeom g0 = MakeGeom(c0, c1, c2, 0.0), g1 = MakeGeom(c0, c2, c3, 0.0);
-		wake_tris.push_back({g0, w.upper, w.lower});
-		wake_tris.push_back({g1, w.upper, w.lower});
-		if (mirrored) {
-			wake_tris.push_back({Mirrored(g0, y0), w.upper, w.lower});
-			wake_tris.push_back({Mirrored(g1, y0), w.upper, w.lower});
+		for (size_t k = 0; k + 1 < w.a_path.size(); ++k) {
+			const Vec3& c0 = w.b_path[k]; const Vec3& c1 = w.a_path[k]; const Vec3& c2 = w.a_path[k + 1]; const Vec3& c3 = w.b_path[k + 1];
+			const PanelGeom g0 = MakeGeom(c0, c1, c2, 0.0), g1 = MakeGeom(c0, c2, c3, 0.0);
+			if (!g0.degenerate) wake_tris.push_back({g0, w.upper, w.lower});
+			if (!g1.degenerate) wake_tris.push_back({g1, w.upper, w.lower});
+			if (mirrored) {
+				if (!g0.degenerate) wake_tris.push_back({Mirrored(g0, y0), w.upper, w.lower});
+				if (!g1.degenerate) wake_tris.push_back({Mirrored(g1, y0), w.upper, w.lower});
+			}
 		}
 	}
 

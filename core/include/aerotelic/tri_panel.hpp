@@ -105,6 +105,14 @@ struct Options {
 	bool buried_rule = true;
 	// Neighbours for the gradient fit must face within this many degrees.
 	double gradient_max_angle_deg = 60.0;
+	// Wake routing (see WakeStrip): a sheet whose straight path would enter a
+	// body -- any body, the shedding one included: a fused configuration is
+	// one body -- is kinked around it, `wake_clearance_panels` of that body's
+	// typical panel size off its surface, sampled at `wake_route_samples`
+	// stations over the body's extent along the stream.
+	bool wake_routing = true;
+	double wake_clearance_panels = 2.0;
+	int wake_route_samples = 6;
 	// A panel's surface speed is capped at this many times the free stream
 	// (0: no cap). No potential flow about a closed body goes much beyond 2
 	// (a cylinder's crosswise peak); a fit on neighbours lying in a line can
@@ -122,11 +130,27 @@ struct PanelResult {
 	double cp = 0.0;
 };
 
+// One trailing-edge edge's wake: a sheet of constant doublet strength from
+// the edge (a, b) downstream. Its two long edges are the polylines a_path
+// (from a) and b_path (from b), of equal length; segment k is the quad
+// (b_path[k], a_path[k], a_path[k+1], b_path[k+1]). A sheet whose straight
+// path along the stream would enter a body, or pass within a clearance of
+// it, is ROUTED around it (Options::wake_routing): kinked to pass the body
+// on the side it approached from, the clearance off its surface, and back
+// to the stream line beyond -- a doublet sheet stopped short would close
+// its vortex loop with a filament at that body's leading edge; through the
+// body it is a potential jump across the body's panels; a fraction of a
+// panel off the surface it is nearly as bad. A straight strip has two
+// points per path.
 struct WakeStrip {
-	std::array<Vec3, 4> corners; // a, b, b + L d, a + L d
+	std::vector<Vec3> a_path, b_path;
+	std::array<Vec3, 4> corners; // the FIRST segment: b, a, a_path[1], b_path[1] (kept for readers of the shed edge)
 	double mu = 0.0;
 	int body = -1;
 	int upper = -1, lower = -1;  // the two panels of the body at the edge
+	int routed_around = -1;      // the body the sheet was kinked around (-1: none)
+	bool stopped = false;        // the sheet stayed within a clearance of a body to the end of the wake length
+	size_t Segments() const { return a_path.size() >= 2 ? a_path.size() - 1 : 0; }
 };
 
 struct BodyResult {
@@ -148,6 +172,8 @@ struct BodyResult {
 	// the same through its rim rule. A sideslip sheds it.
 	int centreline_edges = 0;
 	int buried_edges = 0;        // trailing-edge edges whose wake would run into another body
+	int routed_edges = 0;        // trailing-edge edges whose sheet was kinked around a body downstream
+	int stopped_edges = 0;       // ... or ended short of one it never left (see WakeStrip::stopped)
 	int dropped_in_plane = 0;    // triangles lying in the symmetry plane, left out
 	// The gradient fit: panels whose neighbours lay in a line (the gradient
 	// taken along it only), and panels whose surface speed exceeded
