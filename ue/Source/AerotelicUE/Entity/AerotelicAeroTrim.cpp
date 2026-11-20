@@ -772,6 +772,11 @@ namespace AerotelicAeroTrim
 		OnStatus = InOnStatus;
 		OnDone = InOnDone;
 		Outcome = FOutcome();
+		Driver.Reset();
+		LastCase.Reset();
+		BestCase.Reset();
+		MeshText.Empty();
+		StopReason.Empty();
 		bCancel = false;
 		bRunning = true;
 		++Generation;
@@ -784,30 +789,292 @@ namespace AerotelicAeroTrim
 		Outcome.ReferenceAreaSI = (Setup.ReferenceArea > 0.0 ? Setup.ReferenceArea : 1.0) * Units.AreaToSI();
 		Outcome.CLRequired = aerotelic::aero::RequiredLiftCoefficient(Condition.LoadFactor, Outcome.Weight, Outcome.DynamicPressure, Outcome.ReferenceAreaSI);
 
-		if (OnStatus) OnStatus(FText::FromString(FString::Printf(TEXT("Trim '%s': building the aero mesh for the base and stepped states (α = %g°, δ = %g°; C_L required %.4f)..."), *Condition.Name, Condition.Alpha0, Condition.Delta0, Outcome.CLRequired)));
-		TArray<TSharedPtr<FCase>> Cases;
+		aerotelic::aero::TrimDriver::Settings S;
+		S.CL_target = Outcome.CLRequired;
+		S.control = Condition.Control.IsSet();
+		S.tolerance.CL_fraction = Condition.TolCLFraction;
+		S.tolerance.CL_floor = Condition.TolCLFloor;
+		S.tolerance.Cm = Condition.TolCm;
+		S.step = Condition.Step != 0.0 ? Condition.Step : 1.0;
+		S.max_step_deg = Condition.MaxStepDeg;
+		S.jacobian_move_deg = Condition.JacobianMoveDeg;
+		S.stall_ratio = Condition.StallRatio;
+		S.max_iterations = FMath::Max(Condition.MaxIterations, 1);
+		S.max_jacobians = FMath::Max(Condition.MaxJacobians, 1);
+		Driver = MakeShared<aerotelic::aero::TrimDriver>(S, Condition.Alpha0, Condition.Delta0);
+		Advance();
+	}
+
+	void FRunner::Advance()
+	{
+		if (!Driver.IsValid()) { Finish(false, TEXT("no trim is running")); return; }
+		if (bCancel.load()) { Finish(false, TEXT("cancelled")); return; }
+		using Ask = aerotelic::aero::TrimDriver::Ask;
+		switch (Driver->Next())
+		{
+		case Ask::Derivatives:
+			RequestDerivatives();
+			return;
+		case Ask::State:
+			RequestState();
+			return;
+		case Ask::Done:
+			FinishFromDriver();
+			return;
+		case Ask::Failed:
+		default:
+			Finish(false, (MeshText.IsEmpty() ? FString() : TEXT("Aero mesh:\n") + MeshText) + HistoryText()
+				+ TEXT("\nNO TRIM: ") + UTF8_TO_TCHAR(Driver->Note().c_str()));
+			return;
+		}
+	}
+
+	void FRunner::RequestDerivatives()
+	{
+		const bool bControl = Condition.Control.IsSet();
+		const FControl* Ctl = bControl ? &Condition.Control : nullptr;
+		const aerotelic::aero::TrimPoint B = Driver->BaseState(), A = Driver->StepAlphaState(), D = Driver->StepDeltaState();
+		const bool bHaveBase = Driver->BaseAlreadySolved() && LastCase.IsValid();
+		if (OnStatus)
+		{
+			OnStatus(FText::FromString(FString::Printf(
+				TEXT("Trim '%s': %s the derivatives about α = %.3f°, δ = %.3f° (C_L required %.4f)..."),
+				*Condition.Name, Driver->Jacobians() == 0 ? TEXT("measuring") : TEXT("re-measuring"), B.alpha_deg, B.delta_deg, Outcome.CLRequired)));
+		}
+		TSharedPtr<FCase> BaseCase, AlphaCase, DeltaCase;
+		TArray<TSharedPtr<FCase>> ToSolve;
 		try
 		{
-			const FControl* Ctl = Condition.Control.IsSet() ? &Condition.Control : nullptr;
-			Cases.Add(BuildCase(Setup, Condition.Alpha0, 0.0, Ctl, Condition.Delta0));
-			Cases.Add(BuildCase(Setup, Condition.Alpha0 + Condition.Step, 0.0, Ctl, Condition.Delta0));
-			if (Ctl != nullptr) Cases.Add(BuildCase(Setup, Condition.Alpha0, 0.0, Ctl, Condition.Delta0 + Condition.Step));
+			if (bHaveBase)
+			{
+				BaseCase = LastCase;
+			}
+			else
+			{
+				BaseCase = BuildCase(Setup, B.alpha_deg, 0.0, Ctl, B.delta_deg);
+				ToSolve.Add(BaseCase);
+			}
+			AlphaCase = BuildCase(Setup, A.alpha_deg, 0.0, Ctl, A.delta_deg);
+			ToSolve.Add(AlphaCase);
+			if (bControl)
+			{
+				DeltaCase = BuildCase(Setup, D.alpha_deg, 0.0, Ctl, D.delta_deg);
+				ToSolve.Add(DeltaCase);
+			}
 		}
 		catch (const std::exception& E)
 		{
 			Finish(false, FString(TEXT("the bodies could not be meshed for the panel method: ")) + UTF8_TO_TCHAR(E.what()));
 			return;
 		}
-		Outcome.Derivatives = Cases;
-		Outcome.Report = TEXT("Aero mesh:\n") + Cases[0]->MeshReport;
+		if (MeshText.IsEmpty()) MeshText = BaseCase->MeshReport;
+		Outcome.Solves += ToSolve.Num();
 		TWeakPtr<FRunner> Weak = AsShared();
-		SolveCases(Cases, SolveOptions(Setup, &Condition.MassCentre), [Weak](bool bOk, const FString& Why)
+		SolveCases(ToSolve, SolveOptions(Setup, &Condition.MassCentre), [Weak, BaseCase, AlphaCase, DeltaCase, bHaveBase](bool bOk, const FString& Why)
 		{
 			TSharedPtr<FRunner> Self = Weak.Pin();
 			if (!Self.IsValid()) return;
 			if (!bOk) { Self->Finish(false, Why); return; }
-			Self->OnDerivativesSolved();
+			// Every state a derivative is taken between must itself be an
+			// operating point, or the derivative is meaningless.
+			FString Bad;
+			const bool bBaseOk = bHaveBase || Self->Accept(*BaseCase, Bad);
+			const bool bAlphaOk = bBaseOk && Self->Accept(*AlphaCase, Bad);
+			const bool bDeltaOk = bAlphaOk && (!DeltaCase.IsValid() || Self->Accept(*DeltaCase, Bad));
+			if (!bDeltaOk)
+			{
+				// A state of the derivative set is not an operating point, so no
+				// derivative taken on it means anything. Stop -- but keep the best
+				// HEALTHY iterate reached so far rather than throwing the run away.
+				Self->StopReason = Bad;
+				if (Self->Driver->HasBest() && Self->BestCase.IsValid()) { Self->FinishFromDriver(); return; }
+				Self->Driver->Fail(TCHAR_TO_UTF8(*Bad));
+				Self->Advance();
+				return;
+			}
+			auto Point = [](const FCase& C) { return aerotelic::aero::TrimPoint{ C.AlphaDeg, C.DeltaDeg, C.CL, C.Cm }; };
+			Self->LastCase = BaseCase;
+			Self->Driver->FeedDerivatives(Point(*BaseCase), Point(*AlphaCase), DeltaCase.IsValid() ? Point(*DeltaCase) : Point(*BaseCase));
+			Self->Outcome.Jacobian = Self->Driver->Jacobian();
+			Self->Outcome.Jacobians = Self->Driver->Jacobians();
+			if (!bHaveBase) Self->Note(BaseCase, true, false);
+			else if (Self->Outcome.History.Num() > 0) Self->Outcome.History.Last().bJacobian = true;
+			Self->Advance();
 		});
+	}
+
+	void FRunner::RequestState()
+	{
+		const bool bControl = Condition.Control.IsSet();
+		const FControl* Ctl = bControl ? &Condition.Control : nullptr;
+		const aerotelic::aero::TrimPoint N = Driver->NextState();
+		const bool bClamped = Driver->LastStepClamped();
+		if (OnStatus)
+		{
+			OnStatus(FText::FromString(FString::Printf(
+				TEXT("Trim '%s': correction %d of at most %d%s -- solving α = %.3f°%s..."),
+				*Condition.Name, Driver->Iterations() + 1, FMath::Max(Condition.MaxIterations, 1), bClamped ? TEXT(" (step held to the trust region)") : TEXT(""),
+				N.alpha_deg, bControl ? *FString::Printf(TEXT(", δ = %.3f°"), N.delta_deg) : TEXT(""))));
+		}
+		TSharedPtr<FCase> C;
+		try
+		{
+			C = BuildCase(Setup, N.alpha_deg, 0.0, Ctl, N.delta_deg);
+		}
+		catch (const std::exception& E)
+		{
+			Finish(false, HistoryText() + FString(TEXT("\nThe next state failed to mesh: ")) + UTF8_TO_TCHAR(E.what()));
+			return;
+		}
+		if (MeshText.IsEmpty()) MeshText = C->MeshReport;
+		++Outcome.Solves;
+		TWeakPtr<FRunner> Weak = AsShared();
+		TArray<TSharedPtr<FCase>> ToSolve;
+		ToSolve.Add(C);
+		SolveCases(ToSolve, SolveOptions(Setup, &Condition.MassCentre), [Weak, C, bClamped](bool bOk, const FString& Why)
+		{
+			TSharedPtr<FRunner> Self = Weak.Pin();
+			if (!Self.IsValid()) return;
+			if (!bOk) { Self->Finish(false, Why); return; }
+			FString Bad;
+			if (!Self->Accept(*C, Bad))
+			{
+				Self->Note(C, false, bClamped);   // in the history, but never fed to the driver
+				Self->StopReason = Bad;
+				if (Self->Driver->HasBest() && Self->BestCase.IsValid()) { Self->FinishFromDriver(); return; }
+				Self->Driver->Fail(TCHAR_TO_UTF8(*Bad));
+				Self->Advance();
+				return;
+			}
+			Self->LastCase = C;
+			Self->Driver->FeedState({ C->AlphaDeg, C->DeltaDeg, C->CL, C->Cm });
+			Self->Outcome.Iterations = Self->Driver->Iterations();
+			Self->Note(C, false, bClamped);
+			Self->Advance();
+		});
+	}
+
+	bool FRunner::Accept(FCase& C, FString& OutWhy) const
+	{
+		Derive(C, Setup.ReferenceLength);
+		if (!(Condition.WakeCheckFraction > 0.0) || !C.Sol.lift_from_wake.has_value()) return true;
+		const double CLw = C.Sol.lift_from_wake.value();
+		const double Band = FMath::Max(Condition.WakeCheckFraction * FMath::Abs(CLw), Condition.WakeCheckFloor);
+		if (FMath::Abs(C.CL - CLw) <= Band) return true;
+		OutWhy = FString::Printf(
+			TEXT("the panel solution at α = %.3f°, δ = %.3f° is not an operating point: the lift from the PRESSURES is C_L %.4f while the WAKE CIRCULATION gives %.4f, and in a potential flow those are the same number. ")
+			TEXT("Something in the flow field is wrong -- a wake sheet running into a body downstream, panels in near contact, a mesh that is not closed -- and no trim taken on it would mean anything. ")
+			TEXT("Run Analysis > Panel Method at this attitude and look at the mesh and the pressures before trimming again."),
+			C.AlphaDeg, C.DeltaDeg, C.CL, CLw);
+		return false;
+	}
+
+	void FRunner::Note(const TSharedPtr<FCase>& C, bool bJacobianHere, bool bClamped)
+	{
+		FTrimIterate It;
+		It.AlphaDeg = C->AlphaDeg;
+		It.DeltaDeg = C->DeltaDeg;
+		It.CL = C->CL;
+		It.Cm = C->Cm;
+		It.bWake = C->Sol.lift_from_wake.has_value();
+		It.CLWake = C->Sol.lift_from_wake.value_or(0.0);
+		It.ResidualNorm = aerotelic::aero::ResidualNorm({ C->AlphaDeg, C->DeltaDeg, C->CL, C->Cm },
+			Outcome.CLRequired, Condition.Control.IsSet(), Driver->settings().tolerance);
+		It.bJacobian = bJacobianHere;
+		It.bClamped = bClamped;
+		Outcome.History.Add(It);
+		// The iterate to keep is the one with the smallest residual, which the
+		// driver has just chosen; hold on to its case.
+		const aerotelic::aero::TrimPoint& Best = Driver->Best();
+		if (Driver->HasBest() && FMath::IsNearlyEqual(Best.alpha_deg, C->AlphaDeg, 1e-9) && FMath::IsNearlyEqual(Best.delta_deg, C->DeltaDeg, 1e-9))
+		{
+			BestCase = C;
+		}
+	}
+
+	FString FRunner::HistoryText() const
+	{
+		if (Outcome.History.Num() == 0) return FString();
+		const bool bControl = Condition.Control.IsSet();
+		FString Text = FString::Printf(TEXT("\nThe iteration (C_L required %.4f; the residual is in tolerances, 1 or less is trimmed):"), Outcome.CLRequired);
+		for (int32 i = 0; i < Outcome.History.Num(); ++i)
+		{
+			const FTrimIterate& It = Outcome.History[i];
+			Text += FString::Printf(TEXT("\n  %2d  α %8.3f°%s  C_L %8.4f  C_m %9.5f  residual %8.2f%s%s%s"),
+				i, It.AlphaDeg,
+				bControl ? *FString::Printf(TEXT("  δ %8.3f°"), It.DeltaDeg) : TEXT(""),
+				It.CL, It.Cm, It.ResidualNorm,
+				It.bWake ? *FString::Printf(TEXT("  (wake C_L %.4f)"), It.CLWake) : TEXT(""),
+				It.bJacobian ? TEXT("  [derivatives measured here]") : TEXT(""),
+				It.bClamped ? TEXT("  [step held to the trust region]") : TEXT(""));
+		}
+		return Text;
+	}
+
+	void FRunner::FinishFromDriver()
+	{
+		if (!Driver->HasBest() || !BestCase.IsValid())
+		{
+			Finish(false, HistoryText() + TEXT("\nNO TRIM: no state of the iteration was solved."));
+			return;
+		}
+		FCase& C = *BestCase;
+		const FOutcome& O = Outcome;
+		Outcome.Trimmed = BestCase;
+		Outcome.bConverged = Driver->Trimmed();
+		Outcome.LiftErrorFraction = Driver->BestLiftErrorFraction();
+		Outcome.ResidualNorm = Driver->BestNorm();
+		Outcome.Iterations = Driver->Iterations();
+		Outcome.Jacobians = Driver->Jacobians();
+		Outcome.Jacobian = Driver->Jacobian();
+		const bool bControl = Condition.Control.IsSet();
+
+		FString Text = TEXT("Aero mesh:\n") + MeshText;
+		Text += FString::Printf(TEXT("\nDerivatives last measured about α = %.3f°, δ = %.3f°: dC_L/dα = %.4f, dC_m/dα = %.4f per degree%s."),
+			O.Jacobian.alpha_deg, O.Jacobian.delta_deg, O.Jacobian.dCL_dalpha, O.Jacobian.dCm_dalpha,
+			bControl ? *FString::Printf(TEXT("; dC_L/dδ = %.4f, dC_m/dδ = %.4f per degree (%s)"), O.Jacobian.dCL_ddelta, O.Jacobian.dCm_ddelta, *Condition.Control.Label) : TEXT(""));
+		Text += HistoryText();
+		const double Lift = C.CL * O.DynamicPressure * O.ReferenceAreaSI;
+		Text += FString::Printf(TEXT("\n%s at α = %.3f°%s: C_L %.4f against %.4f required (lift %.4g N against n W = %.4g N, %.2f%% off), C_m about the mass centre %.5f; C_L from the wake circulation %.4f."),
+			Outcome.bConverged ? TEXT("TRIMMED") : TEXT("NOT TRIMMED -- the best state reached"),
+			C.AlphaDeg, bControl ? *FString::Printf(TEXT(", %s at δ = %.3f°"), *Condition.Control.Label, C.DeltaDeg) : TEXT(" (angle of attack alone; the moment is what it is)"),
+			C.CL, O.CLRequired, Lift, Condition.LoadFactor * O.Weight, 100.0 * Outcome.LiftErrorFraction, C.Cm, C.Sol.lift_from_wake.value_or(0.0));
+		Text += FString::Printf(TEXT("\n%d panel solves in %d correction%s and %d derivative measurement%s; the residual is %.2f tolerances (lift to %.4f, moment to %.4f)."),
+			O.Solves, O.Iterations, O.Iterations == 1 ? TEXT("") : TEXT("s"), O.Jacobians, O.Jacobians == 1 ? TEXT("") : TEXT("s"),
+			Outcome.ResidualNorm, aerotelic::aero::LiftTolerance(O.CLRequired, Driver->settings().tolerance), Driver->settings().tolerance.Cm);
+		Text += FString::Printf(TEXT("\nSolve: %s unknowns, %s, %.2f s."), *Thousands(C.Sol.unknowns), C.Sol.direct ? TEXT("direct") : *FString::Printf(TEXT("GMRES %d iterations, residual %.1e"), C.Sol.iterations, C.Sol.residual), C.Sol.seconds_influence + C.Sol.seconds_solve);
+		for (const std::string& N : C.Sol.notes) Text += TEXT("\n") + FString(UTF8_TO_TCHAR(N.c_str()));
+		if (!Driver->Note().empty()) Text += TEXT("\n") + FString(UTF8_TO_TCHAR(Driver->Note().c_str())) + TEXT(".");
+		if (!StopReason.IsEmpty()) Text += TEXT("\nTHE ITERATION STOPPED EARLY: ") + StopReason + TEXT(" The state above is the best one reached before that.");
+
+		// WHAT IS STORED. A case that is not in equilibrium is not a load
+		// case: the structure would be sized for a flight condition the
+		// aircraft is not in. Case 1 of my_drone was stored 148% off.
+		const double Err = FMath::Abs(Outcome.LiftErrorFraction);
+		if (!Outcome.bConverged && Condition.StoreLimitFraction > 0.0 && Err > Condition.StoreLimitFraction)
+		{
+			Finish(false, Text + FString::Printf(
+				TEXT("\nNOT STORED: the lift is %.1f%% off what the condition needs, beyond the %.0f%% a load case may be out by. ")
+				TEXT("Trim again from this attitude (it is the best the iteration reached), loosen the case, or look at whether the configuration can hold this load factor at this speed at all."),
+				100.0 * Outcome.LiftErrorFraction, 100.0 * Condition.StoreLimitFraction));
+			return;
+		}
+		if (!Outcome.bConverged)
+		{
+			Outcome.Warning = FString::Printf(TEXT("stored off target: the lift is %.2f%% from what the condition needs (%.2f tolerances out)"), 100.0 * Outcome.LiftErrorFraction, Outcome.ResidualNorm);
+			Text += FString::Printf(TEXT("\nWARNING: %s. The pressures stored are this state's, not an equilibrium's."), *Outcome.Warning);
+		}
+		if (bControl)
+		{
+			Text += FString::Printf(TEXT("\nThe model's own %s deflection is still %g°: set it to %.2f° in the wing's Flaps tab so the structural model's flap body sits where the air loads were computed."), *Condition.Control.Label, Condition.Delta0, C.DeltaDeg);
+		}
+		Outcome.Case = MakeLoadCase(C, Setup, Condition.Name, O.DynamicPressure, &Condition, &Outcome);
+		const aerotelic::Vec3 Fc = Outcome.Case->ForceCoefficient();
+		Text += FString::Printf(TEXT("\nLoad case '%s': %d panels, q = %.4g Pa; the panels' own resultant over S_ref is (%.4f, %.4f, %.4f)%s."),
+			*Outcome.Case->Name, Outcome.Case->BodyPanels(), Outcome.Case->DynamicPressure, Fc.x, Fc.y, Fc.z,
+			C.bImagedSolve ? TEXT(" with the image about y = 0") : TEXT(""));
+		Outcome.Report = Text;
+		Finish(true, FString());
 	}
 
 	void FRunner::Cancel()
@@ -850,74 +1117,6 @@ namespace AerotelicAeroTrim
 		});
 	}
 
-	void FRunner::OnDerivativesSolved()
-	{
-		TArray<aerotelic::aero::TrimPoint> Points;
-		for (TSharedPtr<FCase>& C : Outcome.Derivatives)
-		{
-			Derive(*C, Setup.ReferenceLength);
-			Points.Add({ C->AlphaDeg, C->DeltaDeg, C->CL, C->Cm });
-		}
-		const bool bControl = Condition.Control.IsSet();
-		Outcome.Result = bControl ? aerotelic::aero::SolveTrim(Points[0], Points[1], Points[2], Outcome.CLRequired)
-			: aerotelic::aero::SolveTrimAlpha(Points[0], Points[1], Outcome.CLRequired);
-		FString Text = Outcome.Report;
-		Text += FString::Printf(TEXT("\nBase α = %g°, δ = %g°: C_L %.4f, C_m(cg) %.4f. dC_L/dα = %.4f, dC_m/dα = %.4f per degree%s."),
-			Condition.Alpha0, Condition.Delta0, Points[0].CL, Points[0].Cm, Outcome.Result.dCL_dalpha, Outcome.Result.dCm_dalpha,
-			bControl ? *FString::Printf(TEXT("; dC_L/dδ = %.4f, dC_m/dδ = %.4f per degree (%s)"), Outcome.Result.dCL_ddelta, Outcome.Result.dCm_ddelta, *Condition.Control.Label) : TEXT(""));
-		if (!Outcome.Result.ok)
-		{
-			Finish(false, Text + TEXT("\nNO TRIM: ") + UTF8_TO_TCHAR(Outcome.Result.note.c_str()));
-			return;
-		}
-		if (FMath::Abs(Outcome.Result.alpha_deg) > 25.0 || FMath::Abs(Outcome.Result.delta_deg) > 45.0)
-		{
-			Finish(false, Text + FString::Printf(TEXT("\nNO TRIM: the step asks for α = %.2f°, δ = %.2f°, outside anything a potential flow describes (|α| < 25°, |δ| < 45°). The condition is too slow or too heavy for these bodies, or the control too small."), Outcome.Result.alpha_deg, Outcome.Result.delta_deg));
-			return;
-		}
-		Outcome.Report = Text;
-		if (OnStatus) OnStatus(FText::FromString(FString::Printf(TEXT("Trim '%s': step to α = %.3f°, δ = %.3f°; solving the trimmed state..."), *Condition.Name, Outcome.Result.alpha_deg, Outcome.Result.delta_deg)));
-		TArray<TSharedPtr<FCase>> Cases;
-		try
-		{
-			Cases.Add(BuildCase(Setup, Outcome.Result.alpha_deg, 0.0, bControl ? &Condition.Control : nullptr, Outcome.Result.delta_deg));
-		}
-		catch (const std::exception& E)
-		{
-			Finish(false, Text + FString(TEXT("\nThe trimmed state failed to mesh: ")) + UTF8_TO_TCHAR(E.what()));
-			return;
-		}
-		Outcome.Trimmed = Cases[0];
-		TWeakPtr<FRunner> Weak = AsShared();
-		SolveCases(Cases, SolveOptions(Setup, &Condition.MassCentre), [Weak](bool bOk, const FString& Why)
-		{
-			TSharedPtr<FRunner> Self = Weak.Pin();
-			if (!Self.IsValid()) return;
-			if (!bOk) { Self->Finish(false, Why); return; }
-			FCase& C = *Self->Outcome.Trimmed;
-			Derive(C, Self->Setup.ReferenceLength);
-			const FOutcome& O = Self->Outcome;
-			const double Lift = C.CL * O.DynamicPressure * O.ReferenceAreaSI;
-			FString Text = Self->Outcome.Report;
-			Text += FString::Printf(TEXT("\nTRIMMED at α = %.3f°%s: C_L %.4f against %.4f required (lift %.4g N against n W = %.4g N, %.2f%% off), C_m about the mass centre %.5f; C_L from the wake circulation %.4f."),
-				C.AlphaDeg, Self->Condition.Control.IsSet() ? *FString::Printf(TEXT(", %s at δ = %.3f°"), *Self->Condition.Control.Label, C.DeltaDeg) : TEXT(" (angle of attack alone; the moment is what it is)"),
-				C.CL, O.CLRequired, Lift, Self->Condition.LoadFactor * O.Weight, 100.0 * (C.CL / FMath::Max(O.CLRequired, 1e-12) - 1.0), C.Cm, C.Sol.lift_from_wake.value_or(0.0));
-			Text += FString::Printf(TEXT("\nSolve: %s unknowns, %s, %.2f s."), *Thousands(C.Sol.unknowns), C.Sol.direct ? TEXT("direct") : *FString::Printf(TEXT("GMRES %d iterations, residual %.1e"), C.Sol.iterations, C.Sol.residual), C.Sol.seconds_influence + C.Sol.seconds_solve);
-			for (const std::string& N : C.Sol.notes) Text += TEXT("\n") + FString(UTF8_TO_TCHAR(N.c_str()));
-			Text += TEXT("\nThe residual is the method's nonlinearity over the step (the wake sheds along the stream; a flap kinks the section): trim again from here to tighten it.");
-			if (Self->Condition.Control.IsSet())
-			{
-				Text += FString::Printf(TEXT("\nThe model's own %s deflection is still %g°: set it to %.2f° in the wing's Flaps tab so the structural model's flap body sits where the air loads were computed."), *Self->Condition.Control.Label, Self->Condition.Delta0, C.DeltaDeg);
-			}
-			Self->Outcome.Case = MakeLoadCase(C, Self->Setup, Self->Condition.Name, O.DynamicPressure, &Self->Condition, &Self->Outcome);
-			const aerotelic::Vec3 Fc = Self->Outcome.Case->ForceCoefficient();
-			Text += FString::Printf(TEXT("\nLoad case '%s': %d panels, q = %.4g Pa; the panels' own resultant over S_ref is (%.4f, %.4f, %.4f)%s."),
-				*Self->Outcome.Case->Name, Self->Outcome.Case->BodyPanels(), Self->Outcome.Case->DynamicPressure, Fc.x, Fc.y, Fc.z,
-				C.bImagedSolve ? TEXT(" with the image about y = 0") : TEXT(""));
-			Self->Outcome.Report = Text;
-			Self->Finish(true, FString());
-		});
-	}
 
 	void FRunner::Finish(bool bOk, const FString& Why)
 	{

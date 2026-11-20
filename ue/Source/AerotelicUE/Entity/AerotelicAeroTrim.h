@@ -178,6 +178,51 @@ namespace AerotelicAeroTrim
 		double Alpha0 = 2.0, Delta0 = 0.0;      // the base state
 		double Step = 1.0;                      // degrees, both derivatives
 		FString Name;                           // the load case's name
+
+		// THE ITERATION (core aero_trim.hpp TrimDriver, 2026-11-19). One
+		// Newton step lands where the LINEAR model is trimmed, which over a
+		// step of fifteen degrees is not where the configuration is: Case 1 of
+		// my_drone was stored from one at C_L -0.60 against the 1.24 it needed.
+		// The defaults here are the trim; a caller only touches them to loosen
+		// a case it cannot converge.
+		// 12 and 6 because my_drone's Case 1 -- a V-n corner that wants a
+		// twenty-degree excursion from the base state -- spent 8 corrections
+		// and ran out of Jacobians while still 23% off, then oscillated on the
+		// stale one (2026-11-19).
+		int32 MaxIterations = 12;                // corrections solved after the first state
+		int32 MaxJacobians = 6;                  // times the derivatives are measured
+		double TolCLFraction = 0.005;            // of the required C_L
+		double TolCLFloor = 0.002;
+		double TolCm = 0.002;                    // about the mass centre
+		double MaxStepDeg = 8.0;                 // trust region on one correction
+		double JacobianMoveDeg = 5.0;            // re-measure once the state has moved this far
+		double StallRatio = 1.5;                 // ... or when the residual stops falling
+
+		// WHAT IS STORED. A converged trim is stored. One that did not
+		// converge but whose lift is within this fraction of what the
+		// condition needs is stored WITH A WARNING. Beyond it nothing is
+		// stored: a structural analysis of a case that is not in equilibrium
+		// is a waste of a solve (0: store whatever came out).
+		double StoreLimitFraction = 0.05;
+
+		// A state whose lift from the PRESSURES and from the WAKE CIRCULATION
+		// disagree by more than this fraction of the latter (plus the floor)
+		// is a broken panel solution, not an operating point: the trim stops
+		// there rather than iterating on it or storing it. This is the
+		// signature Case 1 showed (-0.60 against 3.5) when the wing's wake ran
+		// through the tailplane (0: no check).
+		double WakeCheckFraction = 0.10, WakeCheckFloor = 0.03;
+	};
+
+	// One solved state of the iteration, for the report.
+	struct FTrimIterate
+	{
+		double AlphaDeg = 0.0, DeltaDeg = 0.0;
+		double CL = 0.0, Cm = 0.0, CLWake = 0.0;
+		bool bWake = false;                      // CLWake was reported (anything sheds a wake)
+		double ResidualNorm = 0.0;
+		bool bJacobian = false;                  // the derivatives were measured here
+		bool bClamped = false;                   // the correction that led here was clamped
 	};
 
 	struct FOutcome
@@ -185,18 +230,27 @@ namespace AerotelicAeroTrim
 		bool bOk = false;
 		FString Report;                          // what happened, for the user
 		TSharedPtr<FAerotelicAeroLoadCase> Case; // the stored pressure field, when bOk
-		TSharedPtr<FCase> Trimmed;               // the trimmed state, when bOk
-		TArray<TSharedPtr<FCase>> Derivatives;   // base, alpha step, (delta step)
-		aerotelic::aero::TrimResult Result;
+		TSharedPtr<FCase> Trimmed;               // the best state solved (set even when nothing is stored)
+		aerotelic::aero::TrimJacobian Jacobian;  // the last measured
 		double CLRequired = 0.0, DynamicPressure = 0.0, Weight = 0.0, ReferenceAreaSI = 0.0;
+
+		// The iteration.
+		bool bConverged = false;                 // the trim reached its tolerance
+		int32 Iterations = 0, Jacobians = 0, Solves = 0;
+		double LiftErrorFraction = 0.0;          // of the state reported, against the required C_L
+		double ResidualNorm = 0.0;               // of that state, in tolerances
+		FString Warning;                         // set when a case is stored off target
+		TArray<FTrimIterate> History;
 	};
 
 	// A solved case's panels as a load case (the image included when the
 	// plane was on). Trim may be null for an untrimmed case.
 	TSharedPtr<FAerotelicAeroLoadCase> MakeLoadCase(const FCase& C, const FSetup& Setup, const FString& Name, double DynamicPressure, const FCondition* Trim, const FOutcome* Outcome);
 
-	// The trim, run asynchronously. Keep the runner alive (a shared pointer)
-	// until OnDone; Cancel drops a run between solves.
+	// The trim, run asynchronously: the iteration of core's TrimDriver, whose
+	// states this builds (game thread: it reads the actors) and solves (a
+	// worker). Keep the runner alive (a shared pointer) until OnDone; Cancel
+	// drops a run between solves.
 	class FRunner : public TSharedFromThis<FRunner>
 	{
 	public:
@@ -216,8 +270,27 @@ namespace AerotelicAeroTrim
 		std::atomic<bool> bCancel{ false };
 		int32 Generation = 0;
 
+		TSharedPtr<aerotelic::aero::TrimDriver> Driver;
+		TSharedPtr<FCase> LastCase;   // the state solved most recently (a re-measurement's base)
+		TSharedPtr<FCase> BestCase;   // the case of the driver's best iterate
+		FString MeshText;             // the mesh report, from the first case built
+		// Why the iteration stopped early: a state the solver returned that is
+		// not an operating point (see Accept). The best HEALTHY iterate up to
+		// then is still reported and may still be stored.
+		FString StopReason;
+
 		void SolveCases(TArray<TSharedPtr<FCase>> Cases, const tripanel::Options& Options, TFunction<void(bool, const FString&)> Then);
-		void OnDerivativesSolved();
+		// Acts on what the driver asks for next; the three below are its arms.
+		void Advance();
+		void RequestDerivatives();
+		void RequestState();
+		void FinishFromDriver();
+		// Derives a solved case and checks it is an operating point at all
+		// (the pressure lift against the wake circulation's). False with why.
+		bool Accept(FCase& C, FString& OutWhy) const;
+		// Records an iterate in the report's history and keeps BestCase in step.
+		void Note(const TSharedPtr<FCase>& C, bool bJacobianHere, bool bClamped);
+		FString HistoryText() const;
 		void Finish(bool bOk, const FString& Why);
 	};
 }

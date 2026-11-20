@@ -881,6 +881,51 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 				const FSolved Trimmed = SolveAt(Trim.alpha_deg);
 				Check(FMath::Abs(Trimmed.CL - 0.5) < 0.02, FString::Printf(TEXT("trim: the trimmed state lifts C_L = %.4f against 0.5 asked (the method's nonlinearity over the step)"), Trimmed.CL));
 
+					// THE ITERATION (2026-11-19): core's TrimDriver against the real
+					// panel method, driven synchronously here exactly as FRunner
+					// drives it asynchronously in the application. The single step
+					// above lands within 0.02 of the target on this wing; the
+					// iteration has to close on the tolerance itself.
+					{
+						using Ask = aerotelic::aero::TrimDriver::Ask;
+						aerotelic::aero::TrimDriver::Settings TS;
+						TS.CL_target = 0.5;
+						TS.control = false;
+						aerotelic::aero::TrimDriver D(TS, 2.0, 0.0);
+						TSharedPtr<FSolved> Last;
+						int32 Solves = 0;
+						FString Path;
+						while (Solves < 20)
+						{
+							const Ask A = D.Next();
+							if (A == Ask::Done || A == Ask::Failed) break;
+							if (A == Ask::Derivatives)
+							{
+								FSolved B;
+								if (D.BaseAlreadySolved() && Last.IsValid()) B = *Last;
+								else { B = SolveAt(D.BaseState().alpha_deg); ++Solves; }
+								const FSolved Step = SolveAt(D.StepAlphaState().alpha_deg);
+								++Solves;
+								Last = MakeShared<FSolved>(B);
+								const aerotelic::aero::TrimPoint PB{ B.AlphaDeg, 0.0, B.CL, B.Cm };
+								D.FeedDerivatives(PB, { Step.AlphaDeg, 0.0, Step.CL, Step.Cm }, PB);
+							}
+							else
+							{
+								const FSolved At = SolveAt(D.NextState().alpha_deg);
+								++Solves;
+								Last = MakeShared<FSolved>(At);
+								D.FeedState({ At.AlphaDeg, 0.0, At.CL, At.Cm });
+								Path += FString::Printf(TEXT(" α %.3f° -> C_L %.5f;"), At.AlphaDeg, At.CL);
+							}
+						}
+						const double LiftTol = aerotelic::aero::LiftTolerance(0.5, TS.tolerance);
+						Check(D.Next() == Ask::Done && D.Trimmed() && FMath::Abs(D.Best().CL - 0.5) <= LiftTol,
+							FString::Printf(TEXT("iterated trim: C_L %.5f within %.4f of the 0.5 asked, at α = %.3f°, after %d correction(s) and %d solves (%s)"),
+								D.Best().CL, LiftTol, D.Best().alpha_deg, D.Iterations(), Solves, *Path.TrimStartAndEnd()));
+						Check(D.Iterations() >= 1 && Solves <= 12, FString::Printf(TEXT("iterated trim: it cost %d solves, not a sweep"), Solves));
+					}
+
 				// The load case: the panels and their image.
 				TSharedPtr<FAerotelicAeroLoadCase> Case = AerotelicAeroTrim::MakeLoadCase(*Trimmed.Case, Setup, TEXT("test trim"), 100.0, nullptr, nullptr);
 				int32 BodyPanels = 0;

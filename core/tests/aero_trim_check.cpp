@@ -67,6 +67,177 @@ void TrimChecks() {
 	Check(RequiredLiftCoefficient(1.0, 50.0, 0.0, 0.5) == 0.0, "CL required is 0 at q = 0 rather than infinite");
 }
 
+// A NONLINEAR aircraft: the lift curve bends over (the term in alpha^2) and
+// the control's moment depends on the angle of attack. That is what makes a
+// single Newton step wrong, and it is why the trim iterates -- my_drone's
+// Case 1 was stored from one step at C_L -0.60 against the 1.24 it needed.
+struct Nonlinear {
+	double a0 = 0.1, a = 0.09, b = 0.03, k = 0.0008;
+	double m0 = 0.02, c = -0.015, d = -0.04, e = 0.0005;
+	TrimPoint At(double alpha, double delta) const {
+		return {alpha, delta,
+			a0 + a * alpha + b * delta - k * alpha * alpha,
+			m0 + c * alpha + d * delta + e * alpha * delta};
+	}
+};
+
+// Drives a TrimDriver to Done or Failed against a model, counting the solves
+// it asked for -- exactly the loop the application runs asynchronously.
+template <class Model>
+int DriveTrim(TrimDriver& D, const Model& M, int solve_budget = 80) {
+	int solves = 0;
+	while (solves < solve_budget) {
+		const TrimDriver::Ask ask = D.Next();
+		if (ask == TrimDriver::Ask::Done || ask == TrimDriver::Ask::Failed) break;
+		if (ask == TrimDriver::Ask::Derivatives) {
+			const TrimPoint bs = D.BaseState(), as = D.StepAlphaState(), ds = D.StepDeltaState();
+			const TrimPoint base = M.At(bs.alpha_deg, bs.delta_deg);
+			if (!D.BaseAlreadySolved()) ++solves;
+			const TrimPoint alpha_step = M.At(as.alpha_deg, as.delta_deg);
+			++solves;
+			TrimPoint delta_step = base;
+			if (D.settings().control) {
+				delta_step = M.At(ds.alpha_deg, ds.delta_deg);
+				++solves;
+			}
+			D.FeedDerivatives(base, alpha_step, delta_step);
+		} else {
+			const TrimPoint ns = D.NextState();
+			const TrimPoint at = M.At(ns.alpha_deg, ns.delta_deg);
+			++solves;
+			D.FeedState(at);
+		}
+	}
+	return solves;
+}
+
+void IterationChecks() {
+	const Nonlinear N;
+	const double target = 1.24;   // my_drone Case 1's required lift coefficient
+
+	// The tolerance arithmetic.
+	TrimTolerance tol;
+	Check(std::fabs(LiftTolerance(target, tol) - 0.005 * target) < 1e-12, F("tolerance: 0.5%% of C_L = %.4f", LiftTolerance(target, tol)));
+	Check(std::fabs(LiftTolerance(0.0, tol) - tol.CL_floor) < 1e-12, "tolerance: the floor holds when the condition needs no lift");
+	{
+		const TrimPoint at{5.0, 0.0, target + LiftTolerance(target, tol), 0.0};
+		Check(std::fabs(ResidualNorm(at, target, true, tol) - 1.0) < 1e-9, "residual: exactly one tolerance out reads a norm of 1");
+		Check(Converged(at, target, true, tol), "residual: one tolerance out counts as trimmed");
+		const TrimPoint off{5.0, 0.0, target, 2.0 * tol.Cm};
+		Check(!Converged(off, target, true, tol) && std::fabs(ResidualNorm(off, target, true, tol) - 2.0) < 1e-9, "residual: the moment is in the norm too (2 tolerances out)");
+		Check(Converged(off, target, false, tol), "residual: with no control the moment is not driven, so that state is trimmed on lift alone");
+	}
+
+	// ONE STEP IS NOT A TRIM: the single Newton step the trim used to take.
+	const TrimPoint base = N.At(2.0, 0.0);
+	const TrimResult one = SolveTrim(base, N.At(3.0, 0.0), N.At(2.0, 1.0), target);
+	Check(one.ok, "one step: the 2 x 2 system solves");
+	const TrimPoint landed = N.At(one.alpha_deg, one.delta_deg);
+	const double one_err = LiftErrorFraction(landed, target);
+	std::printf("one Newton step from alpha 2: alpha %.3f, delta %.3f -> C_L %.4f against %.4f (%.1f%% off), C_m %.4f, residual norm %.1f\n",
+		one.alpha_deg, one.delta_deg, landed.CL, target, 100.0 * one_err, landed.Cm, ResidualNorm(landed, target, true, tol));
+	Check(one_err < -0.04 && one_err > -0.25, F("one step: the state it lands on is %.1f%% under the lift it needs -- not a trim", 100.0 * one_err));
+	Check(!Converged(landed, target, true, tol), "one step: that state does not pass the convergence test");
+
+	// THE ITERATION reaches it.
+	{
+		TrimDriver::Settings s;
+		s.CL_target = target;
+		s.control = true;
+		TrimDriver D(s, 2.0, 0.0);
+		const int solves = DriveTrim(D, N);
+		const TrimPoint& bestp = D.Best();
+		std::printf("iterated trim: %d solves, %d corrections, %d Jacobians -> alpha %.3f, delta %.3f, C_L %.5f, C_m %.6f, norm %.3f\n",
+			solves, D.Iterations(), D.Jacobians(), bestp.alpha_deg, bestp.delta_deg, bestp.CL, bestp.Cm, D.BestNorm());
+		Check(D.Next() == TrimDriver::Ask::Done, "iterated trim: the driver finishes");
+		Check(D.Trimmed(), F("iterated trim: converged (best residual norm %.3f)", D.BestNorm()));
+		Check(std::fabs(bestp.CL - target) <= LiftTolerance(target, tol) && std::fabs(bestp.Cm) <= tol.Cm,
+			F("iterated trim: C_L %.5f within tolerance of the target and C_m %.6f driven to zero", bestp.CL, bestp.Cm));
+		Check(std::fabs(LiftErrorFraction(bestp, target)) < 0.006, F("iterated trim: the lift is %.3f%% off, against %.1f%% from the single step", 100.0 * LiftErrorFraction(bestp, target), 100.0 * one_err));
+		Check(solves <= 20 && D.Iterations() <= 8, F("iterated trim: %g solves in %g corrections", static_cast<double>(solves), static_cast<double>(D.Iterations())));
+	}
+
+	// The same without the trust region (the pure chord iteration on one
+	// Jacobian measurement plus re-measurements when it stalls).
+	{
+		TrimDriver::Settings s;
+		s.CL_target = target;
+		s.control = true;
+		s.max_step_deg = 0.0;
+		TrimDriver D(s, 2.0, 0.0);
+		const int solves = DriveTrim(D, N);
+		std::printf("iterated trim, no trust region: %d solves, %d corrections, %d Jacobians, norm %.3f\n", solves, D.Iterations(), D.Jacobians(), D.BestNorm());
+		Check(D.Trimmed(), F("iterated trim without the trust region: converged too (norm %.3f)", D.BestNorm()));
+	}
+
+	// The trust region holds a single correction inside its band.
+	{
+		TrimDriver::Settings s;
+		s.CL_target = target;
+		s.control = true;
+		s.max_step_deg = 4.0;
+		s.jacobian_move_deg = 0.0;      // no re-measurement: the clamp alone
+		s.stall_ratio = 0.0;
+		TrimDriver D(s, 2.0, 0.0);
+		D.FeedDerivatives(N.At(2.0, 0.0), N.At(3.0, 0.0), N.At(2.0, 1.0));
+		Check(D.Next() == TrimDriver::Ask::State && std::fabs(D.NextState().alpha_deg - 2.0) <= 4.0 + 1e-9 && D.LastStepClamped(),
+			F("trust region: the first correction moves alpha to %.3f, not past 4 degrees, and says it was clamped", D.NextState().alpha_deg));
+		const int solves = DriveTrim(D, N);
+		Check(D.Trimmed(), F("trust region: clamped corrections still converge (norm %.3f, %g more solves)", D.BestNorm(), static_cast<double>(solves)));
+	}
+
+	// OUT OF BUDGET is not a trim: one correction only, which is what the
+	// application did before 2026-11-19. Done, but not Trimmed -- the caller
+	// must refuse to store it.
+	{
+		TrimDriver::Settings s;
+		s.CL_target = target;
+		s.control = true;
+		s.max_step_deg = 0.0;
+		s.jacobian_move_deg = 0.0;
+		s.stall_ratio = 0.0;
+		s.max_iterations = 1;
+		TrimDriver D(s, 2.0, 0.0);
+		DriveTrim(D, N);
+		Check(D.Next() == TrimDriver::Ask::Done && !D.Trimmed(), "budget: one correction finishes the run but does NOT count as trimmed");
+		Check(std::fabs(D.BestLiftErrorFraction() - one_err) < 1e-9, F("budget: it reports the single step's %.1f%% lift error for the caller to refuse", 100.0 * D.BestLiftErrorFraction()));
+		Check(!D.Note().empty(), "budget: it says it did not converge");
+	}
+
+	// A condition the configuration cannot reach is refused by the band.
+	{
+		TrimDriver::Settings s;
+		s.CL_target = 5.0;
+		s.control = true;
+		TrimDriver D(s, 2.0, 0.0);
+		DriveTrim(D, N);
+		Check(D.Next() == TrimDriver::Ask::Failed && D.Note().find("potential flow") != std::string::npos,
+			"band: a lift coefficient of 5 asks for an angle outside the band and is refused");
+	}
+
+	// The angle of attack alone: lift driven, moment left alone.
+	{
+		TrimDriver::Settings s;
+		s.CL_target = 0.9;
+		s.control = false;
+		TrimDriver D(s, 0.0, 0.0);
+		const int solves = DriveTrim(D, N);
+		Check(D.Trimmed() && std::fabs(D.Best().CL - 0.9) <= LiftTolerance(0.9, tol) && D.Best().delta_deg == 0.0,
+			F("alpha alone: C_L %.5f at alpha %.3f, the control untouched", D.Best().CL, D.Best().alpha_deg));
+		Check(solves <= 12, F("alpha alone: %g solves", static_cast<double>(solves)));
+	}
+
+	// A solve the caller rejects (a broken panel solution) abandons the run.
+	{
+		TrimDriver::Settings s;
+		s.CL_target = target;
+		s.control = true;
+		TrimDriver D(s, 2.0, 0.0);
+		D.Fail("the pressures and the wake circulation disagree");
+		Check(D.Next() == TrimDriver::Ask::Failed && !D.Note().empty(), "a rejected solve abandons the run with the caller's reason");
+	}
+}
+
 // A sphere of radius 1: panel centres on a lat-long grid carrying the
 // potential-flow pressure 1 - 9/4 sin^2(theta) from the x axis; the faces
 // are a finer triangulation's centroids.
@@ -212,6 +383,7 @@ void MappingChecks() {
 
 int main() {
 	TrimChecks();
+	IterationChecks();
 	MappingChecks();
 	std::printf("RESULT: %d passed, %d failed\n", g_pass, g_fail);
 	return g_fail == 0 ? 0 : 1;

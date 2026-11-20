@@ -341,13 +341,17 @@ namespace
 					{
 						if (UAerotelicDocumentSubsystem* Doc = UAerotelicDocumentSubsystem::Get()) Doc->SetAeroLoadCase(O.Case);
 						const AerotelicAeroTrim::FCase& C = *O.Trimmed;
-						FString Solved = FString::Printf(TEXT("solved: α = %.2f°%s, C_L %.4f (%.4f required; wake %.4f), C_m %.4f, q = %.4g Pa; %d panels on %d triangles%s, %s in %.1f s. Mesh: %s"), C.AlphaDeg,
+						FString Solved = FString::Printf(TEXT("%s in %d correction%s (%d solves, %d derivative measurement%s), %.2f%% off the lift it needs: α = %.2f°%s, C_L %.4f (%.4f required; wake %.4f), C_m %.4f, q = %.4g Pa; %d panels on %d triangles%s, %s in %.1f s. Mesh: %s"),
+							O.bConverged ? TEXT("trimmed") : TEXT("stored OFF TARGET"), O.Iterations, O.Iterations == 1 ? TEXT("") : TEXT("s"), O.Solves, O.Jacobians, O.Jacobians == 1 ? TEXT("") : TEXT("s"), 100.0 * O.LiftErrorFraction, C.AlphaDeg,
 							C.Control.IsEmpty() ? TEXT("") : *FString::Printf(TEXT(", δ = %.2f°"), C.DeltaDeg), C.CL, O.CLRequired, C.Sol.lift_from_wake.value_or(0.0), C.Cm, O.DynamicPressure, O.Case->BodyPanels(), C.Triangles,
 							C.bImagedSolve ? TEXT(" (the y >= 0 half with its image)") : TEXT(""), C.Sol.direct ? TEXT("direct") : *FString::Printf(TEXT("GMRES %d it"), C.Sol.iterations), C.Sol.seconds_influence + C.Sol.seconds_solve,
 							*C.MeshReport.Replace(TEXT("\n"), TEXT(" | ")));
-						for (const FString& W : C.Warnings) Solved += TEXT(" | WARNING: ") + W;
+						if (!O.Warning.IsEmpty()) Solved += TEXT(" | WARNING: ") + O.Warning;
+							for (const FString& W : C.Warnings) Solved += TEXT(" | WARNING: ") + W;
 						D->AeroStatus.Add(Name, Solved);
-						D->Status(FText::FromString(FString::Printf(TEXT("Aero case '%s' trimmed and stored."), *Name)));
+						D->Status(FText::FromString(O.bConverged
+								? FString::Printf(TEXT("Aero case '%s' trimmed and stored."), *Name)
+								: FString::Printf(TEXT("Aero case '%s' stored OFF TARGET: %s."), *Name, *O.Warning)));
 					}
 					else
 					{

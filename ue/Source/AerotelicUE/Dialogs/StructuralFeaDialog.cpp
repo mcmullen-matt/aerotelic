@@ -198,6 +198,13 @@ namespace
 						return;
 					}
 					if (UAerotelicDocumentSubsystem* Doc2 = UAerotelicDocumentSubsystem::Get()) Doc2->SetAeroLoadCase(O.Case);
+						// Stored, but the trim did not reach its tolerance: the structure
+						// is about to be analysed for a condition the aircraft is not
+						// quite in, and the user has to be told before the solve.
+						if (!O.Warning.IsEmpty())
+						{
+							D->S->Message(FText::FromString(FString::Printf(TEXT("The aero case was trimmed OFF TARGET and stored anyway: %s.\n\nThe loads below are that state's, not an equilibrium's. Trim the case again from this attitude in Model > Load Cases before believing the stresses.\n\n%s"), *O.Warning, *O.Report)));
+						}
 					D->S->AeroField = O.Case;
 					UE_LOG(LogTemp, Log, TEXT("StructuralFea: %s"), *O.Report.Replace(TEXT("\n"), TEXT(" | ")));
 					D->SelectCase(D->CaseIndex, true);

@@ -6,6 +6,9 @@
 #include "Entity/AerotelicAeroTrim.h"
 #include "Misc/Paths.h"
 
+#include "aerotelic/load_cases.hpp"
+#include "aerotelic/wing_model.hpp"
+
 #include <algorithm>
 #include <cmath>
 
@@ -364,6 +367,273 @@ namespace
 		UE_LOG(LogAerotelicBooleanProbe, Display, TEXT("RESULT: panel probe done"));
 		return 0;
 	}
+
+	// ---- the trim mode: re-trim one aero load case headlessly ----
+	//
+	// The same iteration the application runs (core aero_trim.hpp TrimDriver,
+	// driven asynchronously by AerotelicAeroTrim::FRunner), driven
+	// SYNCHRONOUSLY here so that a load case can be re-trimmed and inspected
+	// without the dialogs. Added 2026-11-19 to re-trim my_drone's Case 1,
+	// which had been stored from a single Newton step at C_L -0.60 against the
+	// 1.24 it needed. Nothing is saved: the pressure field is not stored on
+	// the document and the project file is not written.
+	int32 TrimProbe(UAerotelicDocumentSubsystem* Doc, const FString& CaseName, const FString& Params)
+	{
+		namespace aero = aerotelic::aero;
+		using AerotelicAeroTrim::FCase;
+
+		const aerotelic::LoadCasesSpec& LC = Doc->GetLoadCases();
+		const aerotelic::AeroLoadCaseSpec* Spec = nullptr;
+		FString Names;
+		for (const aerotelic::AeroLoadCaseSpec& A : LC.aero)
+		{
+			const FString N = UTF8_TO_TCHAR(A.name.c_str());
+			Names += (Names.IsEmpty() ? TEXT("") : TEXT(", ")) + N;
+			if (N == CaseName) Spec = &A;
+		}
+		if (Spec == nullptr)
+		{
+			UE_LOG(LogAerotelicBooleanProbe, Error, TEXT("no aero load case named '%s' in the project (it has: %s)"), *CaseName, Names.IsEmpty() ? TEXT("none") : *Names);
+			return 1;
+		}
+
+		// The case's bodies, by name: the panelable ones (a boolean contributes
+		// its panelable operands, as the Load Cases dialog does) and, for the
+		// weight, every body it names.
+		TArray<AAerotelicEntityActor*> Panelable, ForMass;
+		for (const aerotelic::LoadCaseBody& B : Spec->bodies)
+		{
+			const FString Want = UTF8_TO_TCHAR(B.entity.c_str());
+			AAerotelicEntityActor* E = nullptr;
+			for (const TWeakObjectPtr<AAerotelicEntityActor>& W : Doc->GetEntities())
+				if (W.IsValid() && W->EntityName == Want) E = W.Get();
+			if (E == nullptr)
+			{
+				UE_LOG(LogAerotelicBooleanProbe, Warning, TEXT("the case names a body '%s' that is not in the project"), *Want);
+				continue;
+			}
+			ForMass.AddUnique(E);
+			if (AerotelicAeroTrim::IsPanelable(E->GetEntityType())) Panelable.AddUnique(E);
+			else if (E->GetEntityType() == EntityType::Boolean)
+			{
+				if (const FAerotelicBooleanModel* M = E->GetModelAs<FAerotelicBooleanModel>())
+					for (const FAerotelicBooleanOperand& Op : M->Operands)
+						if (Op.Entity.IsValid() && AerotelicAeroTrim::IsPanelable(Op.Entity->GetEntityType())) Panelable.AddUnique(Op.Entity.Get());
+			}
+		}
+		if (Panelable.Num() == 0)
+		{
+			UE_LOG(LogAerotelicBooleanProbe, Error, TEXT("no body of case '%s' can be paneled"), *CaseName);
+			return 1;
+		}
+
+		AerotelicAeroTrim::FSetup S;
+		for (AAerotelicEntityActor* E : Panelable) S.Entities.Add(E);
+		S.bFuse = true;
+		S.WakeChords = 20.0;
+		S.bSymmetry = !FParse::Param(*Params, TEXT("NoSymmetry")) && AerotelicAeroTrim::DefaultSymmetry(Panelable);
+		AerotelicAeroTrim::DefaultReferences(Panelable, S.ReferenceArea, S.ReferenceLength);
+
+		AerotelicAeroTrim::FCondition Cond;   // its defaults ARE the trim's
+		Cond.Name = CaseName;
+		Cond.LoadFactor = Spec->load_factor;
+		Cond.Speed = Spec->speed;
+		Cond.Density = Spec->density;
+		FString MassText;
+		if (!AerotelicAeroTrim::MassAndCentre(ForMass, Doc->GetUnits(), Cond.MassKg, Cond.MassCentre, MassText))
+		{
+			// The case names a BOOLEAN whose own bodies carry no material, so
+			// the mass report weighs nothing and the application refuses the
+			// trim for want of a weight (my_drone, 2026-11-19). The operands
+			// do carry materials: weigh THEM instead, so that the iteration
+			// can be exercised, and say loudly that this is the probe's
+			// substitute and not what the application does. Fixing the model
+			// (a material on each of the boolean's bodies) is the owner's.
+			UE_LOG(LogAerotelicBooleanProbe, Warning, TEXT("the case's bodies weigh nothing: %s"), *MassText);
+			TArray<AAerotelicEntityActor*> Operands;
+			for (AAerotelicEntityActor* E : ForMass)
+			{
+				if (E->GetEntityType() != EntityType::Boolean) { Operands.AddUnique(E); continue; }
+				if (const FAerotelicBooleanModel* M = E->GetModelAs<FAerotelicBooleanModel>())
+					for (const FAerotelicBooleanOperand& Op : M->Operands)
+						if (Op.Entity.IsValid()) Operands.AddUnique(Op.Entity.Get());
+			}
+			FString OpText;
+			if (Operands.Num() == ForMass.Num() || !AerotelicAeroTrim::MassAndCentre(Operands, Doc->GetUnits(), Cond.MassKg, Cond.MassCentre, OpText))
+			{
+				UE_LOG(LogAerotelicBooleanProbe, Error, TEXT("and neither do its operands: %s"), *OpText);
+				return 1;
+			}
+			FString Who;
+			for (AAerotelicEntityActor* E : Operands) Who += (Who.IsEmpty() ? TEXT("") : TEXT(", ")) + E->EntityName;
+			UE_LOG(LogAerotelicBooleanProbe, Warning, TEXT("PROBE SUBSTITUTE: weighing the boolean's OPERANDS instead (%s): %s. The application would refuse this case for want of a weight -- assign a material to each of the boolean result's bodies, or list the operands in the case."), *Who, *OpText);
+		}
+		if (!Spec->control_entity.empty())
+		{
+			int32 Def = -1;
+			for (const AerotelicAeroTrim::FControl& C : AerotelicAeroTrim::Controls(Panelable, Def))
+			{
+				if (C.Wing.IsValid() && C.Wing->EntityName == UTF8_TO_TCHAR(Spec->control_entity.c_str())
+					&& C.Label.EndsWith(UTF8_TO_TCHAR(Spec->control_flap.c_str()))) { Cond.Control = C; break; }
+			}
+			if (!Cond.Control.IsSet())
+			{
+				UE_LOG(LogAerotelicBooleanProbe, Warning, TEXT("the case's control %s / %s is not among the paneled bodies: trimming the lift alone"), UTF8_TO_TCHAR(Spec->control_entity.c_str()), UTF8_TO_TCHAR(Spec->control_flap.c_str()));
+			}
+			else
+			{
+				const aerotelic::WingModel* W = Cond.Control.Wing->GetModelAs<aerotelic::WingModel>();
+				if (W != nullptr && Cond.Control.Flap < static_cast<int32>(W->flaps.size())) Cond.Delta0 = W->flaps[Cond.Control.Flap].deflection_deg;
+			}
+		}
+		FParse::Value(*Params, TEXT("Alpha0="), Cond.Alpha0);
+		FParse::Value(*Params, TEXT("MaxIter="), Cond.MaxIterations);
+		FParse::Value(*Params, TEXT("MaxJac="), Cond.MaxJacobians);
+		FParse::Value(*Params, TEXT("MaxStep="), Cond.MaxStepDeg);
+		FParse::Value(*Params, TEXT("Delta0="), Cond.Delta0);
+		FParse::Value(*Params, TEXT("TolCL="), Cond.TolCLFraction);
+		FParse::Value(*Params, TEXT("TolCm="), Cond.TolCm);
+		if (FParse::Param(*Params, TEXT("NoWakeCheck"))) Cond.WakeCheckFraction = 0.0;
+		if (FParse::Param(*Params, TEXT("OneStep"))) { Cond.MaxIterations = 1; Cond.MaxStepDeg = 0.0; Cond.JacobianMoveDeg = 0.0; Cond.StallRatio = 0.0; }
+
+		const double Weight = Cond.MassKg * 9.80665;
+		const double Q = aero::DynamicPressure(Cond.Density, Cond.Speed);
+		const double AreaSI = (S.ReferenceArea > 0.0 ? S.ReferenceArea : 1.0) * Doc->GetUnits().AreaToSI();
+		const double CLReq = aero::RequiredLiftCoefficient(Cond.LoadFactor, Weight, Q, AreaSI);
+		UE_LOG(LogAerotelicBooleanProbe, Display, TEXT("trim '%s': n = %g at %g m/s, rho %g (q = %.4g Pa); mass %.4g kg (W = %.4g N) about (%.4f, %.4f, %.4f); S_ref %.5g (%.5g m2), L_ref %.5g; plane %s; control %s; C_L required %.5f"),
+			*CaseName, Cond.LoadFactor, Cond.Speed, Cond.Density, Q, Cond.MassKg, Weight, Cond.MassCentre.x, Cond.MassCentre.y, Cond.MassCentre.z,
+			S.ReferenceArea, AreaSI, S.ReferenceLength, S.bSymmetry ? TEXT("ON") : TEXT("off"),
+			Cond.Control.IsSet() ? *FString::Printf(TEXT("%s at %g deg"), *Cond.Control.Label, Cond.Delta0) : TEXT("none (the angle of attack alone)"), CLReq);
+		UE_LOG(LogAerotelicBooleanProbe, Display, TEXT("trim settings: up to %d correction(s), %d Jacobian(s), trust region %g deg, tolerance %.5f on C_L and %.5f on C_m, store limit %g%%, wake check %g%%"),
+			Cond.MaxIterations, Cond.MaxJacobians, Cond.MaxStepDeg, aero::LiftTolerance(CLReq, { Cond.TolCLFraction, Cond.TolCLFloor, Cond.TolCm }), Cond.TolCm,
+			100.0 * Cond.StoreLimitFraction, 100.0 * Cond.WakeCheckFraction);
+
+		aero::TrimDriver::Settings TS;
+		TS.CL_target = CLReq;
+		TS.control = Cond.Control.IsSet();
+		TS.tolerance = { Cond.TolCLFraction, Cond.TolCLFloor, Cond.TolCm };
+		TS.step = Cond.Step;
+		TS.max_step_deg = Cond.MaxStepDeg;
+		TS.jacobian_move_deg = Cond.JacobianMoveDeg;
+		TS.stall_ratio = Cond.StallRatio;
+		TS.max_iterations = Cond.MaxIterations;
+		TS.max_jacobians = Cond.MaxJacobians;
+		aero::TrimDriver D(TS, Cond.Alpha0, Cond.Delta0);
+
+		const AerotelicAeroTrim::FControl* Ctl = Cond.Control.IsSet() ? &Cond.Control : nullptr;
+		const aerotelic::tripanel::Options Opt = AerotelicAeroTrim::SolveOptions(S, &Cond.MassCentre);
+		int32 Solves = 0;
+		TSharedPtr<FCase> Last;
+		FString Mesh;
+		// Builds, solves and derives one state; null on a failure (logged).
+		auto SolveAt = [&](double AlphaDeg, double DeltaDeg) -> TSharedPtr<FCase>
+		{
+			TSharedPtr<FCase> C;
+			const double T0 = FPlatformTime::Seconds();
+			try
+			{
+				C = AerotelicAeroTrim::BuildCase(S, AlphaDeg, 0.0, Ctl, DeltaDeg);
+			}
+			catch (const std::exception& E)
+			{
+				UE_LOG(LogAerotelicBooleanProbe, Error, TEXT("the aero mesh could not be built at alpha %g, delta %g: %s"), AlphaDeg, DeltaDeg, UTF8_TO_TCHAR(E.what()));
+				return nullptr;
+			}
+			const double TBuild = FPlatformTime::Seconds() - T0;
+			if (Mesh.IsEmpty())
+			{
+				Mesh = C->MeshReport;
+				UE_LOG(LogAerotelicBooleanProbe, Display, TEXT("aero mesh: %s"), *Mesh.Replace(TEXT("\n"), TEXT(" | ")));
+				for (const FString& W : C->Warnings) UE_LOG(LogAerotelicBooleanProbe, Warning, TEXT("mesh: %s"), *W);
+			}
+			try
+			{
+				AerotelicAeroTrim::SolveCaseNow(*C, Opt);
+			}
+			catch (const std::exception& E)
+			{
+				UE_LOG(LogAerotelicBooleanProbe, Error, TEXT("the solve failed at alpha %g, delta %g: %s"), AlphaDeg, DeltaDeg, UTF8_TO_TCHAR(E.what()));
+				return nullptr;
+			}
+			AerotelicAeroTrim::Derive(*C, S.ReferenceLength);
+			++Solves;
+			const double CLw = C->Sol.lift_from_wake.value_or(0.0);
+			UE_LOG(LogAerotelicBooleanProbe, Display, TEXT("  solve %d at alpha %8.4f, delta %8.4f: C_L %9.5f (wake %9.5f, %+.1f%%), C_D %8.5f, C_m %9.5f, residual %7.2f tol; %d unknowns, build %.1f s, solve %.1f s"),
+				Solves, C->AlphaDeg, C->DeltaDeg, C->CL, CLw, C->Sol.lift_from_wake.has_value() && FMath::Abs(CLw) > 1e-9 ? 100.0 * (C->CL / CLw - 1.0) : 0.0, C->CD, C->Cm,
+				aero::ResidualNorm({ C->AlphaDeg, C->DeltaDeg, C->CL, C->Cm }, CLReq, TS.control, TS.tolerance),
+				C->Sol.unknowns, TBuild, C->Sol.seconds_influence + C->Sol.seconds_solve);
+			for (const std::string& N : C->Sol.notes) UE_LOG(LogAerotelicBooleanProbe, Display, TEXT("    solver note: %s"), UTF8_TO_TCHAR(N.c_str()));
+			// The check FRunner::Accept makes: the pressures against the wake.
+			if (Cond.WakeCheckFraction > 0.0 && C->Sol.lift_from_wake.has_value())
+			{
+				const double Band = FMath::Max(Cond.WakeCheckFraction * FMath::Abs(CLw), Cond.WakeCheckFloor);
+				if (FMath::Abs(C->CL - CLw) > Band)
+				{
+					UE_LOG(LogAerotelicBooleanProbe, Error, TEXT("    NOT AN OPERATING POINT: the pressures give C_L %.4f and the wake circulation %.4f (band %.4f). The flow field is wrong at this attitude."), C->CL, CLw, Band);
+					return nullptr;
+				}
+			}
+			return C;
+		};
+
+		using Ask = aero::TrimDriver::Ask;
+		FString StopReason;   // a state that is not an operating point; the best healthy one still stands
+		while (Solves < 40)
+		{
+			const Ask A = D.Next();
+			if (A == Ask::Done || A == Ask::Failed) break;
+			if (A == Ask::Derivatives)
+			{
+				UE_LOG(LogAerotelicBooleanProbe, Display, TEXT("%s the derivatives about alpha %.4f, delta %.4f"), D.Jacobians() == 0 ? TEXT("measuring") : TEXT("RE-measuring"), D.BaseState().alpha_deg, D.BaseState().delta_deg);
+				TSharedPtr<FCase> Base = D.BaseAlreadySolved() && Last.IsValid() ? Last : SolveAt(D.BaseState().alpha_deg, D.BaseState().delta_deg);
+				TSharedPtr<FCase> AStep = Base.IsValid() ? SolveAt(D.StepAlphaState().alpha_deg, D.StepAlphaState().delta_deg) : nullptr;
+				TSharedPtr<FCase> DStep;
+				if (TS.control && AStep.IsValid()) DStep = SolveAt(D.StepDeltaState().alpha_deg, D.StepDeltaState().delta_deg);
+				if (!Base.IsValid() || !AStep.IsValid() || (TS.control && !DStep.IsValid()))
+				{
+					StopReason = TEXT("a state of the derivative set is not an operating point");
+					if (!D.HasBest()) D.Fail("a state of the derivative set could not be solved");
+					break;
+				}
+				auto P = [](const FCase& C) { return aero::TrimPoint{ C.AlphaDeg, C.DeltaDeg, C.CL, C.Cm }; };
+				Last = Base;
+				D.FeedDerivatives(P(*Base), P(*AStep), DStep.IsValid() ? P(*DStep) : P(*Base));
+				const aero::TrimJacobian& J = D.Jacobian();
+				UE_LOG(LogAerotelicBooleanProbe, Display, TEXT("  dC_L/dalpha %.5f, dC_m/dalpha %.5f%s per degree (determinant %.3e)"),
+					J.dCL_dalpha, J.dCm_dalpha, TS.control ? *FString::Printf(TEXT(", dC_L/ddelta %.5f, dC_m/ddelta %.5f"), J.dCL_ddelta, J.dCm_ddelta) : TEXT(""), J.determinant);
+			}
+			else
+			{
+				UE_LOG(LogAerotelicBooleanProbe, Display, TEXT("correction %d%s -> alpha %.4f, delta %.4f"), D.Iterations() + 1, D.LastStepClamped() ? TEXT(" (held to the trust region)") : TEXT(""), D.NextState().alpha_deg, D.NextState().delta_deg);
+				TSharedPtr<FCase> C = SolveAt(D.NextState().alpha_deg, D.NextState().delta_deg);
+				if (!C.IsValid())
+				{
+					StopReason = TEXT("the corrected state is not an operating point");
+					if (!D.HasBest()) D.Fail("the corrected state could not be solved");
+					break;
+				}
+				Last = C;
+				D.FeedState({ C->AlphaDeg, C->DeltaDeg, C->CL, C->Cm });
+			}
+		}
+
+		if (D.Next() == Ask::Failed || !D.HasBest())
+		{
+			UE_LOG(LogAerotelicBooleanProbe, Error, TEXT("RESULT: NO TRIM for '%s' after %d solves: %s"), *CaseName, Solves, UTF8_TO_TCHAR(D.Note().c_str()));
+			return 1;
+		}
+		const aero::TrimPoint& B = D.Best();
+		const double Err = D.BestLiftErrorFraction();
+		const bool bStored = D.Trimmed() || !(Cond.StoreLimitFraction > 0.0) || FMath::Abs(Err) <= Cond.StoreLimitFraction;
+		UE_LOG(LogAerotelicBooleanProbe, Display, TEXT("RESULT: '%s' %s -- alpha %.4f deg%s, C_L %.5f against %.5f required (%+.2f%%), C_m %.6f; residual %.2f tolerances; %d correction(s), %d Jacobian(s), %d solves. The application would %s."),
+			*CaseName, D.Trimmed() ? TEXT("TRIMMED") : TEXT("did NOT converge"), B.alpha_deg,
+			TS.control ? *FString::Printf(TEXT(", %s at %.4f deg"), *Cond.Control.Label, B.delta_deg) : TEXT(""),
+			B.CL, CLReq, 100.0 * Err, B.Cm, D.BestNorm(), D.Iterations(), D.Jacobians(), Solves,
+			bStored ? (D.Trimmed() ? TEXT("store this case") : TEXT("store this case WITH A WARNING")) : TEXT("REFUSE to store this case"));
+		if (!D.Note().empty()) UE_LOG(LogAerotelicBooleanProbe, Display, TEXT("note: %s"), UTF8_TO_TCHAR(D.Note().c_str()));
+		if (!StopReason.IsEmpty()) UE_LOG(LogAerotelicBooleanProbe, Warning, TEXT("the iteration stopped early: %s. The state above is the best one reached before that."), *StopReason);
+		return D.Trimmed() ? 0 : 2;
+	}
 }
 
 int32 UAerotelicBooleanProbeCommandlet::Main(const FString& Params)
@@ -389,6 +659,12 @@ int32 UAerotelicBooleanProbeCommandlet::Main(const FString& Params)
 	{
 		UE_LOG(LogAerotelicBooleanProbe, Error, TEXT("could not open %s"), *Project);
 		return 1;
+	}
+
+	FString TrimCase;
+	if (FParse::Value(*Params, TEXT("Trim="), TrimCase) && !TrimCase.IsEmpty())
+	{
+		return TrimProbe(Doc, TrimCase, Params);
 	}
 
 	FString PanelEntity;
