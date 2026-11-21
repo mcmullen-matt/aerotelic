@@ -16,6 +16,7 @@
 #include "Entity/AerotelicFeaPreprocess.h"
 #include "Entity/AerotelicFeaModelBuilder.h"
 #include "Entity/AerotelicMaterialLibrary.h"
+#include "Entity/AerotelicSkinSources.h"
 #include "Widgets/CurveTabControls.h"
 
 #include "aerotelic/fuselage_model.hpp"
@@ -487,6 +488,142 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 		Check(Doc->NextBooleanName() == TEXT("BoolOp 2"), "next default boolean name is BoolOp 2");
 		AAerotelicEntityActor* Dup = Doc->AddBoolean(TEXT("BoolOp 1"), Operands, TEXT("cut"), Error);
 		Check(Dup == nullptr && !Error.IsEmpty(), "a duplicate name is refused");
+
+		// THE INHERITED SKIN (2026-11-20, the owner's rule). A boolean result
+		// owns no structure: every face of it is a piece of one operand body's
+		// surface (the mesh boolean cuts triangles, it never makes one out of
+		// two bodies) and keeps THAT body's skin. Here the sphere carries the
+		// mass step's 0.05 skin of the density-2 material and the fuselage an
+		// asserted 150 kg, so the fused body weighs as two pieces: rho t A
+		// over the sphere's faces, and the fuselage's share of its 150 kg.
+		UE_LOG(LogAerotelicDocumentTest, Display, TEXT("step: boolean skin"));
+		if (Fused != nullptr)
+		{
+			const std::vector<aerotelic::NamedMesh> Own = Fused->GetPlacedMeshes(false);
+			Check(Own.size() == 1 && Own[0].HasFaceSources() && Own[0].sources.size() == 2,
+				FString::Printf(TEXT("boolean skin: the fused body records which operand every face came from (%d bodies, %d sources)"), (int32)Own.size(), Own.size() ? (int32)Own[0].sources.size() : -1));
+			const TArray<FAerotelicSkinSource> Sources = AerotelicSkinSourcesOf(Fused, TEXT("Main"));
+			const FAerotelicSkinSource* FromSphere = nullptr;
+			const FAerotelicSkinSource* FromFuselage = nullptr;
+			double PieceArea = 0.0;
+			for (const FAerotelicSkinSource& S : Sources)
+			{
+				if (S.Entity.Get() == Primitive) FromSphere = &S;
+				if (S.Entity.Get() == Fuselage) FromFuselage = &S;
+				PieceArea += S.Area;
+			}
+			Check(FromSphere != nullptr && FromFuselage != nullptr && FromSphere->bKnown && FromFuselage->bKnown && !FromSphere->Source.mirror,
+				"boolean skin: both operands resolve to bodies in the scene");
+			Check(FromSphere != nullptr && FromSphere->Structure.IsSkin() && FMath::IsNearlyEqual(FromSphere->Structure.skin_thickness, 0.05, 1e-12) && FMath::IsNearlyEqual(FromSphere->Structure.material.density, 2.0, 1e-12),
+				"boolean skin: the sphere's faces carry the sphere's own 0.05 skin of the density-2 material");
+			Check(FromFuselage != nullptr && FromFuselage->Structure.asserted_mass.has_value() && FromFuselage->Area > 0.0 && FromFuselage->Share() > 0.0 && FromFuselage->Share() < 1.0,
+				FString::Printf(TEXT("boolean skin: the fuselage's faces carry its asserted mass, %.0f%% of its surface being in the result"), FromFuselage ? 100.0 * FromFuselage->Share() : -1.0));
+			Check(Own.size() == 1 && FMath::IsNearlyEqual(PieceArea, Own[0].mesh.SurfaceArea(), 1e-9 * PieceArea),
+				FString::Printf(TEXT("boolean skin: the pieces tile the surface (%.6g vs %.6g)"), PieceArea, Own.size() ? Own[0].mesh.SurfaceArea() : 0.0));
+			// Nothing of its own can be set on it; the dialog's Apply says where to.
+			aerotelic::BodyStructure OwnSkin;
+			OwnSkin.material = *aerotelic::FindMaterialPreset("Aluminium 2024-T3 sheet");
+			OwnSkin.skin_thickness = 0.001;
+			FString Refused;
+			Check(!Fused->SetBodyStructure(TEXT("Main"), OwnSkin) && !Doc->ApplyBodyStructure(Fused, TEXT("Main"), OwnSkin, Refused) && Refused.Contains(TEXT("operand")) && !Fused->GetBodyStructure(0).IsSet(),
+				FString::Printf(TEXT("boolean skin: the result takes no structure of its own, and says to set it on the operands (%s)"), *Refused));
+			// The mass report: one line per operand piece.
+			FAerotelicBooleanOperand BOp;
+			BOp.Entity = Fused;
+			const FAerotelicMassReport BR = ComputeAerotelicMassReport({ BOp }, 2e-3, Doc->GetUnits());
+			const FAerotelicMassLine* SphereLine = nullptr;
+			const FAerotelicMassLine* FuselageLine = nullptr;
+			for (const FAerotelicMassLine& L : BR.Bodies)
+			{
+				if (L.Label.Contains(TEXT("skin of ") + Primitive->EntityName)) SphereLine = &L;
+				if (L.Label.Contains(TEXT("skin of ") + Fuselage->EntityName)) FuselageLine = &L;
+			}
+			Check(BR.Bodies.Num() == 2 && SphereLine != nullptr && FuselageLine != nullptr && BR.IncludedCount == 2,
+				FString::Printf(TEXT("boolean skin: the mass report has one line per operand piece, both weighed (%d lines, %d weighed)"), BR.Bodies.Num(), BR.IncludedCount));
+			if (SphereLine != nullptr && FuselageLine != nullptr)
+			{
+				Check(SphereLine->bIncluded && FMath::IsNearlyEqual(SphereLine->Props.mass, 2.0 * 0.05 * SphereLine->Props.area, 1e-9 * SphereLine->Props.mass) && SphereLine->Note.Contains(TEXT("inherited")),
+					FString::Printf(TEXT("boolean skin: the sphere's piece weighs rho t A with the sphere's skin (%.5g kg over %.5g m^2)"), SphereLine->Props.mass, SphereLine->Props.area));
+				Check(FuselageLine->bIncluded && FuselageLine->Props.mass > 0.0 && FuselageLine->Props.mass < 150.0 && FuselageLine->Note.Contains(TEXT("asserted")),
+					FString::Printf(TEXT("boolean skin: the fuselage's piece carries its share of the asserted 150 kg (%.5g kg)"), FuselageLine->Props.mass));
+				const std::vector<aerotelic::NamedMesh> Fine = Fused->GetPlacedMeshes(false, 2e-3);
+				Check(Fine.size() == 1 && FMath::IsNearlyEqual(SphereLine->Props.area + FuselageLine->Props.area, Fine[0].mesh.SurfaceArea(), 1e-9 * Fine[0].mesh.SurfaceArea()),
+					"boolean skin: the two pieces' areas add up to the result's surface at the report's tolerance");
+			}
+			// The structural model: refused by the OPERAND's name while the
+			// sphere's material has no modulus and the fuselage only an
+			// asserted mass...
+			{
+				AerotelicFeaModelBuilder::FOptions Options;
+				AerotelicFeaModelBuilder::FCache Cache;
+				AerotelicFeaModelBuilder::FBuilt Built;
+				const bool bAppended = AerotelicFeaModelBuilder::AppendBody(BOp, TEXT("Main"), Fused->EntityName, 0, Options, Cache, Built);
+				const FString Problems = FString::Join(Built.Problems, TEXT("; "));
+				Check(!bAppended && Problems.Contains(Primitive->EntityName) && Problems.Contains(Fuselage->EntityName) && Problems.Contains(TEXT("inherits")),
+					FString::Printf(TEXT("boolean skin: the analysis refuses the result by its operands' names (%s)"), *Problems));
+			}
+			// ...and, with a 1.5 mm and a 3 mm aluminium skin on the two
+			// operands, one skin region per piece with that piece's thickness,
+			// the faces partitioned as the sources say.
+			{
+				const aerotelic::Material Al = *aerotelic::FindMaterialPreset("Aluminium 2024-T3 sheet");
+				aerotelic::BodyStructure FS;
+				FS.material = Al;
+				FS.skin_thickness = 0.0015;
+				aerotelic::BodyStructure PS;
+				PS.material = Al;
+				PS.skin_thickness = 0.003;
+				Fuselage->SetBodyStructure(TEXT("Main"), FS);
+				Primitive->SetBodyStructure(TEXT("Main"), PS);
+				Doc->FlushPendingRebuilds();
+				const TArray<FAerotelicSkinSource> Now = AerotelicSkinSourcesOf(Fused, TEXT("Main"));
+				AerotelicFeaModelBuilder::FOptions Options;
+				AerotelicFeaModelBuilder::FCache Cache;
+				AerotelicFeaModelBuilder::FBuilt Built;
+				const bool bAppended = AerotelicFeaModelBuilder::AppendBody(BOp, TEXT("Main"), Fused->EntityName, 0, Options, Cache, Built);
+				int32 SkinRegions = 0, Thin = -1, Thick = -1;
+				for (const AerotelicStructuralFea::FRegion& R : Built.Regions)
+				{
+					if (!(R.SkinThickness > 0.0)) continue;
+					++SkinRegions;
+					if (FMath::IsNearlyEqual(R.SkinThickness, 0.0015, 1e-12)) Thin = R.Id;
+					if (FMath::IsNearlyEqual(R.SkinThickness, 0.003, 1e-12)) Thick = R.Id;
+				}
+				int32 ThinFaces = 0, ThickFaces = 0, OtherFaces = 0;
+				for (const AerotelicStructuralFea::FShellFace& F : Built.ShellFaces)
+				{
+					if (F.Region == Thin) ++ThinFaces; else if (F.Region == Thick) ++ThickFaces; else ++OtherFaces;
+				}
+				int32 FuselageFaces = 0, SphereFaces = 0;
+				for (const FAerotelicSkinSource& S : Now)
+				{
+					if (S.Entity.Get() == Fuselage) FuselageFaces = static_cast<int32>(S.Faces.size());
+					if (S.Entity.Get() == Primitive) SphereFaces = static_cast<int32>(S.Faces.size());
+				}
+				Check(bAppended && SkinRegions == 2 && Thin >= 0 && Thick >= 0 && OtherFaces == 0 && ThinFaces == FuselageFaces && ThickFaces == SphereFaces && ThinFaces > 0 && ThickFaces > 0,
+					FString::Printf(TEXT("boolean skin: the analysis builds a skin region per operand piece -- 1.5 mm on the fuselage's %d faces, 3 mm on the sphere's %d faces (%d skin regions, %d/%d/%d faces; %s)"), FuselageFaces, SphereFaces, SkinRegions, ThinFaces, ThickFaces, OtherFaces, *FString::Join(Built.Problems, TEXT("; "))));
+				// The fuselage's skin brought its frames and longerons, which the
+				// result took over under its inherited Skin row.
+				const FAerotelicBodyStructure* GB = Fused->GetGeneratedStructure(TEXT("Main"));
+				Check(GB != nullptr && GB->IsGenerated() && GB->GetLayers().size() >= 2 && GB->GetLayers()[0].Kind == FAerotelicStructureLayer::EKind::Skin && GB->GetLayers()[0].Note.Contains(TEXT("inherited")) && GB->GetLayers()[0].Thickness == 0.0,
+					FString::Printf(TEXT("boolean skin: the result's generated structure is the fuselage's layers under an inherited Skin row of mixed thickness (%d layers)"), GB ? (int32)GB->GetLayers().size() : -1));
+				// Back to the mass step's settings for the rest of the run: the
+				// fuselage's asserted 150 kg (its layers go, and the result's with
+				// them), the sphere's 0.05 skin of the density-2 material.
+				aerotelic::MassSpec Asserted;
+				Asserted.mode = aerotelic::MassMode::Asserted;
+				Asserted.mass = 150.0;
+				Fuselage->SetMassSpec(Asserted);
+				aerotelic::MassSpec ByDensity;
+				ByDensity.mode = aerotelic::MassMode::Material;
+				ByDensity.material.name = "Custom";
+				ByDensity.material.density = 2.0;
+				ByDensity.skin_thickness = 0.05;
+				Primitive->SetMassSpec(ByDensity);
+				Doc->FlushPendingRebuilds();
+				Check(Fused->GetGeneratedStructure(TEXT("Main")) == nullptr, "boolean skin: with the fuselage back to an asserted mass the result has no layers to take over, and drops them");
+			}
+		}
 	}
 
 	// A body's STRUCTURE (2026-11-08) is what it is made of: material, skin
@@ -1052,7 +1189,7 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 				Region.Id = 1;
 				Region.Label = TEXT("sphere");
 				Region.Skin = Al;
-				Region.SkinThickness = Primitive->GetEffectiveMassSpec().skin_thickness;
+				Region.SkinThickness = Primitive->GetMassSpec().skin_thickness;
 				Region.Body = 0;
 				Request.Regions.Add(Region);
 				Support(Request);
@@ -1367,6 +1504,12 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 					// main element.
 					if (Primitive != nullptr)
 					{
+						// The result inherits its operands' skins (2026-11-20): the
+						// sphere's density-only material would refuse the analysis by
+						// the sphere's name, so it takes the aluminium skin for this
+						// step and gets its own back after.
+						const aerotelic::BodyStructure SphereBefore = Primitive->GetBodyStructure(0);
+						Primitive->SetBodyStructure(TEXT("Main"), FlapSkin);
 						TArray<FAerotelicBooleanOperand> Ops;
 						FAerotelicBooleanOperand BW, BS;
 						BW.Entity = Wing;
@@ -1385,7 +1528,7 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 							TArray<AerotelicFeaModelBuilder::FChosenBody> BChosen;
 							FAerotelicBooleanOperand BOp;
 							BOp.Entity = Fused;
-							for (int32 i = 0; i < NFused; ++i) Fused->SetBodyStructure(Fused->GetBodies()[i].Name, FlapSkin);
+							Check(!Fused->SetBodyStructure(Fused->GetBodies()[0].Name, FlapSkin), "fea (hinge, boolean): the result takes no structure of its own -- its bodies inherit the wing's, the aileron's and the sphere's skins");
 							Doc->FlushPendingRebuilds();
 							bool bAll = true;
 							for (int32 i = 0; i < NFused; ++i)
@@ -1460,6 +1603,8 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 							Check(bAileronHeld, FString::Printf(TEXT("fea (hinge, boolean): the aileron's fused body hangs on its hinge, not floating (%d floating:%s)"), bBPre ? BPre.FloatingRegions.Num() : -1, *Floating));
 						}
 						if (Fused != nullptr) Doc->RemoveEntity(Fused);
+						// The sphere's own skin back (the round trip below expects it).
+						Primitive->SetBodyStructure(TEXT("Main"), SphereBefore);
 						Doc->FlushPendingRebuilds();
 					}
 					AerotelicFeaPreprocess::FModel PreH;
@@ -2294,6 +2439,8 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 			{
 				std::vector<aerotelic::NamedMesh> Meshes = M->BuildMeshes(FAerotelicBooleanModel::kValidationTolerance);
 				Check(Meshes.size() == 1 && Meshes[0].mesh.IsClosedManifold() && Meshes[0].mesh.SignedVolume() > 0.0, "BoolOp 1: the fused mesh is one closed, outward body");
+				Check(Meshes.size() == 1 && Meshes[0].HasFaceSources() && Meshes[0].sources.size() == 2, "BoolOp 1: the reopened result still knows which operand every face came from");
+				Check(!E->GetBodyStructure(0).IsSet(), "BoolOp 1: the reopened result carries no structure of its own (the file has none for it)");
 			}
 			catch (const std::exception& Ex)
 			{

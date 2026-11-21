@@ -954,12 +954,13 @@ public:
 	std::vector<Vec3>& pts;                 // vertex positions (vertex-table ids)
 	std::vector<std::array<int, 3>>& tris;  // -1 marks a dead triangle
 	const std::vector<char>& seam;          // per vertex
+	const std::vector<int>& labels;         // per triangle: a flip never crosses a label boundary
 	const double angle_deg, max_move;
 	MeshBooleanStats& st;
 	std::vector<std::vector<int>> vt;       // vertex -> live triangles
 
-	SeamPass(std::vector<Vec3>& p, std::vector<std::array<int, 3>>& t, const std::vector<char>& s, double deg, double move, MeshBooleanStats& st_)
-		: pts(p), tris(t), seam(s), angle_deg(deg), max_move(move), st(st_) {
+	SeamPass(std::vector<Vec3>& p, std::vector<std::array<int, 3>>& t, const std::vector<char>& s, const std::vector<int>& l, double deg, double move, MeshBooleanStats& st_)
+		: pts(p), tris(t), seam(s), labels(l), angle_deg(deg), max_move(move), st(st_) {
 		vt.assign(pts.size(), {});
 		for (size_t i = 0; i < tris.size(); ++i) for (int k = 0; k < 3; ++k) vt[tris[i][k]].push_back(static_cast<int>(i));
 	}
@@ -1057,6 +1058,9 @@ public:
 		int t1 = on[0], t2 = on[1];
 		int c = third(t1, a, b, &f1), d = third(t2, a, b, &f2);
 		if (c < 0 || d < 0 || f1 == f2 || c == d) { why = "flip: inconsistent pair"; return false; }
+		// The two new triangles would each straddle the boundary between the
+		// two surfaces the old ones came from; neither label would be right.
+		if (labels[t1] != labels[t2]) { why = "flip: across a label boundary"; return false; }
 		if (!f1) { std::swap(t1, t2); std::swap(c, d); }
 		if (!OnEdge(c, d).empty()) { why = "flip: edge exists"; return false; }
 		std::array<int, 3> n1{{a, d, c}}, n2{{b, c, d}};
@@ -1165,12 +1169,25 @@ const char* MeshBooleanOpName(MeshBooleanOp op) {
 	}
 }
 
-TriMesh MeshBoolean(const TriMesh& a, const TriMesh& b, MeshBooleanOp op, MeshBooleanStats* stats_out, const MeshBooleanOptions& options) {
+TriMesh MeshBoolean(const TriMesh& a, const TriMesh& b, MeshBooleanOp op, MeshBooleanStats* stats_out, const MeshBooleanOptions& options, MeshBooleanLabels* labels) {
 	EnsureExact();
 	auto t_start = std::chrono::steady_clock::now();
 	MeshBooleanStats st;
 	if (!a.IsClosedManifold() || !(a.SignedVolume() > 0.0)) throw std::invalid_argument("MeshBoolean: the first body is not a closed, outward surface");
 	if (!b.IsClosedManifold() || !(b.SignedVolume() > 0.0)) throw std::invalid_argument("MeshBoolean: the second body is not a closed, outward surface");
+	if (labels != nullptr) {
+		if (labels->a != nullptr && labels->a->size() != a.triangles.size()) throw std::invalid_argument("MeshBoolean: labels.a must have one entry per triangle of the first body");
+		if (labels->b != nullptr && labels->b->size() != b.triangles.size()) throw std::invalid_argument("MeshBoolean: labels.b must have one entry per triangle of the second body");
+		labels->out.clear();
+	}
+	// The label of an input triangle: the caller's, else which body it is.
+	auto label_of = [labels](int side, size_t t) {
+		if (labels != nullptr) {
+			const std::vector<int>* given = side == 0 ? labels->a : labels->b;
+			if (given != nullptr) return (*given)[t];
+		}
+		return side;
+	};
 	st.volume_a = a.SignedVolume();
 	st.volume_b = b.SignedVolume();
 
@@ -1231,9 +1248,11 @@ TriMesh MeshBoolean(const TriMesh& a, const TriMesh& b, MeshBooleanOp op, MeshBo
 	// 3 + 4. Pieces, classified and kept.
 	MeshSdf sdf_a(a), sdf_b(b);
 	TriMesh out;
-	auto emit = [&](const std::array<int, 3>& t, bool reversed) {
+	std::vector<int> out_labels;   // per triangle of `out`, kept in step with it to the end
+	auto emit = [&](const std::array<int, 3>& t, bool reversed, int label) {
 		if (reversed) out.triangles.push_back({{t[0], t[2], t[1]}});
 		else out.triangles.push_back(t);
+		out_labels.push_back(label);
 	};
 	auto centroid = [&](const std::array<int, 3>& t) { return (table.points[t[0]] + table.points[t[1]] + table.points[t[2]]) / 3.0; };
 	// Keep rule per body: side 0 = pieces of A (inside B?), side 1 = pieces of B (inside A?).
@@ -1329,12 +1348,14 @@ TriMesh MeshBoolean(const TriMesh& a, const TriMesh& b, MeshBooleanOp op, MeshBo
 		const bool reversed = op == MeshBooleanOp::Cut && side == 1;
 		int& kept = side == 0 ? st.n_kept_a : st.n_kept_b;
 		std::vector<std::array<int, 3>> all;
+		std::vector<int> all_label;   // the parent triangle's label, per piece
 		std::unordered_set<uint64_t> barrier;
 		for (size_t t = 0; t < m.triangles.size(); ++t) {
 			if (dropped[t]) continue;
 			const Cut& cut = cuts[side][t];
 			if (cut.pieces.size() > 1) st.n_pieces += static_cast<int>(cut.pieces.size());
 			all.insert(all.end(), cut.pieces.begin(), cut.pieces.end());
+			all_label.insert(all_label.end(), cut.pieces.size(), label_of(side, t));
 			for (const auto& s : segs[t]) {
 				expanded.clear();
 				splits.Expand(s[0], s[1], expanded);
@@ -1377,7 +1398,7 @@ TriMesh MeshBoolean(const TriMesh& a, const TriMesh& b, MeshBooleanOp op, MeshBo
 			for (int p : members) {
 				bool inside = conflict ? dist[p] < 0.0 : region_inside;
 				if (!keep(side, inside)) continue;
-				emit(all[p], reversed);
+				emit(all[p], reversed, all_label[p]);
 				++kept;
 			}
 		}
@@ -1387,11 +1408,13 @@ TriMesh MeshBoolean(const TriMesh& a, const TriMesh& b, MeshBooleanOp op, MeshBo
 	if (options.seam_sliver_deg > 0.0 && !out.triangles.empty()) {
 		std::vector<char> seam(table.points.size(), 0);
 		for (size_t v = 0; v < seam.size(); ++v) seam[v] = (inter.IsSeam(static_cast<int>(v)) || splits.IsSeam(static_cast<int>(v))) ? 1 : 0;
-		SeamPass pass(table.points, out.triangles, seam, options.seam_sliver_deg, options.seam_move_fraction * diagonal, st);
+		SeamPass pass(table.points, out.triangles, seam, out_labels, options.seam_sliver_deg, options.seam_move_fraction * diagonal, st);
 		pass.Run();
 		std::vector<std::array<int, 3>> live;
-		for (const auto& t : out.triangles) if (t[0] >= 0) live.push_back(t);
+		std::vector<int> live_labels;
+		for (size_t i = 0; i < out.triangles.size(); ++i) if (out.triangles[i][0] >= 0) { live.push_back(out.triangles[i]); live_labels.push_back(out_labels[i]); }
 		out.triangles = std::move(live);
+		out_labels = std::move(live_labels);
 	}
 
 	// Assemble: only the vertices used, in table order.
@@ -1400,7 +1423,22 @@ TriMesh MeshBoolean(const TriMesh& a, const TriMesh& b, MeshBooleanOp op, MeshBo
 	int n = 0;
 	for (size_t v = 0; v < remap.size(); ++v) if (remap[v] == 0) { remap[v] = n++; out.vertices.push_back(table.points[v]); }
 	for (auto& t : out.triangles) for (int k = 0; k < 3; ++k) t[k] = remap[t[k]];
-	out.RemoveDegenerateTriangles();
+	{
+		// RemoveDegenerateTriangles, with the labels kept in step.
+		std::vector<std::array<int, 3>> kept;
+		std::vector<int> kept_labels;
+		kept.reserve(out.triangles.size());
+		kept_labels.reserve(out.triangles.size());
+		for (size_t i = 0; i < out.triangles.size(); ++i) {
+			const auto& t = out.triangles[i];
+			if (t[0] == t[1] || t[1] == t[2] || t[0] == t[2]) continue;
+			kept.push_back(t);
+			kept_labels.push_back(out_labels[i]);
+		}
+		out.triangles = std::move(kept);
+		out_labels = std::move(kept_labels);
+	}
+	if (labels != nullptr) labels->out = out_labels;
 	if (!out.triangles.empty()) {
 		if (!out.IsClosedManifold()) {
 			// Count the open edges for the message.

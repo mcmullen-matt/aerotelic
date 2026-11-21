@@ -450,7 +450,7 @@ namespace
 		"ASSIGNING A MATERIAL\n"
 		"\n"
 		"Right-click a body in the Scene tree and choose Structure: pick the material from the list, give the skin thickness (0 for a solid body; a positive thickness makes the body's surface a skin of the material that thick, which is also what the structural analysis gives its shells), and read off the enclosed volume, the surface area and what it would weigh. "
-		"A boolean result's bodies own their structure; Copy Structure From Operand starts them from an operand's.\n"
+		"A boolean result has no structure of its own (2026-11-20): each piece of its surface keeps the material and skin thickness of the operand body it was cut from, fused to a different skin or not, and the ribs, spars and frames inside are the operands' -- change the operand to change the result. Its row shows what it inherits.\n"
 		"\n"
 		"CONVENTIONS OF THE PRESETS\n"
 		"\n"

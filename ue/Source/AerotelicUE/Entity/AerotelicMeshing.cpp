@@ -196,9 +196,12 @@ namespace AerotelicMeshing
 #include <map>
 #include <tuple>
 
-std::vector<aerotelic::TriMesh> AerotelicMeshing::SplitShells(const aerotelic::TriMesh& Mesh, double WeldTolerance)
+std::vector<aerotelic::TriMesh> AerotelicMeshing::SplitShells(const aerotelic::TriMesh& Mesh, double WeldTolerance,
+	const std::vector<int>* Labels, std::vector<std::vector<int>>* OutLabels)
 {
 	std::vector<aerotelic::TriMesh> Out;
+	if (OutLabels != nullptr) OutLabels->clear();
+	if (Labels != nullptr && Labels->size() != Mesh.triangles.size()) Labels = nullptr;
 	const int N = static_cast<int>(Mesh.vertices.size());
 	if (N == 0 || Mesh.triangles.empty())
 	{
@@ -233,15 +236,16 @@ std::vector<aerotelic::TriMesh> AerotelicMeshing::SplitShells(const aerotelic::T
 		if (It == ShellOfRoot.end()) It = ShellOfRoot.emplace(Root, static_cast<int>(ShellOfRoot.size())).first;
 		ShellOfTriangle[t] = It->second;
 	}
-	Out.resize(ShellOfRoot.size());
+	std::vector<aerotelic::TriMesh> Shells(ShellOfRoot.size());
+	std::vector<std::vector<int>> ShellLabels(ShellOfRoot.size());
 	// One remap table, stamped per shell, so a result of many shells costs
 	// no more than one table of the mesh's vertices.
 	std::vector<int> Remap(N, -1), Stamp(N, -1);
 	std::vector<std::vector<size_t>> TrianglesOfShell(ShellOfRoot.size());
 	for (size_t t = 0; t < Mesh.triangles.size(); ++t) TrianglesOfShell[ShellOfTriangle[t]].push_back(t);
-	for (size_t S = 0; S < Out.size(); ++S)
+	for (size_t S = 0; S < Shells.size(); ++S)
 	{
-		aerotelic::TriMesh& Shell = Out[S];
+		aerotelic::TriMesh& Shell = Shells[S];
 		for (size_t t : TrianglesOfShell[S])
 		{
 			std::array<int, 3> Tri;
@@ -252,8 +256,19 @@ std::vector<aerotelic::TriMesh> AerotelicMeshing::SplitShells(const aerotelic::T
 				Tri[k] = Remap[V];
 			}
 			Shell.triangles.push_back(Tri);
+			if (Labels != nullptr) ShellLabels[S].push_back((*Labels)[t]);
 		}
 	}
-	std::stable_sort(Out.begin(), Out.end(), [](const aerotelic::TriMesh& A, const aerotelic::TriMesh& B) { return std::abs(A.SignedVolume()) > std::abs(B.SignedVolume()); });
+	// Largest enclosed volume first, the labels following their shells.
+	std::vector<size_t> Order(Shells.size());
+	std::vector<double> Volume(Shells.size());
+	for (size_t S = 0; S < Shells.size(); ++S) { Order[S] = S; Volume[S] = std::abs(Shells[S].SignedVolume()); }
+	std::stable_sort(Order.begin(), Order.end(), [&Volume](size_t A, size_t B) { return Volume[A] > Volume[B]; });
+	Out.reserve(Shells.size());
+	for (size_t S : Order)
+	{
+		Out.push_back(std::move(Shells[S]));
+		if (OutLabels != nullptr && Labels != nullptr) OutLabels->push_back(std::move(ShellLabels[S]));
+	}
 	return Out;
 }

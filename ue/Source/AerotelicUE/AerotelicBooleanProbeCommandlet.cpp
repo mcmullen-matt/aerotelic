@@ -442,13 +442,13 @@ namespace
 		FString MassText;
 		if (!AerotelicAeroTrim::MassAndCentre(ForMass, Doc->GetUnits(), Cond.MassKg, Cond.MassCentre, MassText))
 		{
-			// The case names a BOOLEAN whose own bodies carry no material, so
-			// the mass report weighs nothing and the application refuses the
-			// trim for want of a weight (my_drone, 2026-11-19). The operands
-			// do carry materials: weigh THEM instead, so that the iteration
-			// can be exercised, and say loudly that this is the probe's
-			// substitute and not what the application does. Fixing the model
-			// (a material on each of the boolean's bodies) is the owner's.
+			// The case's bodies weigh nothing, so the application refuses the
+			// trim for want of a weight. (Until 2026-11-20 a boolean result's
+			// bodies owned their structure, and my_drone's carried none; a
+			// result inherits its operands' skins now, piece by piece, so this
+			// is reached only when the operands themselves have none.) Weigh
+			// the operands directly, so that the iteration can be exercised,
+			// and say loudly that this is the probe's substitute.
 			UE_LOG(LogAerotelicBooleanProbe, Warning, TEXT("the case's bodies weigh nothing: %s"), *MassText);
 			TArray<AAerotelicEntityActor*> Operands;
 			for (AAerotelicEntityActor* E : ForMass)
@@ -466,7 +466,7 @@ namespace
 			}
 			FString Who;
 			for (AAerotelicEntityActor* E : Operands) Who += (Who.IsEmpty() ? TEXT("") : TEXT(", ")) + E->EntityName;
-			UE_LOG(LogAerotelicBooleanProbe, Warning, TEXT("PROBE SUBSTITUTE: weighing the boolean's OPERANDS instead (%s): %s. The application would refuse this case for want of a weight -- assign a material to each of the boolean result's bodies, or list the operands in the case."), *Who, *OpText);
+			UE_LOG(LogAerotelicBooleanProbe, Warning, TEXT("PROBE SUBSTITUTE: weighing the boolean's OPERANDS instead (%s): %s. The application would refuse this case for want of a weight -- give each operand body a material and a skin thickness (a boolean result inherits them), or list the operands in the case."), *Who, *OpText);
 		}
 		if (!Spec->control_entity.empty())
 		{

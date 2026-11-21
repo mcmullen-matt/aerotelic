@@ -14,6 +14,7 @@
 #include "Entity/AerotelicEntityActor.h"
 #include "Entity/AerotelicDocumentSubsystem.h"
 #include "Entity/AerotelicBodyStructureText.h"
+#include "Entity/AerotelicSkinSources.h"
 #include "Widgets/NumericEntry.h"
 #include "Widgets/TabStrip.h"
 #include "Widgets/CurveTabControls.h"
@@ -141,6 +142,20 @@ void OpenAerotelicStructureDialog(AAerotelicEntityActor* Entity, const FString& 
 	const int32 BodyIndex = Entity->FindBodyIndex(BodyRole);
 	if (BodyIndex == INDEX_NONE) return;
 	const FString Role = Entity->GetBodies()[BodyIndex].Name;
+	if (Entity->IsDerived())
+	{
+		// A boolean result owns no structure (2026-11-20): nothing to edit
+		// here, only what it inherits to show. The operands' Structure
+		// dialogs are where it is changed.
+		const UAerotelicDocumentSubsystem* Doc = UAerotelicDocumentSubsystem::Get();
+		const aerotelic::UnitSystem Units = Doc != nullptr ? Doc->GetUnits() : aerotelic::UnitSystem{};
+		const FString Label = Entity->GetBodies().Num() > 1 ? FString::Printf(TEXT("%s / %s"), *Entity->EntityName, *Role) : Entity->EntityName;
+		AerotelicMessageBox(EAppMsgType::Ok,
+			FText::FromString(FString::Printf(TEXT("%s is a boolean result and has no structure of its own.\n\nEach piece of its surface keeps the material and skin thickness of the operand body it was cut from, fused to a different skin or not; the ribs, spars and frames inside are the operands' generated layers. To change what it is made of, open Structure... on the operand.\n\nAs it stands: %s"),
+				*Label, *DescribeAerotelicInheritedSkin(Entity, Role, Units))),
+			LOCTEXT("InheritedStructureTitle", "Inherited Structure"));
+		return;
+	}
 	const FString Key = DialogKey(Entity, Role);
 	if (TWeakPtr<SWindow>* Existing = GOpenStructureDialogs.Find(Key))
 	{

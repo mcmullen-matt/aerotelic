@@ -15,7 +15,10 @@
 // over the surface -- or, once its structure has been GENERATED, by its
 // layers (one line per layer, each a thin shell of its own material:
 // density times area times thickness, the skin on the body's own surface
-// and each rib layer on its discs; 2026-11-08, late).
+// and each rib layer on its discs; 2026-11-08, late). A BOOLEAN RESULT's
+// body owns no structure (2026-11-20): one line per operand body its
+// surface was cut from, that piece weighed by the operand's skin (or its
+// share of the operand's asserted mass), then the operands' layers inside.
 // The assembly is the parallel-axis sum of the lines about their joint
 // centre. Headless, so the document commandlet can check it; the dialog
 // only shows the text.

@@ -1440,6 +1440,12 @@ const aerotelic::BodyStructure& AAerotelicEntityActor::GetBodyStructure(int32 In
 
 bool AAerotelicEntityActor::SetBodyStructure(const FString& BodyRole, const aerotelic::BodyStructure& InStructure)
 {
+	// A boolean result owns no structure: its skin is its operands', piece
+	// by piece (2026-11-20).
+	if (IsDerived())
+	{
+		return false;
+	}
 	const int32 Index = FindBodyIndex(BodyRole);
 	if (!Bodies.IsValidIndex(Index))
 	{
@@ -1504,29 +1510,6 @@ void AAerotelicEntityActor::SetMassSpec(const aerotelic::MassSpec& InSpec)
 aerotelic::MassSpec AAerotelicEntityActor::GetMassSpec() const
 {
 	return aerotelic::MassSpecFromBodyStructure(GetBodyStructure(0));
-}
-
-const AAerotelicEntityActor* AAerotelicEntityActor::GetMassSpecSource() const
-{
-	// A body of its own first; else follow the first operand down to one
-	// that has -- a bounded walk, since a chain of derived entities is
-	// finite and a cycle cannot be authored.
-	const AAerotelicEntityActor* E = this;
-	for (int32 Depth = 0; Depth < 32 && E != nullptr; ++Depth)
-	{
-		if (!E->IsDerived() || E->GetBodyStructure(0).IsSet()) return E;
-		const FAerotelicBooleanOperand* First = nullptr;
-		const FAerotelicBooleanModel* M = static_cast<const FAerotelicBooleanModel*>(E->GetModel());
-		if (M != nullptr && M->Operands.Num() > 0) First = &M->Operands[0];
-		E = (First != nullptr && First->Entity.IsValid()) ? First->Entity.Get() : nullptr;
-	}
-	return nullptr;
-}
-
-aerotelic::MassSpec AAerotelicEntityActor::GetEffectiveMassSpec() const
-{
-	const AAerotelicEntityActor* Source = GetMassSpecSource();
-	return Source != nullptr ? Source->GetMassSpec() : aerotelic::MassSpec();
 }
 
 std::vector<aerotelic::NamedMesh> AAerotelicEntityActor::GetPlacedMeshes(bool bMirror, double Tolerance) const

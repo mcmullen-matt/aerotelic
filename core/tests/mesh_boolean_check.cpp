@@ -97,6 +97,59 @@ int main() {
 		WriteStlAscii(cut, "C:\\Users\\Matt\\devel_1\\aerotelic\\core\\build\\bool_sphere_box_cut.stl", "cut");
 	});
 
+	// ---- labels: which body's surface each face of the result is a piece of ----
+	Case("labels", [] {
+		TriMesh sph = EllipsoidMesh(1.0, 1.0, 1.0, 2e-3);
+		TriMesh box = BoxMesh(2.0, 1.0, 0.5);
+		box.Translate({0.8, 0.1, 0.05});
+		const MeshSdf sdf_s(sph), sdf_b(box);
+		auto centroid = [](const TriMesh& m, size_t t) { return (m.vertices[m.triangles[t][0]] + m.vertices[m.triangles[t][1]] + m.vertices[m.triangles[t][2]]) / 3.0; };
+		auto area = [](const TriMesh& m, size_t t) { return 0.5 * Length(Cross(m.vertices[m.triangles[t][1]] - m.vertices[m.triangles[t][0]], m.vertices[m.triangles[t][2]] - m.vertices[m.triangles[t][0]])); };
+		// A face labelled 0 lies on the sphere's own surface, one labelled 1 on
+		// the box's (the seam pass moves a vertex by at most 1e-4 of the diagonal).
+		double sphere_area_kept[3] = {0.0, 0.0, 0.0};
+		const MeshBooleanOp ops[3] = {MeshBooleanOp::Fuse, MeshBooleanOp::Cut, MeshBooleanOp::Common};
+		for (int i = 0; i < 3; ++i) {
+			MeshBooleanLabels L;
+			TriMesh r = MeshBoolean(sph, box, ops[i], nullptr, {}, &L);
+			Check(L.out.size() == r.triangles.size(), Fmt(std::string(std::string("labels ") + MeshBooleanOpName(ops[i]) + ": one label per result triangle (%.0f of %.0f)").c_str(), (double)L.out.size(), (double)r.triangles.size()));
+			int n0 = 0, n1 = 0, wrong = 0;
+			for (size_t t = 0; t < r.triangles.size() && t < L.out.size(); ++t) {
+				const Vec3 c = centroid(r, t);
+				if (L.out[t] == 0) { ++n0; sphere_area_kept[i] += area(r, t); if (std::fabs(sdf_s.Distance(c)) > 3e-3) ++wrong; }
+				else if (L.out[t] == 1) { ++n1; if (std::fabs(sdf_b.Distance(c)) > 1e-6) ++wrong; }
+				else ++wrong;
+			}
+			Check(n0 > 0 && n1 > 0 && wrong == 0, Fmt(std::string(std::string("labels ") + MeshBooleanOpName(ops[i]) + ": %.0f faces of the sphere, %.0f of the box, every one on the surface its label names (%.0f wrong)").c_str(), n0, n1, wrong));
+		}
+		// The sphere's pieces outside the box (fuse) and inside it (common) tile the sphere.
+		const double sphere_area = sph.SurfaceArea();
+		Check(std::fabs(sphere_area_kept[0] + sphere_area_kept[2] - sphere_area) < 2e-3 * sphere_area,
+			Fmt("labels: the sphere-labelled faces of fuse and common together have the sphere's area (%.6g + %.6g vs %.6g)", sphere_area_kept[0], sphere_area_kept[2], sphere_area));
+		// The caller's own labels come through: 7 for the sphere's faces, 9 for the box's.
+		std::vector<int> la(sph.triangles.size(), 7), lb(box.triangles.size(), 9);
+		MeshBooleanLabels L;
+		L.a = &la;
+		L.b = &lb;
+		TriMesh fuse = MeshBoolean(sph, box, MeshBooleanOp::Fuse, nullptr, {}, &L);
+		int n7 = 0, n9 = 0, other = 0;
+		for (int l : L.out) { if (l == 7) ++n7; else if (l == 9) ++n9; else ++other; }
+		Check(L.out.size() == fuse.triangles.size() && n7 > 0 && n9 > 0 && other == 0, Fmt("labels: the caller's labels 7 and 9 come through unchanged (%.0f, %.0f, %.0f other)", n7, n9, other));
+		// A fuse of the result with a third body carries the labels on: a
+		// piece of a piece is still the sphere's or the box's.
+		TriMesh cyl = CylinderMesh(0.3, 3.0, 2e-3);
+		cyl.Translate({0.37, 0.013, 0.017});   // off the box's planes and the sphere's poles: a rim or a vertex on a face is a degenerate contact
+		std::vector<int> lf = L.out;
+		MeshBooleanLabels L2;
+		L2.a = &lf;
+		std::vector<int> lc(cyl.triangles.size(), 11);
+		L2.b = &lc;
+		TriMesh fuse2 = MeshBoolean(fuse, cyl, MeshBooleanOp::Fuse, nullptr, {}, &L2);
+		int m7 = 0, m9 = 0, m11 = 0, mo = 0;
+		for (int l : L2.out) { if (l == 7) ++m7; else if (l == 9) ++m9; else if (l == 11) ++m11; else ++mo; }
+		Check(L2.out.size() == fuse2.triangles.size() && m7 > 0 && m9 > 0 && m11 > 0 && mo == 0, Fmt("labels: a chained fuse keeps the first result's labels and adds the third body's (%.0f, %.0f, %.0f)", m7, m9, m11));
+	});
+
 	// ---- disjoint ----
 	Case("disjoint", [] {
 		TriMesh sph = EllipsoidMesh(1.0, 1.0, 1.0, 2e-3);

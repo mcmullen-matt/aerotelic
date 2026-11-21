@@ -7,6 +7,7 @@
 #include "Entity/AerotelicStructuralFea.h"
 #include "Entity/AerotelicFeaPreprocess.h"
 #include "Entity/AerotelicFeaModelBuilder.h"
+#include "Entity/AerotelicSkinSources.h"
 #include "Entity/ReferenceImagePaths.h"
 #include "HAL/FileManager.h"
 #include "Misc/FileHelper.h"
@@ -236,8 +237,31 @@ int32 UAerotelicRealProjectTestCommandlet::Main(const FString& Params)
 		}
 		if (Bool != nullptr && Wing != nullptr && Boom != nullptr)
 		{
-			Check(Bool->GetMassSpecSource() == Find(TEXT("Center")) && FMath::IsNearlyEqual(Bool->GetEffectiveMassSpec().skin_thickness, Thickness, 1e-12),
-				"p38a: the boolean inherits Center's material and skin thickness");
+			// The boolean owns no structure (2026-11-20): every face of it is a
+			// piece of one operand body's surface and keeps THAT body's skin --
+			// here the same 5 mm 2024-T3 on all of them, from several operands.
+			{
+				int32 NSources = 0, NFaces = 0;
+				bool bAllSkinned = true;
+				TSet<FString> Operands;
+				for (const aerotelic::NamedMesh& NM : Bool->GetPlacedMeshes(false))
+				{
+					bAllSkinned = bAllSkinned && NM.HasFaceSources();
+					for (const FAerotelicSkinSource& S : AerotelicSkinSourcesOf(NM))
+					{
+						++NSources;
+						NFaces += static_cast<int32>(S.Faces.size());
+						Operands.Add(UTF8_TO_TCHAR(S.Source.entity.c_str()));
+						bAllSkinned = bAllSkinned && S.bKnown && S.Structure.IsSkin() && FMath::IsNearlyEqual(S.Structure.skin_thickness, Thickness, 1e-12) && S.Structure.material.name == "Aluminium 2024-T3 sheet";
+					}
+				}
+				Check(NSources >= 4 && Operands.Num() >= 3 && bAllSkinned,
+					FString::Printf(TEXT("p38a: the boolean's faces come from %d operand bodies of %d operands (%d faces), each piece with its operand's 5 mm 2024-T3 skin"), NSources, Operands.Num(), NFaces));
+				aerotelic::BodyStructure Own;
+				Own.material = *aerotelic::FindMaterialPreset("Aluminium 2024-T3 sheet");
+				Own.skin_thickness = 0.001;
+				Check(!Bool->SetBodyStructure(TEXT("Main"), Own) && !Bool->GetBodyStructure(0).IsSet(), "p38a: the boolean takes no structure of its own");
+			}
 			const std::vector<aerotelic::NamedMesh> Placed = Bool->GetPlacedMeshes(false, 2e-3);
 			bool bClosed = Placed.size() >= 1;
 			for (const aerotelic::NamedMesh& NM : Placed) bClosed = bClosed && NM.mesh.IsClosedManifold() && NM.mesh.SignedVolume() > 0.0;
@@ -268,8 +292,8 @@ int32 UAerotelicRealProjectTestCommandlet::Main(const FString& Params)
 				AerotelicStructuralFea::FRegion Region;
 				Region.Id = 1;
 				Region.Label = TEXT("airframe");
-				Region.Skin = Bool->GetEffectiveMassSpec().material;
-				Region.SkinThickness = Bool->GetEffectiveMassSpec().skin_thickness;
+				Region.Skin = *aerotelic::FindMaterialPreset("Aluminium 2024-T3 sheet");
+				Region.SkinThickness = Thickness;
 				Request.Regions.Add(Region);
 				Request.LengthToSI = 1.0;
 				// The starboard tip: the node furthest along +y. The force
@@ -366,17 +390,19 @@ int32 UAerotelicRealProjectTestCommandlet::Main(const FString& Params)
 					// body holds the wing's, the fin's and the tailplane's spars and
 					// ribs, both halves -- the wing's spars running through the nacelle
 					// as a carry-through. Built through the shared model builder as
-					// the dialog builds it: a region per layer, the layers' nodes
-					// shared with the skin, the same tip load solved, and the tip
-					// moving LESS than for the skin alone.
+					// the dialog builds it: a region per skin piece (one per operand
+					// body the surface was cut from, 2026-11-20) and per layer, the
+					// layers' nodes shared with the skin, the same tip load solved,
+					// and the tip moving LESS than for the skin alone.
 					UE_LOG(LogAerotelicRealProjectTest, Display, TEXT("step: p38a with the wings' structure"));
 					{
 						const FString Role = UTF8_TO_TCHAR(Placed[Main].name.c_str());
-						aerotelic::BodyStructure S = Bool->GetBodyStructure(Role) != nullptr ? *Bool->GetBodyStructure(Role) : aerotelic::BodyStructure();
-						S.material = *aerotelic::FindMaterialPreset("Aluminium 2024-T3 sheet");
-						S.skin_thickness = Thickness;
-						Check(Bool->SetBodyStructure(Role, S), FString::Printf(TEXT("p38a structure: the fused body '%s' takes a skin"), *Role));
+						// The fused body's skin is its operands' (set in the mass step
+						// above); the wings' generation, flushed here, hands the result
+						// their layers.
 						Doc->FlushPendingRebuilds();
+						const int32 NSkinPieces = AerotelicSkinSourcesOf(Bool, Role).Num();
+						Check(NSkinPieces >= 3, FString::Printf(TEXT("p38a structure: the fused body '%s' inherits its skin from %d operand bodies"), *Role, NSkinPieces));
 						const FAerotelicBodyStructure* GW = Wing->GetGeneratedStructure(TEXT("Main"));
 						Check(GW != nullptr && GW->IsGenerated() && GW->GetLayers().size() == 4, FString::Printf(TEXT("p38a structure: the wing built its two spars and its ribs (%d layers)"), GW ? (int32)GW->GetLayers().size() : -1));
 						const FAerotelicBodyStructure* GB = Bool->GetGeneratedStructure(Role);
@@ -403,8 +429,8 @@ int32 UAerotelicRealProjectTestCommandlet::Main(const FString& Params)
 						const bool bAppended = AerotelicFeaModelBuilder::AppendBody(BoolOp, Role, TEXT("airframe"), 0, Options, Cache, Built);
 						int32 SkinNodes = 0;
 						for (const AerotelicStructuralFea::FShellFace& F : Built.ShellFaces) SkinNodes = FMath::Max(SkinNodes, FMath::Max3(F.N[0], F.N[1], F.N[2]) + 1);
-						Check(bAppended && Built.RibFaces.Num() > 0 && Built.Regions.Num() == 1 + (GB ? (int32)GB->GetLayers().size() - 1 : 0) && SkinNodes > 0 && (int32)Built.Nodes.size() > SkinNodes,
-							FString::Printf(TEXT("p38a structure: the airframe builds as skin shells with %d structure shells in %d regions on %d nodes, %d of them the skin's (%s)"), Built.RibFaces.Num(), Built.Regions.Num(), (int32)Built.Nodes.size(), SkinNodes, *FString::Join(Built.Problems, TEXT("; "))));
+						Check(bAppended && Built.RibFaces.Num() > 0 && Built.Regions.Num() == NSkinPieces + (GB ? (int32)GB->GetLayers().size() - 1 : 0) && SkinNodes > 0 && (int32)Built.Nodes.size() > SkinNodes,
+							FString::Printf(TEXT("p38a structure: the airframe builds as %d skin regions (one per operand piece) with %d structure shells in %d regions on %d nodes, %d of them the skin's (%s)"), NSkinPieces, Built.RibFaces.Num(), Built.Regions.Num(), (int32)Built.Nodes.size(), SkinNodes, *FString::Join(Built.Problems, TEXT("; "))));
 						if (bAppended && Built.RibFaces.Num() > 0)
 						{
 							AerotelicStructuralFea::FRequest SparRequest;

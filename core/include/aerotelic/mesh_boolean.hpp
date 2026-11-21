@@ -130,12 +130,28 @@ struct MeshBooleanStats {
 	double seconds = 0.0;
 };
 
+// Per-triangle LABELS carried through the operation (2026-11-20). Every
+// triangle of the result is a piece of exactly one triangle of A or of B
+// (kept whole, or re-triangulated in its own plane, 3 above), so a label
+// on the input triangles -- which body's surface each belongs to -- is a
+// label on the output triangles, exactly; nothing is inferred. The seam
+// pass (5) only removes triangles and flips edges between two of the same
+// sheet, so it loses no label either; a flip between two differently
+// labelled pieces is refused.
+struct MeshBooleanLabels {
+	const std::vector<int>* a = nullptr;  // per triangle of a; null: every triangle of a is 0
+	const std::vector<int>* b = nullptr;  // per triangle of b; null: every triangle of b is 1
+	std::vector<int> out;                 // filled on return: per triangle of the result
+};
+
 // `a` and `b` must be closed, outward-oriented meshes (TriMesh::
 // IsClosedManifold, positive SignedVolume); std::invalid_argument
 // otherwise. Throws MeshBooleanError on a degenerate contact and
 // std::runtime_error if the result does not close. An empty result (a
 // Common of disjoint bodies, a Cut that removes everything) is an empty
-// mesh, not an error.
-TriMesh MeshBoolean(const TriMesh& a, const TriMesh& b, MeshBooleanOp op, MeshBooleanStats* stats = nullptr, const MeshBooleanOptions& options = {});
+// mesh, not an error. `labels`, when given, must have a and b of the
+// meshes' triangle counts (or null) and gets `out` filled.
+TriMesh MeshBoolean(const TriMesh& a, const TriMesh& b, MeshBooleanOp op, MeshBooleanStats* stats = nullptr, const MeshBooleanOptions& options = {},
+	MeshBooleanLabels* labels = nullptr);
 
 } // namespace aerotelic

@@ -130,14 +130,27 @@ public:
 
 	// A BOOLEAN RESULT's structure (2026-11-10): the layers its operands'
 	// bodies generated, already in this body's local frame, taken over as
-	// they are (kind, thickness, material, mesh) under the Skin layer of
-	// the body's own skin. The document picks which operand layers fall
-	// inside which result body; this just lists them.
+	// they are (kind, thickness, material, mesh), under a Skin layer that
+	// is ITSELF the operands' (2026-11-20): the result owns no skin, each
+	// piece of its surface keeps the skin of the operand body it was cut
+	// from (AerotelicSkinSources.h), so the Skin layer lists those pieces
+	// -- one material and thickness when they agree, else per piece in its
+	// Note -- and its material volume is the sum of area x thickness over
+	// them. The document picks which operand layers fall inside which
+	// result body and resolves the skins; this just lists them.
+	struct FSkinPart
+	{
+		FString Label;                 // the operand body: "Wing / Main"
+		aerotelic::Material Material;  // SI; no density: no material on that operand
+		double Thickness = 0.0;        // project units; 0: no skin on that operand
+		bool bAsserted = false;        // the operand carries an asserted mass instead
+		double Area = 0.0;             // of its faces, in Body's (unplaced) units
+	};
 	struct FLayerInputs
 	{
 		FString Label;
 		aerotelic::TriMesh Body;
-		aerotelic::BodyStructure Structure;
+		std::vector<FSkinPart> Skins;
 		double Scale = 1.0;
 		std::vector<FAerotelicStructureLayer> Layers;
 		TArray<FString> Notes;
@@ -148,7 +161,9 @@ public:
 	const std::vector<FAerotelicStructureLayer>& GetLayers() const { return Layers; }
 	const FAerotelicStructureLayer* FindLayer(const FString& Name) const;
 	const FStats& GetStats() const { return Stats; }
-	// The structure the layers were generated from.
+	// The structure the layers were generated from (for a boolean result,
+	// the first skinned operand piece's, as a summary: the Skin layer's
+	// Note has the pieces).
 	const aerotelic::BodyStructure& GetStructure() const { return Generated; }
 	// Set when the body's geometry changed after the generation (the
 	// document regenerates shortly; the Scene tree can say "stale").

@@ -305,12 +305,6 @@ public:
 	DECLARE_MULTICAST_DELEGATE(FOnSectionChanged);
 	FOnSectionChanged OnSectionChanged;
 
-	// A boolean result's bodies own their structure; this gives each of
-	// them the structure of its first operand's first body, the common
-	// starting point (the Scene tree's "Copy Structure From Operand").
-	// Returns how many bodies were set.
-	int32 CopyStructuresFromOperand(AAerotelicEntityActor* Boolean);
-
 	// Fired after the entity list changes shape (add/remove/New/Open) --
 	// not on every in-place edit, which is each entity's own OnChanged.
 	DECLARE_MULTICAST_DELEGATE(FOnEntityListChanged);

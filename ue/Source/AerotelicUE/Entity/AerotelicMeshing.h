@@ -49,6 +49,9 @@ namespace AerotelicMeshing
 	// WeldTolerance of one another count as one for the connectivity (a
 	// mesh boolean can leave a seam's vertices doubled), though each shell
 	// keeps the vertices as they are. A boolean result that fused a wing
-	// and its flap, which never touch, comes out as two shells.
-	std::vector<aerotelic::TriMesh> SplitShells(const aerotelic::TriMesh& Mesh, double WeldTolerance);
+	// and its flap, which never touch, comes out as two shells. Labels,
+	// when given (one per triangle of Mesh), are split the same way: the
+	// i-th shell's labels, one per its triangle in order (2026-11-20).
+	std::vector<aerotelic::TriMesh> SplitShells(const aerotelic::TriMesh& Mesh, double WeldTolerance,
+		const std::vector<int>* Labels = nullptr, std::vector<std::vector<int>>* OutLabels = nullptr);
 }

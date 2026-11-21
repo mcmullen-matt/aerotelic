@@ -28,7 +28,19 @@ struct FAerotelicBooleanOperand
 // rest; fuse and common are associative. An operand with several bodies
 // (a propeller) is fused into one first. Built like any other entity
 // model, so the result is a normal scene item: body, colour, visibility,
-// section, styles, STL export, a body structure (skin and ribs) of its own.
+// section, styles, STL export.
+//
+// A result OWNS NO STRUCTURE (2026-11-20, the owner's rule): every face
+// of it is a piece of one operand body's surface and keeps THAT body's
+// skin -- material and thickness -- fused to a different skin or not; the
+// ribs, spars and frames inside are the operands' generated layers taken
+// over (since 2026-11-10). To change what a result is made of, change the
+// operand. Each body's NamedMesh carries the provenance (face_source /
+// sources, exact: the mesh boolean cuts triangles, it never makes one out
+// of two bodies), and the mass report, the structural model builder and
+// the Scene tree read the operands' structures through it
+// (AerotelicSkinSources.h). A cut's pocket wall is the cutter's surface
+// and keeps the cutter's skin, by the same rule.
 //
 // No OpenCascade: a boolean result has no B-rep solid, so it is not
 // exported to STEP (export the operands and combine them downstream).

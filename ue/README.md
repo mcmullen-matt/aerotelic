@@ -577,9 +577,11 @@ The layout follows the Python/Qt version's main window (`aerotelic/ui/main_windo
   volumes by scene name, or an asserted mass. Start and spacing are
   geometry in the parameterisation's full-scale frame (placed, scaled and
   mirrored with the body); skin, rib thickness and height are physical
-  build figures in project units, not scaled by the model scale. Boolean
-  result bodies own their structure (no inheritance; *Copy Structure From
-  Operand* on the result's row is the starting point). The Scene tree's
+  build figures in project units, not scaled by the model scale. A
+  boolean result's bodies own NO structure (2026-11-20; see *A boolean
+  result inherits its operands' skins*): each piece of the surface keeps
+  the skin of the operand body it was cut from, and the result's row shows
+  *Inherited Structure* instead. The Scene tree's
   body rows (and a single-body entity's row) have *Structure...*: a
   modeless dialog with Skin / Planes / Mass tabs, Apply, Revert
   and *Generate*; while the Planes tab is edited the 3D view shows every
@@ -1424,10 +1426,14 @@ parameterisation's Material Properties are the one source of what it is
 made of. A DERIVED entity -- a boolean result (and, until 2026-11-08, a
 lattice) -- carries no
 `mass:` of its own (an older file's is ignored on load, none is written)
-and has no Material Properties menu: it inherits, a boolean result from
-its first operand (a lattice from its first filled body), recursively
-(`AAerotelicEntityActor::GetEffectiveMassSpec`, `GetMassSpecSource`,
-`IsDerived`). Every analysis reads the effective spec: the mass report
+and has no Material Properties menu: it inherits. From 2026-10-31 a
+boolean result inherited its FIRST operand's whole setting, recursively
+(`GetEffectiveMassSpec`, `GetMassSpecSource`, both gone); from
+2026-11-08, when the structure moved onto the bodies, its bodies owned
+theirs (a regression for booleans, corrected 2026-11-20); since
+2026-11-20 it inherits PER PIECE OF SURFACE from the operand body each
+piece was cut from -- see *A boolean result inherits its operands'
+skins*. Every analysis reads the effective spec: the mass report
 ("inherited from X" in the Note), the structure's generation (each
 body's skin at its own thickness; until 2026-11-08 late, each body
 hollowed by it) and the structural analysis. There is no global
@@ -4345,3 +4351,101 @@ worth building needs the case re-trimmed (or trimmed in more than one
 step), the skins as variables or the junction detailed, and every V-n
 case at once (the tool takes one job directory; several is the natural
 extension, the constraints simply concatenated).
+
+## A boolean result inherits its operands' skins (2026-11-20)
+
+**The rule (Matt's).** A boolean result owns no structure. Every face of
+it is a piece of one operand body's surface and keeps THAT body's skin
+-- material and thickness -- fused to a different skin or not; the ribs,
+spars, frames and stringers inside are the operands' generated layers
+taken over (since 2026-11-10). There is no override on the result: to
+change what a result is made of, change the operand. A cut's pocket wall
+is the cutter's surface and keeps the cutter's skin, by the same rule;
+`common` keeps each body's pieces with each body's skin.
+
+**What was wrong.** From 2026-11-08, when the structure moved from the
+parameterisation onto its bodies, a boolean result's bodies owned a
+structure of their own -- one material and one thickness for the whole
+fused shell, initially unset, with *Copy Structure From Operand* stamping
+one operand's values onto every body. The internals had been regional
+since 2026-11-10 (each operand layer keeps its kind, thickness, material
+and mesh); the skin alone collapsed to one value. my_drone's `BoolOp 1`
+carried none at all, so the application could neither weigh nor trim its
+Case 1 (2026-11-19).
+
+**Provenance, exact.** `MeshBoolean` takes `MeshBooleanLabels` (core
+`mesh_boolean.hpp`): a label per input triangle of either body, and a
+label per output triangle. Every output triangle is a piece of exactly
+one input triangle -- kept whole, or re-triangulated in its own plane --
+so the label is carried, not inferred; the seam pass keeps the labels in
+step (a flip between two differently labelled pieces is refused, a
+collapse re-attaches triangles that keep theirs). `FAerotelicBooleanModel`
+labels each operand body with a `MeshFaceSource` (entity, body, mirror),
+folds the labels through the chain `(A op B) op C` -- a boolean over a
+boolean brings its own sources along, so the parameterised bodies are
+always what a face names -- splits them with the shells
+(`AerotelicMeshing::SplitShells`) and hands each result body its
+`NamedMesh::face_source` / `sources`. Placement and mirroring keep the
+triangle order, so the provenance rides with `GetPlacedMeshes` at any
+tolerance. `mesh_boolean_check` checks every labelled face of a fuse, cut
+and common of a sphere and a box lies on the surface its label names, the
+sphere's pieces of fuse and common tile the sphere, and a chained fuse
+keeps the first result's labels.
+
+**Resolution** (`Entity/AerotelicSkinSources.h`): `AerotelicSkinSourcesOf`
+turns a result body's sources into `FAerotelicSkinSource`s against the
+scene -- the operand entity by name, its body's `BodyStructure` as it
+stands, the faces and area of that piece, the operand's whole area (an
+asserted mass is spread over it, the piece takes its share).
+`AerotelicSkinSourceProblems` names the OPERAND body at fault, which is
+where it is fixed.
+
+**Consumers.**
+
+* The mass report: a result body is one line per operand piece, `rho t A`
+  over that piece's triangles with the operand's skin (or its share of
+  the operand's asserted mass), then the operands' layers inside. A piece
+  whose operand has no material, or is a solid, is left out by the
+  operand's name.
+* The structural model builder (`AppendBody`, `Describe`): one skin
+  REGION per piece, each with that operand's material and thickness, the
+  faces partitioned as the sources say (a laminate piece is draped over
+  its own faces). Any piece without a structural skin refuses the body
+  by the operand's name. The solver writers were regional already
+  (`FShellFace::Region`, `FRegion`); nothing changed there.
+* The structure's generation: a boolean body wants structure when its
+  operands have layers AND at least one operand body gives it a skin
+  (`WantsStructure`); its Skin row is the pieces -- one material and
+  thickness when they agree, else `inherited (several)` / 0 with the
+  pieces in the Note -- and its material volume `sum(area_i t_i)`. A
+  change to an operand body's structure, material included, re-queues
+  the results over it (no mesher runs for a boolean).
+* The Scene tree: a result's row and body rows have *Inherited
+  Structure* (a message with the pieces) in place of *Structure...*, the
+  tooltips describe the inherited skin, *Copy Structure From Operand* is
+  gone; the Structure dialog refuses a result the same way;
+  `ApplyBodyStructure` / `SetBodyStructure` on a result return false and
+  say to set it on the operand.
+* The file: nothing is written for a result's bodies' structure, and one
+  in an older file (2026-11-08 to 2026-11-20) is ignored on load.
+* `GetEffectiveMassSpec` / `GetMassSpecSource` (the 2026-10-31
+  first-operand rule) are gone; `IsDerived` stays.
+
+**Consequence to expect.** A fuse of a 1 mm and a 2 mm skin puts a step
+change in shell thickness at the seam ring, and the FEA will report the
+stress concentration there -- which is what an unreinforced butt joint
+does; a real joint carries a doubler, and there is no way yet to say "this
+joint is reinforced".
+
+**Checks.** `DocumentTest` step *boolean skin*: the fused fuselage +
+sphere records two sources; the sphere's faces carry its 0.05 skin, the
+fuselage's its asserted mass as a share of its surface; the pieces tile
+the surface; nothing can be set on the result; the mass report has a line
+per piece with `rho t A` and the asserted share; the analysis refuses the
+result by both operands' names, then with a 1.5 mm and a 3 mm skin on the
+operands builds a region per piece with those thicknesses on exactly the
+sources' faces, the fuselage's frames taken over under an inherited Skin
+row; the reopened result still knows its sources and carries no structure.
+`RealProjectTest` p38a: the boolean's faces come from four or more
+operand bodies, each piece with its operand's 5 mm 2024-T3; the airframe
+builds as one skin region per piece plus the layers.

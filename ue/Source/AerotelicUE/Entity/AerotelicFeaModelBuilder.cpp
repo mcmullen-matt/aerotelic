@@ -5,6 +5,7 @@
 #include "AerotelicDocumentSubsystem.h"
 #include "AerotelicEntityActor.h"
 #include "AerotelicMeshing.h"
+#include "AerotelicSkinSources.h"
 
 #include "aerotelic/drape.hpp"
 #include "aerotelic/laminate.hpp"
@@ -14,6 +15,7 @@
 #include "aerotelic/structure_plan.hpp"
 #include "aerotelic/wing_model.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <functional>
 #include <memory>
@@ -690,12 +692,6 @@ namespace AerotelicFeaModelBuilder
 	{
 		if (bOutOk) *bOutOk = false;
 		if (!Op.Entity.IsValid()) return Label + TEXT(": (removed entity)");
-		const aerotelic::BodyStructure* Own = StructureOf(Op.Entity.Get(), Role);
-		if (Own == nullptr) return Label + TEXT(": the body is not known yet (never built)");
-		const aerotelic::BodyStructure& S = *Own;
-		if (!HasStructuralMaterial(S)) return FString::Printf(TEXT("%s: NO STRUCTURAL MATERIAL -- set one under Structure... in the Scene tree"), *Label);
-		if (!(S.skin_thickness > 0.0)) return NoSkinProblem(Label);
-		const FString Material = UTF8_TO_TCHAR(S.material.name.c_str());
 		const FString Length = UTF8_TO_TCHAR(Units.LengthName());
 		FString Inside = TEXT("nothing inside");
 		const TArray<FPlacedLayer> Layers = PlacedLayers(Op.Entity.Get(), RoleOf(Op.Entity.Get(), Role), Op.bMirror);
@@ -705,6 +701,23 @@ namespace AerotelicFeaModelBuilder
 			for (const FPlacedLayer& L : Layers) Names.Add(FString::Printf(TEXT("%s (%.4g %s %s, %s triangles)"), *L.Name, L.Thickness, *Length, UTF8_TO_TCHAR(L.Material.name.c_str()), *Thousands((int64)L.Mesh.triangles.size())));
 			Inside = FString::Printf(TEXT("%d generated layer(s) as unloaded shells inside it, on the skin's nodes: %s"), Layers.Num(), *FString::Join(Names, TEXT(", ")));
 		}
+		if (Op.Entity->IsDerived())
+		{
+			// A boolean result (2026-11-20): no skin of its own; each piece of
+			// its surface keeps the skin of the operand body it was cut from,
+			// and is a region of its own.
+			const TArray<FAerotelicSkinSource> Sources = AerotelicSkinSourcesOf(Op.Entity.Get(), RoleOf(Op.Entity.Get(), Role));
+			const TArray<FString> Problems = AerotelicSkinSourceProblems(Sources, /*bStructural*/ true);
+			if (Problems.Num() > 0) return FString::Printf(TEXT("%s: NOT USABLE -- %s"), *Label, *FString::Join(Problems, TEXT("; ")));
+			if (bOutOk) *bOutOk = true;
+			return FString::Printf(TEXT("%s: a boolean result -- shells on its own grid, each piece of the surface with the skin of the operand it came from (%s), %s"), *Label, *DescribeAerotelicSkinSources(Sources, Units), *Inside);
+		}
+		const aerotelic::BodyStructure* Own = StructureOf(Op.Entity.Get(), Role);
+		if (Own == nullptr) return Label + TEXT(": the body is not known yet (never built)");
+		const aerotelic::BodyStructure& S = *Own;
+		if (!HasStructuralMaterial(S)) return FString::Printf(TEXT("%s: NO STRUCTURAL MATERIAL -- set one under Structure... in the Scene tree"), *Label);
+		if (!(S.skin_thickness > 0.0)) return NoSkinProblem(Label);
+		const FString Material = UTF8_TO_TCHAR(S.material.name.c_str());
 		const FString Text = FString::Printf(TEXT("%s: %s -- a thin-walled body: shells %.4g %s thick on its own grid, %s"), *Label, *Material, S.skin_thickness, *Length, *Inside);
 		if (bOutOk) *bOutOk = true;
 		return Text;
@@ -719,31 +732,40 @@ namespace AerotelicFeaModelBuilder
 			return false;
 		}
 		AAerotelicEntityActor* Entity = Op.Entity.Get();
-		const aerotelic::BodyStructure* Own = StructureOf(Entity, Role);
-		if (Own == nullptr)
+		// What the skin is made of: the body's own structure, or -- a boolean
+		// result (2026-11-20) -- its operands', piece by piece, resolved once
+		// the grid is in hand below. S is then the first piece's, the fallback
+		// material of a layer that carries none.
+		const bool bDerived = Entity->IsDerived();
+		aerotelic::BodyStructure S;
+		if (!bDerived)
 		{
-			B.Problems.Add(Label + TEXT(": the body is not known yet (never built)"));
-			return false;
-		}
-		const aerotelic::BodyStructure S = *Own;
-		if (!HasStructuralMaterial(S))
-		{
-			B.Problems.Add(FString::Printf(TEXT("%s: NO STRUCTURAL MATERIAL -- set one under Structure... in the Scene tree"), *Label));
-			return false;
-		}
-		{
-			const std::string Problem = aerotelic::BodyStructureProblem(S);
-			if (!Problem.empty())
+			const aerotelic::BodyStructure* Own = StructureOf(Entity, Role);
+			if (Own == nullptr)
 			{
-				B.Problems.Add(FString::Printf(TEXT("%s: %s"), *Label, UTF8_TO_TCHAR(Problem.c_str())));
+				B.Problems.Add(Label + TEXT(": the body is not known yet (never built)"));
 				return false;
 			}
-		}
-		// Shells only: a body without a skin has nothing to make them of.
-		if (!(S.skin_thickness > 0.0))
-		{
-			B.Problems.Add(NoSkinProblem(Label));
-			return false;
+			S = *Own;
+			if (!HasStructuralMaterial(S))
+			{
+				B.Problems.Add(FString::Printf(TEXT("%s: NO STRUCTURAL MATERIAL -- set one under Structure... in the Scene tree"), *Label));
+				return false;
+			}
+			{
+				const std::string Problem = aerotelic::BodyStructureProblem(S);
+				if (!Problem.empty())
+				{
+					B.Problems.Add(FString::Printf(TEXT("%s: %s"), *Label, UTF8_TO_TCHAR(Problem.c_str())));
+					return false;
+				}
+			}
+			// Shells only: a body without a skin has nothing to make them of.
+			if (!(S.skin_thickness > 0.0))
+			{
+				B.Problems.Add(NoSkinProblem(Label));
+				return false;
+			}
 		}
 		const FString ResolvedRole = RoleOf(Entity, Role);
 		// The body's OWN grid: the triangles its Mesh tab defines and the
@@ -766,6 +788,48 @@ namespace AerotelicFeaModelBuilder
 			B.Problems.Add(Label + TEXT(": not a closed, outward surface"));
 			return false;
 		}
+		// A boolean result's skin: one piece per operand body its surface
+		// was cut from, each with that body's skin. Every piece must be
+		// usable, or the body is refused by the operand's name.
+		struct FSkinPiece
+		{
+			FString Label;
+			aerotelic::BodyStructure Structure;
+			std::vector<int> Faces;   // of Surface; empty: every face
+		};
+		TArray<FSkinPiece> Pieces;
+		if (bDerived)
+		{
+			const TArray<FAerotelicSkinSource> Sources = AerotelicSkinSourcesOf(*Found);
+			const TArray<FString> Problems = AerotelicSkinSourceProblems(Sources, /*bStructural*/ true);
+			if (Problems.Num() > 0)
+			{
+				for (const FString& P : Problems) B.Problems.Add(Label + TEXT(": ") + P);
+				return false;
+			}
+			for (const FAerotelicSkinSource& Src : Sources)
+			{
+				if (Src.Faces.empty()) continue;
+				FSkinPiece P;
+				P.Label = Label + TEXT(" / skin of ") + Src.Label;
+				P.Structure = Src.Structure;
+				P.Faces = Src.Faces;
+				Pieces.Add(MoveTemp(P));
+			}
+			if (Pieces.Num() == 0)
+			{
+				B.Problems.Add(Label + TEXT(": no face of it comes from any operand (rebuild the result)"));
+				return false;
+			}
+			S = Pieces[0].Structure;
+		}
+		else
+		{
+			FSkinPiece P;
+			P.Label = Label;
+			P.Structure = S;
+			Pieces.Add(MoveTemp(P));
+		}
 		if (Options.Status)
 		{
 			Options.Status(FString::Printf(TEXT("Building the model: %s on its own grid (%s triangles)..."), *Label, *Thousands((int64)Surface.triangles.size())));
@@ -773,41 +837,77 @@ namespace AerotelicFeaModelBuilder
 
 		// The skin: shells on the surface's own triangles, each with its
 		// material reference direction (the along-the-loft direction from
-		// the body's plan, else the longest extent).
+		// the body's plan, else the longest extent), in a region per piece.
 		const int32 Offset = static_cast<int32>(B.Nodes.size());
 		B.Nodes.insert(B.Nodes.end(), Surface.vertices.begin(), Surface.vertices.end());
-		const int32 Id = B.NextId++;
-		for (const auto& Tri : Surface.triangles)
+		TArray<int32> PieceIds;
+		std::vector<int32> RegionOfFace(Surface.triangles.size(), 0);
+		for (const FSkinPiece& P : Pieces)
 		{
+			const int32 Id = B.NextId++;
+			PieceIds.Add(Id);
+			if (P.Faces.empty()) std::fill(RegionOfFace.begin(), RegionOfFace.end(), Id);
+			else for (int f : P.Faces) if (f >= 0 && f < static_cast<int>(RegionOfFace.size())) RegionOfFace[f] = Id;
+		}
+		for (size_t t = 0; t < Surface.triangles.size(); ++t)
+		{
+			const auto& Tri = Surface.triangles[t];
 			AerotelicStructuralFea::FShellFace F;
 			F.N[0] = Tri[0] + Offset; F.N[1] = Tri[1] + Offset; F.N[2] = Tri[2] + Offset;
-			F.Region = Id;
+			F.Region = RegionOfFace[t];
 			B.ShellFaces.Add(F);
 		}
-		const aerotelic::BodyStructurePlan* Plan = PlanOf(Entity, ResolvedRole);
+		const aerotelic::BodyStructurePlan* Plan = bDerived ? nullptr : PlanOf(Entity, ResolvedRole);
 		const std::vector<Vec3> Axes = ReferenceAxes(Surface, Plan != nullptr && Plan->HasParameters() ? &Plan->vertex_u : nullptr, LongestExtentAxis(Surface));
 		for (const Vec3& A : Axes) B.ShellAxes.Add(A);
-		AerotelicStructuralFea::FRegion R;
-		R.Id = Id; R.Label = Label; R.Body = BodyIndex;
-		R.Skin = S.material; R.SkinThickness = S.skin_thickness;
-		if (S.material.IsLaminate())
+		for (int32 p = 0; p < Pieces.Num(); ++p)
 		{
-			// A laminate skin: the thickness is the stack's, and each ply is
-			// draped over the body.
-			R.SkinThickness = aerotelic::StackThickness(aerotelic::ExpandedStack(S.material)) / ProjectLengthToSI();
-			if (Options.Status) Options.Status(FString::Printf(TEXT("Draping the %d plies of %s over %s..."), (int32)aerotelic::ExpandedStack(S.material).size(), UTF8_TO_TCHAR(S.material.name.c_str()), *Label));
-			FString Note, Summary;
-			const double T0 = FPlatformTime::Seconds();
-			if (DrapeSkin(Surface, Axes, Plan, S.material, R.SkinDrape, Note, Summary))
+			const FSkinPiece& P = Pieces[p];
+			AerotelicStructuralFea::FRegion R;
+			R.Id = PieceIds[p]; R.Label = P.Label; R.Body = BodyIndex;
+			R.Skin = P.Structure.material; R.SkinThickness = P.Structure.skin_thickness;
+			if (P.Structure.material.IsLaminate())
 			{
-				UE_LOG(LogTemp, Log, TEXT("AerotelicFeaModelBuilder: %s: drape of '%s': %s (%.2f s)"), *Label, UTF8_TO_TCHAR(S.material.name.c_str()), *Summary, FPlatformTime::Seconds() - T0);
+				// A laminate skin: the thickness is the stack's, and each ply is
+				// draped over the piece (the whole body, or the operand's part of
+				// it, in the order its shells were added above).
+				R.SkinThickness = aerotelic::StackThickness(aerotelic::ExpandedStack(P.Structure.material)) / ProjectLengthToSI();
+				if (Options.Status) Options.Status(FString::Printf(TEXT("Draping the %d plies of %s over %s..."), (int32)aerotelic::ExpandedStack(P.Structure.material).size(), UTF8_TO_TCHAR(P.Structure.material.name.c_str()), *P.Label));
+				aerotelic::TriMesh PieceMesh;
+				std::vector<Vec3> PieceAxes;
+				const aerotelic::TriMesh* Over = &Surface;
+				const std::vector<Vec3>* OverAxes = &Axes;
+				if (!P.Faces.empty())
+				{
+					std::vector<int> Map(Surface.vertices.size(), -1);
+					for (int f : P.Faces)
+					{
+						std::array<int, 3> Tri;
+						for (int k = 0; k < 3; ++k)
+						{
+							const int V = Surface.triangles[f][k];
+							if (Map[V] < 0) { Map[V] = static_cast<int>(PieceMesh.vertices.size()); PieceMesh.vertices.push_back(Surface.vertices[V]); }
+							Tri[k] = Map[V];
+						}
+						PieceMesh.triangles.push_back(Tri);
+						PieceAxes.push_back(Axes[f]);
+					}
+					Over = &PieceMesh;
+					OverAxes = &PieceAxes;
+				}
+				FString Note, Summary;
+				const double T0 = FPlatformTime::Seconds();
+				if (DrapeSkin(*Over, *OverAxes, P.Faces.empty() ? Plan : nullptr, P.Structure.material, R.SkinDrape, Note, Summary))
+				{
+					UE_LOG(LogTemp, Log, TEXT("AerotelicFeaModelBuilder: %s: drape of '%s': %s (%.2f s)"), *P.Label, UTF8_TO_TCHAR(P.Structure.material.name.c_str()), *Summary, FPlatformTime::Seconds() - T0);
+				}
+				else
+				{
+					UE_LOG(LogTemp, Warning, TEXT("AerotelicFeaModelBuilder: %s: %s; the laminate is analysed as laid flat along the reference direction"), *P.Label, Note.IsEmpty() ? TEXT("no drape could be computed") : *Note);
+				}
 			}
-			else
-			{
-				UE_LOG(LogTemp, Warning, TEXT("AerotelicFeaModelBuilder: %s: %s; the laminate is analysed as laid flat along the reference direction"), *Label, Note.IsEmpty() ? TEXT("no drape could be computed") : *Note);
-			}
+			B.Regions.Add(R);
 		}
-		B.Regions.Add(R);
 
 		// The generated layers: a region of unloaded shells each, their
 		// nodes matched by position onto the skin's and one another's.

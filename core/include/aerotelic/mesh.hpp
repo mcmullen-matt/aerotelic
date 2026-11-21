@@ -90,10 +90,31 @@ struct TriMesh {
 	Vec3 TriangleNormal(int t) const;
 };
 
+// Where a face of an assembled mesh came from: the surface of one body of
+// one entity (the entity's mirrored copy when `mirror`). A boolean result
+// is made of pieces of its operands' surfaces, and each piece keeps the
+// skin -- material and thickness -- of the body it was cut from
+// (2026-11-20); this names that body.
+struct MeshFaceSource {
+	std::string entity;
+	std::string body;
+	bool mirror = false;
+	bool operator==(const MeshFaceSource& o) const { return entity == o.entity && body == o.body && mirror == o.mirror; }
+};
+
 // A mesh with the role it plays in its entity ("Main", "Spinner", "Blade 1").
 struct NamedMesh {
 	std::string name;
 	TriMesh mesh;
+	// Per triangle of `mesh`, the index in `sources` of the surface it is a
+	// piece of; EMPTY for a body that is its own surface (every
+	// parameterised body). A boolean result's bodies carry it, exactly:
+	// every triangle of the result descends from one triangle of one
+	// operand. The transforms (Transform, Mirror, FlipWinding) keep the
+	// triangle order, so it survives placement and mirroring unchanged.
+	std::vector<int> face_source;
+	std::vector<MeshFaceSource> sources;
+	bool HasFaceSources() const { return !face_source.empty() && face_source.size() == mesh.triangles.size(); }
 };
 
 // A chain of ruled patches, described by the section curve at any station.

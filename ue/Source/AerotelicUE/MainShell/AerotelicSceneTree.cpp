@@ -20,6 +20,7 @@
 #include "Entity/AerotelicEntityActor.h"
 #include "Entity/AerotelicBooleanModel.h"
 #include "Entity/AerotelicBodyStructureText.h"
+#include "Entity/AerotelicSkinSources.h"
 #include "Branding/AerotelicTheme.h"
 #include "Widgets/PromptDialogs.h"
 
@@ -241,6 +242,14 @@ TSharedRef<ITableRow> SAerotelicSceneTree::GenerateRow(FItem Item, const TShared
 		if (!Entity.IsValid()) return FText::GetEmpty();
 		const UAerotelicDocumentSubsystem* Doc = UAerotelicDocumentSubsystem::Get();
 		const aerotelic::UnitSystem Units = Doc != nullptr ? Doc->GetUnits() : aerotelic::UnitSystem{};
+		// A boolean result owns no structure: its skin is its operands',
+		// piece by piece (2026-11-20).
+		if (Kind == EKind::Entity && Entity->IsDerived())
+		{
+			TArray<FString> Lines;
+			for (const FAerotelicBody& B : Entity->GetBodies()) Lines.Add(FString::Printf(TEXT("%s: %s"), *B.Name, *DescribeAerotelicInheritedSkin(Entity.Get(), B.Name, Units)));
+			return FText::FromString(FString::Join(Lines, TEXT("\n")));
+		}
 		if (Kind == EKind::Entity) return FText::FromString(DescribeAerotelicEntityStructures(Entity.Get(), Units));
 		if (Kind == EKind::Layer || Kind == EKind::MirrorLayer)
 		{
@@ -254,6 +263,10 @@ TSharedRef<ITableRow> SAerotelicSceneTree::GenerateRow(FItem Item, const TShared
 			Text += FString::Printf(TEXT("%.4g %s thick, %s, area %.5g %s^2"), L.Thickness, *Len, UTF8_TO_TCHAR(L.Material.name.c_str()), L.Area, *Len);
 			if (!L.Note.IsEmpty()) Text += TEXT("\n") + L.Note;
 			return FText::FromString(Text);
+		}
+		if (Entity->IsDerived() && Entity->GetBodies().IsValidIndex(Body))
+		{
+			return FText::FromString(DescribeAerotelicInheritedSkin(Entity.Get(), Entity->GetBodies()[Body].Name, Units));
 		}
 		return FText::FromString(DescribeAerotelicBodyStructure(Entity->GetBodyStructure(Body), Units));
 	};
@@ -539,33 +552,34 @@ TSharedPtr<SWidget> SAerotelicSceneTree::MakeEntityMenu(FItem Item)
 
 	// The structure -- material, skin, exclusions, asserted mass -- belongs
 	// to each BODY (2026-11-08): an entity with one body offers it here
-	// too; one with several has it on each body's row. A boolean result's
-	// bodies own theirs and can start from an operand's. The interior
-	// (ribs, spars, stringers) is the parameterisation's and builds itself.
+	// too; one with several has it on each body's row. A boolean result
+	// owns none (2026-11-20): each piece of its surface keeps the skin of
+	// the operand it came from, so its row only SHOWS what it inherits. The
+	// interior (ribs, spars, stringers) is the parameterisation's and builds
+	// itself.
 	if (Entity->GetBodies().Num() == 1)
 	{
 		const FString Role = Entity->GetBodies()[0].Name;
-		Menu.AddMenuEntry(LOCTEXT("Structure", "Structure..."),
-			LOCTEXT("StructureTip", "What this body is made of: its material and skin thickness, the volumes its structure avoids, or an asserted mass. The ribs, spars and stringers inside come from the parameterisation (a wing's Structure tab) and build with it once the body has a skin. Analysis > Mass Properties weighs by it; Analysis > Structural analyses with it."),
-			FSlateIcon(),
-			FUIAction(FExecuteAction::CreateLambda([Entity, Role]() { if (Entity.IsValid()) OpenAerotelicStructureDialog(Entity.Get(), Role); })));
+		if (bBoolean)
+		{
+			Menu.AddMenuEntry(LOCTEXT("InheritedStructure", "Inherited Structure"),
+				LOCTEXT("InheritedStructureTip", "A boolean result has no structure of its own: each piece of its surface keeps the material and skin thickness of the operand body it was cut from, fused to a different skin or not, and the ribs, spars and frames inside are the operands'. To change what it is made of, change the operand (Structure... on its row). This shows what the result inherits as it stands."),
+				FSlateIcon(),
+				FUIAction(FExecuteAction::CreateLambda([Entity, Role]() { if (Entity.IsValid()) OpenAerotelicStructureDialog(Entity.Get(), Role); })));
+		}
+		else
+		{
+			Menu.AddMenuEntry(LOCTEXT("Structure", "Structure..."),
+				LOCTEXT("StructureTip", "What this body is made of: its material and skin thickness, the volumes its structure avoids, or an asserted mass. The ribs, spars and stringers inside come from the parameterisation (a wing's Structure tab) and build with it once the body has a skin. Analysis > Mass Properties weighs by it; Analysis > Structural analyses with it. A boolean result over this body inherits its skin, piece by piece."),
+				FSlateIcon(),
+				FUIAction(FExecuteAction::CreateLambda([Entity, Role]() { if (Entity.IsValid()) OpenAerotelicStructureDialog(Entity.Get(), Role); })));
+		}
 		Menu.AddMenuEntry(LOCTEXT("RegenerateStructure", "Regenerate Structure"),
-			LOCTEXT("GenerateStructureTip", "Rebuild the body's layers from its parameterisation's structure (the ribs meshed on gmsh, under a second): they appear under the body, and its mirrored half's, and follow every later edit of the body. The Skin row stands for the body's surface: hide it to see the structure alone."),
+			bBoolean
+				? LOCTEXT("GenerateBooleanStructureTip", "Take the operands' generated layers (ribs, spars, frames, stringers) over into this result again, under the skin it inherits from them.")
+				: LOCTEXT("GenerateStructureTip", "Rebuild the body's layers from its parameterisation's structure (the ribs meshed on gmsh, under a second): they appear under the body, and its mirrored half's, and follow every later edit of the body. The Skin row stands for the body's surface: hide it to see the structure alone."),
 			FSlateIcon(),
 			FUIAction(FExecuteAction::CreateLambda([this, Entity, Role]() { if (Entity.IsValid()) GenerateStructure(Entity.Get(), Role); })));
-	}
-	if (bBoolean)
-	{
-		Menu.AddMenuEntry(LOCTEXT("CopyStructure", "Copy Structure From Operand"),
-			LOCTEXT("CopyStructureTip", "Give every body of this result the structure of its first operand's first body, as a starting point (a boolean result's bodies own their structure; nothing is inherited)."),
-			FSlateIcon(),
-			FUIAction(FExecuteAction::CreateLambda([this, Entity]()
-			{
-				UAerotelicDocumentSubsystem* Doc = UAerotelicDocumentSubsystem::Get();
-				if (!Entity.IsValid() || Doc == nullptr) return;
-				const int32 N = Doc->CopyStructuresFromOperand(Entity.Get());
-				Status(FText::Format(LOCTEXT("StatusCopiedStructure", "{0}: {1} bodies took the first operand's structure"), FText::FromString(Entity->EntityName), FText::AsNumber(N)));
-			})));
 	}
 
 	Menu.AddMenuEntry(LOCTEXT("Color", "Color"), LOCTEXT("ColorTip", "Pick the colour every body of this entity is drawn in (the mirrored ones included)"), FSlateIcon(),
@@ -632,8 +646,11 @@ TSharedPtr<SWidget> SAerotelicSceneTree::MakeBodyMenu(FItem Item)
 		if (Entity->GetBodies().IsValidIndex(Body))
 		{
 			const FString Role = Entity->GetBodies()[Body].Name;
-			Menu.AddMenuEntry(LOCTEXT("BodyStructure", "Structure..."),
-				LOCTEXT("BodyStructureTip", "What this body is made of: its material and skin thickness, the volumes its structure avoids, or an asserted mass. Its mirrored half shares it. The ribs, spars and stringers inside come from the parameterisation and build with it once the body has a skin. Analysis > Mass Properties weighs by it; Analysis > Structural analyses with it."),
+			const bool bDerived = Entity->IsDerived();
+			Menu.AddMenuEntry(bDerived ? LOCTEXT("BodyInheritedStructure", "Inherited Structure") : LOCTEXT("BodyStructure", "Structure..."),
+				bDerived
+					? LOCTEXT("BodyInheritedStructureTip", "A boolean result has no structure of its own: each piece of this body's surface keeps the material and skin thickness of the operand body it was cut from, and the layers inside are the operands'. To change what it is made of, change the operand. This shows what the body inherits as it stands.")
+					: LOCTEXT("BodyStructureTip", "What this body is made of: its material and skin thickness, the volumes its structure avoids, or an asserted mass. Its mirrored half shares it. The ribs, spars and stringers inside come from the parameterisation and build with it once the body has a skin. Analysis > Mass Properties weighs by it; Analysis > Structural analyses with it."),
 				FSlateIcon(),
 				FUIAction(FExecuteAction::CreateLambda([Entity, Role]() { if (Entity.IsValid()) OpenAerotelicStructureDialog(Entity.Get(), Role); })));
 			const bool bGenerated = Entity->GetGeneratedStructure(Role) != nullptr;

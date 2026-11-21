@@ -5,6 +5,7 @@
 #include "AerotelicBooleanModel.h"
 #include "AerotelicBodyStructure.h"
 #include "AerotelicMeshing.h"
+#include "AerotelicSkinSources.h"
 
 #include "aerotelic/sdf.hpp"
 
@@ -270,7 +271,9 @@ namespace
 				Pb.color = std::array<double, 3>{ Body.Color.R, Body.Color.G, Body.Color.B };
 			}
 			Pb.hidden = !Body.bVisible;
-			Pb.structure = Body.Structure;
+			// A boolean result owns no structure (it inherits its operands'
+			// skins, 2026-11-20): nothing of the kind is written for it.
+			if (!Entity->IsDerived()) Pb.structure = Body.Structure;
 			if (!Pb.IsDefault()) Out.push_back(Pb);
 		}
 		return Out;
@@ -296,7 +299,10 @@ namespace
 			{
 				Actor->SetBodyVisible(Index, false);
 			}
-			if (Body.structure.IsSet() || Body.structure.skin_thickness > 0.0 || !Body.structure.exclusions.empty())
+			// A structure on a boolean result's body in an older file (its
+			// bodies owned theirs from 2026-11-08 to 2026-11-20) is ignored:
+			// the result inherits its operands' skins now.
+			if (!Actor->IsDerived() && (Body.structure.IsSet() || Body.structure.skin_thickness > 0.0 || !Body.structure.exclusions.empty()))
 			{
 				Actor->SetBodyStructure(Role, Body.structure);
 				bAnyStructure = true;
@@ -318,11 +324,39 @@ void UAerotelicDocumentSubsystem::OnEntityGeometryChanged(AAerotelicEntityActor*
 
 void UAerotelicDocumentSubsystem::OnEntityBodyStructureChanged(AAerotelicEntityActor* Entity, const FString& Role, bool bGeometry)
 {
-	// Only the geometry the structure describes matters here: a material
-	// edit regenerates nothing. A body whose structure has been generated
-	// regenerates to the new description; one that lost its skin (a solid
-	// now) drops its layers; one never generated waits for Generate.
-	if (!bGeometry || Entity == nullptr)
+	if (Entity == nullptr)
+	{
+		return;
+	}
+	// The boolean results over this entity inherit the body's skin
+	// (2026-11-20): their generated Skin rows re-read it, material edits
+	// included -- no mesher runs for a boolean, its layers are taken over
+	// ready-made, so this costs nothing to speak of.
+	{
+		bool bQueued = false;
+		for (auto& Weak : Entities)
+		{
+			if (!Weak.IsValid() || Weak.Get() == Entity || !DependsOn(Weak.Get(), Entity)) continue;
+			for (const FAerotelicBody& Body : Weak->GetBodies())
+			{
+				if (Body.Generated.IsValid() || WantsStructure(Weak.Get(), Body))
+				{
+					QueueRebuild({ Weak, Body.Name });
+					bQueued = true;
+				}
+			}
+		}
+		if (bQueued)
+		{
+			LastQueueTime = FPlatformTime::Seconds();
+			StartRebuildTicker();
+		}
+	}
+	// Only the geometry the structure describes matters from here: a
+	// material edit regenerates nothing. A body whose structure has been
+	// generated regenerates to the new description; one that lost its skin
+	// (a solid now) drops its layers; one never generated waits for Generate.
+	if (!bGeometry)
 	{
 		return;
 	}
@@ -600,26 +634,6 @@ void UAerotelicDocumentSubsystem::SetRenderStyle(EAerotelicRenderStyle Style)
 			WeakEntity->ApplyRenderStyle(Style);
 		}
 	}
-}
-
-int32 UAerotelicDocumentSubsystem::CopyStructuresFromOperand(AAerotelicEntityActor* Boolean)
-{
-	if (Boolean == nullptr || Boolean->GetEntityType() != EntityType::Boolean)
-	{
-		return 0;
-	}
-	const FAerotelicBooleanModel* M = static_cast<const FAerotelicBooleanModel*>(Boolean->GetModel());
-	if (M == nullptr || M->Operands.Num() == 0 || !M->Operands[0].Entity.IsValid())
-	{
-		return 0;
-	}
-	const BodyStructure Source = M->Operands[0].Entity->GetBodyStructure(0);
-	int32 Count = 0;
-	for (const FAerotelicBody& Body : Boolean->GetBodies())
-	{
-		if (Boolean->SetBodyStructure(Body.Name, Source)) ++Count;
-	}
-	return Count;
 }
 
 void UAerotelicDocumentSubsystem::ApplySectionPlaneToEntities()
@@ -919,9 +933,19 @@ const aerotelic::BodyStructurePlan* UAerotelicDocumentSubsystem::PlanFor(const A
 
 bool UAerotelicDocumentSubsystem::WantsStructure(const AAerotelicEntityActor* Entity, const FAerotelicBody& Body)
 {
+	if (Entity != nullptr && Entity->GetEntityType() == EntityType::Boolean)
+	{
+		// A boolean result: its operands' layers to take over, under a skin
+		// inherited from at least one operand body (2026-11-20).
+		if (!OperandsHaveLayers(Entity)) return false;
+		for (const FAerotelicSkinSource& S : AerotelicSkinSourcesOf(Entity, Body.Name))
+		{
+			if (S.bKnown && S.Structure.IsSkin()) return true;
+		}
+		return false;
+	}
 	if (!Body.Structure.IsSkin()) return false;
-	if (PlanFor(Entity, Body.Name) != nullptr) return true;
-	return OperandsHaveLayers(Entity);
+	return PlanFor(Entity, Body.Name) != nullptr;
 }
 
 bool UAerotelicDocumentSubsystem::OperandsHaveLayers(const AAerotelicEntityActor* Boolean)
@@ -956,21 +980,27 @@ bool UAerotelicDocumentSubsystem::GenerateBodyStructure(AAerotelicEntityActor* E
 	}
 	const FString Role = Entity->GetBodies()[Index].Name;
 	const FString Label = Entity->GetBodies().Num() > 1 ? FString::Printf(TEXT("%s / %s"), *Entity->EntityName, *Role) : Entity->EntityName;
-	const aerotelic::BodyStructure S = Entity->GetBodyStructure(Index);
-	const std::string Problem = aerotelic::BodyStructureProblem(S);
-	if (!Problem.empty())
+	const bool bBoolean = Entity->GetEntityType() == EntityType::Boolean;
+	// A boolean result owns no structure (2026-11-20): its skin is its
+	// operands', resolved below; a parameterised body's is its own.
+	const aerotelic::BodyStructure S = bBoolean ? aerotelic::BodyStructure() : Entity->GetBodyStructure(Index);
+	if (!bBoolean)
 	{
-		OutError = FString::Printf(TEXT("%s: %s."), *Label, UTF8_TO_TCHAR(Problem.c_str()));
-		return false;
-	}
-	if (!S.IsSkin())
-	{
-		// Nothing to generate: a solid, or no material. What there was goes.
-		Entity->ClearGeneratedStructure(Role);
-		OutError = S.material.HasDensity()
-			? FString::Printf(TEXT("%s is a solid (no skin thickness): there is no interior structure to generate. Set a skin thickness under Structure first."), *Label)
-			: FString::Printf(TEXT("%s has no material: set one, with a skin thickness, under Structure first."), *Label);
-		return false;
+		const std::string Problem = aerotelic::BodyStructureProblem(S);
+		if (!Problem.empty())
+		{
+			OutError = FString::Printf(TEXT("%s: %s."), *Label, UTF8_TO_TCHAR(Problem.c_str()));
+			return false;
+		}
+		if (!S.IsSkin())
+		{
+			// Nothing to generate: a solid, or no material. What there was goes.
+			Entity->ClearGeneratedStructure(Role);
+			OutError = S.material.HasDensity()
+				? FString::Printf(TEXT("%s is a solid (no skin thickness): there is no interior structure to generate. Set a skin thickness under Structure first."), *Label)
+				: FString::Printf(TEXT("%s has no material: set one, with a skin thickness, under Structure first."), *Label);
+			return false;
+		}
 	}
 
 	// A PARAMETERISED body's structure comes from its parameterisation
@@ -1031,8 +1061,10 @@ bool UAerotelicDocumentSubsystem::GenerateBodyStructure(AAerotelicEntityActor* E
 	// fall inside or on; the fuse removed the skins between the operands,
 	// so a wing's spars run on through the fuselage as a carry-through).
 	// Each keeps its kind, thickness, material and mesh, named
-	// "<operand> / <layer>", brought into the result's own frame.
-	if (Entity->GetEntityType() == EntityType::Boolean)
+	// "<operand> / <layer>", brought into the result's own frame. Its SKIN
+	// is its operands' too (2026-11-20): each piece of the surface keeps the
+	// skin of the operand body it was cut from (the body's face sources).
+	if (bBoolean)
 	{
 		const FAerotelicBooleanModel* BM = Entity->GetModelAs<FAerotelicBooleanModel>();
 		const aerotelic::NamedMesh* Own = nullptr;
@@ -1047,7 +1079,19 @@ bool UAerotelicDocumentSubsystem::GenerateBodyStructure(AAerotelicEntityActor* E
 		}
 		FAerotelicBodyStructure::FLayerInputs In;
 		In.Label = Label;
-		In.Structure = S;
+		for (const FAerotelicSkinSource& Src : AerotelicSkinSourcesOf(*Own))
+		{
+			FAerotelicBodyStructure::FSkinPart Part;
+			Part.Label = Src.Label;
+			Part.Area = Src.Area;
+			if (Src.bKnown)
+			{
+				Part.Material = Src.Structure.material;
+				Part.Thickness = Src.Structure.skin_thickness;
+				Part.bAsserted = Src.Structure.asserted_mass.has_value();
+			}
+			In.Skins.push_back(std::move(Part));
+		}
 		In.Body = Own->mesh;
 		std::array<double, 9> R;
 		aerotelic::Vec3 T;
@@ -1128,6 +1172,11 @@ bool UAerotelicDocumentSubsystem::ApplyBodyStructure(AAerotelicEntityActor* Enti
 	if (Entity == nullptr)
 	{
 		OutError = TEXT("The entity is no longer in the scene.");
+		return false;
+	}
+	if (Entity->IsDerived())
+	{
+		OutError = FString::Printf(TEXT("%s is a boolean result: it has no structure of its own. Each piece of its surface keeps the skin of the operand it came from, and its interior is the operands' -- set the material and skin thickness on the operands."), *Entity->EntityName);
 		return false;
 	}
 	if (!Entity->SetBodyStructure(BodyRole, Structure))

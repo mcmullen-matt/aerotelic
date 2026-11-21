@@ -67,10 +67,16 @@ const TCHAR* FAerotelicStructureLayer::KindName(EKind Kind)
 
 bool FAerotelicBodyStructure::GenerateFromLayers(const FLayerInputs& In, FString& OutError)
 {
-	const aerotelic::BodyStructure& S = In.Structure;
-	if (!(S.skin_thickness > 0.0))
+	// The skin the pieces bring: at least one operand body must have one,
+	// and a piece without a skin is a gap the Note names.
+	const FSkinPart* First = nullptr;
+	for (const FSkinPart& P : In.Skins) if (P.Material.HasDensity() && P.Thickness > 0.0) { First = &P; break; }
+	if (First == nullptr)
 	{
-		OutError = FString::Printf(TEXT("%s is a solid (no skin thickness): there is no interior structure to take over."), *In.Label);
+		TArray<FString> Names;
+		for (const FSkinPart& P : In.Skins) Names.Add(P.Label);
+		OutError = FString::Printf(TEXT("%s has no skin: a boolean result inherits its operands' skins and none of %s has a material and a skin thickness. Set them under Structure... on the operand."),
+			*In.Label, Names.Num() ? *FString::Join(Names, TEXT(", ")) : TEXT("its operands"));
 		return false;
 	}
 	const double T0 = FPlatformTime::Seconds();
@@ -83,10 +89,30 @@ bool FAerotelicBodyStructure::GenerateFromLayers(const FLayerInputs& In, FString
 			FAerotelicStructureLayer Skin;
 			Skin.Name = TEXT("Skin");
 			Skin.Kind = FAerotelicStructureLayer::EKind::Skin;
-			Skin.Material = S.material;
-			Skin.Thickness = S.skin_thickness;
-			Skin.Area = In.Body.SurfaceArea() * Area;
-			Skin.Volume = Skin.Area * Skin.Thickness;
+			bool bOneMaterial = true, bOneThickness = true;
+			TArray<FString> Parts;
+			double Total = 0.0;
+			for (const FSkinPart& P : In.Skins) Total += P.Area;
+			for (const FSkinPart& P : In.Skins)
+			{
+				bOneMaterial = bOneMaterial && P.Material.HasDensity() && P.Material.name == First->Material.name;
+				bOneThickness = bOneThickness && P.Thickness > 0.0 && FMath::IsNearlyEqual(P.Thickness, First->Thickness, 1e-12);
+				Skin.Area += P.Area * Area;
+				Skin.Volume += P.Area * Area * P.Thickness;
+				FString What;
+				if (P.bAsserted) What = TEXT("an asserted mass, no skin to model");
+				else if (!P.Material.HasDensity()) What = TEXT("NO MATERIAL");
+				else if (!(P.Thickness > 0.0)) What = FString::Printf(TEXT("%s, NO SKIN (a solid)"), UTF8_TO_TCHAR(P.Material.name.c_str()));
+				else What = FString::Printf(TEXT("%s %.4g thick"), UTF8_TO_TCHAR(P.Material.name.c_str()), P.Thickness);
+				Parts.Add(FString::Printf(TEXT("%s -- %s (%.0f%%)"), *P.Label, *What, Total > 0.0 ? 100.0 * P.Area / Total : 0.0));
+			}
+			// One material and thickness when every piece agrees, else the
+			// Note carries them piece by piece (the mass report and the
+			// analysis read the pieces themselves, never this summary).
+			Skin.Material = bOneMaterial ? First->Material : aerotelic::Material();
+			if (!bOneMaterial) Skin.Material.name = "inherited (several)";
+			Skin.Thickness = bOneThickness ? First->Thickness : 0.0;
+			Skin.Note = TEXT("inherited from the operands: ") + FString::Join(Parts, TEXT("; "));
 			NewLayers.push_back(std::move(Skin));
 		}
 		double RibsArea = 0.0;
@@ -95,14 +121,18 @@ bool FAerotelicBodyStructure::GenerateFromLayers(const FLayerInputs& In, FString
 			if (Given.Mesh.IsEmpty()) continue;
 			FAerotelicStructureLayer Layer = Given;
 			Layer.Name = UniqueLayerName(Given.Name, NewLayers);
-			if (!Layer.Material.HasDensity()) Layer.Material = S.material;
+			if (!Layer.Material.HasDensity()) Layer.Material = First->Material;
 			Layer.Area = Layer.Mesh.SurfaceArea() * Area;
 			Layer.Volume = Layer.Area * Layer.Thickness;
 			RibsArea += Layer.Area;
 			NewLayers.push_back(std::move(Layer));
 		}
 		Layers = std::move(NewLayers);
-		Generated = S;
+		// The structure the layers stand for: the first skinned piece's, as
+		// a summary (a boolean result has none of its own).
+		Generated = aerotelic::BodyStructure();
+		Generated.material = First->Material;
+		Generated.skin_thickness = First->Thickness;
 		Stats = FStats();
 		for (const FAerotelicStructureLayer& L : Layers) Stats.Triangles += static_cast<int64>(L.Mesh.triangles.size());
 		Stats.SkinArea = Layers[0].Area;

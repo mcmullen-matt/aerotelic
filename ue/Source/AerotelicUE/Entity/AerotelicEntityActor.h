@@ -204,9 +204,13 @@ public:
 	// (aerotelic::BodyStructure) -- addressed by the body's role name. Kept
 	// by role across rebuilds like the display state; a role that vanishes
 	// (a flap removed, a blade count lowered) parks its structure and gets
-	// it back if the role returns. Every entity's bodies carry their own,
-	// boolean results included (no inheritance any more: a fused airframe's
-	// body is given its structure directly).
+	// it back if the role returns. Every PARAMETERISED entity's bodies carry
+	// their own. A BOOLEAN RESULT owns none (2026-11-20, the owner's rule):
+	// each piece of its surface keeps the skin of the operand body it was
+	// cut from, its interior is the operands' layers, and there is no
+	// override on the result -- change the operand (AerotelicSkinSources.h;
+	// from 2026-11-08 to 2026-11-20 its bodies owned theirs, and before that
+	// the result inherited its first operand's whole setting).
 	//
 	// SetBodyStructure broadcasts OnBodyStructureChanged with bGeometry true
 	// when a regeneration would give different geometry (the skin, a
@@ -216,10 +220,11 @@ public:
 	int32 FindBodyIndex(const FString& BodyRole) const;
 	// Null when there is no such body (or the role is empty and the entity
 	// has more than one body; an empty role on a single-body entity is that
-	// body).
+	// body). A boolean result's is always unset.
 	const aerotelic::BodyStructure* GetBodyStructure(const FString& BodyRole) const;
 	const aerotelic::BodyStructure& GetBodyStructure(int32 Index) const;
-	// False when there is no such body.
+	// False when there is no such body, or the entity is a boolean result
+	// (which owns no structure).
 	bool SetBodyStructure(const FString& BodyRole, const aerotelic::BodyStructure& InStructure);
 	DECLARE_MULTICAST_DELEGATE_ThreeParams(FOnAerotelicBodyStructureChanged, AAerotelicEntityActor*, const FString& /*Role*/, bool /*bGeometry*/);
 	static FOnAerotelicBodyStructureChanged OnBodyStructureChanged;
@@ -262,19 +267,14 @@ public:
 	// ---- the old per-entity setting, as a bridge ----
 	// The one MassSpec a parameterisation used to carry, read and written
 	// through its bodies: Set gives every body the structure the spec
-	// amounts to (an asserted total split between them by area), Get is the
-	// first body's. Kept for the commandlets and the FEA dialog while they
-	// move to the per-body API.
+	// amounts to (an asserted total split between them by area; nothing on
+	// a boolean result), Get is the first body's. Kept for the commandlets
+	// and the FEA dialog while they move to the per-body API.
 	void SetMassSpec(const aerotelic::MassSpec& InSpec);
 	aerotelic::MassSpec GetMassSpec() const;
-	// Built on other entities (a boolean result).
+	// Built on other entities (a boolean result): no parameters, placement
+	// or structure of its own.
 	bool IsDerived() const;
-	// The spec that applies to the first body: its own when set; for a
-	// boolean result whose bodies carry nothing, the first operand's.
-	aerotelic::MassSpec GetEffectiveMassSpec() const;
-	// The entity the effective spec comes from (this one when its own), or
-	// null.
-	const AAerotelicEntityActor* GetMassSpecSource() const;
 
 	// ---- surface finish, style, section ----
 
