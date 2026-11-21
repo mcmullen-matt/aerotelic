@@ -609,6 +609,33 @@ TSharedPtr<SWidget> SAerotelicSceneTree::MakeEntityMenu(FItem Item)
 
 	Menu.AddMenuSeparator();
 
+	// The scene order (2026-11-20): a step up or down when the dependencies
+	// allow it -- an entity never passes a boolean built on it, a boolean
+	// never passes an operand or rises above a parameterised entity. Greyed,
+	// with the reason in the tooltip, when it cannot.
+	for (int32 Delta : { -1, 1 })
+	{
+		UAerotelicDocumentSubsystem* Doc = UAerotelicDocumentSubsystem::Get();
+		FString Reason;
+		const bool bCan = Doc != nullptr && Entity.IsValid() && Doc->CanMoveEntity(Entity.Get(), Delta, &Reason);
+		const FText Label = Delta < 0 ? LOCTEXT("MoveUp", "Move Up") : LOCTEXT("MoveDown", "Move Down");
+		const FText Tip = bCan
+			? (Delta < 0 ? LOCTEXT("MoveUpTip", "One row up in the scene order (the order the file keeps). A boolean result stays below its operands and below every parameterised entity.")
+				: LOCTEXT("MoveDownTip", "One row down in the scene order (the order the file keeps). An entity stays above every boolean result built on it."))
+			: FText::Format(LOCTEXT("MoveRefusedTip", "Cannot: {0}"), FText::FromString(Reason));
+		Menu.AddMenuEntry(Label, Tip, FSlateIcon(),
+			FUIAction(FExecuteAction::CreateLambda([this, Entity, Delta]()
+			{
+				UAerotelicDocumentSubsystem* D = UAerotelicDocumentSubsystem::Get();
+				if (D == nullptr || !Entity.IsValid()) return;
+				if (D->MoveEntity(Entity.Get(), Delta))
+				{
+					Status(FText::Format(Delta < 0 ? LOCTEXT("StatusMovedUp", "Moved {0} up") : LOCTEXT("StatusMovedDown", "Moved {0} down"), FText::FromString(Entity->EntityName)));
+				}
+			}),
+			FCanExecuteAction::CreateLambda([bCan]() { return bCan; })));
+	}
+
 	Menu.AddMenuEntry(LOCTEXT("Delete", "Delete"), LOCTEXT("DeleteTip", "Remove this entity from the scene"), FSlateIcon(),
 		FUIAction(FExecuteAction::CreateLambda([this, Entity]() { if (Entity.IsValid()) DeleteEntity(Entity.Get()); })));
 

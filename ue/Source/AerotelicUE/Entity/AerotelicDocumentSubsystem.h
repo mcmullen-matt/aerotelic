@@ -235,6 +235,20 @@ public:
 	// feature tree's cascading remove).
 	void RemoveEntity(AAerotelicEntityActor* Entity);
 
+	// THE SCENE ORDER (2026-11-20). GetEntities() is the order the Scene
+	// tree shows, the file keeps and the rebuilds follow (a boolean after
+	// its operands). Move Up / Move Down swap an entity with its neighbour
+	// (Delta -1 towards the top, +1 towards the bottom) when the
+	// dependencies allow: an entity never passes a boolean built on it, a
+	// boolean never passes an operand, and a boolean never rises above a
+	// parameterised entity -- the file keeps `booleans:` after `entities:`,
+	// so that order would not survive a reopen. CanMoveEntity says why not;
+	// MoveEntity does it and fires OnEntityListChanged. The order is
+	// otherwise cosmetic: the panel method's references no longer depend
+	// on it (AerotelicAeroTrim::DefaultReferences takes the largest wing).
+	bool CanMoveEntity(const AAerotelicEntityActor* Entity, int32 Delta, FString* OutReason = nullptr) const;
+	bool MoveEntity(AAerotelicEntityActor* Entity, int32 Delta);
+
 	// ---- Edit -> Copy / Paste (Ctrl+C / Ctrl+V) ----
 	// Copying a parameterisation gives two INDEPENDENT entities: the copy
 	// is built by handing the source's own spec to a fresh model's

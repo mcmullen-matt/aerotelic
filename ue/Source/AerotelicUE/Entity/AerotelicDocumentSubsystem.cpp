@@ -874,6 +874,50 @@ void UAerotelicDocumentSubsystem::RemoveEntity(AAerotelicEntityActor* Entity)
 	OnEntityListChanged.Broadcast();
 }
 
+bool UAerotelicDocumentSubsystem::CanMoveEntity(const AAerotelicEntityActor* Entity, int32 Delta, FString* OutReason) const
+{
+	auto Refuse = [OutReason](const FString& Why) { if (OutReason != nullptr) *OutReason = Why; return false; };
+	if (Entity == nullptr || (Delta != -1 && Delta != 1)) return Refuse(TEXT("nothing to move"));
+	const int32 Index = Entities.IndexOfByPredicate([Entity](const TWeakObjectPtr<AAerotelicEntityActor>& E) { return E.Get() == Entity; });
+	if (Index == INDEX_NONE) return Refuse(TEXT("the entity is not in the scene"));
+	const int32 Other = Index + Delta;
+	if (Other < 0) return Refuse(TEXT("already at the top"));
+	if (Other >= Entities.Num()) return Refuse(TEXT("already at the bottom"));
+	const AAerotelicEntityActor* Neighbour = Entities[Other].Get();
+	if (Neighbour == nullptr) return true;   // a dead slot: swapping past it is harmless
+	// Moving up past Neighbour puts Entity before it: refused when Entity
+	// is built on Neighbour. Moving down puts Neighbour before Entity:
+	// refused when Neighbour is built on Entity.
+	if (Delta < 0 && DependsOn(Entity, Neighbour))
+	{
+		return Refuse(FString::Printf(TEXT("%s is built on %s and must stay below it"), *Entity->EntityName, *Neighbour->EntityName));
+	}
+	if (Delta > 0 && DependsOn(Neighbour, Entity))
+	{
+		return Refuse(FString::Printf(TEXT("%s is built on %s and must stay below it"), *Neighbour->EntityName, *Entity->EntityName));
+	}
+	// The file keeps the boolean results after every parameterised entity,
+	// so an order with a result above one would not survive a reopen.
+	if (Delta < 0 && Entity->IsDerived() && !Neighbour->IsDerived())
+	{
+		return Refuse(FString::Printf(TEXT("%s is a boolean result: results stay below the parameterised entities (the file keeps them so)"), *Entity->EntityName));
+	}
+	if (Delta > 0 && !Entity->IsDerived() && Neighbour->IsDerived())
+	{
+		return Refuse(FString::Printf(TEXT("%s is a boolean result: results stay below the parameterised entities (the file keeps them so)"), *Neighbour->EntityName));
+	}
+	return true;
+}
+
+bool UAerotelicDocumentSubsystem::MoveEntity(AAerotelicEntityActor* Entity, int32 Delta)
+{
+	if (!CanMoveEntity(Entity, Delta)) return false;
+	const int32 Index = Entities.IndexOfByPredicate([Entity](const TWeakObjectPtr<AAerotelicEntityActor>& E) { return E.Get() == Entity; });
+	Entities.Swap(Index, Index + Delta);
+	OnEntityListChanged.Broadcast();
+	return true;
+}
+
 bool UAerotelicDocumentSubsystem::IsNameTaken(const FString& Name, const AAerotelicEntityActor* Except) const
 {
 	for (const auto& Weak : Entities)

@@ -149,7 +149,7 @@ namespace AerotelicAeroTrim
 
 	void DefaultReferences(const TArray<AAerotelicEntityActor*>& Entities, double& OutArea, double& OutLength)
 	{
-		double Area = 0.0, Length = 0.0;
+		double Area = 0.0, Length = 0.0, Largest = 0.0;
 		FBox FirstBody(ForceInit);
 		for (const FLeaf& L : AllLeaves(Entities, true))
 		{
@@ -160,8 +160,13 @@ namespace AerotelicAeroTrim
 				{
 					const double S = AAerotelicEntityActor::GetModelScale();
 					const aerotelic::WingModel* W = E->GetModelAs<aerotelic::WingModel>();
-					Area += W->planform().PlanformArea() * S * S;
-					if (Length <= 0.0) Length = W->planform().RootChord() * S;
+					const double A = W->planform().PlanformArea() * S * S;
+					Area += A;
+					// The reference length is the LARGEST wing's root chord
+					// (2026-11-20; until then the first wing's in the scene order,
+					// so a tailplane listed above the wing shortened the wake and
+					// inflated every moment coefficient).
+					if (A > Largest || Length <= 0.0) { Largest = A; Length = W->planform().RootChord() * S; }
 				}
 				catch (const std::exception&) {}
 			}

@@ -4449,3 +4449,35 @@ row; the reopened result still knows its sources and carries no structure.
 `RealProjectTest` p38a: the boolean's faces come from four or more
 operand bodies, each piece with its operand's 5 mm 2024-T3; the airframe
 builds as one skin region per piece plus the layers.
+## The scene order: Move Up / Move Down, and the largest wing's chord (2026-11-20)
+
+**The scene order** (`UAerotelicDocumentSubsystem::GetEntities()`) is
+what the Scene tree shows, what the file keeps and what the rebuilds
+follow (a boolean after its operands). *Move Up* / *Move Down* on an
+entity's row swap it with its neighbour when the dependencies allow
+(`CanMoveEntity` / `MoveEntity`): an entity never passes a boolean built
+on it, a boolean never passes an operand, and a boolean never rises above
+a parameterised entity -- the file keeps `booleans:` after `entities:`,
+so that order would not survive a reopen. A refused move is greyed with
+the reason in its tooltip. Every move fires `OnEntityListChanged`, so the
+tree, the design panel and the body pickers refresh, and the saved file
+takes the new order. No keyboard shortcut: the tree view takes Up/Down
+for navigation, with or without Alt.
+
+**Why it mattered more than cosmetics.** Until today
+`AerotelicAeroTrim::DefaultReferences` took the reference LENGTH -- and
+with it the panel method's wake length (`WakeChords x L_ref`) and the
+nondimensionalisation of every moment coefficient -- from the FIRST wing
+in the chosen list, in scene order. A tailplane listed above the wing
+shortened the wake to twenty tail chords and inflated C_m. It now takes
+the LARGEST wing's root chord (by planform area), whichever is listed
+first; the area is the sum over all wings as before. The order is
+cosmetic again, and Move Up / Move Down is there for when the eye wants
+the wing first anyway.
+
+**Checks** (`DocumentTest` step *scene order*): the fuselage moves down
+past the sphere and stops above the boolean built on it, by that boolean's
+name; the boolean cannot rise above its operand; the wing moves to the
+top and no further; every move fires the delegate; a second wing at 40%
+span and half chord, listed first, does not take the reference length
+from the larger one in either order; the reopened file keeps the order.

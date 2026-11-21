@@ -129,10 +129,11 @@ namespace AerotelicAeroTrim
 
 	// The panelable entities among the scene's (IsPanelable, with a model).
 	TArray<AAerotelicEntityActor*> PanelableEntities();
-	// The planform area of the chosen wings (both halves each) and the first
-	// wing's root chord; with no wing, the first body's frontal ellipse and
-	// its length. Project units (the replica's). A boolean counts its
-	// operands' wings.
+	// The planform area of the chosen wings (both halves each) and the
+	// LARGEST wing's root chord (2026-11-20; the first wing's in the scene
+	// order before, which a tailplane listed above the wing got wrong); with
+	// no wing, the first body's frontal ellipse and its length. Project
+	// units (the replica's). A boolean counts its operands' wings.
 	void DefaultReferences(const TArray<AAerotelicEntityActor*>& Entities, double& OutArea, double& OutLength);
 	// On when anything chosen is mirrored, a wing is symmetric (built tip to
 	// tip about y = 0) or has its root on y = 0.

@@ -2300,6 +2300,78 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 		Doc->OnLoadCasesChanged.Remove(H);
 	}
 
+	// THE SCENE ORDER (2026-11-20): Move Up / Move Down, allowed as far as
+	// the dependencies go -- an entity never passes a boolean built on it, a
+	// boolean never passes an operand or rises above a parameterised entity
+	// -- and kept by the file. And the panel method's reference length no
+	// longer depends on it: the LARGEST wing's root chord, not the first's.
+	UE_LOG(LogAerotelicDocumentTest, Display, TEXT("step: scene order"));
+	if (Wing != nullptr && Fuselage != nullptr)
+	{
+		auto IndexOf = [Doc](const AAerotelicEntityActor* E) { return Doc->GetEntities().IndexOfByPredicate([E](const TWeakObjectPtr<AAerotelicEntityActor>& W) { return W.Get() == E; }); };
+		AAerotelicEntityActor* Bool = nullptr;
+		for (auto& W : Doc->GetEntities()) if (W.IsValid() && W->EntityName == TEXT("BoolOp 1")) Bool = W.Get();
+		Check(Bool != nullptr && IndexOf(Bool) > IndexOf(Fuselage) && IndexOf(Wing) < IndexOf(Fuselage), "order: the scene lists the wing, then the fuselage, then the boolean over it, as added");
+		// The fuselage down as far as it goes: past the sphere and the rest,
+		// never past the boolean built on it.
+		int32 Steps = 0;
+		FString Reason;
+		while (Doc->CanMoveEntity(Fuselage, +1) && Steps < 100) { Doc->MoveEntity(Fuselage, +1); ++Steps; }
+		const bool bStopped = !Doc->CanMoveEntity(Fuselage, +1, &Reason);
+		Check(Steps > 0 && bStopped && Bool != nullptr && IndexOf(Fuselage) + 1 == IndexOf(Bool) && Reason.Contains(TEXT("BoolOp 1")) && Reason.Contains(TEXT("built on")),
+			FString::Printf(TEXT("order: the fuselage moves down %d step(s) and stops above the boolean built on it (%s)"), Steps, *Reason));
+		// The boolean never rises above its operand, nor above any
+		// parameterised entity.
+		Check(!Doc->CanMoveEntity(Bool, -1, &Reason) && !Doc->MoveEntity(Bool, -1) && Reason.Contains(TEXT("built on")),
+			FString::Printf(TEXT("order: the boolean cannot rise above its operand (%s)"), *Reason));
+		// The wing to the top, and the fuselage back under it.
+		while (Doc->CanMoveEntity(Wing, -1)) Doc->MoveEntity(Wing, -1);
+		Check(IndexOf(Wing) == 0 && !Doc->CanMoveEntity(Wing, -1, &Reason) && Reason.Contains(TEXT("top")), "order: the wing moves to the top and no further");
+		while (IndexOf(Fuselage) > 1 && Doc->CanMoveEntity(Fuselage, -1)) Doc->MoveEntity(Fuselage, -1);
+		Check(IndexOf(Fuselage) == 1, "order: the fuselage moves back under the wing");
+		int32 Fired = 0;
+		FDelegateHandle H = Doc->OnEntityListChanged.AddLambda([&Fired]() { ++Fired; });
+		Check(Doc->MoveEntity(Fuselage, +1) && Doc->MoveEntity(Fuselage, -1) && Fired == 2, "order: every move fires OnEntityListChanged (the Scene tree and the pickers refresh)");
+		Doc->OnEntityListChanged.Remove(H);
+
+		// The reference length: a second, smaller wing added LAST and listed
+		// first must not take over -- the largest wing's root chord it is,
+		// whichever comes first.
+		AAerotelicEntityActor* Small = Doc->AddWing(TEXT("standard"));
+		if (Small != nullptr)
+		{
+			std::unique_ptr<aerotelic::ISolidModel> Draft = Doc->CloneEntityModel(Small);
+			aerotelic::WingModel* SD = Draft ? static_cast<aerotelic::WingModel*>(Draft.get()) : nullptr;
+			// A "standard" planform IS a TrapPlanform (no RTTI in the module).
+			aerotelic::TrapPlanform* TP = SD != nullptr && SD->planform().Serialize().type == "standard" ? static_cast<aerotelic::TrapPlanform*>(&SD->planform()) : nullptr;
+			FString SmallError;
+			bool bSmall = TP != nullptr;
+			if (TP != nullptr)
+			{
+				TP->SetSemiSpan(0.4 * TP->SemiSpan());
+				TP->SetRootChord(0.5 * TP->RootChord());
+				TP->SetTipChord(0.5 * TP->TipChord());
+				bSmall = Doc->ApplyEntityModel(Small, *Draft, SmallError);
+				Doc->FlushPendingRebuilds();
+			}
+			Check(bSmall, FString::Printf(TEXT("order: a second wing at 40%% span and half chord is added (%s)"), *SmallError));
+			while (Doc->CanMoveEntity(Small, -1)) Doc->MoveEntity(Small, -1);
+			Check(IndexOf(Small) == 0 && IndexOf(Wing) == 1, "order: the small wing is listed first");
+			const double S = AAerotelicEntityActor::GetModelScale();
+			const double BigChord = Wing->GetModelAs<aerotelic::WingModel>()->planform().RootChord() * S;
+			const double SmallChord = Small->GetModelAs<aerotelic::WingModel>()->planform().RootChord() * S;
+			double Area = 0.0, Length = 0.0;
+			AerotelicAeroTrim::DefaultReferences({ Small, Wing }, Area, Length);
+			double Area2 = 0.0, Length2 = 0.0;
+			AerotelicAeroTrim::DefaultReferences({ Wing, Small }, Area2, Length2);
+			Check(SmallChord < BigChord && FMath::IsNearlyEqual(Length, BigChord, 1e-9 * BigChord) && FMath::IsNearlyEqual(Length2, BigChord, 1e-9 * BigChord) && FMath::IsNearlyEqual(Area, Area2, 1e-9 * Area),
+				FString::Printf(TEXT("order: the reference length is the largest wing's root chord whichever is listed first (%.4g, %.4g vs chords %.4g and %.4g)"), Length, Length2, BigChord, SmallChord));
+			Doc->RemoveEntity(Small);
+			Doc->FlushPendingRebuilds();
+		}
+		Check(IndexOf(Wing) == 0 && IndexOf(Fuselage) == 1, "order: the wing first and the fuselage second go into the file");
+	}
+
 	UE_LOG(LogAerotelicDocumentTest, Display, TEXT("step: save"));
 	const FString TmpPath = FPaths::Combine(FPlatformProcess::UserTempDir(), TEXT("aerotelic_document_test.yaml"));
 	Check(Doc->SaveProjectToPath(TmpPath), "save succeeded");
@@ -2322,6 +2394,20 @@ int32 UAerotelicDocumentTestCommandlet::Main(const FString& Params)
 	// Entities.Num() == 0 here, so OpenProjectPath's confirmation check
 	// short-circuits without showing a dialog.
 	Check(Doc->OpenProjectPath(TmpPath), "reopen succeeded");
+	// The scene order came back with the file: the wing first, the
+	// fuselage second, the boolean after its operands.
+	{
+		const TArray<TWeakObjectPtr<AAerotelicEntityActor>>& Order = Doc->GetEntities();
+		int32 BoolAt = -1, FuselageAt = -1;
+		for (int32 i = 0; i < Order.Num(); ++i)
+		{
+			if (!Order[i].IsValid()) continue;
+			if (Order[i]->GetEntityType() == aerotelic::project_yaml::EntityType::Boolean) BoolAt = i;
+			if (Order[i]->GetEntityType() == aerotelic::project_yaml::EntityType::Fuselage) FuselageAt = i;
+		}
+		Check(Order.Num() >= 3 && Order[0].IsValid() && Order[0]->GetEntityType() == aerotelic::project_yaml::EntityType::Wing && FuselageAt == 1 && BoolAt > FuselageAt,
+			FString::Printf(TEXT("order: the reopened scene keeps the order (wing first, fuselage at %d, boolean at %d)"), FuselageAt, BoolAt));
+	}
 	{
 		const TArray<aerotelic::MassItem>& Back = Doc->GetMassItems();
 		Check(Back.Num() == 2 && Back[0].name == "battery" && Back[0].mass == 1.5 && Back[0].position[2] == 0.3 && Back[0].inertia[5] == 0.001 && Back[0].attach_nodes == 10 && !Back[0].attach_entity.empty()
