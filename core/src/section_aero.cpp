@@ -275,12 +275,18 @@ void AddBoundaryLayerCues(SectionSurface& sf, double reynolds, double alpha_deg,
 		}
 	}
 
-	// ---- skin-friction drag: turbulent flat plate from the stagnation point,
-	// Cf = 0.0592 Re_s^-0.2 at the local edge speed, projected on the wind.
+	// ---- skin-friction drag: the flat plate unwrapped along the surface from
+	// the stagnation point. Two estimates at the local edge speed, projected
+	// on the wind, each over the whole surface: laminar (Blasius,
+	// Cf = 0.664 Re_s^-1/2) and turbulent (Prandtl-Schlichting power law,
+	// Cf = 0.0592 Re_s^-1/5). They are combined as the weighted average with
+	// the transition cue's arc fraction f = s_tr / s_TE as the laminar weight,
+	// cd = f cd_lam + (1 - f) cd_turb; a surface laminar to the trailing edge
+	// has f = 1.
 	{
 		const double alpha = alpha_deg * kPi / 180.0;
 		const double ex = std::cos(alpha), ey = std::sin(alpha);
-		double cd = 0.0;
+		double cd_lam = 0.0, cd_turb = 0.0;
 		for (int i = 1; i < n; ++i) {
 			const double ds = sf.s[i] - sf.s[i - 1];
 			if (ds <= 0.0) continue;
@@ -288,11 +294,18 @@ void AddBoundaryLayerCues(SectionSurface& sf, double reynolds, double alpha_deg,
 			const double qm = 0.5 * (sf.q[i] + sf.q[i - 1]);
 			const double re_s = reynolds * qm * sm;
 			if (re_s <= 0.0) continue;
-			const double cf = 0.0592 * std::pow(re_s, -0.2);
 			const double tx = (sf.x[i] - sf.x[i - 1]) / ds, ty = (sf.y[i] - sf.y[i - 1]) / ds;
-			cd += cf * qm * qm * (tx * ex + ty * ey) * ds;
+			const double w = qm * qm * (tx * ex + ty * ey) * ds;   // local q^2, projected on the wind
+			cd_lam += 0.664 / std::sqrt(re_s) * w;
+			cd_turb += 0.0592 * std::pow(re_s, -0.2) * w;
 		}
-		sf.cd_friction = cd;
+		const double s_te = sf.s.back();
+		double f = 1.0;
+		if (sf.transition.found && s_te > 0.0) f = std::clamp(sf.transition.s / s_te, 0.0, 1.0);
+		sf.transition_fraction = f;
+		sf.cd_friction_laminar = cd_lam;
+		sf.cd_friction_turbulent = cd_turb;
+		sf.cd_friction = f * cd_lam + (1.0 - f) * cd_turb;
 	}
 
 	// ---- Stratford (1959): C̄p = 1 - (V/V_max)^2 from the peak, x from the

@@ -352,8 +352,19 @@ int32 SAerotelicLinePlot::OnPaint(const FPaintArgs& Args, const FGeometry& Geome
 			const FText T = FText::FromString(S.Label);
 			const FVector2D TS = Measure->Measure(T, Font);
 			const double X = Left + PlotW - 8.0 - TS.X;
-			TArray<FVector2f> Swatch = { FVector2f((float)(X - 22.0), (float)(Y + TS.Y * 0.5)), FVector2f((float)(X - 6.0), (float)(Y + TS.Y * 0.5)) };
-			FSlateDrawElement::MakeLines(Out, LayerId + 6, Geometry.ToPaintGeometry(), Swatch, ESlateDrawEffect::None, S.Color, true, S.LineWidth);
+			if (S.bLine)
+			{
+				TArray<FVector2f> Swatch = { FVector2f((float)(X - 22.0), (float)(Y + TS.Y * 0.5)), FVector2f((float)(X - 6.0), (float)(Y + TS.Y * 0.5)) };
+				FSlateDrawElement::MakeLines(Out, LayerId + 6, Geometry.ToPaintGeometry(), Swatch, ESlateDrawEffect::None, S.Color, true, S.LineWidth);
+			}
+			else
+			{
+				// A marker-only series (a transition or separation point on a
+				// pressure distribution): its symbol is the marker itself, a
+				// box of the marker's size, not a line.
+				const float M = S.MarkerSize > 0.0f ? S.MarkerSize : (bCompact ? 4.0f : 5.0f);
+				FSlateDrawElement::MakeBox(Out, LayerId + 6, Geometry.ToPaintGeometry(FVector2f(M, M), FSlateLayoutTransform(FVector2f((float)(X - 14.0 - M * 0.5), (float)(Y + TS.Y * 0.5 - M * 0.5)))), White, ESlateDrawEffect::None, S.Color);
+			}
 			FSlateDrawElement::MakeText(Out, LayerId + 6, Geometry.ToOffsetPaintGeometry(FVector2D(X, Y)), T, Font, ESlateDrawEffect::None, FLinearColor::White);
 			Y += TS.Y + 2.0;
 		}

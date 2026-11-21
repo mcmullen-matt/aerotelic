@@ -28,7 +28,8 @@ struct FAerotelicPlotSeries
 // polylines with optional markers (dashed for a reference curve), an
 // optional right-hand y axis for series in other units (its own range and
 // ticks, no grid, its zero on the same line as the left axis's zero), a
-// legend when there is more than one series, a title and axis labels. Read-only; what an
+// legend when there is more than one series (a line swatch for a curve, a
+// box of the marker's size for a marker-only series), a title and axis labels. Read-only; what an
 // analysis dialog shows a result with (the span loading, a coefficient
 // against the angle of attack). Not the NURBS curve editor, which is an
 // editor; this is only a picture of numbers.

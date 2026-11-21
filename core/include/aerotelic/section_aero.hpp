@@ -68,7 +68,15 @@ struct SectionSurface {
 	SurfaceCue separation;
 	SurfaceCue detachment;
 	double stratford_range_end_x = -1.0; // x/c where Cpbar first exceeded 4/7 (criterion no longer valid), -1 if never
-	double cd_friction = 0.0;       // this surface's share of the skin-friction drag
+	// Skin-friction drag of this surface (inviscid methods): the flat plate
+	// unwrapped along the surface, laminar (Blasius) and turbulent
+	// (Prandtl-Schlichting) estimates over the whole surface, combined as the
+	// weighted average with the transition cue's arc fraction s_tr / s_TE as
+	// the laminar weight: cd_friction = f cd_lam + (1 - f) cd_turb.
+	double cd_friction = 0.0;
+	double cd_friction_laminar = 0.0;   // the whole surface laminar
+	double cd_friction_turbulent = 0.0; // the whole surface turbulent
+	double transition_fraction = 1.0;   // f = s_tr / s_TE (1 when laminar to the trailing edge)
 	double cf_integral_x_equiv = 0.0; // Stratford's equivalent flat-plate length x_EL / c at the peak
 	// Boundary-layer distributions (the boundary-layer method only; empty otherwise).
 	std::vector<double> theta, delta_star, hk, cf, amp; // amp: n~ (laminar) or sqrt(c_tau) (turbulent)
@@ -94,7 +102,7 @@ struct SectionAeroResult {
 	double alpha0_deg = 0.0;        // zero-lift angle
 	double cl_alpha = 0.0;          // per radian
 	double cp_min = 0.0;
-	double cd_friction = 0.0;       // sum of the two surfaces' flat-plate estimates
+	double cd_friction = 0.0;       // sum of the two surfaces' transition-weighted flat-plate estimates
 
 	SectionSurface upper, lower;
 
@@ -150,8 +158,9 @@ Mat CloseTrailingEdge(const Mat& contour, double blend_start, double* gap_out = 
 
 // The shared viscous post-processing on one surface (from stagnation): the
 // transition cue, Stratford's turbulent separation criterion and the
-// flat-plate skin-friction drag. Exposed for the tests; SolveSection calls
-// it for both surfaces.
+// flat-plate skin-friction drag (laminar and turbulent plate estimates,
+// averaged with the transition location as the weight). Exposed for the
+// tests; SolveSection calls it for both surfaces.
 void AddBoundaryLayerCues(SectionSurface& surface, double reynolds, double alpha_deg, double transition_re_x);
 
 // ---- control-point sensitivity ---------------------------------------------

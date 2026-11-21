@@ -3759,10 +3759,19 @@ cusp keeps a finite speed.
 **Viscous cues, Mach 0, Reynolds number the user's.** On each surface from
 the stagnation point: the *transition cue* is the earlier of the station
 where `Re_x = Re (V/U)(s/c)` reaches 3.5e6 and the first adverse pressure
-gradient (the suction peak); the *skin-friction drag* integrates the
-turbulent flat-plate law `Cf = 0.0592 Re_s^-0.2` at the local edge speed
-from the stagnation point, projected on the wind (0.0108 for NACA 0012 at
-Re 1e6 and 0 deg; a plate gives 0.0094); the *separation cue* is
+gradient (the suction peak); the *skin-friction drag* treats each surface
+as a flat plate unwrapped from the stagnation point, at the local edge
+speed and projected on the wind, computed twice over the whole surface --
+laminar (Blasius, `Cf = 0.664 Re_s^-1/2`) and turbulent
+(Prandtl-Schlichting, `Cf = 0.0592 Re_s^-1/5`) -- and averaged with the
+transition location as the weight, the laminar fraction being the arc
+length from stagnation to the transition cue over the surface's arc length
+(since 2026-11-21, on Matt's instruction; until then the turbulent law
+alone from stagnation, 0.0108 for NACA 0012 at Re 1e6 and 0 deg against a
+plate's 0.0094). The surface carries the two estimates and the weight
+(`cd_friction_laminar`, `cd_friction_turbulent`, `transition_fraction`).
+The chart legend shows the cue markers as boxes of their colour (a line
+swatch is for a curve). The *separation cue* is
 Stratford's criterion (J. Fluid Mech. 5:1-16, 1959), fully turbulent from
 stagnation given the transition cue's fidelity: from the suction peak,
 `Cpbar = 1 - (V/Vmax)^2`, `x` from the equivalent flat-plate origin

@@ -28,10 +28,11 @@ void Print(const SectionAeroResult& r) {
 		r.alpha0_deg, r.cl_alpha, r.cp_min, r.iterations, r.residual, r.convergence_margin, r.te_gap_closed, r.te_angle_deg, r.solve_ms, r.error.c_str());
 	for (const std::string& w : r.warnings) std::printf("   warning: %s\n", w.c_str());
 	auto cue = [](const char* name, const SectionSurface& s) {
-		std::printf("   %s: %zu pts, peak q %.3f at x/c %.3f; transition %s x/c %.3f (%s); separation %s x/c %.3f (%s); 4/7 at %.3f; cd_f %.5f x_EL %.4f\n",
+		std::printf("   %s: %zu pts, peak q %.3f at x/c %.3f; transition %s x/c %.3f (%s); separation %s x/c %.3f (%s); 4/7 at %.3f; cd_f %.5f (laminar %.5f, turbulent %.5f, laminar weight %.3f) x_EL %.4f\n",
 			name, s.x.size(), s.q.empty() ? 0.0 : s.q[s.peak_index], s.x.empty() ? 0.0 : s.x[s.peak_index],
 			s.transition.found ? "at" : "none", s.transition.x, s.transition.note.c_str(),
-			s.separation.found ? "at" : "none", s.separation.x, s.separation.note.c_str(), s.stratford_range_end_x, s.cd_friction, s.cf_integral_x_equiv);
+			s.separation.found ? "at" : "none", s.separation.x, s.separation.note.c_str(), s.stratford_range_end_x,
+			s.cd_friction, s.cd_friction_laminar, s.cd_friction_turbulent, s.transition_fraction, s.cf_integral_x_equiv);
 	};
 	cue("upper", r.upper);
 	cue("lower", r.lower);
@@ -59,7 +60,13 @@ int main() {
 		Check(std::fabs(r0.cp_min + 0.43) < 0.03, "NACA 0012 Cp_min about -0.43 at alpha 0 (v/V max 1.196, Abbott & von Doenhoff)");
 		Check(r0.cl_alpha > 6.6 && r0.cl_alpha < 7.2, "NACA 0012 lift slope between 6.6 and 7.2 per radian (thin-airfoil 6.28 plus thickness)");
 		Check(std::fabs(r0.cd_pressure) < 2e-3, "pressure drag is a discretisation residual (d'Alembert)");
-		Check(r0.cd_friction > 0.008 && r0.cd_friction < 0.014, "turbulent flat-plate friction drag about 0.0094 at Re 1e6");
+		Check(r0.cd_friction > 0.006 && r0.cd_friction < 0.012, "friction drag (laminar/turbulent plate averaged by the transition location) about 0.009 at Re 1e6");
+		Check(r0.upper.cd_friction_laminar > 0.0 && r0.upper.cd_friction_laminar < r0.upper.cd_friction_turbulent, "the laminar plate estimate lies below the turbulent one");
+		Check(r0.upper.transition.found && std::fabs(r0.upper.transition_fraction - r0.upper.transition.s / r0.upper.s.back()) < 1e-12, "the laminar weight is the transition cue's arc fraction s_tr / s_TE");
+		Check(std::fabs(r0.upper.cd_friction - (r0.upper.transition_fraction * r0.upper.cd_friction_laminar + (1.0 - r0.upper.transition_fraction) * r0.upper.cd_friction_turbulent)) < 1e-12,
+			"the surface's friction drag is the weighted average of its laminar and turbulent estimates");
+		Check(r0.upper.cd_friction > r0.upper.cd_friction_laminar && r0.upper.cd_friction < r0.upper.cd_friction_turbulent, "transition ahead of the trailing edge: the drag lies between the two plates");
+		Check(std::fabs(r0.cd_friction - (r0.upper.cd_friction + r0.lower.cd_friction)) < 1e-12, "the section's friction drag is the sum of the surfaces'");
 		Check(r0.upper.transition.found && r0.upper.transition.x > 0.05 && r0.upper.transition.x < 0.3, "transition cue at the suction peak (first adverse gradient)");
 		Check(r0.upper.x.front() < 1e-3 && std::fabs(r0.upper.x.back() - 1.0) < 1e-6 && r0.upper.cp.front() > 0.999, "upper surface runs from the stagnation point (Cp 1) to the trailing edge");
 		Check(r0.upper.cp.back() > 0.999, "finite trailing-edge angle: inviscid stagnation at the trailing edge");
@@ -78,6 +85,7 @@ int main() {
 		SectionAeroResult rh = SolveSection(cm, req);
 		Print(rh);
 		Check(rh.upper.transition.found && rh.upper.transition.note.find("Re_x") != std::string::npos, "at Re 5e7 the Re_x rule fires before the peak");
+		Check(rh.upper.transition_fraction < r0.upper.transition_fraction, "earlier transition at Re 5e7: a smaller laminar weight than at Re 1e6");
 	}
 
 	// ---- NACA 2412 --------------------------------------------------------------------
